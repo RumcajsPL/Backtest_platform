@@ -1,0 +1,48 @@
+//@version=6
+indicator('We Buy / We Sell - Trigger', shorttitle = 'WBWST', overlay = true, max_labels_count = 50)
+
+// ============================================================================
+// INPUTS - Higher Timeframe for Continuity
+// ============================================================================
+htf = input.timeframe("60", title = "Higher Timeframe for Continuity", inline = "htf")
+
+// ============================================================================
+// HIGHER TIMEFRAME DATA
+// ============================================================================
+float htf_open = request.security(syminfo.tickerid, htf, open, lookahead=barmerge.lookahead_on)
+float htf_close = request.security(syminfo.tickerid, htf, close, lookahead=barmerge.lookahead_on)
+bool htf_bull = not na(htf_close) and not na(htf_open) and htf_close > htf_open  // HTFC Bullish
+bool htf_bear = not na(htf_close) and not na(htf_open) and htf_close < htf_open  // HTFC Bearish
+
+// ============================================================================
+// CANDLE CLASSIFICATION
+// ============================================================================
+// Candle Classification
+bool is_inside = high <= high[1] and low >= low[1]  // 1: Inside Bar
+bool is_outside = high > high[1] and low < low[1]   // 3: Full Outside
+bool is_2up = high > high[1] and low >= low[1]      // 2u: Up Directional
+bool is_2down = low < low[1] and high <= high[1]    // 2d: Down Directional
+int candle_type = is_inside ? 1 : is_outside ? 3 : is_2up ? 2 : is_2down ? -2 : na  // 1=Inside, 3=Outside, 2=2u, -2=2d
+
+// ============================================================================
+// REVERSAL PATTERNS
+// ============================================================================
+bool rev_2d_2u = candle_type[1] == -2 and candle_type == 2  // 2d to 2u (Bullish Reversal)
+bool rev_2u_2d = candle_type[1] == 2 and candle_type == -2  // 2u to 2d (Bearish Reversal)
+
+// ============================================================================
+// SIGNAL CONDITIONS
+// ============================================================================
+bool we_buy = rev_2d_2u and htf_bull
+bool we_sell = rev_2u_2d and htf_bear
+
+// ============================================================================
+// SIGNAL PLOTS
+// ============================================================================
+plotchar(we_buy, 'We Buy', '👍', location.belowbar, color.green, size = size.tiny)
+plotchar(we_sell, 'We Sell', '👎', location.abovebar, color.red, size = size.tiny)
+
+// ============================================================================
+// HTF BACKGROUND COLOR
+// ============================================================================
+bgcolor(htf_bull ? color.new(color.green, 95) : htf_bear ? color.new(color.red, 95) : na, title = 'HTF Background')

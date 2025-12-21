@@ -1,0 +1,68 @@
+# configs/wbws_dax40_60min.yaml
+# Default configuration for DAX40 with 60min HTF
+
+# ============================================================================
+# METADATA
+# ============================================================================
+name: "WBWS Trigger - DAX40 60min HTF"
+description: "We Buy/We Sell trigger signals for DAX40 with 60-minute higher timeframe"
+version: "1.0"
+created: "2025-12-11"
+
+# ============================================================================
+# ASSET CONFIGURATION
+# ============================================================================
+asset:
+  symbol: "DAX40"
+  name: "DAX 40 Index"
+  exchange: "EUREX"
+  currency: "EUR"
+  timezone: "Europe/Berlin"
+
+# ============================================================================
+# DATA SOURCE
+# ============================================================================
+data:
+  file: "data/processed/DAX40_TV_RANGE.parquet"
+  format: "parquet"
+  timeframe: "1min"
+  
+  # Standard column names (preprocessing ensures these)
+  columns:
+    timestamp: "timestamp"
+    open: "open"
+    high: "high"
+    low: "low"
+    close: "close"
+    volume: "volume"
+  
+  validate_ohlc: true
+  handle_missing: "drop"
+
+# ============================================================================
+# INDICATOR PARAMETERS
+# ============================================================================
+indicator:
+  htf_period: "60min"
+
+# ============================================================================
+# OUTPUT SETTINGS
+# ============================================================================
+output:
+  save_execution_report: true
+  reports_dir: "outputs/reports/WBWS"
+  save_signals_csv: false
+  signals_file: "outputs/signals/wbws_signals_{timestamp}.csv"
+  verbose: false                                # Set to true for detailed terminal output
+
+# ============================================================================
+# VALIDATION REFERENCE (for testing)
+# ============================================================================
+validation:
+  enabled: true
+  reference_source: "TradingView"
+  expected_signals:
+    buy: 878
+    sell: 658
+    total: 1536
+  tolerance_pct: 20

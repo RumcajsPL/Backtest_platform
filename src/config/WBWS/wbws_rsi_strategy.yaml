@@ -1,0 +1,49 @@
+# WBWS Strategy with RSI Filter Configuration
+# All timestamps are in CET/CEST (Europe/Berlin) as naive datetimes
+
+strategy:
+  name: "WBWS strategy with RSI Filter"
+  description: "We Buy/We Sell Trigger combined with RSI signal validation"
+  version: "1.0.0"
+  author: "Backtest Platform"
+  created: "2025-12-17"
+
+asset:
+  symbol: "DEUIDXEUR"
+  name: "DAX 40 Index"
+  exchange: "EUREX"
+  currency: "EUR"
+
+# Chose ohlcv data source and date range for backtest
+data:
+  file: "data/processed/ohlcv/DEUIDXEUR_1min_20231201_20251214.csv"
+  format: "csv"
+  
+  # Date range (in CET/CEST naive time - matches CSV timestamps)
+  date_range:
+    start: "2025-11-24 00:03:00"  # CET/CEST time
+    end: "2025-12-05 00:00:00"    # CET/CEST time
+  
+  validation:
+    check_ohlc: true
+    check_gaps: false
+    max_price_move: 0.10
+
+indicator:
+  name: "WBWS_Trigger"
+  htf_period: "60min"
+
+filters:
+  rsi_filter:
+    enabled: true
+    length: 14
+    overbought: 70
+    oversold: 30
+
+output:
+  outputs_dir: "outputs"
+  reports_dir: "reports/WBWS"
+  signals_dir: "signals/strategy"
+  save_signals_csv: true
+  save_execution_report: true
+  verbose: false

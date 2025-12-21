@@ -1,0 +1,1394 @@
+//@version=6
+strategy("🔬Strategy Builder Lab🔬", "🔬SBL🔬", overlay=true,
+   initial_capital=30000, currency=currency.USD, pyramiding = 0,
+   default_qty_type=strategy.percent_of_equity, default_qty_value=5,
+   commission_type=strategy.commission.percent, commission_value=0.01, process_orders_on_close=true)
+// =============================================== FILTERING MANAGER BLOCK ===============================================
+////////////////////////////////////////////////////////////////////////////////
+// INPUT GROUPS & TOOLTIPS DEFINITIONS
+////////////////////////////////////////////////////////////////////////////////
+gS_title = "─────────────📍 Source Triggers 📍─────────────" // Source Triggers
+gS_tooltip = "👉 Select the source from buil-in variable like: open, close etc.\n 
+                  or select the source from external source\n 
+                  like an indicator available on the same chart.\n
+             👉 Remark: buil-in input.source() is being used to catch external signals\n
+                 Only plots: (plot(), plotchar(), plotshape() returning no negative value are captured. \n
+             👉 Up to 4 signals can be captured : 2 longs and 2 shorts" 
+
+gF1_title = "─────────────〽️ Trend / Direction 〽️─────────────"
+gF1_tooltip = "👉 Confirms market bias (bullish or bearish): \n" +
+              "🔹MACD → trend + momentum combo \n" +
+              "🔹Moving Averages (MA) → simple trend filter \n" +
+              "🔹VWAP → session anchor, strong intraday bias \n" +
+              "🔹SuperTrend → adaptive trend following \n" +
+              "👉 Pick ONE main bias filter:\n" +
+              "🔹MACD (Classic) → EMA(12,26), Signal(9), confirm > 0 histogram \n" +
+              "🔹MACD (Slope) → Histogram rising = bullish momentum \n" +
+              "🔹MACD (Strict) → Both direction and slope must align \n" +
+              "🔹MA (Scalping) → short MA(20) vs long MA(50) \n" +
+              "🔹MA (Intraday) → MA(50) vs MA(200) \n" +
+              "🔹VWAP (Scalping) → use Daily VWAP \n" +
+              "🔹VWAP (Intraday) → Weekly VWAP \n" +
+              "🔹SuperTrend (Scalping) → ATR(10), Mult=2.0 \n" +
+              "🔹SuperTrend (Intraday) → ATR(14), Mult=3.0"
+
+gF2_title = "─────────🔥 Momentum / Regime Strength 🔥─────────"
+gF2_tooltip = "👉 Measures strength and velocity of the ongoing move:\n" +
+              "🔹Choppiness Index → identifies range vs trend conditions\n" +
+              "🔹ADX → measures trend strength (direction-agnostic)\n" +
+              "🔹ROC (Rate of Change) → measures pure price acceleration or deceleration\n" +
+              "   ▪ Positive = rising momentum\n" +
+              "   ▪ Negative = falling momentum\n" +
+              "   ▪ Strong impulses often precede continuation moves\n" +
+              "👉 Usage suggestions:\n" +
+              "🔹Choppiness (Scalping) → < 55 = trending, > 60 = choppy\n" +
+              "🔹Choppiness (Intraday) → < 50 = trending, > 60 = choppy\n" +
+              "🔹ADX (Scalping) → ADX > 20 = valid trend\n" +
+              "🔹ADX (Intraday) → ADX > 25 = valid trend\n" +
+              "🔹ROC (Scalping) → Length 9–14, Threshold ±0.2%–0.5%\n" +
+              "🔹ROC (Intraday) → Length 14–21, Threshold ±0.3%–0.8%"
+
+gF3_title = "─────────⛽ Volume / 💥 Volatility ─────────"
+gF3_tooltip = "👉 Confirms market participation and volatility conditions:\n
+              🔹ATR-Normalized Volume → compares current volume relative to volatility\n
+              🔹Bollinger Bands → volatility expansion / contraction\n
+              🔹Keltner Channels → directional volatility confirmation\n
+             👉 Recommended usage:\n
+              🔹Volume (Scalping) → Volume/ATR > 1.2 × MA(20) ⇒ strong participation\n
+              🔹Volume (Intraday) → Volume/ATR > 1.5 × MA(20)\n
+              🔹Bollinger (Scalping) → Bandwidth rising ⇒ valid momentum\n
+              🔹Bollinger (Intraday) → Look for squeeze (low width → expansion)\n
+              🔹Keltner → Price outside channel ⇒ trend continuation; inside ⇒ consolidation"
+
+gF4_title = "─────────────〰️ Oscillators 〰️─────────────"
+gF4_tooltip = "👉 Measures short-term momentum, overbought/oversold and cyclic price oscillations:\n" +
+              "🔹 RSI → smooth, balanced oscillator, reacts slower\n" +
+              "🔹 DPO (Detrended Price Oscillator) → removes long-term trend to highlight short-term price cycles\n" +
+              "   ▪ Positive = price above its short-term mean (bullish bias)\n" +
+              "   ▪ Negative = price below its short-term mean (bearish bias)\n" +
+              "🔹 CCI (Commodity Channel Index) → measures deviation from typical price to identify strong impulses or reversals\n" +
+              "   ▪ Above +100 = strong bullish momentum or overbought\n" +
+              "   ▪ Below -100 = strong bearish momentum or oversold\n" +
+              "👉 Use depending on trading style:\n" +
+              "🔹 RSI (Scalping) → OB > 70 / OS < 30\n" +
+              "🔹 RSI (Intraday) → OB > 80 / OS < 20\n" +
+              "🔹 DPO (Scalping) → Length 10–20, Threshold ±0.1–0.2%\n" +
+              "🔹 DPO (Intraday) → Length 20–30, Threshold ±0.2–0.3%\n" +
+              "🔹 CCI (Scalping) → Length 10–20, OB > +100 / OS < -100\n" +
+              "🔹 CCI (Intraday) → Length 20–40, OB > +150 / OS < -150"
+
+gF5_title = "─────────🧭 Market Structure & Flow 🧭─────────"
+gF5_tooltip = "👉 Confirms the current structural flow of price:\n" +
+             "🔹Pivot Structure → evaluates HH/HL vs LH/LL sequences.\n" +
+             "🔹Local Angle (Slope) → measures short-term direction bias.\n" +
+             "👉 Typically used to confirm breakout or early trend phases.\n" +
+             "👉 Recommended usage:\n" +
+             "🔹Pivot Structure (Scalping) → Zig-Zag Reversal → 0.2% \n" +
+             "   ▪ HH/HL = bullish bias for longs\n" +
+             "   ▪ LH/LL = bearish bias for shorts\n" +
+             "🔹Pivot Structure (Intraday) → Zig-Zag Reversal → 0.5% \n" +
+             "   ▪ Percent Lower = more sensitive (more swing updates, possible whipsaws)\n" +
+             "    ▪ Higher = less sensitive \n" +
+             "🔹Local Angle (Scalping) → Lookback 5–10, Min Angle 0.1–0.25 rad\n" +
+             "   ▪ Steeper angles = stronger momentum\n" +
+             "   ▪ Shorter lookback = faster response\n" +
+             "🔹Local Angle (Intraday) → Lookback 10–20, Min Angle 0.08–0.15 rad\n" +
+             "   ▪ Gentle slopes = sustainable trends\n" +
+             "   ▪ Longer lookback = smoother signals\n\n" +
+             "👉 Pro Tips:\n" +
+             "🔹 Combine both filters for high-probability entries\n" +
+             "🔹Pivot + Angle alignment = strongest signals\n" +
+             "🔹 Use in trending markets for best results\n" +
+             "🔹 Avoid during choppy/range-bound conditions"
+
+gT_title = "─────────────🕐 Time Frame Bias 🕐─────────────"
+gT_tooltip = "👉 Higher Time Frame (HTF) Bias applied only on MACD, MA and Pivot filters.\n" +
+              "🔹The timeframe used for HTF filter checks. \n" + 
+              "🔹Use 'chart' (default) to disable HTF bias and use the current chart's timeframe."
+
+///////////////////////////////////////////////////////////////////////
+// INPUTS SOURCES & FILTERS
+////////////////////////////////////////////////////////////////////////////////
+// Source Triggers
+longSrc1       = input.source(close, "🟢 Primary Long", group = gS_title, inline = "primary", tooltip = gS_tooltip)
+shortSrc1      = input.source(close, "🔴 Primary Short", group = gS_title, inline = "primary")
+longSrc2       = input.source(close, "🟢 Secondary Long", group = gS_title, inline = "secondary", tooltip = gS_tooltip)
+shortSrc2      = input.source(close, "🔴 Secondary Short", group = gS_title, inline = "secondary")
+
+// Higher Time Frame Bias
+htfTimeframe = input.timeframe(title="🕐 Time Frame bias (leave 'Chart' if want disabled)", defval="", group=gT_title, tooltip = gT_tooltip)
+// MACD + MACD Histogram Slope
+useMACD     = input.bool(false, "〽️ Enable MACD", group=gF1_title, inline="macd1", tooltip=gF1_tooltip)
+macdMode    = input.string("Classic", "MACD Mode", options=["Classic", "Histogram Slope", "Strict (Both)"], 
+                 group=gF1_title, inline="macd1", tooltip="Classic = direction only\nHistogram Slope = momentum acceleration\nStrict = both direction & momentum must align.")
+macdFastLen  = input.int(12, "📏 Fast EMA", group=gF1_title, inline="macd2", minval=2)
+macdSlowLen  = input.int(26, "📏 Slow EMA", group=gF1_title, inline="macd2", minval=3)
+macdSignalLen = input.int(9, "📏 Signal EMA", group=gF1_title, inline="macd3", minval=2)
+macdSlopeLen = input.int(3, "📐 Slope Lookback", group=gF1_title, inline="macd3",
+                 tooltip="Bars back for histogram slope comparison (used in Slope and Strict modes).",minval=1)
+
+// MAs
+useMA         = input.bool(false, "〽️ Enable MA Filter", group=gF1_title, inline = "maIN1", tooltip=gF1_tooltip)
+maType        = input.string("EMA","MA Type", options=["SMA","EMA","WMA","HMA"], group=gF1_title, inline = "maIN1")
+maLen         = input.int(25, "📏 MA Length", group=gF1_title, inline = "maIN2", minval = 1)
+maSlopeLen    = input.int(10, "📐 Slope Lookback", group=gF1_title, inline = "maIN2", tooltip="👉 Length for moving average calculation. Longer for thend confirmation\n
+                                                                                                 👉 Number of bars back to check for the MA's slope. A higher number confirms a more stable trend.", minval = 1)
+
+// VWAP
+useVWAP       = input.bool(false, "〽️ Enable VWAP Filter", group=gF1_title, inline = "vwapIN1", tooltip=gF1_tooltip)
+vwapBuffer    = input.float(0.0, "⭐ VWAP Buffer (%)", minval = 0, step=0.001, group=gF1_title, inline = "vwapIN1", tooltip="👉 Lookback for slope direction. Set =1 to disable slope check\n
+                                                                                                                         👉 Require price to be at least X% above/below VWAP. Set 0 to disable buffer")
+
+// Super Trend
+useSUPT         = input.bool(false, "〽️ Enable Supertrend Filter", group=gF1_title, inline = "suptIN1", tooltip=gF1_tooltip)
+suptAtrLen      = input.int(10,    "📏 ATR Length", group=gF1_title, inline = "suptIN2", minval = 1)
+suptFactor      = input.float(3, "⭐ Factor",  step = 0.1, group=gF1_title, inline = "suptIN2", tooltip="👉 ATR length for Supertrend calculation\n
+                                                                                                         👉 ATR multiplier for Supertrend calculation", minval = 1)
+
+// Choppiness Index
+useChop       = input.bool(false, "🔥 Enable Choppiness", group=gF2_title, inline = "chopIN1", tooltip=gF2_tooltip)
+ciLen         = input.int(14,    "📏 Length", group=gF2_title, inline = "chopIN2", minval = 1)
+chopThr       = input.float(61.8,"⭐ Threshold", step = 0.1, group=gF2_title, inline = "chopIN2" , tooltip="👉 Length for Choppiness Index calculation\n
+                                                                                                                     👉 Threshold below which market is considered trending", minval = 1)
+
+// ADX
+useADX        = input.bool(false, "🔥 Enable ADX Filter", group=gF2_title, inline = "adxIN1", tooltip=gF2_tooltip)
+adxLen        = input.int(14,    "📏 ADX Length", group=gF2_title, inline = "adxIN1", minval = 1)
+adxThr        = input.float(18.0,"⭐ ADX Threshold",  step = 0.2, group=gF2_title, inline = "adxIN2", tooltip="", minval = 1)
+diLen         = input.int(10,    "📏 DI Length", group=gF2_title, inline = "adxIN2", tooltip="👉 Threshold above which trend is considered strong\n
+                                                                                             👉 Length for Directional Indicators (+DI and -DI)", minval = 1)
+
+// ROC (Rate of Change)
+useROC      = input.bool(false, "🔥 Enable ROC", group = gF2_title, tooltip = gF2_tooltip, inline = "rocIN1")
+rocLen      = input.int(14, "📏 ROC Length", group = gF2_title, inline = "rocIN1", minval = 2, maxval = 100)
+rocThreshold= input.float(0.1, "⭐ Threshold (%)", group = gF2_title, inline = "rocIN2", 
+                             tooltip = "ROC = (Close - Close[n]) / Close[n] * 100\n" +
+                                      "▪ Positive ROC = upward acceleration\n" +
+                                      "▪ Negative ROC = downward acceleration\n" +
+                                      "▪ Threshold defines minimum impulse strength\n" +
+                                      "Suggested:\n" +
+                                      "Scalping → 0.2–0.5%\n" +
+                                      "Intraday → 0.3–0.8%", 
+                             step = 0.01, minval = 0.01, maxval = 2.0)
+
+// Volume
+useVol       = input.bool(false, "⛽ Volume", group = gF3_title, tooltip = gF3_tooltip, inline = "vol1")
+volMaLen     = input.int(20, "📏 MA Length", group = gF3_title, inline = "vol1", minval = 5, maxval = 100)
+atrLenVol    = input.int(14, "📏 ATR Length", group = gF3_title, inline = "vol2", tooltip = "ATR is used to normalize volume, allowing comparison across assets with different price scales.")
+
+// Volatility - Bollinger Bands
+useBBW        = input.bool(false, "💥 Enable BB Width", group=gF3_title, inline = "bbIN1", tooltip=gF3_tooltip) 
+bbLen         = input.int(14, "📏 BB Length", group=gF3_title, inline = "bbIN1", minval = 1)
+bbwMaLen      = input.int(30,    "📏 BBW MA Length", group=gF3_title, inline = "bbIN2", tooltip="", minval = 1)
+bbwFilterMult = input.float(0.5, "⭐ Filter Multiplier", step = 0.02, group=gF3_title, inline = "bbIN2", tooltip="👉 Length for Bollinger Band Width moving average\n
+                                 👉 Filters for volatility expansion. A value of 1.1 requires the current BB width to be at least 10% greater than its moving average.", minval = 0.02)
+
+// Volatility - Keltner Channels
+useKC          = input.bool(false, "💥 Enable Keltner", group = gF3_title, tooltip = gF3_tooltip, inline = "kcIN1")
+kcLen          = input.int(20, "📏 KC EMA Length", group = gF3_title, inline = "kcIN1", minval = 2, maxval = 100)
+kcMult         = input.float(1.5, "⭐ ATR Multiplier", group = gF3_title, inline = "kcIN2", step = 0.1, minval = 0.1, maxval = 5.0,
+                               tooltip = "Keltner Channels = EMA ± (ATR × Multiplier)\n" +
+                                         "▪ Lower values = tighter channel (sensitive)\n" +
+                                         "▪ Higher values = wider channel (conservative)\n" +
+                                         "Typical:\n" +
+                                         "Scalping → 1.2–1.8\n" +
+                                         "Intraday → 1.5–2.5")
+kcATRlen       = input.int(10, "📏 ATR Length", group = gF3_title, inline = "kcIN2", minval = 2, maxval = 100)
+
+// RSI
+useRSI        = input.bool(false, "〰️ Enable RSI", group = gF4_title, tooltip = gF4_tooltip, inline = "rsiIN1")
+rsiLen        = input.int(14, "📏 RSI Length", group = gF4_title, inline = "rsiIN1", minval = 2, maxval = 50)
+rsiOverbought = input.int(70, "🔴 Overbought", group = gF4_title, inline = "rsiIN2", minval = 50, maxval = 95)
+rsiOversold   = input.int(30, "🟢 Oversold", group = gF4_title, inline = "rsiIN2", tooltip="RSI Overbought 👉 level above which market is considered overbought \n
+                                                                                             RSI Oversold 👉 level below which market is considered oversold", minval = 5, maxval = 50)
+
+// DPO
+useDPO      = input.bool(false, "〰️ Enable DPO", group = gF4_title, tooltip = gF4_tooltip, inline = "dpoIN1")
+dpoLen      = input.int(20, "📏 DPO Length", group = gF4_title, inline = "dpoIN1", minval = 3, maxval = 100, 
+                         tooltip = "Length of the centered moving average used to detrend the price.\nShorter → faster response, more noise.\nLonger → smoother cycles, more lag.")
+dpoSmooth   = input.int(3, "⭐ Smoothing", group = gF4_title, inline = "dpoIN2", minval = 1, 
+                         tooltip = "Optional smoothing period for DPO output. Helps stabilize spikes without delaying signals.")
+dpoThresh   = input.float(0.2, "⭐ Threshold (%)", group = gF4_title, inline = "dpoIN2", step = 0.01, minval = 0.01, maxval = 1.0, 
+                         tooltip = "Defines neutral zone around zero (in % of price).\nHigher value = stricter filtering, fewer signals.")
+
+// CCI (Commodity Channel Index)
+useCCI        = input.bool(false, "〰️ Enable CCI", group = gF4_title, tooltip = gF4_tooltip, inline = "cciIN1")
+cciLen        = input.int(20, "📏 CCI Length", group = gF4_title, inline = "cciIN1", minval = 3, maxval = 100)
+cciOverbought = input.int(100, "🔴 Overbought", group = gF4_title, inline = "cciIN2", minval = 50, maxval = 300)
+cciOversold   = input.int(-100, "🟢 Oversold", group = gF4_title, inline = "cciIN2", tooltip = 
+                                                                                         "CCI Overbought/Oversold levels:\n" +
+                                                                                         "▪ Above OB = strong upward momentum or potential exhaustion\n" +
+                                                                                         "▪ Below OS = strong downward momentum or potential reversal", 
+                                                                                     minval = -300, maxval = -50)
+
+// Pivot
+useStructurePivot = input.bool(false, 
+     title = "🧭 Use Pivot Structure", 
+     tooltip = "Detects structural bias using real-time swing sequences (HH/HL vs LH/LL).\n" +
+               "Updated every bar without waiting for pivot confirmation.",
+     group = gF5_title, inline="pivot1")
+
+zzPercent = input.float(0.2, "⭐ Zig-Zag Reversal (%)", 
+     tooltip = "Minimum reversal % to form new zig-zag leg.\n" +
+               "Lower = more sensitive (more swing updates, possible whipsaws)\n" +
+               "Higher = less sensitive (cleaner swings, more lag)\n\n" +
+               "Recommended settings:\n" +
+               "• 1-min chart: 0.15-0.30%\n" +
+               "• 5-min chart: 0.20-0.40%\n" +
+               "• 15-min chart: 0.30-0.60%\n" +
+               "• 1-hour chart: 0.50-1.00%",
+     step = 0.01, minval = 0.01, maxval = 3.0, group = gF5_title, inline="pivot1")
+
+// Local angle
+useStructureAngle = input.bool(false, 
+     title = "🧭 Use Local Angle", 
+     tooltip = "Measures the local trend slope via linear regression angle.",
+     group = gF5_title, inline="angle1")
+angleLen  = input.int(10, "📏 Lookback", minval = 2, group = gF5_title, inline="angle1")
+minAngle  = input.float(0.15, "📐 Min Angle (rad)", step = 0.01, group = gF5_title, inline="angle2")
+////////////////////////////////////////////////////////////////////////////////
+// FILTER CALCULATIONS / HELPER FUNCTIONS
+////////////////////////////////////////////////////////////////////////////////
+// Helper function to determine effective timeframe
+getEffectiveTimeframe() =>
+    htfTimeframe == "" ? timeframe.period : htfTimeframe
+
+effectiveTF = getEffectiveTimeframe()
+// MACD
+macdFast   = ta.ema(close, macdFastLen)
+macdSlow   = ta.ema(close, macdSlowLen)
+macd       = macdFast - macdSlow
+macdSignal = ta.ema(macd, macdSignalLen)
+macdHist   = macd - macdSignal
+[htfMACD, htfSignal, htfHist] = request.security(syminfo.tickerid, effectiveTF, 
+     [macd, macdSignal, macdHist], 
+     lookahead=barmerge.lookahead_off)
+htfHistDelta = htfHist - htfHist[macdSlopeLen]
+htfHistNorm  = htfHistDelta / ta.stdev(htfHist, 50)
+getMACDFilter(isLong) =>
+    if not useMACD
+        true
+    else
+        // Use HTF values for direction and slope
+        dirOK   = isLong ? htfHist > 0 : htfHist < 0
+        slopeOK = isLong ? htfHistNorm > 0 : htfHistNorm < 0
+
+        if macdMode == "Classic"
+            dirOK
+        else if macdMode == "Histogram Slope"
+            slopeOK
+        else  // "Strict (Both)"
+            dirOK and slopeOK
+// MAs
+ma = switch maType
+    "SMA" => ta.sma(close, maLen)
+    "EMA" => ta.ema(close, maLen)
+    "WMA" => ta.wma(close, maLen)
+    "HMA" => ta.hma(close, maLen)
+htfMA = request.security(syminfo.tickerid, effectiveTF, ma, 
+     lookahead=barmerge.lookahead_off)
+getMAFilter(isLong) =>
+    if not useMA
+        true
+    else
+        // Compare HTF MA with its value maSlopeLen bars ago on HTF
+        isLong ? htfMA > htfMA[maSlopeLen] : htfMA < htfMA[maSlopeLen]     
+// VWAP
+vwap = ta.vwap
+aboveVWAP = close > vwap * (1 + vwapBuffer/100)
+belowVWAP = close < vwap * (1 - vwapBuffer/100)
+getVWAPFilter(isLong) =>
+    if not useVWAP
+        true
+    else
+        isLong ? aboveVWAP : belowVWAP
+// Supertrend
+[stUp, stDn] = ta.supertrend(suptFactor, suptAtrLen)
+getSuptFilter(isLong) =>
+    if not useSUPT
+        true
+    else
+        isLong ? close > stDn : close < stUp
+// Choppiness
+highLowDiff = ta.highest(ciLen) - ta.lowest(ciLen)
+ci = highLowDiff > 0 ? 100 * math.log10(math.sum(ta.atr(1), ciLen) / highLowDiff) / math.log10(ciLen) : 100
+getChopFilter() =>
+    not useChop or ci < chopThr
+// ADX
+[_, _, adxVal] = ta.dmi(diLen, adxLen)
+getADXFilter() =>
+    not useADX or adxVal > adxThr
+// ROC (Rate of Change)
+roc = ((close - close[rocLen]) / close[rocLen]) * 100
+getROCFilter(isLong) =>
+    if not useROC
+        true
+    else
+        isLong ? roc > rocThreshold : roc < -rocThreshold
+// Volume
+atrVol       = ta.atr(atrLenVol)
+volNorm = volume / math.max(atrVol, 1e-10)
+volNormMA    = ta.sma(volNorm, volMaLen)
+getVolFilter() =>
+    if not useVol
+        true
+    else
+        volNorm > volNormMA
+
+// BBW - Calculate always
+bbw = ta.bbw(close, bbLen, 2)
+bbwMA = ta.sma(bbw, bbwMaLen)
+getBBWFilter() =>
+    not useBBW or bbw > (bbwMA * bbwFilterMult)
+// KELTNER CHANNELS
+kcBasis = ta.ema(close, kcLen)
+kcATR   = ta.atr(kcATRlen)
+kcUpper = kcBasis + kcATR * kcMult
+kcLower = kcBasis - kcATR * kcMult
+getKCFilter(isLong) =>
+    if not useKC
+        true
+    else
+        isLong ? close < kcUpper : close > kcLower
+// RSI
+rsi = ta.rsi(close, rsiLen)
+getRSIFilter(isLong) =>
+    if not useRSI
+        true
+    else
+        isLong ? rsi < rsiOverbought : rsi > rsiOversold
+// DPO
+lookback = math.floor(dpoLen / 2) + 1
+dpo_raw     = close - ta.sma(close, dpoLen)
+dpo         = ta.sma(dpo_raw, dpoSmooth) // smoothed DPO
+dpo_norm    = dpo / close * 100           // normalize as % deviation from price
+getDPOFilter(isLong) =>
+    if not useDPO
+        true
+    else
+        isLong ? dpo_norm < 0 and dpo_norm > -dpoThresh : 
+                 dpo_norm > 0 and dpo_norm < dpoThresh
+// CCI (Commodity Channel Index)
+cci = ta.cci(close, cciLen)
+getCCIFilter(isLong) =>
+    if not useCCI
+        true
+    else
+        isLong ? cci < cciOverbought : cci > cciOversold
+// Pivot
+var float zzHigh = high
+var float zzLow = low
+var float zzLastHigh = 0.0
+var float zzLastLow = 0.0
+var int zzTrend = 0  // Current zig-zag direction
+var int zzBias = 0   // Structure bias
+zzThreshold = close * (zzPercent / 100)
+if bar_index == 0
+    zzTrend := 1
+    zzHigh := high
+    zzLow := low
+if zzTrend == 1  // Currently in uptrend
+    if high > zzHigh
+        zzHigh := high  // Update current leg high
+    else if low < zzHigh - zzThreshold
+        // Reversal down detected
+        zzLastHigh := zzHigh
+        zzLow := low
+        zzTrend := -1
+        if zzLow > zzLastLow and zzLastLow > 0
+            zzBias := 1  // HH + HL = bullish
+        else if zzLow < zzLastLow and zzLastLow > 0
+            zzBias := -1  // HH + LL = bearish
+        else
+            zzBias := 0
+else  // Currently in downtrend
+    if low < zzLow
+        zzLow := low  // Update current leg low
+    else if high > zzLow + zzThreshold
+        // Reversal up detected
+        zzLastLow := zzLow
+        zzHigh := high
+        zzTrend := 1
+        if zzHigh > zzLastHigh and zzLastHigh > 0
+            zzBias := 1  // HH + HL = bullish
+        else if zzHigh < zzLastHigh and zzLastHigh > 0
+            zzBias := -1  // LH + LL = bearish
+        else
+            zzBias := 0
+[htfPivotBias, htfPivotTrend] = request.security(syminfo.tickerid, effectiveTF, 
+     [zzBias, zzTrend], lookahead=barmerge.lookahead_off)
+
+// Use HTF pivot values in filter
+getPivotStructureFilter(bool isLong) =>
+    if not useStructurePivot
+        true
+    else
+        isLong ? htfPivotBias == 1 : htfPivotBias == -1
+// Local Angle
+angleSlope = ta.linreg(close, angleLen, 0)
+angleDelta = angleSlope - angleSlope[angleLen]
+angleNorm = angleDelta / math.max(ta.stdev(close, angleLen), close * 0.0001)
+currentAngle = math.atan(angleNorm)
+angleLongCond = currentAngle > minAngle
+angleShortCond = currentAngle < -minAngle
+getAngleStructureFilter(bool isLong) =>
+    if not useStructureAngle
+        true
+    else
+        isLong ? angleLongCond : angleShortCond
+////////////////////////////////////////////////////////////////////////////////
+// FILTER MANAGEMENT 
+////////////////////////////////////////////////////////////////////////////////
+filter_long = getMACDFilter(true) and
+              getMAFilter(true) and 
+              getVWAPFilter(true) and
+              getSuptFilter(true) and
+              getChopFilter() and 
+              getADXFilter() and
+              getROCFilter(true) and
+              getVolFilter() and 
+              getBBWFilter() and
+              getKCFilter(true) and
+              getRSIFilter(true) and
+              getDPOFilter(true) and
+              getCCIFilter(true) and
+              getPivotStructureFilter(true) and
+              getAngleStructureFilter(true)
+filter_short = getMACDFilter(false) and
+               getMAFilter(false) and 
+               getVWAPFilter(false) and
+               getSuptFilter(false) and
+               getChopFilter() and 
+               getADXFilter() and 
+               getROCFilter(false) and
+               getVolFilter() and 
+               getBBWFilter() and
+               getKCFilter(false) and
+               getRSIFilter(false) and
+               getDPOFilter(false) and
+               getCCIFilter(false) and
+               getPivotStructureFilter(false) and
+               getAngleStructureFilter(false)
+////////////////////////////////////////////////////////////////////////////////
+// SIGNALS GENERATOR
+////////////////////////////////////////////////////////////////////////////////
+getLongCondition() =>
+     (longSrc1 > 0 and longSrc1[1] == 0) or (longSrc2 > 0 and longSrc2[1] == 0)
+getShortCondition() =>
+     (shortSrc1 > 0 and shortSrc1[1] == 0) or (shortSrc2 > 0 and shortSrc2[1] == 0)
+// Final signals
+longCondition  = getLongCondition() and filter_long
+shortCondition = getShortCondition() and filter_short
+// =============================================== END OF: FILTERING MANAGER BLOCK ===============================================
+
+// =============================================== TRADING MANAGER BLOCK ===============================================
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUT PARAMETERS - TRADING SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Trading Groups Definitions
+gTime_title = "─────────────🕐 Trading Session 🕐─────────────"
+gTime_tooltip = "👉 Define your active trading hours to avoid trading during low liquidity or overnight sessions\n" +
+               "🔹 Enable/Disable time filtering completely\n" +
+               "🔹 Set your local timezone for accurate session timing\n" +
+               "🔹 Define start and end times for your trading day\n\n" +
+               "👉 Pro Tips:\n" +
+               "▪ European Session: 8:00-17:00 CET\n" +
+               "▪ US Session: 14:30-21:00 EST\n" +
+               "▪ Asian Session: 23:00-08:00 GMT"
+
+gSLTP_title = "─────────────⚖️ Risk Management ⚖️─────────────"
+gSLTP_tooltip = "👉 Configure your stop-loss and take-profit strategy\n" +
+               "🔹 ATR-based dynamic stops that adapt to market volatility\n" +
+               "🔹 Fixed risk-reward ratios for consistent position sizing\n" +
+               "🔹 Separate multipliers for SL and TP calculations\n" +
+               "👉 Recommended Settings:\n" +
+               "▪ Scalping: SL 1.0-1.5 ATR, TP 2.0-3.0 ATR\n" +
+               "▪ Day Trading: SL 1.5-2.0 ATR, TP 2.5-4.0 ATR\n" +
+               "▪ Swing Trading: SL 2.0-3.0 ATR, TP 3.0-5.0 ATR"
+
+gRisk_title = "─────────────💰 Risk Control 💰─────────────"
+gRisk_tooltip = "👉 Risk management based on annual price ranged percentile\n" +
+               "🔹 Max Percentile - prevents from excessive risk\n" +
+               "🔹 Uses 12-month high/low range as reference (0-1 scale)\n" +
+               "🔹 Allow Exceed Limit - controls behavior when stop loss exceeds defined max percentile\n\n" +
+               "👉 How it works:\n" +
+               "▪ 1.0 = Feature disabled (100% of risk accepted)\n" +
+               "▪ 0.05 = Maximum 5% of risk is defined\n" +
+               "▪ Lower values = tighter risk control\n\n" +
+               "👉 Allow Exceed Limit:\n" +
+               "▪ TRUE: Trade continues with SL adjusted to max percentile\n" +
+               "▪ FALSE: Trade is refused if SL exceeds max percentile"
+
+// Time Filtering
+useTimeFilter = input.bool(true, "🕐 Enable Time Filter", group=gTime_title, inline="tz1", tooltip=gTime_tooltip)
+timezone_manual = input.string("Europe/Paris", "🌍 Timezone", 
+     options=["UTC", "America/New_York", "Europe/London", "Europe/Paris", "Asia/Tokyo", "America/Chicago"], 
+     group=gTime_title, inline="tz1", tooltip="Select your local timezone for accurate session timing")
+start_hour = input.int(8, "🕗 From: Hour", minval=0, maxval=23, group=gTime_title, inline = "start1")
+start_minute = input.int(30, "Minutes", minval=0, maxval=59, group=gTime_title, inline = "start1")
+end_hour = input.int(20, "🕗 To: Hour", minval=0, maxval=23, group=gTime_title, inline = "end1")
+end_minute = input.int(30, "Minutes", minval=0, maxval=59, group=gTime_title, inline = "end1")
+// Opposite Signal Control
+allowOppositeClose = input.bool(false, "⚖️ Close on Opposite Signal", group=gSLTP_title,
+     tooltip="When enabled: Opposite signals will close current position and reverse\n" +
+             "When disabled: Opposite signals are ignored until position closes via SL/TP")
+// SL/TP Settings
+useSL         = input.bool(true,  "⚖️ Enable SL/TP", group=gSLTP_title, inline="sltp1", tooltip=gSLTP_tooltip)
+atrLen        = input.int(14,     "📏 ATR Length", minval = 1, group=gSLTP_title, inline="sltp1")
+slMult        = input.float(1.4,  "⭐ SL Multiplier", step = 0.1, minval = 1, group=gSLTP_title, inline="sltp2")
+tpMult        = input.float(2.8,  "⭐ TP Multiplier", step = 0.1, minval = 1, group=gSLTP_title, inline="sltp2")
+// Annual Range Normalized Risk Management
+allowTradeOnLimit = input.bool(false, "⚠️ Allow Exceed Limit", group=gRisk_title, inline="risk1",
+                         tooltip="When enabled: If ATR stop exceeds max percentile, trade continues with adjusted SL\n" +
+                         "When disabled: Trade is cancelled if stop exceeds max risk percentile")
+maxPercentile = input.float(1.0, "🔒 Max Risk Percentile", minval=0.0001, maxval=1.0, step=0.0001, 
+     group=gRisk_title, inline="risk1", tooltip="Maximum stop loss as % of annual range (0-1 scale)\n" +
+                                               "1.0 = disabled (100% risk accepted)\n" +
+                                               "0.05 = 5% of annual range\n" +
+                                               "Lower values = tighter risk control")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANNUAL RANGE CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Annual Range Variables
+var float annualHigh = na
+var float annualLow = na
+var float annualRange = na
+
+// Fetch annual high/low from monthly timeframe (calculated once on script load)
+if na(annualRange)
+    // Fetch the 1-Year (12-month) High/Low from the "1M" timeframe.
+    // We use [1] to get the completed, non-repainting range.
+    // 'lookahead=barmerge.lookahead_on' ensures we get the same value for all bars.
+    [_high, _low] = request.security(syminfo.tickerid, "1M", 
+         [ta.highest(high, 12)[1], ta.lowest(low, 12)[1]], 
+         lookahead=barmerge.lookahead_on)
+    annualHigh := _high
+    annualLow := _low
+    annualRange := annualHigh - annualLow
+
+// Normalizes a distance value against the annual range (0-1 scale).
+// @param distance The price distance to normalize (e.g., stop loss distance).
+// @param priceRange The total range to normalize against (annualRange).
+// @return The normalized ratio (e.g., 0.05 = 5% of annual range). Returns 0 if range is 0.
+f_normalize_distance(float distance, float priceRange) =>
+    priceRange > 0 ? math.abs(distance) / priceRange : 0.0
+
+// Convert percentile to actual price distance
+// @param entryPrice The entry price for the trade
+// @param riskPercentile The risk as a percentage of annual range (0-1)
+// @param isLong True for long position, false for short
+// @return The stop loss price at the max percentile level
+f_percentile_to_price(float entryPrice, float riskPercentile, bool isLong) =>
+    priceDistance = riskPercentile * annualRange
+    stopPrice = if isLong
+        entryPrice - priceDistance
+    else
+        entryPrice + priceDistance
+    stopPrice
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE VARIABLES
+// ═══════════════════════════════════════════════════════════════════════════════
+// Track SL / TP
+var float slLevel = na
+var float tpLevel = na
+
+// Pre-calculate ATR for SL/TP
+atrValue = ta.atr(atrLen)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERT FUNCTION
+// ═══════════════════════════════════════════════════════════════════════════════
+// Create formatted alert message with RR ratio
+f_create_alert_message(string direction, float entryPrice, float stopLoss, float takeProfit) =>
+    directionText = direction == "long" ? "🟢 BUY" : "🔴 SELL"
+    
+    // Calculate Risk-to-Reward ratio
+    riskDistance = math.abs(entryPrice - stopLoss)
+    rewardDistance = math.abs(takeProfit - entryPrice)
+    rrRatio = riskDistance > 0 ? rewardDistance / riskDistance : 0
+    
+    alertMessage = 
+     directionText + " SIGNAL\n" +
+     "Symbol: " + syminfo.ticker + "\n" +
+     "Entry Price: " + str.tostring(entryPrice, "#.#####") + "\n" +
+     "Stop Loss: " + str.tostring(stopLoss, "#.#####") + "\n" +
+     "Take Profit: " + str.tostring(takeProfit, "#.#####") + "\n" +
+     "RR Ratio: 1:" + str.tostring(rrRatio, "#.##") + "\n" +
+     "Time: " + str.format_time(time, "dd/MM/yyyy HH:mm", syminfo.timezone)
+    alertMessage
+
+// Check if current time is within trading hours
+f_in_trading_hours() =>
+    if not useTimeFilter
+        true
+    else
+        // Takes the bar's built-in UTC 'time' and converts to defined timezone
+        current_hour = hour(time, timezone_manual)
+        current_minute = minute(time, timezone_manual)
+        
+        // Convert times to minutes for easier comparison
+        start_time_minutes = start_hour * 60 + start_minute
+        end_time_minutes = end_hour * 60 + end_minute
+        current_time_minutes = current_hour * 60 + current_minute
+        
+        if start_time_minutes <= end_time_minutes
+            // Normal session (e.g., 8:30 - 20:30)
+            current_time_minutes >= start_time_minutes and current_time_minutes < end_time_minutes
+        else    
+            // Overnight session (e.g., 22:30 - 06:30)
+            current_time_minutes >= start_time_minutes or current_time_minutes < end_time_minutes
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERCENTILE-BASED RISK VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_validate_percentile_risk(float entryPrice, float atrStopPrice, bool isLong) =>
+    // REMOVED 'var' declarations - these should be fresh for each trade evaluation
+    bool canTrade = false
+    float finalSL = atrStopPrice
+    float finalTP = na
+    string comment = ""    
+    
+    // Calculate ATR stop distance as percentile of annual range
+    stopDistance = math.abs(entryPrice - atrStopPrice)
+    atrStopPercentile = f_normalize_distance(stopDistance, annualRange)
+    
+    // Calculate proposed TP based on ATR and multiplier
+    tpDistance = atrValue * tpMult
+    proposedTP = isLong ? entryPrice + tpDistance : entryPrice - tpDistance
+    
+    // Check if maxPercentile feature is disabled (1.0 = 100% of annual range)
+    riskDisabled = maxPercentile >= 1.0
+    
+    if riskDisabled or atrStopPercentile <= maxPercentile
+        // ATR stop is within percentile risk limit OR feature is disabled
+        canTrade := true
+        finalSL := atrStopPrice
+        finalTP := proposedTP        
+        comment := "SL: " + str.tostring(math.round(atrStopPercentile * 10000) / 100, "#.##") + "% of annual range"
+    
+    else if allowTradeOnLimit
+        // ATR stop exceeds limit - adjust SL to max percentile
+        canTrade := true
+        finalSL := f_percentile_to_price(entryPrice, maxPercentile, isLong)
+        
+        // Maintain risk/reward ratio using the adjusted stop
+        adjustedSlDistance = math.abs(entryPrice - finalSL)
+        adjustedTpDistance = adjustedSlDistance * (tpMult / slMult)
+        finalTP := isLong ? entryPrice + adjustedTpDistance : entryPrice - adjustedTpDistance
+        
+        comment := "⚠️ SL Adjusted: " + str.tostring(math.round(maxPercentile * 10000) / 100, "#.##") + 
+                   "% (was " + str.tostring(math.round(atrStopPercentile * 10000) / 100, "#.##") + "%)"
+    
+    else
+        // ATR stop exceeds limit and trade adjustment not allowed - REFUSE TRADE
+        canTrade := false
+        comment := "❌ Risk Too High: " + str.tostring(math.round(atrStopPercentile * 10000) / 100, "#.##") + 
+                   "% > " + str.tostring(math.round(maxPercentile * 10000) / 100, "#.##") + "%"
+    
+    [canTrade, finalSL, finalTP, comment]
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE EXECUTION LOGIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Only execute trades within trading hours
+realTradesAllowed = f_in_trading_hours()
+
+// Handle opposite signal closes when enabled
+if allowOppositeClose and realTradesAllowed
+    // Close long position on short signal
+    if strategy.position_size > 0 and shortCondition
+        strategy.close("Long", comment="Opposite Signal")
+    
+    // Close short position on long signal
+    if strategy.position_size < 0 and longCondition
+        strategy.close("Short", comment="Opposite Signal")
+
+// Determine if we can enter new position
+// When opposite close is enabled: enter on signal regardless of position (close handled above)
+// When disabled: only enter when flat
+canEnterLong = longCondition and realTradesAllowed and (allowOppositeClose or strategy.position_size == 0)
+canEnterShort = shortCondition and realTradesAllowed and (allowOppositeClose or strategy.position_size == 0)
+
+// Long trade execution
+if canEnterLong
+    // Calculate ATR-based stop
+    slDistance = atrValue * slMult
+    proposedSL = close - slDistance
+    
+    // Validate against max percentile risk
+    [canTrade, finalSL, finalTP, comment] = f_validate_percentile_risk(close, proposedSL, true)    
+    
+    if canTrade
+        alertMessage = f_create_alert_message("long", close, finalSL, finalTP)
+        alert(alertMessage, alert.freq_once_per_bar)        
+        
+        // Enter with fixed position size (from strategy defaults: 5% of equity)
+        strategy.entry("Long", strategy.long, comment = comment)
+        
+        if useSL
+            slLevel := finalSL
+            tpLevel := finalTP
+            strategy.exit("Exit Long", "Long", stop=slLevel, limit=tpLevel, comment="TP/SL Hit")
+
+// Short trade execution
+if canEnterShort
+    // Calculate ATR-based stop
+    slDistance = atrValue * slMult
+    proposedSL = close + slDistance
+    
+    // Validate against max percentile risk
+    [canTrade, finalSL, finalTP, comment] = f_validate_percentile_risk(close, proposedSL, false)    
+    
+    if canTrade
+        alertMessage = f_create_alert_message("short", close, finalSL, finalTP)
+        alert(alertMessage, alert.freq_once_per_bar)        
+        
+        // Enter with fixed position size (from strategy defaults: 5% of equity)
+        strategy.entry("Short", strategy.short, comment = comment)
+        
+        if useSL
+            slLevel := finalSL
+            tpLevel := finalTP
+            strategy.exit("Exit Short", "Short", stop=slLevel, limit=tpLevel, comment="TP/SL Hit")
+// =============================================== END OF: TRADING MANAGER BLOCK ===============================================
+
+// =============================================== VISULIATION & DASHBOARD SETTINGS BLOCK ===============================================
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Only show SL/TP for current position's direction
+// Reset levels if position direction changed (handles opposite close scenario)
+var int lastPositionDirection = 0  // 1 = long, -1 = short, 0 = flat
+
+currentDirection = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+
+// Reset SL/TP if position direction changed (indicates opposite close occurred)
+if currentDirection != lastPositionDirection
+    slLevel := na
+    tpLevel := na
+
+lastPositionDirection := currentDirection
+
+// Plot SL/TP lines when enabled and levels are valid
+plot(useSL and strategy.position_size > 0 and not na(slLevel) ? slLevel : na, 
+     "Long SL", color=color.red, style=plot.style_circles, linewidth=2)
+plot(useSL and strategy.position_size > 0 and not na(tpLevel) ? tpLevel : na, 
+     "Long TP", color=color.green, style=plot.style_circles, linewidth=2)
+plot(useSL and strategy.position_size < 0 and not na(slLevel) ? slLevel : na, 
+     "Short SL", color=color.red, style=plot.style_circles, linewidth=2)
+plot(useSL and strategy.position_size < 0 and not na(tpLevel) ? tpLevel : na, 
+     "Short TP", color=color.green, style=plot.style_circles, linewidth=2)
+
+// Plot Annual Range reference levels (visual aid)
+plot(annualHigh, "Annual High", color=color.blue, style=plot.style_circles, linewidth=1, display=display.none)
+plot(annualLow, "Annual Low", color=color.blue, style=plot.style_circles, linewidth=1, display=display.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERFORMANCE DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD INPUT PARAMETERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Dashboard Groups Definitions
+gDash_title = "───────────🧮Performance Dashboard🧮───────────"
+gDash_tooltip = "👉 Comprehensive performance tracking and statistics\n" +
+               "🔹 Real-time trade metrics and performance analytics\n" +
+               "🔹 Separate tracking for long and short trades\n" +
+               "🔹 Filter and trading parameter summaries\n\n" +
+               "👉 Features:\n" +
+               "▪ Win rates and profit factors for both directions\n" +
+               "▪ Average trade duration in bars\n" +
+               "▪ Equity curve and drawdown monitoring\n" +
+               "▪ Current filter settings overview\n" +
+               "▪ Annual range and risk percentile information"
+
+// Dashboard Settings
+dashboardMode = input.string("Short", "🧮 Dashboard Mode", 
+     options=["Off", "Short", "Full"], 
+     group=gDash_title, inline="dash1", tooltip=gDash_tooltip)
+dashboardPosition = input.string("Bottom Right", "📍 Dashboard Position", 
+     options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], 
+     group=gDash_title, inline="dash1",
+     tooltip="Choose where the performance dashboard appears on your chart")
+
+// Get dashboard position from input
+getDashboardPosition() =>
+    switch dashboardPosition
+        "Top Left" => position.top_left
+        "Top Right" => position.top_right
+        "Bottom Left" => position.bottom_left
+        => position.bottom_right
+
+// Signal counting
+var int totalLongSignals = 0
+var int totalShortSignals = 0
+
+if longCondition
+    totalLongSignals += 1
+
+if shortCondition
+    totalShortSignals += 1
+
+// Calculate built-in metrics
+totalSignals = totalLongSignals + totalShortSignals
+winRate = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : 0
+profitFactor = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : strategy.grossprofit > 0 ? 999 : 0
+avgTrade = strategy.closedtrades > 0 ? strategy.netprofit / strategy.closedtrades : 0
+maxDD = strategy.max_drawdown
+maxDDPercent = strategy.initial_capital > 0 ? (maxDD / strategy.initial_capital) * 100 : 0
+totalReturn = strategy.initial_capital > 0 ? ((strategy.equity - strategy.initial_capital) / strategy.initial_capital) * 100 : 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LONG/SHORT PERFORMANCE METRICS CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var longTrades = 0
+var shortTrades = 0
+var longWins = 0
+var shortWins = 0
+var float longGrossProfit = 0.0
+var float longGrossLoss = 0.0
+var float shortGrossProfit = 0.0
+var float shortGrossLoss = 0.0
+
+// Track the last processed trade count to avoid double counting
+var int lastTradeCount = 0
+
+// This logic runs on every bar, but only processes when new trades are closed
+if strategy.closedtrades > lastTradeCount
+    // Process each new trade that hasn't been counted yet
+    for i = lastTradeCount to strategy.closedtrades - 1
+        tradeProfit = strategy.closedtrades.profit(i)
+        tradeSize = strategy.closedtrades.size(i)
+        
+        // positive size = long, negative size = short
+        if tradeSize > 0
+            // This was a long trade
+            longTrades += 1
+            if tradeProfit > 0
+                longWins += 1
+                longGrossProfit += tradeProfit
+            else
+                longGrossLoss += math.abs(tradeProfit)
+                
+        else if tradeSize < 0
+            // This was a short trade  
+            shortTrades += 1
+            if tradeProfit > 0
+                shortWins += 1
+                shortGrossProfit += tradeProfit
+            else
+                shortGrossLoss += math.abs(tradeProfit)
+    
+    // Update the counter to current trade count
+    lastTradeCount := strategy.closedtrades
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE DURATION TRACKING VARIABLES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Variables to track trade durations
+var int[] longTradeBars = array.new_int()
+var int[] shortTradeBars = array.new_int()
+var int[] longWinTradeBars = array.new_int()
+var int[] shortWinTradeBars = array.new_int()
+var int[] longLossTradeBars = array.new_int()
+var int[] shortLossTradeBars = array.new_int()
+
+var int currentTradeEntryBar = na
+var string currentTradeDirection = ""
+
+// Track when new trades open and close
+tradeJustOpened = strategy.position_size[1] == 0 and strategy.position_size != 0
+tradeJustClosed = strategy.position_size[1] != 0 and strategy.position_size == 0
+
+// Record entry bar when trade opens
+if tradeJustOpened
+    currentTradeEntryBar := bar_index
+    currentTradeDirection := strategy.position_size > 0 ? "long" : "short"
+
+// Record trade duration when trade closes
+if tradeJustClosed and not na(currentTradeEntryBar)
+    tradeDuration = bar_index - currentTradeEntryBar
+    tradeProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    
+    if currentTradeDirection == "long"
+        array.push(longTradeBars, tradeDuration)
+        if tradeProfit > 0
+            array.push(longWinTradeBars, tradeDuration)
+        else
+            array.push(longLossTradeBars, tradeDuration)
+    else
+        array.push(shortTradeBars, tradeDuration)
+        if tradeProfit > 0
+            array.push(shortWinTradeBars, tradeDuration)
+        else
+            array.push(shortLossTradeBars, tradeDuration)
+
+// Calculate average durations
+avgLongBars = array.size(longTradeBars) > 0 ? array.avg(longTradeBars) : 0
+avgShortBars = array.size(shortTradeBars) > 0 ? array.avg(shortTradeBars) : 0
+avgTotalBars = (array.size(longTradeBars) + array.size(shortTradeBars)) > 0 ? 
+     (array.sum(longTradeBars) + array.sum(shortTradeBars)) / (array.size(longTradeBars) + array.size(shortTradeBars)) : 0
+
+avgLongWinBars = array.size(longWinTradeBars) > 0 ? array.avg(longWinTradeBars) : 0
+avgShortWinBars = array.size(shortWinTradeBars) > 0 ? array.avg(shortWinTradeBars) : 0
+avgTotalWinBars = (array.size(longWinTradeBars) + array.size(shortWinTradeBars)) > 0 ? 
+     (array.sum(longWinTradeBars) + array.sum(shortWinTradeBars)) / (array.size(longWinTradeBars) + array.size(shortWinTradeBars)) : 0
+
+avgLongLossBars = array.size(longLossTradeBars) > 0 ? array.avg(longLossTradeBars) : 0
+avgShortLossBars = array.size(shortLossTradeBars) > 0 ? array.avg(shortLossTradeBars) : 0
+avgTotalLossBars = (array.size(longLossTradeBars) + array.size(shortLossTradeBars)) > 0 ? 
+     (array.sum(longLossTradeBars) + array.sum(shortLossTradeBars)) / (array.size(longLossTradeBars) + array.size(shortLossTradeBars)) : 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPPOSITE SIGNAL CLOSE DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var int longOppositeCloses = 0
+var int shortOppositeCloses = 0
+var int totalOppositeCloses = 0
+
+// Detect opposite signal closes
+if allowOppositeClose and realTradesAllowed
+    if strategy.position_size > 0 and shortCondition
+        longOppositeCloses += 1
+        totalOppositeCloses += 1
+    
+    if strategy.position_size < 0 and longCondition
+        shortOppositeCloses += 1
+        totalOppositeCloses += 1
+
+// Calculate percentages
+longOppositePercent = longTrades > 0 ? (longOppositeCloses / longTrades) * 100 : 0
+shortOppositePercent = shortTrades > 0 ? (shortOppositeCloses / shortTrades) * 100 : 0
+totalOppositePercent = strategy.closedtrades > 0 ? (totalOppositeCloses / strategy.closedtrades) * 100 : 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERFORMANCE DASHBOARD TABLE HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper function for creating header cells to reduce repetition
+fillHeaderCell(tbl, col, textfill) =>
+    table.cell(tbl, col, 0, textfill, bgcolor=color.new(color.blue, 70),
+         text_color=color.white, text_size=size.normal, text_halign=text.align_center, text_formatting=text.format_bold)
+
+// Helper function for creating data cells
+fillDataCell(tbl, col, row, textfill, txt_color) =>
+    table.cell(tbl, col, row, textfill, text_color=txt_color, text_halign=text.align_center, text_size=size.normal)
+
+// Helper function for merged cells
+fillMergedCell(tbl, row, title, value, txt_color) =>
+    table.cell(tbl, 0, row, title, text_color=color.white, text_halign=text.align_center, text_size=size.normal)
+    table.merge_cells(tbl, 1, row, 3, row)
+    table.cell(tbl, 1, row, value, text_color=txt_color, text_halign=text.align_center, text_size=size.normal)
+
+// Helper function to determine color based on profit factor value
+pfColor(pf) => pf > 2 ? color.green : pf > 1.5 ? color.yellow : pf > 1 ? color.orange : color.red
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUT PARAMETER SETTINGS HELPER FUNCTIONs
+// ═══════════════════════════════════════════════════════════════════════════════
+// Define a visual separator (• = bullet point, | = pipe, › = arrow, ▫ = small square)
+vis_sep = "•"
+
+// Function to get source information
+f_get_sources() =>
+    string sourceText = ""
+    string customSources = ""
+    
+    if longSrc1 != close
+        customSources += "Prim🟢"
+    if shortSrc1 != close
+        customSources += "Prim🔴"
+    if longSrc2 != close
+        customSources += "Sec🟢" 
+    if shortSrc2 != close
+        customSources += "Sec🔴"
+    
+    if customSources != ""
+        sourceText := str.tostring(customSources)
+    else
+        sourceText := "external source missing"
+    
+    sourceText
+
+f_get_filter_settings() =>
+    string filterText = ""
+    int filterCount = 0
+    string currentLine = ""
+    
+    // HTF Settings
+    if htfTimeframe != ""
+        filterText += "HTF:" + htfTimeframe + "\n"
+    
+    // Array to collect all active filters
+    array<string> activeFilters = array.new<string>()
+    
+    // MACD Filter
+    if useMACD
+        modeAbbr = macdMode == "Classic" ? "C" : macdMode == "Histogram Slope" ? "S" : "B"
+        array.push(activeFilters, "MACD:" + modeAbbr + str.tostring(macdFastLen) + "/" + str.tostring(macdSlowLen) + "/" + str.tostring(macdSignalLen) + "/" + str.tostring(macdSlopeLen))
+    
+    // MA Filter
+    if useMA
+        maTypeAbbr = maType == "SMA" ? "S" : maType == "EMA" ? "E" : maType == "WMA" ? "W" : "H"
+        array.push(activeFilters, maTypeAbbr + "MA:" + str.tostring(maLen) + "/" + str.tostring(maSlopeLen))
+    
+    // VWAP Filter
+    if useVWAP
+        array.push(activeFilters, "VWAP:" + str.tostring(vwapBuffer, "#.##"))
+    
+    // Supertrend Filter
+    if useSUPT
+        array.push(activeFilters, "SupT:" + str.tostring(suptAtrLen) + "/" + str.tostring(suptFactor, "#.#"))
+    
+    // Choppiness Filter
+    if useChop
+        array.push(activeFilters, "Chop:" + str.tostring(ciLen) + "/" + str.tostring(chopThr, "#.#"))
+    
+    // ADX Filter
+    if useADX
+        array.push(activeFilters, "ADX:" + str.tostring(adxLen) + "/" + str.tostring(adxThr, "#.#") + "/" + str.tostring(diLen))
+    
+    // ROC Filter
+    if useROC
+        array.push(activeFilters, "ROC:" + str.tostring(rocLen) + "/" + str.tostring(rocThreshold, "#.##"))
+    
+    // Volume Filter
+    if useVol
+        array.push(activeFilters, "Vol:" + str.tostring(volMaLen) + "/" + str.tostring(atrLenVol))
+       
+    // Bollinger Bands Width Filter
+    if useBBW
+        array.push(activeFilters, "BB:" + str.tostring(bbLen) + "/" + str.tostring(bbwMaLen) + "/" + str.tostring(bbwFilterMult, "#.##"))
+    
+    // Keltner Channels Filter
+    if useKC
+        array.push(activeFilters, "KC:" + str.tostring(kcLen) + "/" + str.tostring(kcMult, "#.#") + "/" + str.tostring(kcATRlen))
+    
+    // RSI Filter
+    if useRSI
+        array.push(activeFilters, "RSI:" + str.tostring(rsiLen) + "/" + str.tostring(rsiOverbought) + "/" + str.tostring(rsiOversold))
+    
+    // DPO Filter
+    if useDPO
+        array.push(activeFilters, "DPO:" + str.tostring(dpoLen) + "/" + str.tostring(dpoSmooth) + "/" + str.tostring(dpoThresh, "#.##"))
+    
+    // CCI Filter
+    if useCCI
+        array.push(activeFilters, "CCI:" + str.tostring(cciLen) + "/" + str.tostring(cciOverbought) + "/" + str.tostring(cciOversold))
+    
+    // Pivot Structure Filter
+    if useStructurePivot
+        array.push(activeFilters, "Piv:" + str.tostring(zzPercent, "#.##"))
+    
+    // Local Angle Filter
+    if useStructureAngle
+        array.push(activeFilters, "LA:" + str.tostring(angleLen) + "/" + str.tostring(minAngle, "#.##"))
+    
+    // Check if we have any filters
+    if array.size(activeFilters) > 0
+        // Process filters in pairs
+        for i = 0 to array.size(activeFilters) - 1
+            string filterStr = array.get(activeFilters, i)
+            
+            if filterCount % 2 == 0
+                // First filter in pair
+                currentLine := filterStr
+            else
+                // Second filter in pair - add separator and line break
+                currentLine += vis_sep + filterStr
+                filterText += currentLine + "\n"
+                currentLine := ""
+            
+            filterCount += 1
+        
+        // Add any remaining filter on the last line
+        if currentLine != ""
+            filterText += currentLine
+    else
+        // No filters active
+        if filterText == ""  // No HTF either
+            filterText := "No Filters"
+        // If we have HTF but no filters, filterText already contains HTF line
+    
+    // Remove trailing newline and check if empty
+    filterText := str.replace_all(filterText, "\n$", "")
+    filterText := str.trim(filterText)
+    if filterText == ""
+        filterText := "No Filters"
+    
+    filterText
+
+// Function to generate trading input parameters string
+f_get_trading_params() =>
+    string paramsText = ""
+    
+    // Time Filter
+    if useTimeFilter
+        paramsText += "Time:" + str.tostring(start_hour) + ":" + str.tostring(start_minute, "00") + "-" + str.tostring(end_hour) + ":" + str.tostring(end_minute, "00") + vis_sep
+    else
+        paramsText += "24/7" + vis_sep
+    
+    // Close on opposite string
+    paramsText += "Opposite Close:" + (allowOppositeClose ? "Y" : "N") + "\n"
+    
+
+    // SL/TP Parameters
+    if useSL
+        // ATR Length
+        paramsText += "ATR:" + str.tostring(atrLen) + vis_sep
+        paramsText += "SL:" + str.tostring(slMult, "#.#") + " TP:" + str.tostring(tpMult, "#.#") + "\n"
+    else
+        paramsText += "NoSL/TP"
+           
+    // Risk Management - max percentile
+    if maxPercentile <= 1
+        paramsText += "Risk:" + str.tostring(math.round(maxPercentile * 100, 2)) + "%" + vis_sep
+    else
+        paramsText += "Risk:Unltd" + vis_sep
+    
+    // Limit Mode
+    paramsText += "Limit:" + (allowTradeOnLimit ? "Y" : "N")
+    
+    // Remove trailing separator if exists
+    paramsText := str.replace_all(paramsText, vis_sep + "$", "")
+    
+    paramsText
+
+// Function to get annual range information for Full mode
+f_get_annual_range_info() =>
+    string rangeText = ""
+    
+    if not na(annualRange) and annualRange > 0
+        rangeText := "Annual Range: " + str.tostring(math.round(annualRange, 4)) + " (" + 
+                     str.tostring(math.round(annualLow, 4)) + " - " + 
+                     str.tostring(math.round(annualHigh, 4)) + ")"
+    else
+        rangeText := "Annual Range: Calculating..."
+    
+    rangeText
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERFORMANCE DASHBOARD TABLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var table performanceTable = na
+
+if dashboardMode != "Off" and (barstate.islast or barstate.isconfirmed and barstate.islastconfirmedhistory)
+    if not na(performanceTable)
+        table.delete(performanceTable)
+    // Calculate metrics - FIXED FOR AVG PROFIT/TRADE
+    longWinRate = longTrades > 0 ? (longWins / longTrades) * 100 : 0
+    shortWinRate = shortTrades > 0 ? (shortWins / shortTrades) * 100 : 0
+    
+    longNetProfit = longGrossProfit - longGrossLoss
+    shortNetProfit = shortGrossProfit - shortGrossLoss
+    
+    longProfitFactor = longGrossLoss > 0 ? longGrossProfit / longGrossLoss : longGrossProfit > 0 ? 999 : 0
+    shortProfitFactor = shortGrossLoss > 0 ? shortGrossProfit / shortGrossLoss : shortGrossProfit > 0 ? 999 : 0
+    
+    // NEW: Calculate the additional metrics
+    totalLossTrades = strategy.losstrades
+    
+    // FIXED: Avg Profit/Trade = Gross Profit / Total Winning Trades
+    avgTrade = strategy.closedtrades > 0 ? strategy.grossprofit / strategy.wintrades : 0
+    
+    // For loss calculations
+    avgLossPerTrade = totalLossTrades > 0 ? math.abs(strategy.grossloss) / totalLossTrades : 0
+    avgTradeFactor = avgLossPerTrade != 0 ? math.abs(avgTrade) / avgLossPerTrade : avgTrade > 0 ? 999 : 0
+
+    // Long/Short specific calculations - FIXED
+    longLossTrades = longTrades - longWins
+    shortLossTrades = shortTrades - shortWins
+
+    avgLongLoss = longLossTrades > 0 ? math.abs(longGrossLoss) / longLossTrades : 0
+    avgShortLoss = shortLossTrades > 0 ? math.abs(shortGrossLoss) / shortLossTrades : 0
+    
+    // FIXED: Use gross profit for average profit calculations
+    avgLongTrade = longTrades > 0 ? longGrossProfit / longWins : 0
+    avgShortTrade = shortTrades > 0 ? shortGrossProfit / shortWins : 0
+    
+    avgLongTradeFactor = avgLongLoss != 0 ? math.abs(avgLongTrade) / avgLongLoss : avgLongTrade > 0 ? 999 : 0
+    avgShortTradeFactor = avgShortLoss != 0 ? math.abs(avgShortTrade) / avgShortLoss : avgShortTrade > 0 ? 999 : 0
+    
+    // Get settings texts
+    sourcesText = f_get_sources()
+    filterSettingsText = f_get_filter_settings()
+    tradingParamsText = f_get_trading_params()
+    annualRangeText = f_get_annual_range_info()
+    
+    // Determine table size based on mode - UPDATED ROW COUNTS
+    tableRows = dashboardMode == "Full" ? 25 : 15  // Full mode: 25 rows (0-24), Short mode: 15 rows (0-14)
+    
+    performanceTable := table.new(getDashboardPosition(), 4, tableRows,
+         bgcolor=color.new(color.black, 85),
+         border_width=1,
+         border_color=color.gray)
+    
+    // --- TABLE CONTENT ---
+    // Title row (row 0)
+    fillHeaderCell(performanceTable, 0, "PERFORMANCE")
+    fillHeaderCell(performanceTable, 1, "LONG")
+    fillHeaderCell(performanceTable, 2, "SHORT")
+    fillHeaderCell(performanceTable, 3, "TOTAL")
+    
+    // Signals Section (row 1)
+    fillDataCell(performanceTable, 0, 1, "Signals", color.white)
+    fillDataCell(performanceTable, 1, 1, str.tostring(totalLongSignals), color.white)
+    fillDataCell(performanceTable, 2, 1, str.tostring(totalShortSignals), color.white)
+    fillDataCell(performanceTable, 3, 1, str.tostring(totalSignals), color.yellow)
+    
+    // Trades Section (row 2)
+    fillDataCell(performanceTable, 0, 2, "Trades", color.white)
+    fillDataCell(performanceTable, 1, 2, str.tostring(longTrades), color.white)
+    fillDataCell(performanceTable, 2, 2, str.tostring(shortTrades), color.white)
+    fillDataCell(performanceTable, 3, 2, str.tostring(strategy.closedtrades), color.white)
+    
+    // Winning Trades (row 3)
+    fillDataCell(performanceTable, 0, 3, "Winning Trades", color.white)
+    fillDataCell(performanceTable, 1, 3, str.tostring(longWins), color.green)
+    fillDataCell(performanceTable, 2, 3, str.tostring(shortWins), color.green)
+    fillDataCell(performanceTable, 3, 3, str.tostring(strategy.wintrades), color.green)
+    
+    // Losing Trades (row 4)
+    fillDataCell(performanceTable, 0, 4, "Losing Trades", color.white)
+    fillDataCell(performanceTable, 1, 4, str.tostring(longTrades - longWins), color.red)
+    fillDataCell(performanceTable, 2, 4, str.tostring(shortTrades - shortWins), color.red)
+    fillDataCell(performanceTable, 3, 4, str.tostring(strategy.losstrades), color.red)
+
+    // Win Rate % (row 5)
+    fillDataCell(performanceTable, 0, 5, "Win Rate %", color.white)
+    fillDataCell(performanceTable, 1, 5, str.tostring(longWinRate, "#.##") + "%", longWinRate >= 50 ? color.green : color.orange)
+    fillDataCell(performanceTable, 2, 5, str.tostring(shortWinRate, "#.##") + "%", shortWinRate >= 50 ? color.green : color.orange)
+    fillDataCell(performanceTable, 3, 5, str.tostring(winRate, "#.##") + "%", winRate >= 50 ? color.green : color.orange)
+    
+    // Opposite Signal Closes % (row 6)
+    fillDataCell(performanceTable, 0, 6, "Opposite Closes %", color.white)
+    fillDataCell(performanceTable, 1, 6, str.tostring(longOppositePercent, "#.##") + "%", color.purple)
+    fillDataCell(performanceTable, 2, 6, str.tostring(shortOppositePercent, "#.##") + "%", color.purple)
+    fillDataCell(performanceTable, 3, 6, str.tostring(totalOppositePercent, "#.##") + "%", color.purple)
+    
+    // Avg Bars in Trades (row 7)
+    fillDataCell(performanceTable, 0, 7, "Avg Bars/Trade", color.white)
+    fillDataCell(performanceTable, 1, 7, str.tostring(math.round(avgLongBars), "#"), color.blue)
+    fillDataCell(performanceTable, 2, 7, str.tostring(math.round(avgShortBars), "#"), color.blue)
+    fillDataCell(performanceTable, 3, 7, str.tostring(math.round(avgTotalBars), "#"), color.blue)
+    
+    // Avg Bars in Winning Trades (row 8)
+    fillDataCell(performanceTable, 0, 8, "Avg Bars/Win", color.white)
+    fillDataCell(performanceTable, 1, 8, str.tostring(math.round(avgLongWinBars), "#"), color.green)
+    fillDataCell(performanceTable, 2, 8, str.tostring(math.round(avgShortWinBars), "#"), color.green)
+    fillDataCell(performanceTable, 3, 8, str.tostring(math.round(avgTotalWinBars), "#"), color.green)
+    
+    // Avg Bars in Losing Trades (row 9)
+    fillDataCell(performanceTable, 0, 9, "Avg Bars/Loss", color.white)
+    fillDataCell(performanceTable, 1, 9, str.tostring(math.round(avgLongLossBars), "#"), color.red)
+    fillDataCell(performanceTable, 2, 9, str.tostring(math.round(avgShortLossBars), "#"), color.red)
+    fillDataCell(performanceTable, 3, 9, str.tostring(math.round(avgTotalLossBars), "#"), color.red)
+    
+    // Profit Factor (row 10)
+    fillDataCell(performanceTable, 0, 10, "Profit Factor", color.white)
+    fillDataCell(performanceTable, 1, 10, str.tostring(math.min(longProfitFactor, 999.9), "#.###"), pfColor(longProfitFactor))
+    fillDataCell(performanceTable, 2, 10, str.tostring(math.min(shortProfitFactor, 999.9), "#.###"), pfColor(shortProfitFactor))
+    fillDataCell(performanceTable, 3, 10, str.tostring(math.min(profitFactor, 999.9), "#.###"), pfColor(profitFactor))
+    
+    // Only show additional rows in Full mode
+    if dashboardMode == "Full"
+        // Gross Profit (row 11)
+        fillDataCell(performanceTable, 0, 11, "Gross Profit", color.white)
+        fillDataCell(performanceTable, 1, 11, "$" + str.tostring(longGrossProfit, "#.##"), color.green)
+        fillDataCell(performanceTable, 2, 11, "$" + str.tostring(shortGrossProfit, "#.##"), color.green)
+        fillDataCell(performanceTable, 3, 11, "$" + str.tostring(strategy.grossprofit, "#.##"), color.green)
+        
+        // Gross Loss (row 12)
+        fillDataCell(performanceTable, 0, 12, "Gross Loss", color.white)
+        fillDataCell(performanceTable, 1, 12, "$" + str.tostring(longGrossLoss, "#.##"), color.red)
+        fillDataCell(performanceTable, 2, 12, "$" + str.tostring(shortGrossLoss, "#.##"), color.red)
+        fillDataCell(performanceTable, 3, 12, "$" + str.tostring(strategy.grossloss, "#.##"), color.red)
+        
+        // Net Profit (row 13)
+        fillDataCell(performanceTable, 0, 13, "Net Profit", color.white)
+        fillDataCell(performanceTable, 1, 13, "$" + str.tostring(longNetProfit, "#.##"), longNetProfit > 0 ? color.green : color.red)
+        fillDataCell(performanceTable, 2, 13, "$" + str.tostring(shortNetProfit, "#.##"), shortNetProfit > 0 ? color.green : color.red)
+        fillDataCell(performanceTable, 3, 13, "$" + str.tostring(strategy.netprofit, "#.##"), strategy.netprofit > 0 ? color.green : color.red)
+        
+        // Avg Profit per Trade (row 14)
+        fillDataCell(performanceTable, 0, 14, "Avg Profit/Trade", color.white)
+        fillDataCell(performanceTable, 1, 14, "$" + str.tostring(avgLongTrade, "#.##"), avgLongTrade > 0 ? color.green : color.red)
+        fillDataCell(performanceTable, 2, 14, "$" + str.tostring(avgShortTrade, "#.##"), avgShortTrade > 0 ? color.green : color.red)
+        fillDataCell(performanceTable, 3, 14, "$" + str.tostring(avgTrade, "#.##"), avgTrade > 0 ? color.green : color.red)
+        
+        // NEW: Avg Loss per Trade (row 15)
+        fillDataCell(performanceTable, 0, 15, "Avg Loss/Trade", color.white)
+        fillDataCell(performanceTable, 1, 15, "$" + str.tostring(avgLongLoss, "#.##"), color.red)
+        fillDataCell(performanceTable, 2, 15, "$" + str.tostring(avgShortLoss, "#.##"), color.red)
+        fillDataCell(performanceTable, 3, 15, "$" + str.tostring(avgLossPerTrade, "#.##"), color.red)
+        
+        // NEW: Avg Trade Factor (row 16)
+        fillDataCell(performanceTable, 0, 16, "Avg Trade Factor", color.white)
+        fillDataCell(performanceTable, 1, 16, str.tostring(math.min(avgLongTradeFactor, 999.9), "#.###"), pfColor(avgLongTradeFactor))
+        fillDataCell(performanceTable, 2, 16, str.tostring(math.min(avgShortTradeFactor, 999.9), "#.###"), pfColor(avgShortTradeFactor))
+        fillDataCell(performanceTable, 3, 16, str.tostring(math.min(avgTradeFactor, 999.9), "#.###"), pfColor(avgTradeFactor))
+        
+        // Total Return (row 17)
+        fillMergedCell(performanceTable, 17, "Total Return", str.tostring(totalReturn, "#.##") + "%", totalReturn > 0 ? color.green : color.red)
+            
+        // Max Drawdown (row 18)
+        ddColor = maxDDPercent > 20 ? color.red : maxDDPercent > 10 ? color.orange : color.yellow
+        fillMergedCell(performanceTable, 18, "Max Drawdown", "$" + str.tostring(maxDD, "#.##") + " (" + str.tostring(maxDDPercent, "#.##") + "%)", ddColor)
+        
+        // Equity (row 19)
+        fillMergedCell(performanceTable, 19, "Equity", "$" + str.tostring(strategy.equity, "#.##"), color.white)
+        
+        // Initial Capital (row 20)
+        fillMergedCell(performanceTable, 20, "Initial Capital", "$" + str.tostring(strategy.initial_capital, "#.##"), color.white)
+        
+        // Annual Range Information (row 21)
+        table.cell(performanceTable, 0, 21, "Annual Range", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 21, 3, 21)
+        table.cell(performanceTable, 1, 21, annualRangeText, text_color=color.fuchsia, text_halign=text.align_center, text_size=size.small)
+        
+        // Sources (Full mode - row 22)
+        table.cell(performanceTable, 0, 22, "Sources", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 22, 3, 22)
+        table.cell(performanceTable, 1, 22, sourcesText, text_color=color.orange, text_halign=text.align_center, text_size=size.small)
+        
+        // Filters (Full mode - row 23)
+        table.cell(performanceTable, 0, 23, "Filters", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 23, 3, 23)
+        table.cell(performanceTable, 1, 23, filterSettingsText, text_color=color.lime, text_halign=text.align_center, text_size=size.small)
+
+        // Trading (Full mode - row 24)
+        table.cell(performanceTable, 0, 24, "Trading", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 24, 3, 24)
+        table.cell(performanceTable, 1, 24, tradingParamsText, text_color=color.yellow, text_halign=text.align_center, text_size=size.small)
+    else
+        // Short mode - NEW: Avg Trade Factor (row 11)
+        fillDataCell(performanceTable, 0, 11, "Avg Trade Factor", color.white)
+        fillDataCell(performanceTable, 1, 11, str.tostring(math.min(avgLongTradeFactor, 999.9), "#.###"), pfColor(avgLongTradeFactor))
+        fillDataCell(performanceTable, 2, 11, str.tostring(math.min(avgShortTradeFactor, 999.9), "#.###"), pfColor(avgShortTradeFactor))
+        fillDataCell(performanceTable, 3, 11, str.tostring(math.min(avgTradeFactor, 999.9), "#.###"), pfColor(avgTradeFactor))
+        
+        // Sources, Filters, Trading (rows 12-14)
+        table.cell(performanceTable, 0, 12, "Sources", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 12, 3, 12)
+        table.cell(performanceTable, 1, 12, sourcesText, text_color=color.orange, text_halign=text.align_center, text_size=size.small)
+        
+        table.cell(performanceTable, 0, 13, "Filters", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 13, 3, 13)
+        table.cell(performanceTable, 1, 13, filterSettingsText, text_color=color.lime, text_halign=text.align_center, text_size=size.small)
+
+        table.cell(performanceTable, 0, 14, "Trading", text_color=color.white, text_halign=text.align_center, text_size=size.small)
+        table.merge_cells(performanceTable, 1, 14, 3, 14)
+        table.cell(performanceTable, 1, 14, tradingParamsText, text_color=color.yellow, text_halign=text.align_center, text_size=size.small)
+// =============================================== END OFF: VISULIATION & DASHBOARD SETTINGS BLOCK ===============================================
+// ========================================================== END OFF: STRATEGY SCRIPT ===========================================================

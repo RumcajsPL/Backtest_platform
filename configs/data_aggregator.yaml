@@ -1,0 +1,21 @@
+
+# Configuration for OHLCV Bar Aggregation
+# Used by scripts/data_preprocessing/generate_ohlcv.py
+# Data_source settings:
+  # instrument: The instrument name used in the raw data folder structure
+  # timeframe: Target bar size (Pandas aliases: 1min, 5min, H, 4H, D, W) + customs like 45min, 90min
+  # start_date: Start date (YYYY-MM-DD)
+  # end_date: End date (YYYY-MM-DD) 
+# output settings:
+  # format: Output file format: 'csv' (requested) or 'parquet'
+  # directory: Final destination for aggregated bars
+
+data_source:
+  instrument: DEUIDXEUR
+  timeframe: 1min
+  start_date: 2023-12-01  # UTC start date (data will be converted to CET/CEST)
+  end_date: 2025-12-14    # UTC end date
+
+output:
+  format: csv
+  directory: data/processed/ohlcv

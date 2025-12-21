@@ -1,0 +1,20 @@
+# RSI Filter Configuration
+# Exact translation of Pine Script inputs
+rsi_filter:
+  enabled: false           # useRSI - Master switch
+  length: 14               # rsiLen - RSI calculation period (2-50)
+  overbought: 70           # rsiOverbought - Overbought threshold (50-95)
+  oversold: 30             # rsiOversold - Oversold threshold (5-50)
+
+# Example configurations for different trading styles:
+# rsi_filter_scalping:
+#   enabled: true
+#   length: 14
+#   overbought: 70
+#   oversold: 30
+# 
+# rsi_filter_intraday:
+#   enabled: true
+#   length: 14
+#   overbought: 80
+#   oversold: 20
