@@ -13,8 +13,8 @@
 data_source:
   instrument: DEUIDXEUR
   timeframe: 1min
-  start_date: 2023-12-01  # UTC start date (data will be converted to CET/CEST)
-  end_date: 2025-12-14    # UTC end date
+  start_date: 2023-12-01
+  end_date: 2025-12-22
 
 output:
   format: csv

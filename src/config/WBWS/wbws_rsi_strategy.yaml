@@ -16,13 +16,13 @@ asset:
 
 # Chose ohlcv data source and date range for backtest
 data:
-  file: "data/processed/ohlcv/DEUIDXEUR_1min_20231201_20251214.csv"
+  file: "data/processed/ohlcv/DEUIDXEUR_1min_20231201_20251222.csv"
   format: "csv"
   
   # Date range (in CET/CEST naive time - matches CSV timestamps)
   date_range:
-    start: "2025-11-24 00:03:00"  # CET/CEST time
-    end: "2025-12-05 00:00:00"    # CET/CEST time
+    start: "2025-12-08 01:00:00"  # CET/CEST time
+    end: "2025-12-22 16:00:00"    # CET/CEST time
   
   validation:
     check_ohlc: true
