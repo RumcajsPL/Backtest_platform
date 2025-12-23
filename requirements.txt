@@ -1,21 +1,21 @@
-/requirements.txt
-list of required and installed packages with their versions
+# Core tools/packages for data analysis and backtesting
+python==3.13.9
+pandas==2.3.3
+numpy==2.3.5
+matplotlib==3.10.7
+seaborn==0.12.2
+ta-lib==0.4.24
 
-Core tools/packages for data analysis and backtesting:
-python = 3.13.9
-pandas = 2.3.3
-numpy = 2.3.5
-matplotlib = 3.10.7
-seaborn = 0.12.2
-ta-lib = 0.4.24
+# Backtesting and visualization libraries
+vectorbt==0.28.1
 
-Backtesting and visualization libraries:
-vectorbt = 0.28.1
+# Data handling and finance-specific packages
+pyarrow==22.0.0
+yfinance==0.2.66
 
-Data handling and finance-specific packages:
-pyarrow = 22.0.0 
-yfinance = 0.2.66
+# Development and documentation tools
+jupyterlab_widgets==3.0.16
+pyyaml==6.0.3
 
-Development and documentation tools:
-jupyterlab_widgets = 3.0.16
-pyyaml = 6.0.3
+# Additional packages for trade management modules
+pytz==2025.2

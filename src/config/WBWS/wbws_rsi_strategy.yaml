@@ -40,6 +40,32 @@ filters:
     overbought: 70
     oversold: 30
 
+# Trade management => time management
+trade_management:
+  time_filter:
+    enabled: true
+    session_start:
+      hour: 8
+      minute: 30
+    session_end:
+      hour: 20
+      minute: 30
+  # Trade management => oposite signal management
+  opposite_signal:
+    enabled: false
+  
+  # Trade management => risk management
+  sl_tp:
+    enabled: true
+    atr_length: 14
+    sl_multiplier: 1.4
+    risk_to_reward_ratio: 2.0  # Risk to reward 1:2 R:R ratio
+  
+  risk_management:
+    enabled: true
+    max_risk_percentile: 1.0  # 1.0 = disabled (100% of annual range)
+    allow_exceed_limit: false
+
 output:
   outputs_dir: "outputs"
   reports_dir: "reports/WBWS"

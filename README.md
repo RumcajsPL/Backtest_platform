@@ -261,6 +261,7 @@ python scripts/data_scripts/download_raw_ticks.py
 python scripts/data_scripts/update_raw_ticks
 # Run transformating tool to generate time framed ohlcv csv file from .bi5 hourly files => uses yaml configuration file with settings like: instrument, desired TimeFrame, data range...
 python scripts/data_preprocessing/generate_ohlcv.py configs/data_aggregator.yaml
+# Remark: .bi5 file are in UTC timezone whilst all csv are converted to desired CET/CEST
 
 ### Initiating virtual env.
 ```bash
