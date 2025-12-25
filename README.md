@@ -166,6 +166,9 @@ project_root/
 │   │   ├── filters/                    # strategy scripts for signal filtering
 |   |   |   └── rsi_filter.py           # WBWS Strategy with filter configurations settings
 │   │   ├── trade_management/           # strategy scripts for trage and risk management
+|   |   |   ├── __init__.py
+|   |   |   ├── time_manager.py         # Filtering signal for specific session time
+|   |   |   └── risk_manager.py         # Applying risk mgt StopLoss ATR based and RR TakeProfit
 │   │   └── WBWS                        # strategy scripts specific for WBWS strategy 
 │   ├── utils/                          # Utility modules
 │   │   ├── __init__.py
@@ -173,10 +176,30 @@ project_root/
 │   │   └── report_generator.py         # Report generation utilities
 │   └── visualization/                  # Vizualization utilities
 │
-├── tests                                       # folder for testing
-└── venv/                                       # Venv specific folders and files
+├── tests                               # folder for testing
+|   ├── test_time_manager.py            # basic tests script for time_manager 
+|   └── test_risk_manager.py            # basic tests script for risk_manager
+└── venv/                               # Venv specific folders and files
 ---
-
+## Key Development platform Components
+**`requirements.txt`**
+# Core tools/packages for data analysis and backtesting
+- python==3.13.9
+- pandas==2.3.3
+- numpy==2.3.5
+- matplotlib==3.10.7
+- seaborn==0.12.2
+- ta-lib==0.4.24
+# Backtesting and visualization libraries
+- vectorbt==0.28.1
+# Data handling and finance-specific packages
+- pyarrow==22.0.0
+-  yfinance==0.2.66
+# Development and documentation tools
+- jupyterlab_widgets==3.0.16
+- pyyaml==6.0.3
+# Additional packages for trade management modules
+- pytz==2025.2
 ## 📖 Key Components Documentation
 
 ### Strategy trigger indicators
@@ -196,6 +219,15 @@ project_root/
   - Print formatted summaries
   - Display sample signals
 
+### Strategy trade management
+**`src\strategies\trade_management\time_manager.py`**
+  - Filtering signals to specifically defined session start and end hours (withing ohlcv file timestap)
+  - Inputs: start hour/minutes; end hour/minutes (based on .yaml config)
+**`src\strategies\trade_management\risk_manager.py`**
+  - Applying risk management with ATR based StopLoss and Rist to Reward TakeProfit
+  - Inputs SL: ATR length, multiplier (default 14, 1.4); Inputs TP: RR (default 2)
+  - Input Risk Percentile: special function modifying SL if exceeding some define price percentile change
+
 ### Main Orchestrators/Runners
 **`scripts/run_wbws_trigger.py` => for WBWS trigger only**
 - **Purpose:** Workflow orchestrator for WBWS trigger
@@ -204,7 +236,6 @@ project_root/
   2. Run WBWS Trigger indicator
   3. Generate reports and outputs
 - **Usage:** `python scripts/run_wbws_trigger.py configs/<name>.yaml`
-
 **`scripts/run_wbws_strategy.py` => for WBWS strategy**
 - **Purpose:** End-to-end workflow orchestrator assembling signal triggering indicator and filters
 - **Workflow:**
@@ -234,20 +265,16 @@ project_root/
   - Uses same .yaml config file as strategy orchestrators for input
   - Prints reports on data availability, structure, quality and confirms readiness 
   - To be used preliminary to launch strategy runner 
-
 ---
-
 ## 🗂 Development Plan
-
 ### 🔄 In Progress (to do by 28/12/2025)
 - Continue translation of TradingView filters into Python (one filter per script):
   - DPO
   - Bollinger Bands
   - Choppiness Index
-- Begin translation of Pine strategy trade management:
-  - Time-based rules
-  - SL/TP logic
+- Finalize translation of Pine strategy trade management:
   - Additional validation vs TradingView
+  - Dashboard
 - Finalize strategy execution for DAX40 historical data
 - Start preparing automated backtesting pipeline
 ---
