@@ -200,24 +200,21 @@ project_root/
 - pyyaml==6.0.3
 # Additional packages for trade management modules
 - pytz==2025.2
-## 📖 Key Components Documentation
 
+## 📖 Key Components Documentation
 ### Strategy trigger indicators
 **`src/indicators/wbws_trigger.py`**
-- **Purpose:** Pure signal calculation engine for WBWS Trigger indicator
-- **Scope:** Core logic only - candle classification, reversal detection, HTF alignment, signal generation
+- **Purpose:** Signal calculation engine for WBWS Trigger indicator
+- **Scope:** Core logic - candle classification, reversal detection, HTF alignment, signal generation
 - **Input:** Preprocessed OHLCV DataFrame (DatetimeIndex, standardized columns)
 - **Output:** DataFrame with buy/sell signals + execution statistics
-- **Key Feature:** Asset-agnostic, configuration-driven operation
+- **Key Feature:** Asset-agnostic, configuration-driven
 
 ### Strategy filters
 **`src\strategies\filters\rsi_filter.py`**
   - RSI Filter - filters signals for overbought/oversold bias
   - Inputs: length, overbought, oversold
-  - Save JSON execution reports
-  - Export signals to CSV (optional)
-  - Print formatted summaries
-  - Display sample signals
+  - Print formatted summaries/status/error messages
 
 ### Strategy trade management
 **`src\strategies\trade_management\time_manager.py`**
@@ -287,8 +284,12 @@ python scripts/data_scripts/download_raw_ticks.py
 # Run ducascopy dowloader tick to get delta of raw real tick data (.bi5 hourly files) for an instrument => checs the last available .bi5 file and gets the most recent .bi5 files
 python scripts/data_scripts/update_raw_ticks
 # Run transformating tool to generate time framed ohlcv csv file from .bi5 hourly files => uses yaml configuration file with settings like: instrument, desired TimeFrame, data range...
+# Remark: .bi5 file are in UTC timezone whilst all csv are converted to desired timeframe for exemple: CET/CEST
 python scripts/data_preprocessing/generate_ohlcv.py configs/data_aggregator.yaml
-# Remark: .bi5 file are in UTC timezone whilst all csv are converted to desired CET/CEST
+Example of ohlcv data file structure:
+timestamp,open,high,low,close,volume
+2025-12-22 14:49:00,24252.788000,24254.777000,24249.777000,24251.799000,80305408680.000000
+2025-12-22 14:50:00,24250.755000,24252.299000,24249.255000,24249.755000,43976771420.000000
 
 ### Initiating virtual env.
 ```bash

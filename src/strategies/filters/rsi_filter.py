@@ -43,27 +43,33 @@ class RSIFilter:
         
         return rsi
 
-    def apply_filter(self, df: pd.DataFrame, is_long: bool) -> pd.Series:
+    def apply_filter(self, df: pd.DataFrame, is_long: bool = True, price_col: str = 'close') -> pd.Series:
         """
-        Applies the filter logic.
-        Returns a boolean Series: True if the trade is ALLOWED, False if filtered out.
+        Apply RSI filter logic.
+        
+        Args:
+            df: OHLCV DataFrame
+            is_long: True for buy signals (check not overbought), False for sell (check not oversold)
+            price_col: Column to use for RSI calculation
+            
+        Returns:
+            Boolean Series: True where condition is met
         """
-        # 1. Check if filter is disabled
         if not self.enabled:
-            return pd.Series([True] * len(df), index=df.index)
-
-        # 2. Ensure RSI is calculated
-        # We check if 'rsi' exists to avoid recalculating if run multiple times
-        if 'rsi' not in df.columns:
-            # Assumes 'close' or 'Close' column exists
-            price_col = 'close' if 'close' in df.columns else 'Close'
-            df['rsi'] = self._calculate_rsi_wilder(df[price_col])
-
-        # 3. Apply Logic
-        # Pine: isLong ? rsi < rsiOverbought : rsi > rsiOversold
+            return pd.Series(True, index=df.index)
+        
+        # CRITICAL FIX: Work on a copy to avoid SettingWithCopyWarning
+        df_copy = df.copy()
+        
+        # Calculate RSI (will modify df_copy, not original df)
+        df_copy['rsi'] = self._calculate_rsi_wilder(df_copy[price_col])
+        
+        # Apply filter logic
         if is_long:
-            # Long Logic: Allow if RSI has NOT hit the overbought ceiling (Room to grow)
-            return df['rsi'] < self.overbought
+            # For BUY signals: RSI should NOT be overbought
+            result = df_copy['rsi'] < self.overbought
         else:
-            # Short Logic: Allow if RSI has NOT hit the oversold floor (Room to drop)
-            return df['rsi'] > self.oversold
+            # For SELL signals: RSI should NOT be oversold
+            result = df_copy['rsi'] > self.oversold
+        
+        return result
