@@ -8,7 +8,7 @@ The idea comes from the observed limitations of the TradingView Strategy Tester 
 **Conclusion:** Backtesting results from TV/ST can provide only a high-level idea of strategy potential. They cannot be reliably used to design or validate a professional trading system for live trading.
 This project is therefore a custom, high-precision backtesting environment designed to overcome these limitations.
 It is not intended to become a live trading platform with charts, alerts, and order execution. TradingView will remain the main platform for live trading.
-This project will never be published or commercialized — it is solely for supporting and improving my personal trading workflow.
+This project is not going to be published or commercialized — it is solely for supporting and improving my personal trading workflow.
 ---
 ## 🎯 Project Objectives
 At the detailed level, this project aims to:
@@ -234,7 +234,7 @@ project_root/
   3. Generate reports and outputs
 - **Usage:** `python scripts/run_wbws_trigger.py configs/<name>.yaml`
 **`scripts/run_wbws_strategy.py` => for WBWS strategy**
-- **Purpose:** End-to-end workflow orchestrator assembling signal triggering indicator and filters
+- **Purpose:** End-to-end workflow orchestrator assembling signal triggering indicator, filters, time manager, risk manager & metrics
 - **Workflow:**
   1. Load YAML configuration
   2. Run WBWS Trigger indicator

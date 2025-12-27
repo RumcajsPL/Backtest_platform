@@ -394,7 +394,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             print(f"   → {len(trades_df)} trades saved")
         else:
             print("\n⚠️  No trades to export (trade_details is empty)")
-    
+   
     # 9. Display Final Summary
     print("\n" + "="*70)
     print("📊 FINAL SUMMARY - COMPLETE SIGNAL FLOW")
