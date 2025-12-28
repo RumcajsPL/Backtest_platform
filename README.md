@@ -1,97 +1,84 @@
 # 📘 Backtesting Platform
-
 ## 📌 Overview
-The Backtest Platform project aims to create an alternative trading backtesting environment that complements the TradingView platform.
-The idea comes from the observed limitations of the TradingView Strategy Tester (TV/ST):
-- Limited historical data (typically 5–40k historical bars)
-- Historical bars are simulated, not based on actual tick data
-**Conclusion:** Backtesting results from TV/ST can provide only a high-level idea of strategy potential. They cannot be reliably used to design or validate a professional trading system for live trading.
-This project is therefore a custom, high-precision backtesting environment designed to overcome these limitations.
-It is not intended to become a live trading platform with charts, alerts, and order execution. TradingView will remain the main platform for live trading.
-This project is not going to be published or commercialized — it is solely for supporting and improving my personal trading workflow.
+This project aims to build a **high‑precision trading backtesting environment** that complements TradingView rather than replacing it.
+The idea originates from practical limitations observed in the TradingView Strategy Tester (TV/ST):
+* Limited historical depth (typically ~5–40k bars)
+* Bar‑based simulation instead of true tick‑level execution
+**Conclusion:** TradingView backtests are useful for *high‑level validation* but are insufficient for designing or validating a professional trading system intended for live deployment.
+This project therefore focuses on **accurate, data‑driven backtesting using real tick data**, while keeping TradingView as the primary platform for:
+* Live trading
+* Charting
+* Alerts and execution
+This repository is **not intended for commercialization or publication**. It exists solely to support and improve my personal trading workflow.
 ---
 ## 🎯 Project Objectives
-At the detailed level, this project aims to:
-- Provide access to high-quality historical OHLCV data based on real ticks, with a minimum of 2 years of history.
-- Offer a simple and modular structure for translating TradingView Pine Scripts to Python.
-- Automate backtesting to quickly derive optimal parameter settings for strategies executed live on TradingView.
-- Use GitHub to simplify collaboration with AI assistance for development.
-- Support backtesting of various assets:
-  - Forex, indices, gold, and others.
-- Support multiple trading timeframes.
+At a detailed level, the platform aims to:
+* Provide access to high‑quality historical OHLCV data generated from **real tick data**, with at least **2 years of history**.
+* Offer a **modular and maintainable framework** for translating TradingView Pine Script strategies into Python.
+* Enable **automated backtesting** to identify optimal parameter configurations for strategies executed live on TradingView.
+* Use GitHub as a structured workspace for version control and AI‑assisted development.
+* Support backtesting across multiple:
+  * Asset classes (Forex, indices, gold, etc.)
+  * Timeframes
 ---
-## 🧱 Rules for Code Structure & Content Management
-- Scripts should remain reasonably sized, reusable, and encapsulated, each focusing on a specific task.
-- Avoid monolithic scripts combining computation, visualization, and data handling.
-- Build the strategy from small, composable code bricks.
-- Maintain a clean, adaptive, and well-organized repository.
-- When designing new strategies:
-  - Reuse existing code bricks whenever possible.
-  - Ensure new components are written to be reusable in future strategies as well.
-- Maintain professional documentation to support long-term project scalability.
-- Maintain scripts, settings ready to be used by runner, automataizing bactesting structures
+## 🧱 Code Structure & Design Principles
+* Scripts should remain **small, reusable, and well‑encapsulated**, each addressing a single responsibility.
+* Avoid monolithic scripts combining data loading, computation, visualization, and reporting.
+* Build strategies from **composable building blocks** (indicators, filters, trade management modules).
+* Keep the repository **clean, adaptive, and logically structured**.
+* When designing new strategies:
+  * Reuse existing components whenever possible.
+  * Write new components with **future reuse** in mind.
+* Maintain clear and professional documentation to support long‑term scalability.
+* Ensure all scripts and configurations are compatible with automated runners and batch backtesting workflows.
 ---
-## 🤝 Collaboration
-This project uses GitHub for version control and AI-assisted development. All major refactoring and feature additions are documented in commit history.
-Backtesting in its target deployment should be automated, highly iterative, manage by AI assitance as far as possible to create an autooptimizing algorithms helping in identifying the optimal settings for a strategy.
-## List of operated assets (with Ducascopy naming convention)
-    Asset	Dukascopy Datafeed Name
-    GOLD (XAUUSD)	xauusd
-    DAX40 (GER40)	deuidxeur 
-    SPTRD (SPX500)	usa500idxusd
-    DOW (DJ30)	usa30idxusd
-    NASDAQ (NS100)	usatechidxusd (US Tech / Nasdaq 100)
-    CAC (FR40)	fraidxeur
-    UK100 (FTSE 100)	gbridxgbp
-    AUDUSD	audusd
-    EURJPY	eurjpy
-    EURUSD	eurusd
-    GBPUSD	gbpusd
-    USDCAD	usdcad
-    USDCHF	usdchf
-    USDJPY	usdjpy
+## 🤝 Collaboration & Development Workflow
+GitHub is used for version control and AI‑assisted development. All significant refactoring and feature additions are tracked through commit history.
+The long‑term goal is to build an **automated, highly iterative backtesting pipeline**, where AI assistance helps:
+* Explore parameter spaces
+* Identify optimal configurations
+* Detect structural weaknesses in strategies
 ---
-## 📅 Project Status (as of 28/12/2025) => Key components
-- **Project initiation date:** 05/12/2025
-- **First strategy selected:** We Buy / We Sell Trigger (Pine v6)
-  - Original Trigger indicator located at: `pine_scripts/WBWS_Trigger.pine`
-  - Original Strategy script (filters, risk, time, trade, dashboard) located at: `pine_scripts\StrategyBuilderLab.pine`
-- **Historical data for Backtest platform**
-  - `scripts/data_scripts/download_raw_ticks.py` => scripts to download .bi5 data, 
-  - `scripts/data_scripts/update_raw_ticks` then latest delta of .bi5 available => sucessfully tested
-  - scripts/data_preprocessing/generate_ohlcv.py transforms .bi5 files into required date range and TF ohlcv .csv => scucessfully tested
-  - historical .bi5 real tick hourly data available for all assets and for 2+ years period (from 01 DEC 2023)
-  - 1 min DAX40 ohlcv .csv available for all historical data as base for development & initial testing
-- **Configuration system implemented:** `src\config\WBWS\wbws_rsi_strategy.yaml`
-  - YAML-based configuration for asset-agnostic operation 
-- **requirements.txt** File with all installed packages dependencies
-- **WBWS Trigger successfully translated to Python:** `src/indicators/wbws_trigger.py`
-  - **Purpose:** Signal calculation engine for WBWS Trigger indicator
-  - **Scope:** Core logic - candle classification, reversal detection, HTF alignment, signal generation
-  - **Input:** Preprocessed OHLCV DataFrame (DatetimeIndex, standardized columns)
-  - **Output:** DataFrame with buy/sell signals + execution statistics
-  - **Key Feature:** Asset-agnostic, configuration-driven
-  - WBWS indicator tested on settings : 1 minute for main timeframe and 60 minutes for Higher Time Frame
-  - Quality testing completed
-  - High similarity with TradingView results confirmed
-- **RSI filter translated to Python:** `src\strategies\filters\rsi_filter.py`
-  - RSI Filter - filters signals for overbought/oversold bias
-  - RSI filter tested on settings : length 14, overbought: 70, oversold: 30
-  - Quality testing completed
-  - High similarity with TradingView results confirmed
-- **Strategy components translated to Python:**
-  - Time management `src\strategies\trade_management\time_manager.py`
-    - Filtering signals to specifically defined session start and end hours (withing ohlcv file timestap)
-    - Inputs: start hour/minutes; end hour/minutes (based on .yaml config)
-  - Risk management `src\strategies\trade_management\risk_manager.py` (SL/TP + risk percentile)
-    - Applying risk management with ATR based StopLoss and Risk to Reward TakeProfit
-    - Inputs SL: ATR length, multiplier (default 14, 1.4); Inputs TP: RR (default 2)
-    - Input Risk Percentile (default 1 = 100%): special function modifying SL if exceeding some define price percentile change
-  - Backtest simulator with Dashboard `scripts\backtest_simulator.py` & `scripts\dashboard_standalone.py`
-  - Initial testing testing completed
+## 📊 Supported Assets (Dukascopy Naming Convention)
+
+| Asset            | Dukascopy Datafeed Name |
+| ---------------- | ----------------------- |
+| GOLD (XAUUSD)    | xauusd                  |
+| DAX40 (GER40)    | deuidxeur               |
+| SPX500           | usa500idxusd            |
+| DOW (DJ30)       | usa30idxusd             |
+| NASDAQ (NS100)   | usatechidxusd           |
+| CAC40            | fraidxeur               |
+| UK100 (FTSE 100) | gbridxgbp               |
+| AUDUSD           | audusd                  |
+| EURJPY           | eurjpy                  |
+| EURUSD           | eurusd                  |
+| GBPUSD           | gbpusd                  |
+| USDCAD           | usdcad                  |
+| USDCHF           | usdchf                  |
+| USDJPY           | usdjpy                  |
 ---
-## 📂 Repository Structure (28/12/2025)
-```
+## 📅 Project Status (as of 28/12/2025)
+### General
+* **Project start date:** 05/12/2025
+* **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
+### Data Pipeline
+* Raw tick data (.bi5) download from Dukascopy implemented and tested
+* Incremental tick updates supported
+* Tick‑to‑OHLCV transformation validated
+* At least **2 years of real tick data** available (from 01 Dec 2023)
+* 1‑minute DAX40 OHLCV dataset available as a development baseline
+### Strategy Translation
+* WBWS Trigger indicator fully translated to Python
+* RSI filter translated and validated
+* Time‑based trade filtering implemented
+* ATR‑based risk management (SL/TP + RR) implemented
+* High similarity with TradingView results confirmed across components
+### Configuration
+* YAML‑based, asset‑agnostic configuration system implemented
+* Strategy, filter, and data aggregation parameters fully externalized
+---
+## 📂 Repository Structure (Current)
 project_root/
 │
 ├── .gitignore
@@ -209,12 +196,22 @@ project_root/
 # Additional packages for trade management modules
 - pytz==2025.2
 
+---
+
+🔄 Development Roadmap (In Progress – target 31/12/2025)
+### Continue translation of TradingView filters into Python:
+* DPO
+* Bollinger Bands
+* Choppiness Index
+### Finalize full WBWS strategy execution and validation
+### Prepare automated, parameter‑driven backtesting pipelines
+---
 ## 📖 Key Backtest testing & execution components
 ---
-## 🚀 Quick Start
-### Prerequisites / Guidances
-```
+## 🚀 Quick Start ### Prerequisites / Guidances
+---
 ### Raw and preprocessed data management
+---
 # Run ducascopy dowloader tick to get raw real tick data (.bi5 hourly files) for an instrument
 `python scripts/data_scripts/download_raw_ticks.py`
 # Run ducascopy dowloader tick to get delta of raw real tick data (.bi5 hourly files) for an instrument => checs the last available .bi5 file and gets the most recent .bi5 files
@@ -228,7 +225,7 @@ timestamp,open,high,low,close,volume
 2025-12-22 14:50:00,24250.755000,24252.299000,24249.255000,24249.755000,43976771420.000000
 ---
 ### Activate virtual environment (venv).
-.\venv\Scripts\Activate.ps1
+`.\venv\Scripts\Activate.ps1`
 ---
 ### Main Orchestrators/Runners
 **`scripts/run_wbws_strategy.py` => for WBWS strategy**
@@ -281,13 +278,4 @@ timestamp,open,high,low,close,volume
   - Uses same .yaml config file as strategy orchestrators for input
   **Usage:** `tests\test_risk_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
 ---
-## 🗂 Development Plan => ### 🔄 In Progress (to do by 31/12/2025)
-- Continue translation of TradingView filters into Python (1 filter per script):
-  - DPO
-  - Bollinger Bands
-  - Choppiness Index
-- Finalize translation of Pine strategy trade management:
-  - Additional validation vs TradingView
-  - Finalize strategy execution for DAX40 historical data
-- Start preparing automated backtesting pipeline
---- End of file ---
+*End of README*
