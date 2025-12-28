@@ -287,7 +287,6 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             'total_trades': 0,
             'message': 'No approved trades to analyze'
         }
-
     # 8. Prepare Output Directories and Save Reports
     out_cfg = config.get('output', {})
     report_dir = project_root / out_cfg.get('outputs_dir', 'outputs') / out_cfg.get('reports_dir', 'reports/WBWS')
@@ -298,10 +297,17 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # Get sample trades
-    buy_samples = [td for td in trade_details if td['signal'] == 'BUY'][:10]
-    sell_samples = [td for td in trade_details if td['signal'] == 'SELL'][:10]
+    # Pre-calculate CSV path to include in JSON report
+    save_csv = out_cfg.get('save_signals_csv', True)
+    csv_filename = f"trade_details_{timestamp_str}.csv"
+    csv_path = signals_dir / csv_filename
     
+    # Get relative path for cleaner reporting
+    try:
+        csv_relative_path = str(csv_path.relative_to(project_root))
+    except ValueError:
+        csv_relative_path = str(csv_path) # Fallback if paths don't share root
+
     # Build JSON report
     report_data = {
         "execution_time": datetime.now().isoformat(),
@@ -361,16 +367,15 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             "total_rejection_rate_pct": round(((raw_total - risk_approved_total)/raw_total*100) if raw_total > 0 else 0, 2)
         },
         "performance_metrics": performance_metrics,
-        "samples": {
-            "buy_signals": buy_samples,
-            "sell_signals": sell_samples
-        },
         "risk_details": {
             "atr_length": sl_cfg.get('atr_length', 14),
             "sl_multiplier": sl_cfg.get('sl_multiplier', 1.4),
             "risk_to_reward": sl_cfg.get('risk_to_reward_ratio', 2.0),
             "max_risk_percentile": risk_cfg.get('max_risk_percentile', 1.0),
             "allow_exceed_limit": risk_cfg.get('allow_exceed_limit', False)
+        },
+        "outputs": {
+            "signals_csv_file": csv_relative_path if save_csv and trade_details else None
         }
     }
     
@@ -381,16 +386,15 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     
     # Export Trade Details to CSV with DEBUG
     print(f"\n[DEBUG] trade_details length: {len(trade_details)}")
-    print(f"[DEBUG] save_signals_csv: {out_cfg.get('save_signals_csv', True)}")
+    print(f"[DEBUG] save_signals_csv: {save_csv}")
     
-    if out_cfg.get('save_signals_csv', True):
+    if save_csv:
         if trade_details:
             trades_df = pd.DataFrame(trade_details)
-            csv_path = signals_dir / f"trade_details_{timestamp_str}.csv"
             print(f"[DEBUG] Saving to: {csv_path}")
             trades_df.to_csv(csv_path, index=False)
             print(f"[DEBUG] File exists: {csv_path.exists()}")
-            print(f"\n📊 CSV Export: {csv_path.relative_to(project_root)}")
+            print(f"\n📊 CSV Export: {csv_relative_path}")
             print(f"   → {len(trades_df)} trades saved")
         else:
             print("\n⚠️  No trades to export (trade_details is empty)")
@@ -430,17 +434,20 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             print(f"    • {wr_pct}% WR: {exp_r:+.3f}R per trade → {total_r:+.1f}R total ({total_r * performance_metrics['avg_sl_distance']:+.1f} pts)")
         print("="*70)
     
-    # Show sample trades
+    # Show sample trades (Console only)
+    buy_samples = [td for td in trade_details if td['signal'] == 'BUY'][:5]
+    sell_samples = [td for td in trade_details if td['signal'] == 'SELL'][:5]
+
     if buy_samples:
         print("\n📋 Sample BUY Trades (with SL/TP):")
-        for i, trade in enumerate(buy_samples[:5], 1):
+        for i, trade in enumerate(buy_samples, 1):
             print(f"  {i}. {trade['timestamp']} | Entry: {trade['entry']} | "
                   f"SL: {trade['sl']} (-{trade['sl_distance']}) | "
                   f"TP: {trade['tp']} (+{trade['tp_distance']})")
     
     if sell_samples:
         print("\n📋 Sample SELL Trades (with SL/TP):")
-        for i, trade in enumerate(sell_samples[:5], 1):
+        for i, trade in enumerate(sell_samples, 1):
             print(f"  {i}. {trade['timestamp']} | Entry: {trade['entry']} | "
                   f"SL: {trade['sl']} (+{trade['sl_distance']}) | "
                   f"TP: {trade['tp']} (-{trade['tp_distance']})")
@@ -448,7 +455,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     print(f"\n📂 JSON Report: {report_path.relative_to(project_root)}")
     print("\n✅ Strategy execution completed successfully!\n")
 
-    return df, final_signals, trade_details
+    return df, final_signals, trade_details    
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
