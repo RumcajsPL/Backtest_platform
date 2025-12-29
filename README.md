@@ -142,7 +142,7 @@ project_root/
 |       └── WBWS/                               # WBWS-specific validations
 │           └── validate_strategy_data.py       # Script validating availability, structure and quality of historical ohlc data (.csv) for strategy runner
 │   ├── dashboard_standalone.py                 # Main enhanced strategy dashboard
-│   ├── backtest_simulator.py                   # Backtest simulation engine
+│   ├── backtest_simulator.py                   # (obsolete)/placeholder
 │   ├── run_wbws_strategy.py                    # Runner script assembling WeBuy WeSell trigger with filters
 │   └── run_wbws_trigger.py                     # Runner script WeBuy WeSell trigger only
 │
@@ -242,7 +242,7 @@ timestamp,open,high,low,close,volume
 - **Usage:** `python scripts/run_wbws_strategy.py src\config\WBWS\wbws_rsi_strategy.yaml`
 ---
 ## 📊 Current Performance metrics for DAX40 sample data (to be used as reference in intermediary testing)
-- **Usage:** `python scripts/dashboard_standalone.py outputs/reports/WBWS/strategy_report_20251227_224945.json src/config/WBWS/wbws_rsi_strategy.yaml`
+- **Usage:** `python scripts/dashboard_standalone.py outputs/reports/WBWS/strategy_report_20251227_224945.json --visualize` (--visualize optional)
 ---
 ### Auxiliary tools
 ---
