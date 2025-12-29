@@ -1,6 +1,6 @@
-#!/usr/bin/env python
 """
 Enhanced Standalone Performance Dashboard with Backtesting
+Now includes Position Management metrics
 """
 import sys
 import json
@@ -47,8 +47,7 @@ class EnhancedDashboard:
         # 3. Load Trade Details (INTELLIGENT LOADING)
         trades_df = None
         csv_path = None
-        project_root = report_path.parent.parent.parent.parent # rough guess: outputs/reports/WBWS/file.json -> root
-        
+                
         # Strategy A: Check 'outputs' key in JSON (The new robust way)
         if 'outputs' in report_data and report_data['outputs'].get('signals_csv_file'):
             rel_path = report_data['outputs']['signals_csv_file']
@@ -112,18 +111,17 @@ class EnhancedDashboard:
         
         return report_data, config, trades_df, ohlcv_df
     
-    def simulate_backtest(self, trades_df: pd.DataFrame, ohlcv_df: pd.DataFrame) -> Dict:
+    def simulate_backtest(self, trades_df: pd.DataFrame, ohlcv_df: pd.DataFrame, config: Dict) -> Dict:
         """Simulate backtest and calculate real metrics"""
         if trades_df is None or ohlcv_df is None:
             return {}
         
         try:
             from backtest_simulator import TradeSimulator
-            simulator = TradeSimulator()
+            # Pass config to simulator for TradeManager integration
+            simulator = TradeSimulator(config=config)
             
             # OPTIMIZATION: Slice OHLCV to relevant range + buffer
-            # We add a buffer (e.g. 7 days) after the last trade entry to ensure we have data 
-            # for the trade to close (hit TP/SL).
             if not trades_df.empty:
                 start_date = trades_df['timestamp'].min()
                 end_date = trades_df['timestamp'].max() + pd.Timedelta(days=7)
@@ -142,6 +140,12 @@ class EnhancedDashboard:
             
             if completed_trades:
                 metrics = simulator.calculate_metrics(completed_trades)
+                
+                # Add rejected signals info
+                rejected = simulator.get_rejected_signals()
+                metrics['rejected_signals'] = rejected
+                metrics['rejected_count'] = len(rejected)
+                
                 return metrics
             else:
                 return {}
@@ -194,7 +198,7 @@ class EnhancedDashboard:
                     print(f"{str(cell):<{col_widths[i]}}", end="")
             print()
 
-    def display_tradingview_style_dashboard(self, basic_metrics: Dict, backtest_metrics: Dict):
+    def display_tradingview_style_dashboard(self, basic_metrics: Dict, backtest_metrics: Dict, config: Dict):
         # 1. PERFORMANCE OVERVIEW
         self.print_header("📈 TRADINGVIEW-STYLE PERFORMANCE DASHBOARD")
         overview_rows = [
@@ -211,7 +215,45 @@ class EnhancedDashboard:
         for label, value in overview_rows:
             print(f"{label:<20} {value}")
         
-        # 2. LONG/SHORT BREAKDOWN
+        # 2. POSITION MANAGEMENT (NEW SECTION)
+        if 'trade_manager' in backtest_metrics:
+            self.print_header("🎯 POSITION MANAGEMENT")
+            tm = backtest_metrics['trade_manager']
+            
+            # Display settings
+            position_cfg = config.get('trade_management', {}).get('position_control', {})
+            close_opposite = position_cfg.get('close_on_opposite', False)
+            pyramiding = position_cfg.get('pyramiding_enabled', False)
+            
+            print(f"{self.color_text('SETTINGS', self.colors.BOLD)}")
+            print("-" * 40)
+            print(f"{'Close on Opposite':<25} {'ENABLED' if close_opposite else 'DISABLED'}")
+            print(f"{'Pyramiding':<25} {'ENABLED' if pyramiding else 'DISABLED'}")
+            
+            print(f"\n{self.color_text('SIGNAL PROCESSING', self.colors.BOLD)}")
+            print("-" * 40)
+            print(f"{'Total Signals Received':<25} {tm.get('total_signals_received', 0)}")
+            print(f"{'Signals Accepted':<25} {tm.get('signals_accepted', 0)}")
+            print(f"{'Signals Rejected':<25} {tm.get('signals_rejected', 0)} ({tm.get('signals_rejected', 0) / max(tm.get('total_signals_received', 1), 1) * 100:.1f}%)")
+            
+            # Rejection breakdown
+            reasons = tm.get('rejected_reasons', {})
+            if reasons.get('pyramiding_disabled', 0) > 0 or reasons.get('opposite_ignored', 0) > 0:
+                print(f"\n{self.color_text('REJECTION REASONS', self.colors.BOLD)}")
+                print("-" * 40)
+                if reasons.get('pyramiding_disabled', 0) > 0:
+                    print(f"{'  Pyramiding Disabled':<25} {reasons['pyramiding_disabled']}")
+                if reasons.get('opposite_ignored', 0) > 0:
+                    print(f"{'  Opposite Ignored':<25} {reasons['opposite_ignored']}")
+            
+            # Close & Reverse stats
+            if close_opposite and tm.get('positions_closed_by_opposite', 0) > 0:
+                print(f"\n{self.color_text('CLOSE & REVERSE', self.colors.BOLD)}")
+                print("-" * 40)
+                print(f"{'Positions Closed':<25} {tm.get('positions_closed_by_opposite', 0)}")
+                print(f"{'Positions Reversed':<25} {tm.get('positions_reversed', 0)}")
+        
+        # 3. LONG/SHORT BREAKDOWN
         self.print_header("🔀 LONG/SHORT PERFORMANCE")
         breakdown_headers = ["Metric", "LONG", "SHORT", "TOTAL"]
         breakdown_rows = [
@@ -221,7 +263,7 @@ class EnhancedDashboard:
         ]
         self.print_table(breakdown_headers, breakdown_rows)
         
-        # 3. STATS
+        # 4. STATS
         self.print_header("⏱️ TRADE STATISTICS")
         stats_rows = [
             ["Avg Duration (min)", f"{backtest_metrics.get('avg_duration_minutes', 0):.1f}"],
@@ -232,18 +274,24 @@ class EnhancedDashboard:
         for label, value in stats_rows:
             print(f"{label:<25} {value}")
 
-        # 4. EXITS
+        # 5. EXITS
         self.print_header("🚪 EXIT STATISTICS")
         total = backtest_metrics.get('total_trades', 1) or 1
         exit_rows = [
             ["Take Profit", f"{backtest_metrics.get('take_profit_exits', 0)} ({backtest_metrics.get('take_profit_exits', 0)/total*100:.1f}%)"],
             ["Stop Loss", f"{backtest_metrics.get('stop_loss_exits', 0)} ({backtest_metrics.get('stop_loss_exits', 0)/total*100:.1f}%)"],
-            ["End of Data", str(backtest_metrics.get('end_of_data_exits', 0))],
         ]
+        
+        # Add opposite signal exits if feature enabled
+        if backtest_metrics.get('opposite_signal_exits', 0) > 0:
+            exit_rows.append(["Opposite Signal", f"{backtest_metrics.get('opposite_signal_exits', 0)} ({backtest_metrics.get('opposite_signal_exits', 0)/total*100:.1f}%)"])
+        
+        exit_rows.append(["End of Data", str(backtest_metrics.get('end_of_data_exits', 0))])
+        
         for label, value in exit_rows:
             print(f"{label:<25} {value}")
             
-        # 5. SIGNAL FLOW
+        # 6. SIGNAL FLOW
         self.print_header("📡 SIGNAL FLOW")
         flow_headers = ["Stage", "BUY", "SELL", "TOTAL", "Rejected"]
         flow_rows = [
@@ -252,6 +300,20 @@ class EnhancedDashboard:
             ["RSI Filter", str(basic_metrics['rsi_buy']), str(basic_metrics['rsi_sell']), str(basic_metrics['rsi_total']), str(basic_metrics['time_total'] - basic_metrics['rsi_total'])],
             ["Risk Managed", str(basic_metrics['final_buy']), str(basic_metrics['final_sell']), str(basic_metrics['final_total']), str(basic_metrics['rsi_total'] - basic_metrics['final_total'])],
         ]
+        
+        # Add position control row if relevant
+        if 'trade_manager' in backtest_metrics:
+            tm = backtest_metrics['trade_manager']
+            executed = backtest_metrics.get('total_trades', 0)
+            rejected_by_position = tm.get('signals_rejected', 0)
+            flow_rows.append([
+                "Position Control", 
+                "-", 
+                "-", 
+                str(executed), 
+                str(rejected_by_position)
+            ])
+        
         self.print_table(flow_headers, flow_rows, [15, 8, 8, 8, 10])
 
     def display(self, report_path: str, config_path: str = None):
@@ -266,10 +328,10 @@ class EnhancedDashboard:
             
             backtest_metrics = {}
             if trades_df is not None and ohlcv_df is not None:
-                backtest_metrics = self.simulate_backtest(trades_df, ohlcv_df)
+                backtest_metrics = self.simulate_backtest(trades_df, ohlcv_df, config)
             
             if backtest_metrics:
-                self.display_tradingview_style_dashboard(basic_metrics, backtest_metrics)
+                self.display_tradingview_style_dashboard(basic_metrics, backtest_metrics, config)
             else:
                 print(f"\n{self.colors.YELLOW}⚠️  Partial Dashboard (No simulation data available){self.colors.END}")
                 # Simple fallback display if needed or just exit

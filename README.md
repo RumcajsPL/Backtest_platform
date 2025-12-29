@@ -58,7 +58,7 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 | USDCHF           | usdchf                  |
 | USDJPY           | usdjpy                  |
 ---
-## 📅 Project Status (as of 28/12/2025)
+## 📅 Project Status (as of 29/12/2025)
 ### General
 * **Project start date:** 05/12/2025
 * **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
@@ -74,6 +74,7 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 * Time‑based trade filtering implemented
 * ATR‑based risk management (SL/TP + RR) implemented
 * High similarity with TradingView results confirmed across components
+* Trade/position management integrated (managing pyramiding and oposit signal detection)
 ### Configuration
 * YAML‑based, asset‑agnostic configuration system implemented
 * Strategy, filter, and data aggregation parameters fully externalized
@@ -163,6 +164,7 @@ project_root/
 │   │   ├── trade_management/           # strategy scripts for trage and risk management
 |   |   |   ├── __init__.py
 |   |   |   ├── time_manager.py         # Filtering signal for specific session time
+|   |   |   ├── trade_manager.py        # Managing pyramiding possibility and opposite signal detection
 |   |   |   └── risk_manager.py         # Applying risk mgt StopLoss ATR based and RR TakeProfit
 │   │   └── WBWS                        # strategy scripts specific for WBWS strategy 
 │   ├── utils/                          # Utility modules
@@ -172,12 +174,14 @@ project_root/
 │   └── visualization/                  # Vizualization utilities
 │
 ├── tests                               # folder for testing
-|   ├── test_time_manager.py            # basic tests script for time_manager 
-|   └── test_risk_manager.py            # basic tests script for risk_manager
+|   ├── test_time_manager.py            # basic tests script for time/session managment
+|   ├── test_time_manager.py            # basic tests script for risk managment 
+|   └── test_trade_manager.py           # basic tests script for trade managment
 └── venv/                               # Venv specific folders and files
 ---
 ## Key Development platform Components
 **`requirements.txt`**
+# Environement OS = Microsoft Windows [version 10.0.22621.4317]
 # Core tools/packages for data analysis and backtesting
 - python==3.13.9
 - pandas==2.3.3
@@ -203,7 +207,7 @@ project_root/
 * DPO
 * Bollinger Bands
 * Choppiness Index
-### Finalize full WBWS strategy execution and validation
+### Finalize full WBWS strategy execution, validation and dashboard
 ### Prepare automated, parameter‑driven backtesting pipelines
 ---
 ## 📖 Key Backtest testing & execution components
@@ -270,12 +274,15 @@ timestamp,open,high,low,close,volume
   - Can be used preliminary to launch strategy runner to validate data quality
   **Usage:** `python scripts\validation_scripts\validate_strategy_data.py.py src\config\WBWS\wbws_rsi_strategy.yaml`
 - **Purpose:** Validates time management script against serveral test scenarios
-- **Features:**
+- **Features:** - Tests time manager(trading session) script
   - Uses same .yaml config file as strategy orchestrators for input
   **Usage:** `tests\test_time_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
   - **Purpose:** Validates risk management script against serveral test scenarios
-- **Features:**
+- **Features:** - Tests SL, RR TP and risk percentile
   - Uses same .yaml config file as strategy orchestrators for input
   **Usage:** `tests\test_risk_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
+  **Features:** - Tests pyramiding and opposit signal management
+  - Uses same .yaml config file as strategy orchestrators for input
+  **Usage:** `tests\test_trade_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
 ---
 *End of README*

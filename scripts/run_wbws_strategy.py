@@ -157,7 +157,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     risk_rejected_count = {'buy': 0, 'sell': 0}
     risk_adjusted_count = {'buy': 0, 'sell': 0}
     
-    trade_details = []  # Store SL/TP info for each signal
+    potential_trades = []  # Store potential trades before position management
     
     for timestamp, signal_type in risk_input_signals.items():
         is_long = (signal_type == 'BUY')
@@ -203,12 +203,11 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             else:
                 take_profit = entry_price - tp_distance
         
-        # Trade approved
+        # Trade approved by risk - store potential trade
         risk_approved_count['buy' if is_long else 'sell'] += 1
         
-        # Store trade details
-        trade_details.append({
-            'timestamp': str(timestamp),
+        potential_trades.append({
+            'timestamp': timestamp,
             'signal': signal_type,
             'entry': round(entry_price, 2),
             'sl': round(stop_loss, 2),
@@ -246,11 +245,124 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     if risk_adjusted_total > 0:
         print(f"  ⚠️  Adjusted SL: {risk_adjusted_total} trades")
     print("="*70 + "\n")
+    
+    # 7. Apply Position Management with Backtest Simulation
+    from src.strategies.trade_management.trade_manager import TradeManager
+    
+    trade_manager = TradeManager(config)
+    trade_details = []  # Final approved and managed trades (opens and closes)
+    position_rejected_count = {'buy': 0, 'sell': 0}
+    position_closed_by_opposite = 0
+    position_closed_by_sl = 0
+    position_closed_by_tp = 0
+    
+    # Create dict of potential signals by timestamp
+    potential_signals = {pt['timestamp']: pt for pt in potential_trades}
+    
+    # Simulate backtest bar by bar
+    for timestamp, row in df.iterrows():
+        # Check for exits on open positions
+        current_positions = trade_manager.get_current_positions()
+        for pos in current_positions[:]:
+            exit_price = None
+            exit_reason = None
+            if pos.direction == 'BUY':
+                if row['low'] <= pos.sl_price:
+                    exit_price = pos.sl_price  # Assume hit exactly; could use min(low, sl_price) for overshoot
+                    exit_reason = 'SL'
+                elif row['high'] >= pos.tp_price:
+                    exit_price = pos.tp_price
+                    exit_reason = 'TP'
+            else:  # SELL
+                if row['high'] >= pos.sl_price:
+                    exit_price = pos.sl_price
+                    exit_reason = 'SL'
+                elif row['low'] <= pos.tp_price:
+                    exit_price = pos.tp_price
+                    exit_reason = 'TP'
+            
+            if exit_reason:
+                close_trade = trade_manager.close_position_on_exit(pos.trade_id, timestamp, exit_price, exit_reason)
+                if close_trade:
+                    close_trade['status'] = 'CLOSE'
+                    close_trade['comment'] = f'Hit {exit_reason}'
+                    trade_details.append(close_trade)
+                    if exit_reason == 'SL':
+                        position_closed_by_sl += 1
+                    elif exit_reason == 'TP':
+                        position_closed_by_tp += 1
+    
+        # Process signal if present at this bar
+        if timestamp in potential_signals:
+            pot_trade = potential_signals[timestamp]
+            signal_row = pd.Series({
+                'timestamp': timestamp,
+                'signal': pot_trade['signal'],
+                'entry': pot_trade['entry'],
+                'sl': pot_trade['sl'],
+                'tp': pot_trade['tp']
+            })
+            
+            result = trade_manager.handle_signal(signal_row)
+            
+            if result['action'] == 'OPEN':
+                open_trade = result['open_trade']
+                open_trade['status'] = 'OPEN'
+                open_trade['comment'] = pot_trade['comment']
+                open_trade['sl_distance'] = pot_trade['sl_distance']
+                open_trade['tp_distance'] = pot_trade['tp_distance']
+                trade_details.append(open_trade)
+            
+            elif result['action'] == 'CLOSE_AND_REVERSE':
+                for close_trade in result['close_trades']:
+                    close_trade['status'] = 'CLOSE'
+                    close_trade['comment'] = 'Closed by opposite signal'
+                    trade_details.append(close_trade)
+                position_closed_by_opposite += len(result['close_trades'])
+                
+                open_trade = result['open_trade']
+                open_trade['status'] = 'OPEN'
+                open_trade['comment'] = pot_trade['comment'] + ' (Reversal)'
+                open_trade['sl_distance'] = pot_trade['sl_distance']
+                open_trade['tp_distance'] = pot_trade['tp_distance']
+                trade_details.append(open_trade)
+            
+            elif result['action'] == 'REJECT':
+                direction = pot_trade['signal'].lower()
+                position_rejected_count[direction] += 1
+    
+    # Get final metrics from TradeManager
+    tm_metrics = trade_manager.get_metrics()
+    
+    position_approved_buy = sum(1 for td in trade_details if td.get('status') == 'OPEN' and td['signal'] == 'BUY')
+    position_approved_sell = sum(1 for td in trade_details if td.get('status') == 'OPEN' and td['signal'] == 'SELL')
+    position_approved_total = position_approved_buy + position_approved_sell
+    
+    position_rejected_buy = position_rejected_count['buy']
+    position_rejected_sell = position_rejected_count['sell']
+    position_rejected_total = position_rejected_buy + position_rejected_sell
+    
+    print("="*70)
+    print("📋 STEP 5: POSITION MANAGEMENT")
+    print(f"  Close on Opposite: {'ENABLED' if trade_manager.close_on_opposite else 'DISABLED'}")
+    print(f"  Pyramiding: {'ENABLED' if trade_manager.pyramiding_enabled else 'DISABLED'}")
+    print("-"*70)
+    print(f"  🟢 BUY Opens:   {position_approved_buy:>4}  (rejected: {position_rejected_buy})")
+    print(f"  🔴 SELL Opens:  {position_approved_sell:>4}  (rejected: {position_rejected_sell})")
+    print(f"  📊 TOTAL Opens: {position_approved_total:>4}  (rejected: {position_rejected_total}, "
+          f"{(position_rejected_total/risk_approved_total*100) if risk_approved_total > 0 else 0:.1f}%)")
+    if position_closed_by_opposite > 0:
+        print(f"  🔄 Closes by Opposite: {position_closed_by_opposite}")
+    if position_closed_by_sl > 0 or position_closed_by_tp > 0:
+        print(f"  🛑 Closes by SL: {position_closed_by_sl}")
+        print(f"  🎯 Closes by TP: {position_closed_by_tp}")
+    print("="*70 + "\n")
 
-    # 7. Calculate Performance Metrics
-    if trade_details:
-        sl_distances = [td['sl_distance'] for td in trade_details]
-        tp_distances = [td['tp_distance'] for td in trade_details]
+    # 8. Calculate Performance Metrics (based on final managed opens)
+    open_trades = [td for td in trade_details if td.get('status') == 'OPEN']
+    if open_trades:
+        sl_distances = [td['sl_distance'] for td in open_trades]
+        tp_distances = [td['tp_distance'] for td in open_trades]
         
         avg_sl = np.mean(sl_distances)
         avg_tp = np.mean(tp_distances)
@@ -267,14 +379,14 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
                 'win_rate': wr,
                 'expected_return_per_trade_R': round(expected_r, 3),
                 'expected_return_per_trade_points': round(expected_r * avg_sl, 2),
-                'total_expected_return_R': round(expected_r * len(trade_details), 2),
+                'total_expected_return_R': round(expected_r * len(open_trades), 2),
                 'breakeven_win_rate': round(1 / (1 + rr_ratio), 3)
             }
         
         performance_metrics = {
-            'total_trades': len(trade_details),
-            'buy_trades': risk_approved_buy,
-            'sell_trades': risk_approved_sell,
+            'total_trades': len(open_trades),
+            'buy_trades': position_approved_buy,
+            'sell_trades': position_approved_sell,
             'avg_sl_distance': round(avg_sl, 2),
             'avg_tp_distance': round(avg_tp, 2),
             'max_sl_distance': round(max_sl, 2),
@@ -287,7 +399,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             'total_trades': 0,
             'message': 'No approved trades to analyze'
         }
-    # 8. Prepare Output Directories and Save Reports
+    # 9. Prepare Output Directories and Save Reports
     out_cfg = config.get('output', {})
     report_dir = project_root / out_cfg.get('outputs_dir', 'outputs') / out_cfg.get('reports_dir', 'reports/WBWS')
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -323,7 +435,8 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
                 "session": f"{time_manager.session_start_hour:02d}:{time_manager.session_start_minute:02d}-"
                           f"{time_manager.session_end_hour:02d}:{time_manager.session_end_minute:02d}"
             } if time_manager.enabled else {"enabled": False},
-            "rsi_filter": rsi_cfg
+            "rsi_filter": rsi_cfg,
+            "position_control": time_mgr_cfg.get('position_control', {})
         },
         "signal_flow": {
             "step1_raw_signals": {
@@ -360,11 +473,24 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
                 "adjusted_sell": risk_adjusted_sell,
                 "adjusted_total": risk_adjusted_total,
                 "rejection_rate_pct": round((risk_rejected_total/final_total*100) if final_total > 0 else 0, 2)
+            },
+            "step5_position_managed": {
+                "buy_opens": position_approved_buy,
+                "sell_opens": position_approved_sell,
+                "total_opens": position_approved_total,
+                "rejected_buy": position_rejected_buy,
+                "rejected_sell": position_rejected_sell,
+                "rejected_total": position_rejected_total,
+                "closes_by_opposite": position_closed_by_opposite,
+                "closes_by_sl": position_closed_by_sl,
+                "closes_by_tp": position_closed_by_tp,
+                "rejection_rate_pct": round((position_rejected_total/risk_approved_total*100) if risk_approved_total > 0 else 0, 2),
+                "trade_manager_metrics": tm_metrics
             }
         },
         "overall_rejection": {
-            "total_rejected": raw_total - risk_approved_total,
-            "total_rejection_rate_pct": round(((raw_total - risk_approved_total)/raw_total*100) if raw_total > 0 else 0, 2)
+            "total_rejected": raw_total - position_approved_total,
+            "total_rejection_rate_pct": round(((raw_total - position_approved_total)/raw_total*100) if raw_total > 0 else 0, 2)
         },
         "performance_metrics": performance_metrics,
         "risk_details": {
@@ -399,7 +525,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         else:
             print("\n⚠️  No trades to export (trade_details is empty)")
    
-    # 9. Display Final Summary
+    # 10. Display Final Summary
     print("\n" + "="*70)
     print("📊 FINAL SUMMARY - COMPLETE SIGNAL FLOW")
     print("="*70)
@@ -407,16 +533,19 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     print(f"  Time Filtered:      {time_filtered_total:>4}  (↓ {time_rejected_total}, -{(time_rejected_total/raw_total*100) if raw_total > 0 else 0:.1f}%)")
     print(f"  RSI Filtered:       {final_total:>4}  (↓ {rsi_rejected_total}, -{(rsi_rejected_total/time_filtered_total*100) if time_filtered_total > 0 else 0:.1f}%)")
     print(f"  Risk Approved:      {risk_approved_total:>4}  (↓ {risk_rejected_total}, -{(risk_rejected_total/final_total*100) if final_total > 0 else 0:.1f}%)")
+    print(f"  Position Approved:  {position_approved_total:>4}  (↓ {position_rejected_total}, -{(position_rejected_total/risk_approved_total*100) if risk_approved_total > 0 else 0:.1f}%)")
     print("-"*70)
-    print(f"  🟢 Final BUY:       {risk_approved_buy:>4}  (from {raw_buy_count}, -{raw_buy_count-risk_approved_buy})")
-    print(f"  🔴 Final SELL:      {risk_approved_sell:>4}  (from {raw_sell_count}, -{raw_sell_count-risk_approved_sell})")
-    print(f"  📉 Overall Rejection: {((raw_total-risk_approved_total)/raw_total*100) if raw_total > 0 else 0:.1f}%")
+    print(f"  🟢 Final BUY Opens: {position_approved_buy:>4}  (from {raw_buy_count}, -{raw_buy_count-position_approved_buy})")
+    print(f"  🔴 Final SELL Opens:{position_approved_sell:>4}  (from {raw_sell_count}, -{raw_sell_count-position_approved_sell})")
+    print(f"  📉 Overall Rejection: {((raw_total-position_approved_total)/raw_total*100) if raw_total > 0 else 0:.1f}%")
     if risk_adjusted_total > 0:
         print(f"  ⚙️  SL Adjustments:  {risk_adjusted_total}")
+    if position_closed_by_opposite > 0:
+        print(f"  🔄  Closes by Opposite: {position_closed_by_opposite}")
     print("="*70)
     
     # Display Performance Metrics
-    if trade_details:
+    if open_trades:
         print("\n" + "="*70)
         print("📈 PERFORMANCE METRICS")
         print("="*70)
@@ -431,29 +560,29 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             wr_pct = int(scenario['win_rate'] * 100)
             exp_r = scenario['expected_return_per_trade_R']
             total_r = scenario['total_expected_return_R']
-            print(f"    • {wr_pct}% WR: {exp_r:+.3f}R per trade → {total_r:+.1f}R total ({total_r * performance_metrics['avg_sl_distance']:+.1f} pts)")
+            print(f"    • {wr_pct}% WR: {exp_r:+.3f} R per trade → {total_r:+.1f}R total ({total_r * performance_metrics['avg_sl_distance']:+.1f} pts)")
         print("="*70)
     
     # Show sample trades (Console only)
-    buy_samples = [td for td in trade_details if td['signal'] == 'BUY'][:5]
-    sell_samples = [td for td in trade_details if td['signal'] == 'SELL'][:5]
+    buy_samples = [td for td in trade_details if td.get('status') == 'OPEN' and td['signal'] == 'BUY'][:5]
+    sell_samples = [td for td in trade_details if td.get('status') == 'OPEN' and td['signal'] == 'SELL'][:5]
 
     if buy_samples:
         print("\n📋 Sample BUY Trades (with SL/TP):")
         for i, trade in enumerate(buy_samples, 1):
             print(f"  {i}. {trade['timestamp']} | Entry: {trade['entry']} | "
-                  f"SL: {trade['sl']} (-{trade['sl_distance']}) | "
-                  f"TP: {trade['tp']} (+{trade['tp_distance']})")
+                  f"SL: {trade['sl']} (-{trade.get('sl_distance', 'N/A')}) | "
+                  f"TP: {trade['tp']} (+{trade.get('tp_distance', 'N/A')})")
     
     if sell_samples:
         print("\n📋 Sample SELL Trades (with SL/TP):")
         for i, trade in enumerate(sell_samples, 1):
             print(f"  {i}. {trade['timestamp']} | Entry: {trade['entry']} | "
-                  f"SL: {trade['sl']} (+{trade['sl_distance']}) | "
-                  f"TP: {trade['tp']} (-{trade['tp_distance']})")
+                  f"SL: {trade['sl']} (+{trade.get('sl_distance', 'N/A')}) | "
+                  f"TP: {trade['tp']} (-{trade.get('tp_distance', 'N/A')})")
     
     print(f"\n📂 JSON Report: {report_path.relative_to(project_root)}")
-    print("\n✅ Strategy execution completed successfully!\n")
+    print("\n\n✅ Strategy execution completed successfully!\n")
 
     return df, final_signals, trade_details    
 
