@@ -39,24 +39,24 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 * Identify optimal configurations
 * Detect structural weaknesses in strategies
 ---
-## 📊 Supported Assets (Dukascopy Naming Convention)
+## 📊 Supported Assets (Dukascopy Naming Convention & eToro CFD Spreads)
+| Asset            | Dukascopy Datafeed Name | Spread / Fee (eToro CFD) | Unit   |
+| ---------------- | ----------------------- | ------------------------ | ------ |
+| GOLD (XAUUSD)    | xauusd                  | 0.025                    | %      |
+| DAX40 (GER40)    | deuidxeur               | 0.015                    | %      |
+| SPX500           | usa500idxusd            | 0.015                    | %      |
+| DOW (DJ30)       | usa30idxusd             | 6                        | points |
+| NASDAQ (NS100)   | usatechidxusd           | 0.015                    | %      |
+| CAC40            | fraidxeur               | 1                        | point  |
+| UK100 (FTSE 100) | gbridxgbp               | 1.5                      | points |
+| AUDUSD           | audusd                  | 1                        | pip    |
+| EURJPY           | eurjpy                  | 2                        | pips   |
+| EURUSD           | eurusd                  | 1                        | pip    |
+| GBPUSD           | gbpusd                  | 2                        | pips   |
+| USDCAD           | usdcad                  | 1.5                      | pips   |
+| USDCHF           | usdchf                  | 1.5                      | pips   |
+| USDJPY           | usdjpy                  | 1                        | pip    |
 
-| Asset            | Dukascopy Datafeed Name |
-| ---------------- | ----------------------- |
-| GOLD (XAUUSD)    | xauusd                  |
-| DAX40 (GER40)    | deuidxeur               |
-| SPX500           | usa500idxusd            |
-| DOW (DJ30)       | usa30idxusd             |
-| NASDAQ (NS100)   | usatechidxusd           |
-| CAC40            | fraidxeur               |
-| UK100 (FTSE 100) | gbridxgbp               |
-| AUDUSD           | audusd                  |
-| EURJPY           | eurjpy                  |
-| EURUSD           | eurusd                  |
-| GBPUSD           | gbpusd                  |
-| USDCAD           | usdcad                  |
-| USDCHF           | usdchf                  |
-| USDJPY           | usdjpy                  |
 ---
 ## 📅 Project Status (as of 29/12/2025)
 ### General
