@@ -1,11 +1,11 @@
-# 📘 Backtesting Platform
+# 📘 Backtesting Platform (BT)
 ## 📌 Overview
 This project aims to build a **high‑precision trading backtesting environment** that complements TradingView rather than replacing it.
 The idea originates from practical limitations observed in the TradingView Strategy Tester (TV/ST):
 * Limited historical depth (typically ~5–40k bars)
 * Bar‑based simulation instead of true tick‑level execution
 **Conclusion:** TradingView backtests are useful for *high‑level validation* but are insufficient for designing or validating a professional trading system intended for live deployment.
-This project therefore focuses on **accurate, data‑driven backtesting using real tick data**, while keeping TradingView as the primary platform for:
+ BT project therefore focuses on **accurate, data‑driven backtesting using real tick data**, while keeping TradingView as the primary platform for:
 * Live trading
 * Charting
 * Alerts and execution
@@ -22,15 +22,13 @@ At a detailed level, the platform aims to:
   * Timeframes
 ---
 ## 🧱 Code Structure & Design Principles
-* Scripts should remain **small, reusable, and well‑encapsulated**, each addressing a single responsibility.
-* Avoid monolithic scripts combining data loading, computation, visualization, and reporting.
-* Build strategies from **composable building blocks** (indicators, filters, trade management modules).
-* Keep the repository **clean, adaptive, and logically structured**.
-* When designing new strategies:
-  * Reuse existing components whenever possible.
-  * Write new components with **future reuse** in mind.
-* Maintain clear and professional documentation to support long‑term scalability.
-* Ensure all scripts and configurations are compatible with automated runners and batch backtesting workflows.
+* As far as possible, scripts should remain **small, reusable, and well‑encapsulated**: 
+* **Single Responsibility**: Each module handles one specific task
+* **Separation of Concerns**: Clear boundaries between data, logic, and presentation
+* **Reusability**: Modules can be reused across different strategies
+* **Testability**: Each module can be tested independently
+* **Maintainability**: Easy to update and extend individual components
+* **Automatation ready** scripts and configurations are compatible with automated runners and batch
 ---
 ## 🤝 Collaboration & Development Workflow
 GitHub is used for version control and AI‑assisted development. All significant refactoring and feature additions are tracked through commit history.
@@ -56,9 +54,8 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 | USDCAD           | usdcad                  | 1.5                      | pips   |
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
-
 ---
-## 📅 Project Status (as of 29/12/2025)
+## 📅 Project Status (as of 30/12/2025)
 ### General
 * **Project start date:** 05/12/2025
 * **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
@@ -73,37 +70,31 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 * RSI filter translated and validated
 * Time‑based trade filtering implemented
 * ATR‑based risk management (SL/TP + RR) implemented
-* High similarity with TradingView results confirmed across components
 * Trade/position management integrated (managing pyramiding and oposit signal detection)
+* High similarity with TradingView results confirmed across components
 ### Configuration
 * YAML‑based, asset‑agnostic configuration system implemented
-* Strategy, filter, and data aggregation parameters fully externalized
 ---
 ## 📂 Repository Structure (Current)
 project_root/
 │
 ├── .gitignore
-├── README.md                                    # This document
-├── requirements.txt                             # Required packages with versions
+├── README.md                           # This document
+├── requirements.txt                    # Required packages with versions
 │
-├── configs/                                     # YAML configuration files
-│   └── wbws_dax40_60min.yaml                   # Default WBWS config for DAX40
-│   └── data_aggregator.yaml                   # Settings file for generate_ohlcv.py to create csv data files
+├── configs/                            # YAML configuration files
+│   └── wbws_dax40_60min.yaml           # Default WBWS config for DAX40
+│   └── data_aggregator.yaml            # Settings file for generate_ohlcv.py to create csv data files
 │
 ├── data/
 │   ├── exports/
 │   ├── features/
 │   ├── processed/                               # Processed data ready for backtesting
-|   |   ├── ohlcv/ csv files => different instruments, time frames, full date ranges (~2 years)
-|   |       ├── ... (csv files)
-│   │   ├── DAX40_FULL.parquet
-│   │   ├── DAX40_LAST_10000.parquet
-│   │   ├── DAX40_LAST_30_DAYS.parquet
-│   │   ├── DAX40_REAL_PROCESSED.parquet
-│   │   └── DAX40_TV_RANGE.parquet              # Currently used validation dataset
+|   |   └──  ohlcv/ csv files => different instruments, time frames, full date ranges (~2 years)
+|   |       └── ... (csv files)
 │   ├── raw/                                    # Raw data files
-|   |   ├── dukascopy_bi5/             # Datafeed from Dukascopy
-|   |   |   └── ... subfolders with real tick data for at least 2 years (organized in hourly .bi5)
+|   |   └──  dukascopy_bi5/             # Datafeed from Dukascopy
+|   |       └── ... subfolders with real tick data for at least 2 years (organized in hourly .bi5)
 │   │   
 │   └── results/
 │
@@ -112,16 +103,18 @@ project_root/
 ├── notebooks/ # folder for notebooks in ipynb format
 │   └── example_usage.ipynb
 │
-├── outputs/
+├── outputs/                                     # All output files
 │   ├── backtests/                               # backtest results/outputs
 │   ├── logs/                                    # logs for strategies and platform functionning
 │   ├── reports/
 │   │   ├── Data_quality/                        # Data quality check reports
 │   │   └── WBWS/                                # WBWS execution and validation reports
-│   │       ├── execution_YYYYMMDD_HHMMSS.json  # Execution reports from indicator
-│   │       └── validation_YYYYMMDD_HHMMSS.json # Validation reports
+│   │       ├── strategy_report_YYYYMMDD_HHMMSS.json  # Execution reports from strategy runner
+│   │       └── validation_YYYYMMDD_HHMMSS.json # Data validation reports
 │   └── signals/                                # Signal/trade exports (CSV)
-│       └── trade_details_YYYYMMDD_HHMMSS.csv   # Filtered and time/risk validated signals fromrunner
+│       └── strategy
+|           ├── trade_details_YYYYMMDD_HHMMSS.csv   # Trades simulated by strategy runner
+|           └── visualizations/                     # .png chart illustrations with results 
 │
 ├── pine_scripts/                               # Original TradingView Pine v6 scripts
 │   ├── StrategyBuilderLab.pine                 # Strategy components (filters, trade mgmt)
@@ -136,14 +129,33 @@ project_root/
 |   |   └── update_raw_ticks                    # Dukascopy datafeed delta real tick .bi5 file downloader
 │   ├── setup_scripts/                          # Backtesting setup scripts
 │   └── validation_scripts/                     # Utilities to validate strategies and indicators
-│       ├── Filters/                            # Filters specific validations
-│       |   └── test_rsi_filter.py              # Simple test for RSI filer using standard settings
-│       ├── Strategy/                           # Strategies specific validations
-|       └── WBWS/                               # WBWS-specific validations
-│           └── validate_strategy_data.py       # Script validating availability, structure and quality of historical ohlc data (.csv) for strategy runner
-│   ├── dashboard_standalone.py                 # Main enhanced strategy dashboard
+│   |   ├── Filters/                            # Filters specific validations
+│   |   |   └── test_rsi_filter.py              # Simple test for RSI filer using standard settings
+│   |   ├── Strategy/                           # Strategies specific validations
+|   |   └── WBWS/                               # WBWS-specific validations
+│   |      └── validate_strategy_data.py       # Script validating availability, structure and quality of historical ohlc data (.csv) for strategy runner
+|   ├── dashboard_standalone.py          # Orchestrator of Dashboard metrics modules (below)
+|   ├── dashboard_modules/               # All Dashboard orchestrator modules
+|   |   ├── __init__.py                 
+|   |   ├── data_loader.py              # Loading .json and signal .csv for calculation
+|   |   ├── display_engine.py           # Metrics display engine 
+|   |   ├── metrics_display.py          # Main metrics module
+|   |   ├── signal_flow_display.py      # Signal metrics module
+|   |   ├── trade_analysis_display.py   # Trade matric and analysis module
+|   |   ├── drawdown_display.py         # Drawdown analysis and metrics module
+|   |   ├── position_management_display.py # Position analysis and metrics module
+|   |   ├── time_based_display.py       # Session time filter metrics module
+|   |   └── visualizations.py           # Chart .png export
 │   ├── backtest_simulator.py                   # (obsolete)/placeholder
 │   ├── run_wbws_strategy.py                    # Runner script assembling WeBuy WeSell trigger with filters
+│   ├── strategy_modules/ # Modular components
+│   │   ├── data_loader.py # Data loading & validation
+│   │   ├── signal_generator.py # WBWS signal generation
+│   │   ├── filter_pipeline.py # Time, RSI, Risk filters
+│   │   ├── trade_tracker.py # Complete trade tracking
+│   │   ├── trade_simulator.py # Position management & simulation
+│   │   ├── metrics_calculator.py # Performance metrics
+│   │   └── report_generator.py # JSON/CSV report generation
 │   └── run_wbws_trigger.py                     # Runner script WeBuy WeSell trigger only
 │
 ├── src/                                # Basctesting platform sources, utilities
@@ -207,8 +219,8 @@ project_root/
 * DPO
 * Bollinger Bands
 * Choppiness Index
-### Finalize full WBWS strategy execution, validation and dashboard
-### Prepare automated, parameter‑driven backtesting pipelines
+* Finalize full WBWS strategy testing
+* Prepare automated, parameter‑driven backtesting pipelines
 ---
 ## 📖 Key Backtest testing & execution components
 ---
@@ -241,7 +253,13 @@ timestamp,open,high,low,close,volume
   3. Generate reports and outputs
 - **Usage:** `python scripts/run_wbws_strategy.py src\config\WBWS\wbws_rsi_strategy.yaml`
 ---
-## 📊 Current Performance metrics for DAX40 sample data (to be used as reference in intermediary testing)
+## 🚀 Enhanced Performance Dashboard 
+### **📊 Comprehensive Metrics Display:**
+- **Basic Performance**: Win rate, profit factor, total P&L, expectancy
+- **Advanced Metrics**: Kelly Criterion, System Quality Number (SQN), Calmar Ratio
+- **Risk Analysis**: Max drawdown, recovery factor, risk of ruin
+- **Trade Statistics**: Duration analysis, exit reasons, hourly performance
+- **Position Management**: Pyramiding stats, rejection reasons, signal flow
 - **Usage:** `python scripts/dashboard_standalone.py outputs/reports/WBWS/strategy_report_20251227_224945.json --visualize` (--visualize optional)
 ---
 ### Auxiliary tools
@@ -254,17 +272,8 @@ timestamp,open,high,low,close,volume
   3. Generate reports and outputs
 - **Usage:** `python scripts/run_wbws_trigger.py wbws_rsi_strategy.yaml`
 ---
-### Report Generation for testing**
-- **Purpose:** Handle all output operations (reports, exports, console printing)
-- **Features:**
-  - Save JSON execution reports
-  - Export signals to CSV (optional)
-  - Print formatted summaries
-  - Display sample signals
-**Usage:** `python src/utils/report_generator.py`
----
 ### Validation Scripts
-- **Purpose:** Test on simple config data of Rsi filter
+- **Purpose:** Test on simple config data of RSI filter
 - **Features:** - Prints simple signal reports
 **Usage:** `python scripts\validation_scripts\Filters\test_rsi_filter.py`
 - **Purpose:** Validates readines of the indicated OHLCV data
