@@ -5,7 +5,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional # FIX: Added missing import
+from typing import Optional #
 
 # --- CONFIGURATION ---
 BASE_URL = "https://datafeed.dukascopy.com/datafeed"

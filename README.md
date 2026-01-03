@@ -55,14 +55,14 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
 ---
-## 📅 Project Status (as of 30/12/2025)
+## 📅 Project Status (as of 03/01/2026)
 ### General
 * **Project start date:** 05/12/2025
 * **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
 ### Data Pipeline
 * Raw tick data (.bi5) download from Dukascopy implemented and tested
 * Incremental tick updates supported
-* Tick‑to‑OHLCV transformation validated
+* Tick‑to‑OHLCV transformation validated (all prices are BID prices!)
 * At least **2 years of real tick data** available (from 01 Dec 2023)
 * 1‑minute DAX40 OHLCV dataset available as a development baseline
 ### Strategy Translation
@@ -71,6 +71,7 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 * Time‑based trade filtering implemented
 * ATR‑based risk management (SL/TP + RR) implemented
 * Trade/position management integrated (managing pyramiding and oposit signal detection)
+* Spread management integrated and tested
 * High similarity with TradingView results confirmed across components
 ### Configuration
 * YAML‑based, asset‑agnostic configuration system implemented
@@ -83,7 +84,9 @@ project_root/
 ├── requirements.txt                    # Required packages with versions
 │
 ├── configs/                            # YAML configuration files
-│   └── wbws_dax40_60min.yaml           # Default WBWS config for DAX40
+|   ├── spreads/
+|   |   └── broker_spreads.yaml         # Centralized broker spread config (all assets)
+│   ├── wbws_dax40_60min.yaml           # (Obsolete) old WBWS config for DAX40
 │   └── data_aggregator.yaml            # Settings file for generate_ohlcv.py to create csv data files
 │
 ├── data/
@@ -111,8 +114,10 @@ project_root/
 │   │   └── WBWS/                                # WBWS execution and validation reports
 │   │       ├── strategy_report_YYYYMMDD_HHMMSS.json  # Execution reports from strategy runner
 │   │       └── validation_YYYYMMDD_HHMMSS.json # Data validation reports
-│   └── signals/                                # Signal/trade exports (CSV)
-│       └── strategy
+│   └── signals/ # Signal/trade exports (CSV)
+|       ├──progressive/
+|       |   └── signals_progressive_YYYYMMDD_HHMMSS.csv # Singal and trades detailed, phase by phase break down and analysis
+│       └── strategy/
 |           ├── trade_details_YYYYMMDD_HHMMSS.csv   # Trades simulated by strategy runner
 |           └── visualizations/                     # .png chart illustrations with results 
 │
@@ -140,6 +145,7 @@ project_root/
 |   |   ├── data_loader.py              # Loading .json and signal .csv for calculation
 |   |   ├── display_engine.py           # Metrics display engine 
 |   |   ├── metrics_display.py          # Main metrics module
+|   |   ├── progressive_tracker.py      # Module generating signal_progressive .csv files for further analysis
 |   |   ├── signal_flow_display.py      # Signal metrics module
 |   |   ├── trade_analysis_display.py   # Trade matric and analysis module
 |   |   ├── drawdown_display.py         # Drawdown analysis and metrics module
@@ -177,7 +183,8 @@ project_root/
 |   |   |   ├── __init__.py
 |   |   |   ├── time_manager.py         # Filtering signal for specific session time
 |   |   |   ├── trade_manager.py        # Managing pyramiding possibility and opposite signal detection
-|   |   |   └── risk_manager.py         # Applying risk mgt StopLoss ATR based and RR TakeProfit
+|   |   |   ├── risk_manager.py         # Applying risk mgt StopLoss ATR based and RR TakeProfit
+|   |   |   └── spread_manager.py       # Spread calculation logic applied in risk manager
 │   │   └── WBWS                        # strategy scripts specific for WBWS strategy 
 │   ├── utils/                          # Utility modules
 │   │   ├── __init__.py
@@ -211,16 +218,14 @@ project_root/
 - pyyaml==6.0.3
 # Additional packages for trade management modules
 - pytz==2025.2
-
 ---
-
-🔄 Development Roadmap (In Progress – target 31/12/2025)
+🔄 Development Roadmap (In Progress – target 11/01/2026)
+### Prepare automated, parameter‑driven backtesting pipelines
 ### Continue translation of TradingView filters into Python:
+* Consider WSWB Trigger (change the logic to non repainting)
 * DPO
 * Bollinger Bands
 * Choppiness Index
-* Finalize full WBWS strategy testing
-* Prepare automated, parameter‑driven backtesting pipelines
 ---
 ## 📖 Key Backtest testing & execution components
 ---
@@ -235,7 +240,7 @@ project_root/
 # Run transformating tool to generate time framed ohlcv csv file from .bi5 hourly files => uses yaml configuration file with settings like: instrument, desired TimeFrame, data range...
 # Remark: .bi5 file are in UTC timezone whilst all csv are converted to desired timeframe for exemple: CET/CEST
 `python scripts/data_preprocessing/generate_ohlcv.py configs/data_aggregator.yaml`
-# Example of ohlcv data file structure:
+# Example of ohlcv data file structure (Important all prices are BID prices):
 timestamp,open,high,low,close,volume
 2025-12-22 14:49:00,24252.788000,24254.777000,24249.777000,24251.799000,80305408680.000000
 2025-12-22 14:50:00,24250.755000,24252.299000,24249.255000,24249.755000,43976771420.000000
@@ -255,7 +260,7 @@ timestamp,open,high,low,close,volume
 ---
 ## 🚀 Enhanced Performance Dashboard 
 ### **📊 Comprehensive Metrics Display:**
-- **Basic Performance**: Win rate, profit factor, total P&L, expectancy
+- **Basic Performance**: Win rate, profit factor, total P&L, expectancy, spread - costs
 - **Advanced Metrics**: Kelly Criterion, System Quality Number (SQN), Calmar Ratio
 - **Risk Analysis**: Max drawdown, recovery factor, risk of ruin
 - **Trade Statistics**: Duration analysis, exit reasons, hourly performance

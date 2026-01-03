@@ -4,10 +4,10 @@
 strategy:
   name: "WBWS strategy with RSI Filter"
   description: "We Buy/We Sell Trigger combined with RSI signal validation"
-  version: "1.1.0"  # Updated for position control features
+  version: "1.2.0"  # Updated for spread integration
   author: "Backtest Platform"
   created: "2025-12-17"
-  updated: "2025-12-28"  # Position control added
+  updated: "2025-12-30"  # Spread integration added
 
 asset:
   symbol: "DEUIDXEUR"
@@ -52,19 +52,12 @@ trade_management:
       hour: 20
       minute: 30
   
-  # Trade management => POSITION CONTROL (NEW)
+  # Trade management => POSITION CONTROL
   position_control:
-    # Close on opposite signal behavior
-    # false = ignore opposite signals until position closes via SL/TP (DEFAULT - matches TradingView default)
-    # true = close current position and reverse on opposite signal
     close_on_opposite: false
-    
-    # Pyramiding control
-    # false = only 1 trade at a time, ignore new signals in same direction (DEFAULT - matches TradingView default)
-    # true = allow multiple positions in same direction (unlimited pyramiding)
     pyramiding_enabled: false
   
-  # Trade management => opposite signal management (DEPRECATED - use position_control instead)
+  # Trade management => opposite signal management (DEPRECATED)
   opposite_signal:
     enabled: false
   
@@ -73,12 +66,29 @@ trade_management:
     enabled: true
     atr_length: 14
     sl_multiplier: 1.4
-    risk_to_reward_ratio: 3.0  # example Risk to reward 1:2 R:R ratio
+    risk_to_reward_ratio: 3.0
   
   risk_management:
     enabled: true
-    max_risk_percentile: 0.003  # 1.0 = disabled (100% of annual range)
+    max_risk_percentile: 0.003
     allow_exceed_limit: false
+  
+  # Spread simulation settings
+  spread:
+    enabled: true  # Set to false to disable spread simulation
+    
+    # Path to spread config file (optional - uses default if not specified)
+    # config_path: "configs/spreads/broker_spreads.yaml"
+    
+    # Whether spread config is required (error if missing)
+    required: false
+    
+    # Application settings (can override defaults from spread config)
+    apply_to_long: true
+    apply_to_short: true
+    
+    # Logging
+    log_spread_impact: true  # Log spread adjustments in reports
 
 output:
   outputs_dir: "outputs"

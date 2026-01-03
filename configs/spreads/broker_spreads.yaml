@@ -1,0 +1,120 @@
+# Broker Spread Configuration
+# Source: eToro CFD Spreads
+# Last Updated: 2025-12-30
+
+broker:
+  name: "eToro"
+  type: "CFD"
+  note: "Spreads applied at position open (embedded in entry price)"
+
+# Spread definitions by asset
+spreads:
+  # === INDICES ===
+  DEUIDXEUR:  # DAX40
+    spread_value: 0.015
+    spread_type: "percentage"
+    display_name: "DAX 40"
+    asset_class: "index"
+    
+  USA500IDXUSD:  # S&P 500
+    spread_value: 0.015
+    spread_type: "percentage"
+    display_name: "S&P 500"
+    asset_class: "index"
+    
+  USA30IDXUSD:  # Dow Jones
+    spread_value: 6.0
+    spread_type: "points"
+    display_name: "Dow Jones 30"
+    asset_class: "index"
+    
+  USATECHIDXUSD:  # NASDAQ
+    spread_value: 0.015
+    spread_type: "percentage"
+    display_name: "NASDAQ 100"
+    asset_class: "index"
+    
+  FRAIDXEUR:  # CAC40
+    spread_value: 1.0
+    spread_type: "points"
+    display_name: "CAC 40"
+    asset_class: "index"
+    
+  GBRIDXGBP:  # FTSE 100
+    spread_value: 1.5
+    spread_type: "points"
+    display_name: "FTSE 100"
+    asset_class: "index"
+  
+  # === COMMODITIES ===
+  XAUUSD:  # Gold
+    spread_value: 0.025
+    spread_type: "percentage"
+    display_name: "Gold (XAU/USD)"
+    asset_class: "commodity"
+  
+  # === FOREX ===
+  AUDUSD:
+    spread_value: 1.0
+    spread_type: "pips"
+    display_name: "AUD/USD"
+    asset_class: "forex"
+    pip_position: 4  # 4th decimal place
+    
+  EURJPY:
+    spread_value: 2.0
+    spread_type: "pips"
+    display_name: "EUR/JPY"
+    asset_class: "forex"
+    pip_position: 2  # 2nd decimal place (JPY pairs)
+    
+  EURUSD:
+    spread_value: 1.0
+    spread_type: "pips"
+    display_name: "EUR/USD"
+    asset_class: "forex"
+    pip_position: 4
+    
+  GBPUSD:
+    spread_value: 2.0
+    spread_type: "pips"
+    display_name: "GBP/USD"
+    asset_class: "forex"
+    pip_position: 4
+    
+  USDCAD:
+    spread_value: 1.5
+    spread_type: "pips"
+    display_name: "USD/CAD"
+    asset_class: "forex"
+    pip_position: 4
+    
+  USDCHF:
+    spread_value: 1.5
+    spread_type: "pips"
+    display_name: "USD/CHF"
+    asset_class: "forex"
+    pip_position: 4
+    
+  USDJPY:
+    spread_value: 1.0
+    spread_type: "pips"
+    display_name: "USD/JPY"
+    asset_class: "forex"
+    pip_position: 2
+
+# Global settings
+settings:
+  # When true, applies spread to LONG positions (entry price increases)
+  # When true, applies spread to SHORT positions (entry price decreases)
+  apply_to_long: true
+  apply_to_short: true
+  
+  # Spread application method:
+  # "entry_only" = Apply spread only to entry price (RECOMMENDED - matches broker reality)
+  # "entry_and_exit" = Apply spread to both entry and exit (conservative, double-counts)
+  application_method: "entry_only"
+  
+  # Validation
+  require_spread_for_all_assets: true
+  warn_on_missing_spread: true

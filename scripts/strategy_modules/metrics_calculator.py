@@ -6,11 +6,16 @@ import numpy as np
 from typing import Dict, Optional
 
 def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd.DataFrame] = None) -> Dict:
-    """Calculate comprehensive performance metrics from trades"""
+    """Calculate comprehensive performance metrics from trades including spread analysis"""
     if trades_df.empty:
         return {
             'total_trades': 0,
-            'message': 'No trades to analyze'
+            'message': 'No trades to analyze',
+            'spread_analysis': {
+                'total_spread_cost': 0,
+                'avg_spread_per_trade': 0,
+                'spread_impact_on_pnl': 0
+            }
         }
     
     # Filter by status
@@ -113,11 +118,61 @@ def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd
         except:
             metrics['monthly_performance'] = {}
     
-    # Calculate Sharpe ratio (simplified)
-    if len(closed_trades) > 1:
-        returns = closed_trades['pnl_points'] / closed_trades['sl_distance'].clip(lower=0.1)
-        if returns.std() > 0:
-            metrics['sharpe_ratio'] = returns.mean() / returns.std()
+      # Spread impact metrics
+        if 'spread_cost_points' in trades_df.columns:
+            closed_with_spread = closed_trades[closed_trades['spread_cost_points'] > 0]
+            metrics['spread_analysis'] = {
+                'total_spread_cost_points': closed_trades['spread_cost_points'].sum() if not closed_trades.empty else 0,
+                'avg_spread_per_trade_points': closed_trades['spread_cost_points'].mean() if not closed_trades.empty else 0,
+                'max_spread_points': closed_trades['spread_cost_points'].max() if not closed_trades.empty else 0,
+                'min_spread_points': closed_trades['spread_cost_points'].min() if not closed_trades.empty else 0,
+                'trades_with_spread': len(closed_with_spread),
+                'spread_penetration_rate': len(closed_with_spread) / len(closed_trades) * 100 if len(closed_trades) > 0 else 0,
+                'spread_impact_on_pnl': closed_trades['spread_cost_points'].sum() / abs(closed_trades['pnl_points'].sum()) * 100 if closed_trades['pnl_points'].sum() != 0 else 0,
+                'net_pnl_after_spread': closed_trades['pnl_points'].sum() - closed_trades['spread_cost_points'].sum() if not closed_trades.empty else 0,
+                'spread_efficiency_analysis': {
+                    'avg_spread_to_sl_ratio': (closed_trades['spread_cost_points'] / closed_trades['sl_distance']).mean() if not closed_trades.empty and closed_trades['sl_distance'].mean() > 0 else 0,
+                    'avg_spread_to_tp_ratio': (closed_trades['spread_cost_points'] / closed_trades['tp_distance']).mean() if not closed_trades.empty and closed_trades['tp_distance'].mean() > 0 else 0,
+                    'profitable_despite_spread': len(closed_trades[(closed_trades['pnl_points'] > 0) & (closed_trades['spread_cost_points'] > 0)]) if not closed_trades.empty else 0
+                }
+            }
+            
+            # Spread impact by direction
+            if not closed_trades.empty:
+                long_spread = closed_trades[closed_trades['direction'] == 'BUY']['spread_cost_points'].sum() if len(closed_trades[closed_trades['direction'] == 'BUY']) > 0 else 0
+                short_spread = closed_trades[closed_trades['direction'] == 'SELL']['spread_cost_points'].sum() if len(closed_trades[closed_trades['direction'] == 'SELL']) > 0 else 0
+                metrics['spread_analysis']['spread_by_direction'] = {
+                    'long_total_spread': long_spread,
+                    'short_total_spread': short_spread,
+                    'long_avg_spread': closed_trades[closed_trades['direction'] == 'BUY']['spread_cost_points'].mean() if len(closed_trades[closed_trades['direction'] == 'BUY']) > 0 else 0,
+                    'short_avg_spread': closed_trades[closed_trades['direction'] == 'SELL']['spread_cost_points'].mean() if len(closed_trades[closed_trades['direction'] == 'SELL']) > 0 else 0
+                }
+        else:
+            metrics['spread_analysis'] = {
+                'total_spread_cost': 0,
+                'avg_spread_per_trade': 0,
+                'spread_enabled': False,
+                'message': 'No spread data available'
+            }
+        
+        # Enhanced profit factor considering spread costs
+        if not closed_trades.empty and 'spread_cost_points' in closed_trades.columns:
+            win_sum_net = closed_trades[closed_trades['pnl_points'] > 0]['pnl_points'].sum() - closed_trades[closed_trades['pnl_points'] > 0]['spread_cost_points'].sum()
+            loss_sum_net = abs(closed_trades[closed_trades['pnl_points'] < 0]['pnl_points'].sum()) + closed_trades[closed_trades['pnl_points'] < 0]['spread_cost_points'].sum()
+            
+            if loss_sum_net > 0:
+                metrics['profit_factor_net_spread'] = win_sum_net / loss_sum_net
+                metrics['profit_factor_gross'] = metrics['profit_factor']
+                metrics['spread_impact_on_profit_factor'] = metrics['profit_factor'] - metrics['profit_factor_net_spread']
+        
+        # Spread-adjusted Sharpe ratio
+        if len(closed_trades) > 1 and 'spread_cost_points' in closed_trades.columns:
+            net_returns = (closed_trades['pnl_points'] - closed_trades['spread_cost_points']) / closed_trades['sl_distance'].clip(lower=0.1)
+            if net_returns.std() > 0:
+                metrics['sharpe_ratio_net_spread'] = net_returns.mean() / net_returns.std()
+                metrics['spread_impact_on_sharpe'] = metrics.get('sharpe_ratio', 0) - metrics.get('sharpe_ratio_net_spread', 0)
+        
+        return metrics
     
     # Calculate realized risk:reward
     if not closed_trades.empty:
@@ -146,5 +201,5 @@ def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd
             'rejection_rate': len(rejected_trades) / len(trades_df) * 100,
             'rejection_reasons': {k: int(v) for k, v in rejection_counts.items()}
         }
-    
+           
     return metrics
