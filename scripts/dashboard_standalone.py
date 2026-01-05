@@ -1,8 +1,8 @@
 """
-Enhanced Standalone Performance Dashboard - Modular Version
-Main orchestrator for dashboard display
+Enhanced Standalone Performance Dashboard - Optimized for Progressive Data
 """
 import sys
+import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
@@ -10,7 +10,49 @@ from datetime import datetime
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-# ... [previous imports and setup]
+def create_visualizations(report_path: str, trades_df: pd.DataFrame):
+    """Create visualizations"""
+    output_dir = Path(report_path).parent
+    
+    # Extract timestamp from report filename or use current time
+    report_filename = Path(report_path).stem
+    if '_' in report_filename:
+        parts = report_filename.split('_')
+        if len(parts) >= 3:
+            timestamp = f"{parts[-2]}_{parts[-1]}"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    try:
+        from scripts.dashboard_modules.visualizations import DashboardVisualizations
+        visualizer = DashboardVisualizations(output_dir, timestamp)
+        visualizer.create_all_visualizations(trades_df)
+        
+        print(f"\n🖼️  Visualizations created in: {output_dir / 'visualizations'}")
+        
+    except ImportError as e:
+        print(f"⚠️  Could not create visualizations: {e}")
+
+def display_file_info(display, report_path: str, data_loader):
+    """Display file information"""
+    display.print_header("📁 FILES & DATA SOURCES")
+    print(f"JSON Report: {Path(report_path).resolve()}")
+    
+    # Progressive CSV info
+    progressive_path = data_loader._find_progressive_csv()
+    if progressive_path and progressive_path.exists():
+        print(f"Progressive CSV: {progressive_path.resolve()} ✅")
+    else:
+        print(f"Progressive CSV: Not found")
+    
+    # Legacy CSV info (for reference)
+    legacy_path = data_loader._find_legacy_csv()
+    if legacy_path and legacy_path.exists():
+        print(f"Legacy CSV: {legacy_path.resolve()} ✅")
+    else:
+        print(f"Legacy CSV: Not found")
 
 def main():
     if len(sys.argv) < 2:
@@ -21,13 +63,14 @@ def main():
         sys.exit(1)
     
     report_path = sys.argv[1]
-    create_visualizations = '--visualize' in sys.argv
+    create_visualizations_flag = '--visualize' in sys.argv
     
     try:
         from scripts.dashboard_modules import (
             DashboardDataLoader, DisplayEngine, MetricsDisplay,
             SignalFlowDisplay, TradeAnalysisDisplay, DrawdownDisplay,
-            PositionManagementDisplay, TimeBasedDisplay, DashboardVisualizations
+            PositionManagementDisplay, TimeBasedDisplay,
+            ProgressiveAnalysisDisplay
         )
         
     except ImportError as e:
@@ -43,78 +86,113 @@ def main():
         print(f"Report: {Path(report_path).name}")
         print("="*80)
         
-        # 1. Load data
+        # 1. Load all data with progressive priority
         data_loader = DashboardDataLoader(report_path)
-        report_data, trades_df, config = data_loader.load_all_data()
+        report_data, trades_df, _ = data_loader.load_all_data()
+        progressive_df = data_loader.get_progressive_data()
         
         # Show data loading status
         summary = data_loader.get_data_summary()
         print(f"\n📁 Data loading status:")
         print(f"  • Report loaded: ✅")
         
-        if summary['trades_loaded']:
-            print(f"  • Trade data loaded: ✅ ({summary['closed_trades']} closed trades)")
+        if summary['progressive_data_loaded']:
+            print(f"  • Progressive data: ✅ ({summary['total_signals']:,} signals)")
+            print(f"  • Data source: Progressive CSV")
+        elif summary['trades_data_loaded']:
+            print(f"  • Trade data loaded: ✅ ({summary['total_trade_records']:,} records)")
+            print(f"  • Data source: Legacy CSV")
         else:
-            print(f"  • Trade data loaded: ❌ (CSV file not found or couldn't be loaded)")
+            print(f"  • Data loaded: ❌")
         
-        # 2. Initialize display modules
+        # ============================================================
+        # SECTION 1: JSON REPORT DATA (FROM STRATEGY - MAY HAVE BUGS)
+        # ============================================================
+        print(f"\n{display.color_text('📋 SECTION 1: STRATEGY REPORT DATA', display.colors.BOLD + display.colors.MAGENTA)}")
+        print(f"{display.color_text('(From JSON report - strategy calculated)', display.colors.YELLOW)}")
+        print("-"*80)
+        
+        # Initialize all display modules
         metrics_display = MetricsDisplay(display)
         signal_display = SignalFlowDisplay(display)
-        trade_display = TradeAnalysisDisplay(display)
-        drawdown_display = DrawdownDisplay(display)
         position_display = PositionManagementDisplay(display)
-        time_display = TimeBasedDisplay(display)
         
-        # 3. Display all sections
+        # Display JSON-based sections
         metrics_display.display_overview(report_data)
         signal_display.display_signal_flow(report_data)
+        position_display.display_position_management(report_data)
         
-        # Only display detailed analysis if we have the CSV data
+        # ============================================================
+        # SECTION 2: PROGRESSIVE CSV ANALYSIS (MORE RELIABLE)
+        # ============================================================
+        print(f"\n{display.color_text('🔬 SECTION 2: PROGRESSIVE DATA ANALYSIS', display.colors.BOLD + display.colors.GREEN)}")
+        print(f"{display.color_text('(From progressive CSV - execution verified)', display.colors.CYAN)}")
+        print("="*80)
+        
+        progressive_display = ProgressiveAnalysisDisplay(display)
+        
+        # 2.1 Progressive signal analysis
+        if progressive_df is not None and not progressive_df.empty:
+            progressive_display.display_progressive_overview(progressive_df)
+            progressive_display.display_risk_analysis(progressive_df)
+        else:
+            print("⚠️  No progressive data available for analysis")
+        
+        # ============================================================
+        # SECTION 3: DASHBOARD-CALCULATED METRICS (FROM PROGRESSIVE DATA)
+        # ============================================================
+        print(f"\n{display.color_text('📊 SECTION 3: DASHBOARD-CALCULATED METRICS', display.colors.BOLD + display.colors.BLUE)}")
+        print(f"{display.color_text('(Calculated from progressive execution data)', display.colors.CYAN)}")
+        print("="*80)
+        
+        # Initialize dashboard calculation modules
+        trade_display = TradeAnalysisDisplay(display)
+        drawdown_display = DrawdownDisplay(display)
+        time_display = TimeBasedDisplay(display)
+        
+        # 3.1 Detailed performance analysis (from trade data)
         if trades_df is not None and not trades_df.empty:
-            print(f"\n{display.color_text('📈 DETAILED ANALYSIS (from CSV trade data)', display.colors.GREEN)}")
-            print("-"*80)
-            
+            print(f"\n{display.color_text('🎯 ADVANCED PERFORMANCE METRICS', display.colors.GREEN)}")
+            print("-"*60)
             metrics_display.display_advanced_metrics(trades_df, report_data)
+            
+            print(f"\n{display.color_text('🔍 DETAILED TRADE ANALYSIS', display.colors.GREEN)}")
+            print("-"*60)
             trade_display.display_trade_analysis(trades_df)
+            
+            print(f"\n{display.color_text('📉 DRAWDOWN & RISK ANALYSIS', display.colors.GREEN)}")
+            print("-"*60)
             drawdown_display.display_drawdown_analysis(trades_df)
+            
+            print(f"\n{display.color_text('📅 TIME-BASED PERFORMANCE', display.colors.GREEN)}")
+            print("-"*60)
             time_display.display_monthly_performance(trades_df)
             time_display.display_hourly_performance(trades_df)
             
             # Create visualizations if requested
-            if create_visualizations:
-                output_dir = Path(report_path).parent
-                
-                # Extract timestamp from report filename or use current time
-                report_filename = Path(report_path).stem
-                if '_' in report_filename:
-                    # Try to extract timestamp from report filename (e.g., strategy_report_20251230_141721)
-                    parts = report_filename.split('_')
-                    if len(parts) >= 3:
-                        timestamp = f"{parts[-2]}_{parts[-1]}"
-                    else:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                else:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                
-                visualizer = DashboardVisualizations(output_dir, timestamp)
-                visualizer.create_all_visualizations(trades_df)
+            if create_visualizations_flag:
+                create_visualizations(report_path, trades_df)
         else:
-            print(f"\n{display.color_text('📈 BASIC ANALYSIS (JSON report only)', display.colors.YELLOW)}")
-            print("-"*80)
-            print("Advanced metrics, trade analysis, and time-based metrics require the CSV trade file.")
+            print(f"\n{display.color_text('📈 BASIC ANALYSIS ONLY', display.colors.YELLOW)}")
+            print("-"*60)
+            print("Dashboard-calculated metrics require trade execution data.")
         
-        # Position management is available from JSON
-        position_display.display_position_management(report_data)
+        # ============================================================
+        # SECTION 4: FILE INFORMATION
+        # ============================================================
+        print(f"\n{display.color_text('📁 SECTION 4: FILES & DATA SOURCES', display.colors.BOLD)}")
+        print("="*80)
+        display_file_info(display, report_path, data_loader)
         
-        # Show file info
-        display.print_header("📁 FILES")
-        print(f"JSON Report: {Path(report_path).resolve()}")
-        
-        csv_path = data_loader._find_csv_file()
-        if csv_path and csv_path.exists():
-            print(f"CSV Trades: {csv_path.resolve()} ✅")
-        else:
-            print(f"CSV Trades: Not found ❌")
+        # ============================================================
+        # DATA SOURCE NOTES
+        # ============================================================
+        print(f"\n{display.color_text('📝 DATA SOURCE NOTES:', display.colors.BOLD + display.colors.YELLOW)}")
+        print("-"*80)
+        print(f"{display.colors.YELLOW}• Section 1:{display.colors.END} From JSON report (strategy-calculated, may have known issues)")
+        print(f"{display.colors.GREEN}• Section 2:{display.colors.END} From progressive CSV (signal progression tracking)")
+        print(f"{display.colors.BLUE}• Section 3:{display.colors.END} Dashboard-calculated from progressive data (most reliable)")
+        print(f"{display.colors.CYAN}Note:{display.colors.END} Progressive CSV is the single source of truth for execution data")
         
         print(f"\n{display.color_text('✅ Dashboard completed!', display.colors.GREEN)}")
         

@@ -1,6 +1,6 @@
 """
 Signal Flow Display Module
-Displays signal flow analysis
+Displays signal flow analysis with reliability notes
 """
 from typing import Dict
 from .display_engine import DisplayEngine
@@ -10,8 +10,13 @@ class SignalFlowDisplay:
         self.display = display_engine
     
     def display_signal_flow(self, report_data: Dict):
-        """Display signal flow statistics"""
+        """Display signal flow statistics with reliability warning"""
         self.display.print_header("📡 SIGNAL FLOW ANALYSIS")
+        
+        # Add reliability note
+        print(f"{self.display.colors.YELLOW}⚠️  Note: This data comes from JSON report and may have known issues.")
+        print(f"    Use 'Progressive Data Analysis' section for accurate signal progression.{self.display.colors.END}")
+        print("-"*80)
         
         signal_flow = report_data.get('signal_flow', {})
         
