@@ -17,7 +17,9 @@ asset:
 
 # Chose ohlcv data source and date range for backtest
 data:
-  file: "data/processed/ohlcv/DEUIDXEUR_1min_20231201_20251227.csv"
+  file: "data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260104.csv"
+  file_htf: "data/processed/ohlcv/DEUIDXEUR_1H_20230101_20260104.csv"
+  file_exec: "data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv"
   format: "csv"
   
   # Date range (in CSV timestamps timezone)

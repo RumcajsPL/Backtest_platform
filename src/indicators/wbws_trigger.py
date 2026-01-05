@@ -2,7 +2,7 @@
 """
 We Buy / We Sell Trigger Indicator - Pure Calculation Engine
 
-SCOPE: Signal calculation logic ONLY
+SCOPE: Signal calculation logic
 - Candle classification (inside, outside, 2u, 2d)
 - Reversal pattern detection
 - HTF trend alignment
@@ -23,13 +23,7 @@ from typing import Tuple, Optional
 
 class WBWSTrigger:
     """
-    Pure signal calculation engine for We Buy / We Sell Trigger indicator.
-    
-    Pine Script Translation:
-    - Uses higher timeframe for trend bias (default 60min)
-    - Classifies 1-minute candles into 4 types
-    - Triggers on specific reversal patterns
-    - Requires HTF trend alignment
+    Signal calculation engine for We Buy / We Sell Trigger indicator.
     """
     
     def __init__(self, htf_period: str = '60min'):
@@ -96,10 +90,15 @@ class WBWSTrigger:
             (df_htf['close'] < df_htf['open'])
         )
         
-        # Forward fill to base timeframe
+        # MODIFICATION: Always use lookahead_off behavior
+        # Shift HTF conditions by 1 to use previous closed bar (no future leak)
+        df_htf['htf_bull'] = df_htf['htf_bull'].shift(1).where(lambda x: x.notna(), False)
+        df_htf['htf_bear'] = df_htf['htf_bear'].shift(1).where(lambda x: x.notna(), False)
+                
+        # Forward fill to base timeframe (with NaN replacement to avoid warning)
         df_copy = df.copy()
-        df_copy['htf_bull'] = df_htf['htf_bull'].reindex(df.index, method='ffill').fillna(False)
-        df_copy['htf_bear'] = df_htf['htf_bear'].reindex(df.index, method='ffill').fillna(False)
+        df_copy['htf_bull'] = df_htf['htf_bull'].reindex(df.index, method='ffill').where(lambda x: x.notna(), False)
+        df_copy['htf_bear'] = df_htf['htf_bear'].reindex(df.index, method='ffill').where(lambda x: x.notna(), False)
         
         return df_copy, df_htf
     
@@ -154,7 +153,7 @@ class WBWSTrigger:
         self._validate_input(df_ohlcv)
         
         # Prepare HTF data
-        df, df_htf = self.prepare_htf_data(df_ohlcv)
+        df, _ = self.prepare_htf_data(df_ohlcv)
         
         # Reset index for operations (but keep timestamp as column)
         df = df.reset_index()

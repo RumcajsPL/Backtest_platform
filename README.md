@@ -281,12 +281,6 @@ timestamp,open,high,low,close,volume
 - **Purpose:** Test on simple config data of RSI filter
 - **Features:** - Prints simple signal reports
 **Usage:** `python scripts\validation_scripts\Filters\test_rsi_filter.py`
-- **Purpose:** Validates readines of the indicated OHLCV data
-- **Features:**
-  - Uses same .yaml config file as strategy orchestrators for input
-  - Prints reports on data availability, structure, quality and confirms readiness 
-  - Can be used preliminary to launch strategy runner to validate data quality
-  **Usage:** `python scripts\validation_scripts\validate_strategy_data.py.py src\config\WBWS\wbws_rsi_strategy.yaml`
 - **Purpose:** Validates time management script against serveral test scenarios
 - **Features:** - Tests time manager(trading session) script
   - Uses same .yaml config file as strategy orchestrators for input
