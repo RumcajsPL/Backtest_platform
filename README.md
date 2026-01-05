@@ -158,7 +158,7 @@ project_root/
 |   |   ├── data_loader.py              # Loading .json and signal .csv for calculation
 |   |   ├── display_engine.py           # Metrics display engine 
 |   |   ├── metrics_display.py          # Main metrics module
-|   |   ├── progressive_tracker.py      # Module generating signal_progressive .csv files for further analysis
+|   |   ├── progressive_analysis.py     # Metrics on the base of signal_progressive...csv
 |   |   ├── signal_flow_display.py      # Signal metrics module
 |   |   ├── trade_analysis_display.py   # Trade matric and analysis module
 |   |   ├── drawdown_display.py         # Drawdown analysis and metrics module
@@ -173,7 +173,7 @@ project_root/
 │       ├── trade_tracker.py # Complete trade tracking
 │       ├── trade_simulator.py # Position management & simulation
 │       ├── metrics_calculator.py # Performance metrics
-│       ├── progressive_tracker.py.py # Capturing debut and perf data for sihnal-progressive...csv
+│       ├── progressive_tracker.py # Capturing data for signal-progressive...csv
 │       └── report_generator.py # JSON/CSV report generation
 │
 ├── src/                                # Basctesting platform sources, utilities
