@@ -30,13 +30,6 @@ At a detailed level, the platform aims to:
 * **Maintainability**: Easy to update and extend individual components
 * **Automatation ready** scripts and configurations are compatible with automated runners and batch
 ---
-## 🤝 Collaboration & Development Workflow
-GitHub is used for version control and AI‑assisted development. All significant refactoring and feature additions are tracked through commit history.
-The long‑term goal is to build an **automated, highly iterative backtesting pipeline**, where AI assistance helps:
-* Explore parameter spaces
-* Identify optimal configurations
-* Detect structural weaknesses in strategies
----
 ## 📊 Supported Assets (Dukascopy Naming Convention & eToro CFD Spreads)
 | Asset            | Dukascopy Datafeed Name | Spread / Fee (eToro CFD) | Unit   |
 | ---------------- | ----------------------- | ------------------------ | ------ |
@@ -55,7 +48,7 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
 ---
-## 📅 Project Status (as of 03/01/2026)
+## 📅 Project Status (as of 05/01/2026)
 ### General
 * **Project start date:** 05/12/2025
 * **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
@@ -63,8 +56,7 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 * Raw tick data (.bi5) download from Dukascopy implemented and tested
 * Incremental tick updates supported
 * Tick‑to‑OHLCV transformation validated (all prices are BID prices!)
-* At least **2 years of real tick data** available (from 01 Dec 2023)
-* 1‑minute DAX40 OHLCV dataset available as a development baseline
+* At least **2 years of real tick data** available
 ### Strategy Translation
 * WBWS Trigger indicator fully translated to Python
 * RSI filter translated and validated
@@ -75,6 +67,28 @@ The long‑term goal is to build an **automated, highly iterative backtesting pi
 * High similarity with TradingView results confirmed across components
 ### Configuration
 * YAML‑based, asset‑agnostic configuration system implemented
+### Flowchart of the strategy data processing:
+  %% =========================
+  %% SIGNAL DOMAIN
+  %% =========================
+  subgraph SD["🔴 SIGNAL DOMAIN (Decision Logic)"]
+      S0["STAGE 0<br/>SignalCandidate<br/><br/>M1 OHLCV<br/>+ H1 OHLCV Bias (closed bars)"] --> S1
+      S1["STAGE 1<br/>TimeFilter<br/><br/><br/>M1 OHLCV<br/>Sessions<br/>News<br/>Day-of-Week"] --> S2
+      S2["STAGE 2<br/>RSIFilter<br/><br/>M1 OHLCV<br/><br/>Momentum / Regime"] --> S3
+      S3["STAGE 3<br/>PositionManagement<br/><br/>M1 OHLCV<br/><br/>Pyramiding<br/>Exposure<br/>Cooldowns"]
+  end
+  %% =========================
+  %% SIGNAL → TRADE BOUNDARY
+  %% =========================
+  S3 -->|Trade permission granted| TI["TradeIntent"] --> S4
+  %% =========================
+  %% EXECUTION DOMAIN
+  %% =========================
+  subgraph ED["🔵 EXECUTION DOMAIN (Market Simulation)"]
+      S4["STAGE 4<br/>RiskManagement<br/><br/>M1 OHLCV<br/><br/>Spread<br/>SL / TP<br/>Position Sizing"] --> S5
+      S5["STAGE 5<br/>TradeExecution<br/><br/>S1 OHLCV<br/>Bid / Ask Logic"]
+  end
+  S5 --> TR["TradeResult<br/><br/>PnL · MAE · MFE<br/>Exit Reason"]
 ---
 ## 📂 Repository Structure (Current)
 project_root/
@@ -86,7 +100,6 @@ project_root/
 ├── configs/                            # YAML configuration files
 |   ├── spreads/
 |   |   └── broker_spreads.yaml         # Centralized broker spread config (all assets)
-│   ├── wbws_dax40_60min.yaml           # (Obsolete) old WBWS config for DAX40
 │   └── data_aggregator.yaml            # Settings file for generate_ohlcv.py to create csv data files
 │
 ├── data/
@@ -112,6 +125,7 @@ project_root/
 │   ├── reports/
 │   │   ├── Data_quality/                        # Data quality check reports
 │   │   └── WBWS/                                # WBWS execution and validation reports
+│   │       ├── repainting  # Temporary for trigger testing
 │   │       ├── strategy_report_YYYYMMDD_HHMMSS.json  # Execution reports from strategy runner
 │   │       └── validation_YYYYMMDD_HHMMSS.json # Data validation reports
 │   └── signals/ # Signal/trade exports (CSV)
@@ -135,7 +149,6 @@ project_root/
 │   ├── setup_scripts/                          # Backtesting setup scripts
 │   └── validation_scripts/                     # Utilities to validate strategies and indicators
 │   |   ├── Filters/                            # Filters specific validations
-│   |   |   └── test_rsi_filter.py              # Simple test for RSI filer using standard settings
 │   |   ├── Strategy/                           # Strategies specific validations
 |   |   └── WBWS/                               # WBWS-specific validations
 │   |      └── validate_strategy_data.py       # Script validating availability, structure and quality of historical ohlc data (.csv) for strategy runner
@@ -152,30 +165,28 @@ project_root/
 |   |   ├── position_management_display.py # Position analysis and metrics module
 |   |   ├── time_based_display.py       # Session time filter metrics module
 |   |   └── visualizations.py           # Chart .png export
-│   ├── backtest_simulator.py                   # (obsolete)/placeholder
 │   ├── run_wbws_strategy.py                    # Runner script assembling WeBuy WeSell trigger with filters
-│   ├── strategy_modules/ # Modular components
-│   │   ├── data_loader.py # Data loading & validation
-│   │   ├── signal_generator.py # WBWS signal generation
-│   │   ├── filter_pipeline.py # Time, RSI, Risk filters
-│   │   ├── trade_tracker.py # Complete trade tracking
-│   │   ├── trade_simulator.py # Position management & simulation
-│   │   ├── metrics_calculator.py # Performance metrics
-│   │   └── report_generator.py # JSON/CSV report generation
-│   └── run_wbws_trigger.py                     # Runner script WeBuy WeSell trigger only
+│   └── strategy_modules/ # Modular components
+│       ├── data_loader.py # Data loading & validation
+│       ├── signal_generator.py # WBWS signal generation
+│       ├── filter_pipeline.py # Time, RSI, Risk filters
+│       ├── trade_tracker.py # Complete trade tracking
+│       ├── trade_simulator.py # Position management & simulation
+│       ├── metrics_calculator.py # Performance metrics
+│       ├── progressive_tracker.py.py # Capturing debut and perf data for sihnal-progressive...csv
+│       └── report_generator.py # JSON/CSV report generation
 │
 ├── src/                                # Basctesting platform sources, utilities
 │   ├── __init__.py
-│   ├── main.py
 │   ├── backtesting/                    # Backtesting automatation
 │   ├── config/                         # Configuration management
 │   │   ├── __init__.py
 │   │   └── WBWS/                       # specifig WBWS 
-│   |       ├── filter_configs.yaml     # Filter configuration settings
+│   |       ├── filter_configs.yaml     # Filter configuration settings (stand alone used for testing only)
 |   |       └── wbws_rsi_strategy.yaml  # WBWS Strategy with filter configurations settings
 │   ├── indicators/                     # indicator scripts for backtesting
 │   │   ├── __init__.py
-│   │   └── wbws_trigger.py             # WBWS calculation engine and signal trigger
+│   │   └── wbws_trigger.py             # WBWS calculation engine and signal trigger (HTF not repaints)
 │   ├── strategies/                     # strategy scripts for backtesting 
 │   │   ├── filters/                    # strategy scripts for signal filtering
 |   |   |   └── rsi_filter.py           # WBWS Strategy with filter configurations settings
@@ -188,13 +199,15 @@ project_root/
 │   │   └── WBWS                        # strategy scripts specific for WBWS strategy 
 │   ├── utils/                          # Utility modules
 │   │   ├── __init__.py
-|   |   ├── json_to_md converter (for reports)
+|   |   ├── json_to_md                  # converter(for reports)
 │   │   └── report_generator.py         # Report generation utilities
 │   └── visualization/                  # Vizualization utilities
 │
 ├── tests                               # folder for testing
+|   ├── test_risk_manager_spread.py     # test of risk_manager with spreads applied
+|   ├── test_time_repainting.py         # specific tests of original (repainting) WBWS trigger
 |   ├── test_time_manager.py            # basic tests script for time/session managment
-|   ├── test_time_manager.py            # basic tests script for risk managment 
+|   ├── test_risk_manager.py            # basic tests script for risk managment 
 |   └── test_trade_manager.py           # basic tests script for trade managment
 └── venv/                               # Venv specific folders and files
 ---
@@ -225,18 +238,22 @@ project_root/
 * Consider WSWB Trigger (change the logic to non repainting)
 * DPO
 * Bollinger Bands
-* Choppiness Index
+* Choppiness Index 
 ---
 ## 📖 Key Backtest testing & execution components
 ---
 ## 🚀 Quick Start ### Prerequisites / Guidances
 ---
 ### Raw and preprocessed data management
+## 3 data suources (exemples):
+* data\processed\ohlcv\DEUIDXEUR_1s_20240101_20260104.csv => 1 second bars for execution precision
+* data\processed\ohlcv\DEUIDXEUR_1min_20240101_20260104.csv => 1 minute bars for signal management
+* data\processed\ohlcv\DEUIDXEUR_1H_20230101_20260104.csv => 1 hour for Higher TF signal confirmation
 ---
 # Run ducascopy dowloader tick to get raw real tick data (.bi5 hourly files) for an instrument
-`python scripts/data_scripts/download_raw_ticks.py`
+`python scripts/data_scripts/download_raw_ticks.py`  - settings inside the script
 # Run ducascopy dowloader tick to get delta of raw real tick data (.bi5 hourly files) for an instrument => checs the last available .bi5 file and gets the most recent .bi5 files
-`python scripts/data_scripts/update_raw_ticks`
+`python scripts/data_scripts/update_raw_ticks` - settings inside the script
 # Run transformating tool to generate time framed ohlcv csv file from .bi5 hourly files => uses yaml configuration file with settings like: instrument, desired TimeFrame, data range...
 # Remark: .bi5 file are in UTC timezone whilst all csv are converted to desired timeframe for exemple: CET/CEST
 `python scripts/data_preprocessing/generate_ohlcv.py configs/data_aggregator.yaml`
@@ -268,14 +285,6 @@ timestamp,open,high,low,close,volume
 - **Usage:** `python scripts/dashboard_standalone.py outputs/reports/WBWS/strategy_report_20251227_224945.json --visualize` (--visualize optional)
 ---
 ### Auxiliary tools
----
-## WBWS trigger runner only for testing **
-- **Purpose:** Workflow orchestrator for WBWS trigger
-- **Workflow:**
-  1. Load YAML configuration
-  2. Run WBWS Trigger indicator
-  3. Generate reports and outputs
-- **Usage:** `python scripts/run_wbws_trigger.py wbws_rsi_strategy.yaml`
 ---
 ### Validation Scripts
 - **Purpose:** Test on simple config data of RSI filter
