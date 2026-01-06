@@ -2,7 +2,7 @@
 """
 We Buy / We Sell Trigger Indicator - Pure Calculation Engine
 
-SCOPE: Signal calculation logic
+SCOPE: Signal calculation logic ONLY
 - Candle classification (inside, outside, 2u, 2d)
 - Reversal pattern detection
 - HTF trend alignment
@@ -23,7 +23,13 @@ from typing import Tuple, Optional
 
 class WBWSTrigger:
     """
-    Signal calculation engine for We Buy / We Sell Trigger indicator.
+    Pure signal calculation engine for We Buy / We Sell Trigger indicator.
+    
+    Pine Script Translation:
+    - Uses higher timeframe for trend bias (default 60min)
+    - Classifies 1-minute candles into 4 types
+    - Triggers on specific reversal patterns
+    - Requires HTF trend alignment
     """
     
     def __init__(self, htf_period: str = '60min'):
@@ -59,43 +65,41 @@ class WBWSTrigger:
         if df[required_cols].isnull().any().any():
             raise ValueError("DataFrame contains missing values. Clean data first.")
     
-    def prepare_htf_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def prepare_htf_data(self, df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Resample to higher timeframe and calculate HTF conditions.
-        
-        Args:
-            df: 1-minute OHLCV data (with DatetimeIndex)
+        Prepare HTF data: Use provided df_htf if available, else resample from base df.
+        """
+        if df_htf is not None:
+            # Validate HTF freq roughly matches htf_period (e.g., '60min' -> '1H')
+            inferred_freq = pd.infer_freq(df_htf.index)
+            if inferred_freq != self.htf_period.upper().replace('MIN', 'T'):  # Basic check, e.g., '60T' for 60min
+                print(f"Warning: HTF freq {inferred_freq} may not match {self.htf_period}")
             
-        Returns:
-            Tuple of (df_with_htf, df_htf)
-        """
-        # Create HTF data
-        df_htf = df.resample(self.htf_period).agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }).dropna()
+            # Ensure required columns
+            required = ['open', 'high', 'low', 'close', 'volume']
+            if not all(col in df_htf.columns for col in required):
+                raise ValueError(f"HTF missing columns: {set(required) - set(df_htf.columns)}")
+            
+        else:
+            # Fallback: Resample from base
+            df_htf = df.resample(self.htf_period).agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            }).dropna()
         
-        # HTF conditions (exact Pine logic)
-        df_htf['htf_bull'] = (
-            df_htf['close'].notna() & 
-            df_htf['open'].notna() & 
-            (df_htf['close'] > df_htf['open'])
-        )
-        df_htf['htf_bear'] = (
-            df_htf['close'].notna() & 
-            df_htf['open'].notna() & 
-            (df_htf['close'] < df_htf['open'])
-        )
+        # HTF conditions (if not pre-computed)
+        if 'htf_bull' not in df_htf.columns or 'htf_bear' not in df_htf.columns:
+            df_htf['htf_bull'] = (df_htf['close'] > df_htf['open'])
+            df_htf['htf_bear'] = (df_htf['close'] < df_htf['open'])
         
-        # MODIFICATION: Always use lookahead_off behavior
-        # Shift HTF conditions by 1 to use previous closed bar (no future leak)
+        # lookahead_off shift
         df_htf['htf_bull'] = df_htf['htf_bull'].shift(1).where(lambda x: x.notna(), False)
         df_htf['htf_bear'] = df_htf['htf_bear'].shift(1).where(lambda x: x.notna(), False)
-                
-        # Forward fill to base timeframe (with NaN replacement to avoid warning)
+        
+        # Forward fill to base timeframe
         df_copy = df.copy()
         df_copy['htf_bull'] = df_htf['htf_bull'].reindex(df.index, method='ffill').where(lambda x: x.notna(), False)
         df_copy['htf_bear'] = df_htf['htf_bear'].reindex(df.index, method='ffill').where(lambda x: x.notna(), False)
@@ -133,12 +137,13 @@ class WBWSTrigger:
         
         return None
     
-    def calculate_signals(self, df_ohlcv: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
+    def calculate_signals(self, df_ohlcv: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, verbose: bool = False) -> pd.DataFrame:
         """
         Calculate We Buy/We Sell signals.
         
         Args:
             df_ohlcv: Preprocessed OHLCV DataFrame (DatetimeIndex, required columns)
+            df_htf: Optional pre-loaded HTF DataFrame
             verbose: If True, print detailed progress
             
         Returns:
@@ -153,7 +158,7 @@ class WBWSTrigger:
         self._validate_input(df_ohlcv)
         
         # Prepare HTF data
-        df, _ = self.prepare_htf_data(df_ohlcv)
+        df, df_htf = self.prepare_htf_data(df_ohlcv, df_htf)
         
         # Reset index for operations (but keep timestamp as column)
         df = df.reset_index()

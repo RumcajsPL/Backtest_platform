@@ -3,18 +3,19 @@ WBWS Signal Generation Module
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 class SignalGenerator:
     def __init__(self, htf_period: str = "60min"):
         self.htf_period = htf_period
         
-    def generate_signals(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame]:
+    def generate_signals(self, df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None) -> Tuple[pd.Series, pd.DataFrame]:
         """
         Generate WBWS trigger signals
         
         Args:
             df: OHLCV DataFrame with timestamp index
+            df_htf: Optional pre-loaded HTF DataFrame
             
         Returns:
             Tuple of (signal_series, signals_dataframe)
@@ -26,7 +27,7 @@ class SignalGenerator:
             return self._generate_mock_signals(df)
         
         indicator = WBWSTrigger(htf_period=self.htf_period)
-        signals_df = indicator.calculate_signals(df)
+        signals_df = indicator.calculate_signals(df, df_htf=df_htf)
         
         # Align index
         if not signals_df.index.equals(df.index):

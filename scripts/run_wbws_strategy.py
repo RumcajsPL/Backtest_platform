@@ -32,7 +32,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print("📊 STEP 1: LOADING DATA")
         data_loader = DataLoader(config_path)
         config = data_loader.load_config()
-        df_full, df_strategy = data_loader.load_data()
+        df_full, df_strategy, df_htf = data_loader.load_data()
         
         # Initialize enhanced progressive tracker
         progressive_tracker = EnhancedProgressiveTracker(config)
@@ -40,12 +40,18 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         data_info = data_loader.get_data_info()
         print(f"  Full dataset: {data_info['full_bars']:,} bars")
         print(f"  Strategy period: {data_info['strategy_bars']:,} bars")
+        if df_htf is not None:
+            print(f"  HTF dataset: {data_info['htf_bars']:,} bars (loaded from file)")
         print(f"  Date range: {data_info['date_range'][0]} to {data_info['date_range'][1]}")
+        # Validate data including HTF
+        validation = data_loader.validate_data()
+        if not validation['is_valid']:
+            raise ValueError(f"Data validation failed: {validation}")
         
         # 2. Generate signals (STAGE 0)
         print("\n📈 STEP 2: GENERATING SIGNALS")
         signal_gen = SignalGenerator(config['indicator']['htf_period'])
-        raw_signals, indicator_values = signal_gen.generate_signals(df_strategy)
+        raw_signals, indicator_values = signal_gen.generate_signals(df_strategy, df_htf=df_htf)  # Pass df_htf
         
         # Get HTF signals if available
         htf_signals = None
