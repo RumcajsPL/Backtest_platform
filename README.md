@@ -48,7 +48,7 @@ At a detailed level, the platform aims to:
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
 ---
-## 📅 Project Status (as of 05/01/2026)
+## 📅 Project Status (as of 08/01/2026)
 ### General
 * **Project start date:** 05/12/2025
 * **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
@@ -233,7 +233,7 @@ project_root/
 - pytz==2025.2
 ---
 🔄 Development Roadmap (In Progress – target 11/01/2026)
-### Prepare automated, parameter‑driven backtesting pipelines
+### Prepare automated, parameter‑driven backtesting pipelines and algoritms
 ### Continue translation of TradingView filters into Python:
 * Consider WSWB Trigger (change the logic to non repainting)
 * DPO
@@ -246,7 +246,7 @@ project_root/
 ---
 ### Raw and preprocessed data management
 ## 3 data suources (exemples):
-* data\processed\ohlcv\DEUIDXEUR_1s_20240101_20260104.csv => 1 second bars for execution precision
+* data\processed\ohlcv\DEUIDXEUR_1s_20240101_20260104.csv => 1 second bars for trade execution precision
 * data\processed\ohlcv\DEUIDXEUR_1min_20240101_20260104.csv => 1 minute bars for signal management
 * data\processed\ohlcv\DEUIDXEUR_1H_20230101_20260104.csv => 1 hour for Higher TF signal confirmation
 ---

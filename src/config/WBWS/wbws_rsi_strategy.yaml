@@ -68,11 +68,11 @@ trade_management:
     enabled: true
     atr_length: 14
     sl_multiplier: 1.4
-    risk_to_reward_ratio: 3.0
+    risk_to_reward_ratio: 5.7
   
   risk_management:
     enabled: true
-    max_risk_percentile: 0.003
+    max_risk_percentile: 0.0016
     allow_exceed_limit: false
   
   # Spread simulation settings

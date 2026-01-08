@@ -24,7 +24,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
     Main orchestrator for WBWS strategy execution with enhanced progressive tracking
     """
     print("\n" + "="*70)
-    print("🚀 WBWS STRATEGY WORKFLOW - WITH ENHANCED PROGRESSIVE TRACKING")
+    print("🚀 WBWS STRATEGY WORKFLOW ")
     print("="*70 + "\n")
     
     try:
@@ -32,7 +32,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print("📊 STEP 1: LOADING DATA")
         data_loader = DataLoader(config_path)
         config = data_loader.load_config()
-        df_full, df_strategy, df_htf = data_loader.load_data()
+        df_full, df_strategy, df_htf, df_ltf = data_loader.load_data()
         
         # Initialize enhanced progressive tracker
         progressive_tracker = EnhancedProgressiveTracker(config)
@@ -42,7 +42,10 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print(f"  Strategy period: {data_info['strategy_bars']:,} bars")
         if df_htf is not None:
             print(f"  HTF dataset: {data_info['htf_bars']:,} bars (loaded from file)")
+        if df_ltf is not None:
+            print(f"  LTF dataset: {data_info['ltf_bars']:,} bars for execution (TF: {data_info.get('ltf_tf', 'N/A')})")
         print(f"  Date range: {data_info['date_range'][0]} to {data_info['date_range'][1]}")
+
         # Validate data including HTF
         validation = data_loader.validate_data()
         if not validation['is_valid']:
@@ -109,7 +112,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print(f"    → RSI filtered: {rsi_stats['total']:,} signals "
               f"({rsi_stats['buy']:,} BUY, {rsi_stats['sell']:,} SELL)")
         
-        # Get filter stats (now excludes risk, as it's moved to simulation)
+        # Get filter stats
         filter_stats = filter_pipeline.get_filter_stats(raw_signals, time_filtered, rsi_filtered)
         
         # 4. Simulate trades (STAGES 3-5: Position mgmt, risk, execution)
@@ -117,7 +120,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         trade_simulator = TradeSimulator(config)
         simulation_results = trade_simulator.simulate_trades(
             df_strategy, rsi_filtered, 
-            verbose=verbose,
+            verbose=verbose, df_ltf=df_ltf,
             progressive_tracker=progressive_tracker,
             risk_manager=filter_pipeline.filters['risk'], # Pass for Stage 4
             signal_id_map=signal_id_map  # Pass signal_id_map
@@ -126,6 +129,8 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print(f"  Simulated trades: {len(simulation_results['closed_trades']):,} closed, "
             f"{len(simulation_results['open_trades']):,} open, "
             f"{len(simulation_results['rejected_trades']):,} rejected")
+        if df_ltf is not None:
+            print(f"  Execution precision: LTF ({data_info.get('ltf_tf', 'N/A')}) used for SL/TP checks")
         all_trades = simulation_results['all_trades']
         
         # Add risk stats from simulation to filter_stats
