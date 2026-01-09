@@ -159,15 +159,52 @@ Genetic Algorithms (GA)
 Monte-Carlo robustness testing
 
 📁 Folder Structure (Backtesting)
-src/backtesting/
-  ├── orchestrator.py
-  ├── optimization/
-  ├── evaluation/
-  └── wfo/ (future)
+src/
+└── backtesting/
+    ├── __init__.py
 
-src/config/WBWS/
-  ├── wbws_rsi_strategy.yaml
-  └── wbws_backtest.yaml
+    ├── orchestrator.py          # Option A: Main controller (pipeline)
+
+    ├── config/
+    │   ├── __init__.py
+    │   ├── loader.py            # Loads + validates optimization YAML
+    │   └── schema.py            # Optional: YAML schema / rules
+
+    ├── optimization/
+    │   ├── __init__.py
+    │   ├── parameter_space.py  # Expands YAML ranges into parameters
+    │   ├── sampler.py          # Random / Latin / hybrid sampling
+    │   └── genetic.py          # GA logic
+
+    ├── validation/
+    │   ├── __init__.py
+    │   ├── walk_forward.py     # WFO engine
+    │   └── monte_carlo.py      # Monte Carlo simulation
+
+    ├── execution/
+    │   ├── __init__.py
+    │   └── strategy_runner.py  # Calls your existing run_wbws_strategy.py
+
+    ├── evaluation/
+    │   ├── __init__.py
+    │   ├── metrics.py          # Lean optimization metrics
+    │   └── fitness.py          # Fitness score calculation
+
+    ├── reporting/
+    │   ├── __init__.py
+    │   ├── comparator.py       # Safe vs Exploration vs Discovery
+    │   └── final_report.py     # Summary generator
+
+outputs/
+└── backtests/
+    ├── safe/
+    │   ├── random_search/
+    │   ├── genetic/
+    │   ├── walk_forward/
+    │   └── monte_carlo/
+    ├── exploration/
+    ├── discovery/
+    └── comparison_report.json
 
 outputs/backtests/
 
