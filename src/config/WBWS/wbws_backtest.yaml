@@ -1,0 +1,98 @@
+# =========================================================
+# WBWS BACKTEST CONFIGURATION
+# =========================================================
+
+strategy_config: src/config/WBWS/wbws_rsi_strategy.yaml
+
+output:
+  root: outputs/backtests
+  top_n: 10
+
+# =========================================================
+# PARAMETER SEARCH ZONES
+# =========================================================
+
+parameters:
+  rsi_overbought:
+    safe: [68, 75]
+    exploration: [64, 80]
+    discovery: [55, 85]
+
+  rsi_oversold:
+    safe: [25, 32]
+    exploration: [20, 36]
+    discovery: [15, 40]
+
+  atr_length:
+    safe: [10, 14]
+    exploration: [7, 20]
+    discovery: [5, 30]
+
+  max_risk_percentile:
+    safe: [0.005, 0.015]
+    exploration: [0.003, 0.02]
+    discovery: [0.001, 0.03]
+
+  htf_bias_tf:
+    safe: [ "5m", "15m", "30m", "45m", "1h" ]
+    exploration: [ "3m", "5m", "15m", "30m", "45m", "1h" ]
+    discovery: [ "1m", "3m", "5m", "15m", "30m", "45m", "1h" ]
+
+# =========================================================
+# RANDOM SEARCH CONTROL
+# =========================================================
+
+search:
+  zones:
+    safe: 50
+    exploration: 75
+    discovery: 100
+
+# =========================================================
+# FITNESS EVALUATION
+# =========================================================
+
+fitness:
+  constraints:
+    min_winrate: 0.55
+    min_rr: 3.0
+    max_drawdown: 15.0
+    min_trades: 30
+
+  weights:
+    winrate: 2.0
+    expectancy: 3.0
+    profit: 1.5
+    drawdown: -2.5
+    mc_ruin_prob: -10.0
+
+# =========================================================
+# WALK-FORWARD OPTIMIZATION
+# =========================================================
+
+wfo:
+  enabled: true
+  train_days: 20
+  test_days: 5
+
+# =========================================================
+# GENETIC ALGORITHM
+# =========================================================
+
+ga:
+  enabled: true
+  population_size: 20
+  generations: 10
+  tournament_k: 3
+  mutation_rate: 0.15
+
+# =========================================================
+# MONTE-CARLO ROBUSTNESS
+# =========================================================
+
+monte_carlo:
+  enabled: true
+  iterations: 1000
+  initial_balance: 10000
+  spread_noise: 0.25
+  risk_noise: 0.15
