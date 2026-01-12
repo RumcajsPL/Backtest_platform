@@ -23,6 +23,29 @@ class BacktestOrchestrator:
 
         with open(self.backtest_yaml_path, "r") as f:
             self.config = yaml.safe_load(f)
+        
+        # Load the strategy template as base config
+        # Assuming strategy template is in the same directory as backtest config
+        config_dir = self.backtest_yaml_path.parent
+        strategy_template_path = config_dir / "wbws_rsi_strategy.yaml"
+        
+        if not strategy_template_path.exists():
+            # Try to find it in the expected location
+            strategy_template_path = Path("configs/WBWS/wbws_rsi_strategy.yaml")
+            
+        if strategy_template_path.exists():
+            with open(strategy_template_path, "r") as f:
+                self.strategy_template = yaml.safe_load(f)
+            print(f"✅ Loaded strategy template from: {strategy_template_path}")
+        else:
+            print(f"⚠️  Warning: Strategy template not found at {strategy_template_path}")
+            print("  Using empty template. This may cause errors if required fields are missing.")
+            self.strategy_template = {
+                "strategy": {"name": "WBWS Backtest", "version": "1.0.0"},
+                "asset": {"symbol": "DEUIDXEUR", "currency": "EUR"},
+                "data": {"format": "csv"},
+                "output": {"outputs_dir": "outputs"}
+            }
 
     def run(self):
         print("🚀 Starting Backtest Orchestrator")
@@ -114,7 +137,7 @@ class BacktestOrchestrator:
                 with open(zone_dir / "ga_results.json", "w") as f:
                     # Save only parameters and scores for brevity
                     ga_summary = []
-                    for i, (params, score, metrics) in enumerate(ga_results):
+                    for i, (params, score, full_metrics) in enumerate(ga_results):
                         ga_summary.append({
                             "rank": i + 1,
                             "score": score,
@@ -280,14 +303,106 @@ class BacktestOrchestrator:
             print(f"    ⚠ Monte Carlo analysis failed: {e}")
             return {}
 
-    def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "random") -> Path:
-        """Create a temporary YAML file with specific parameters"""
-        # Load the base configuration
-        with open(self.backtest_yaml_path, "r") as f:
-            config = yaml.safe_load(f)
+    def map_parameters_to_config(self, flat_params: dict) -> dict:
+        """
+        Convert flat parameter dictionary from ParameterSampler
+        to nested YAML structure expected by run_wbws_strategy.py
+        """
+        config_updates = {}
         
-        # Update the configuration with sampled parameters
-        config['optimization'] = params
+        # 1. RSI Filter mapping (with all required fields)
+        if "rsi_overbought" in flat_params or "rsi_oversold" in flat_params:
+            config_updates.setdefault("filters", {})
+            config_updates["filters"]["rsi_filter"] = {
+                "enabled": True,
+                "length": 14,  # Required default from strategy YAML
+                "overbought": flat_params.get("rsi_overbought", 70),
+                "oversold": flat_params.get("rsi_oversold", 30)
+            }
+        
+        # 2. Higher Timeframe mapping
+        if "htf_timeframe" in flat_params:
+            config_updates.setdefault("indicator", {})
+            config_updates["indicator"]["name"] = "WBWS_Trigger"
+            config_updates["indicator"]["htf_period"] = flat_params["htf_timeframe"]
+        
+        # 3. ATR and Risk-Reward mapping
+        if any(k in flat_params for k in ["atr_length", "atr_multiplier", "rr_target"]):
+            config_updates.setdefault("trade_management", {})
+            config_updates["trade_management"]["sl_tp"] = {
+                "enabled": True,
+                "atr_length": flat_params.get("atr_length", 14),
+                "sl_multiplier": flat_params.get("atr_multiplier", 1.4),
+                "risk_to_reward_ratio": flat_params.get("rr_target", 5.7)
+            }
+        
+        # 4. Risk management mapping
+        if "max_risk_percentile" in flat_params:
+            config_updates.setdefault("trade_management", {})
+            config_updates["trade_management"]["risk_management"] = {
+                "enabled": True,
+                "max_risk_percentile": flat_params["max_risk_percentile"],
+                "allow_exceed_limit": False
+            }
+        
+        # 5. Session window mapping
+        if "session_window" in flat_params:
+            config_updates.setdefault("trade_management", {})
+            config_updates["trade_management"]["time_filter"] = {
+                "enabled": True,
+                "session_start": {
+                    "hour": int(flat_params["session_window"][0].split(":")[0]),
+                    "minute": int(flat_params["session_window"][0].split(":")[1])
+                },
+                "session_end": {
+                    "hour": int(flat_params["session_window"][1].split(":")[0]),
+                    "minute": int(flat_params["session_window"][1].split(":")[1])
+                }
+            }
+        
+        # 6. Position control defaults
+        config_updates.setdefault("trade_management", {})
+        config_updates["trade_management"]["position_control"] = {
+            "close_on_opposite": False,
+            "pyramiding_enabled": False
+        }
+        
+        # 7. Opposite signal defaults
+        config_updates["trade_management"]["opposite_signal"] = {
+            "enabled": False
+        }
+        
+        # 8. Spread defaults
+        config_updates["trade_management"]["spread"] = {
+            "enabled": True,
+            "required": False,
+            "apply_to_long": True,
+            "apply_to_short": True,
+            "log_spread_impact": True
+        }
+        
+        return config_updates
+
+    def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "random") -> Path:
+        """
+        Create a temporary YAML file with specific parameters
+        """
+        # Start with the strategy template (not the backtest config!)
+        config = self.strategy_template.copy()
+        
+        # Map flat parameters to nested config structure
+        config_updates = self.map_parameters_to_config(params)
+        
+        # Apply updates to the config
+        for section, updates in config_updates.items():
+            if section not in config:
+                config[section] = updates
+            else:
+                # Deep merge for nested dictionaries
+                if isinstance(updates, dict) and isinstance(config[section], dict):
+                    self._deep_merge(config[section], updates)
+                else:
+                    config[section] = updates
         
         # Create a temporary file
         temp_dir = Path(tempfile.gettempdir())
@@ -296,7 +411,22 @@ class BacktestOrchestrator:
         with open(temp_file, "w") as f:
             yaml.dump(config, f)
         
+        # Save a copy for debugging
+        debug_file = self.base_dir / zone_name / self.timestamp / f"config_{zone_name}_{source}_{sample_index}.yaml"
+        debug_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(debug_file, "w") as f:
+            yaml.dump(config, f)
+        
+        print(f"    📄 Config saved for debugging: {debug_file.name}")
         return temp_file
+
+    def _deep_merge(self, target: dict, source: dict):
+        """Deep merge source dictionary into target dictionary"""
+        for key, value in source.items():
+            if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+                self._deep_merge(target[key], value)
+            else:
+                target[key] = value
 
     def run_strategy(self, strategy_yaml_path: Path, output_dir: Path, sample_index: int) -> Path:
         """Run strategy and return path to the generated report"""
