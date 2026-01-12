@@ -83,8 +83,9 @@ src/
     │   ├── wfo_evaluator.py
     │   └── window_generator.py
 └── config/
-    │   ├── wbws_backtest.yaml (orchestrator.py yaml config)
-    │   └── wbws_rsi_strategy.yaml (strategy yaml config)
+    └── WBWS/
+        ├── wbws_backtest.yaml (orchestrator.py yaml config)
+        └── wbws_rsi_strategy.yaml (strategy yaml config)
 ```
 ### Outputs
 ```
