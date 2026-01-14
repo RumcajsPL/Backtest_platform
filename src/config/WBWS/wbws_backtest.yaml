@@ -13,12 +13,12 @@ backtest:
 # ============================================================
 
 constraints:
-  min_winrate: 0.55
-  max_drawdown: 0.25
-  max_losing_streak: 12
+  min_winrate: 0.3
+  # max_drawdown: 0.25 - deactivated as not yet available
+  # max_losing_streak: 12 - deactivated as not yet available
   min_trades_per_day: 4
-  min_expectancy: 0.2
-  min_profit_factor: 1.2
+  min_expectancy: 0.1
+  min_profit_factor: 1.1
 
 # ============================================================
 # FITNESS FUNCTION (WHAT "GOOD" MEANS)
@@ -31,26 +31,47 @@ fitness:
     drawdown: -0.20
     losing_streak: -0.10
     winrate: 0.10
+    
+# ==========================================================================================================
+# RANDOM SEARCH CONFIGURATION
+# ==========================================================================================================
 
-# ============================================================
-# WALK-FORWARD OPTIMIZATION (WFO) CONFIGURATION
-# ============================================================
-
-wfo:
+random_search:
   enabled: true
-  train_days: 20
-  test_days: 5
+  samples_per_zone: 150
+  method: latin_hypercube
 
 # ============================================================
 # GENETIC ALGORITHM CONFIGURATION
 # ============================================================
 
-ga:
+genetic:
   enabled: true
-  population_size: 20
-  generations: 10
-  tournament_k: 3
+  population_size: 40
+  generations: 15
   mutation_rate: 0.15
+  crossover_rate: 0.6
+  elite_fraction: 0.2
+  tournament_k: 3
+
+# ============================================================
+# WALK-FORWARD OPTIMIZATION (WFO) CONFIGURATION
+# ============================================================
+
+walk_forward:
+  enabled: true
+  method: fixed_windows      # options: fixed_windows, rolling_days
+  windows:
+    - train: ["2024-01-01", "2024-06-30"]
+      test:  ["2024-07-01", "2024-08-31"]
+    - train: ["2024-03-01", "2024-08-31"]
+      test:  ["2024-09-01", "2024-10-31"]
+    - train: ["2024-05-01", "2024-10-31"]
+      test:  ["2024-11-01", "2024-12-31"]
+  
+  # Alternative rolling days approach (kept for compatibility)
+  train_days: 20
+  test_days: 5
 
 # ============================================================
 # MONTE CARLO STRESS TESTING CONFIGURATION
@@ -60,8 +81,18 @@ monte_carlo:
   enabled: true
   iterations: 1000
   initial_balance: 10000
+  
+  # Noise parameters
   spread_noise: 0.25
   risk_noise: 0.15
+  
+  # Trade execution parameters
+  slippage_points: [0, 2]
+  execution_delay_seconds: [0, 3]
+  
+  # Shuffling options
+  shuffle_trades: true
+  resample_returns: true
 
 # ============================================================
 # OPTIMIZATION ZONES
@@ -75,17 +106,17 @@ zones:
 
   safe:
     description: "Conservative, industry-standard parameter ranges"
+    enabled: true
 
     optimization:
-
       rsi:
         overbought: [65, 75]
         oversold: [25, 35]
         step: 1
 
       htf:
-        timeframe: ["15min", "30min", "1h"]
-
+        # timeframe: ["15min", "30min", "1h"]
+        timeframe: ["1H"]
       atr:
         length: [10, 14]
         multiplier: [1.5, 2.0]
@@ -106,16 +137,17 @@ zones:
 
   exploration:
     description: "Expanded parameter discovery zone"
+    enabled: true
 
     optimization:
-
       rsi:
         overbought: [60, 85]
         oversold: [15, 40]
         step: 1
 
       htf:
-        timeframe: ["5min", "15min", "30min", "45min", "1h"]
+        # timeframe: ["5min", "15min", "30min", "45min", "1h"]
+        timeframe: ["1H"]
 
       atr:
         length: [7, 21]
@@ -137,17 +169,18 @@ zones:
 
   discovery:
     description: "Unusual / extreme parameter exploration"
+    enabled: false   # Disabled by default due to extreme ranges
 
     optimization:
-
       rsi:
         overbought: [50, 90]
         oversold: [10, 50]
         step: 1
 
       htf:
-        timeframe: ["1min", "3min", "5min", "15min", "30min", "45min", "1h"]
-
+        # timeframe: ["1min", "3min", "5min", "15min", "30min", "45min", "1h"]
+        timeframe: ["1H"]
+      
       atr:
         length: [5, 30]
         multiplier: [0.8, 3.0]
@@ -162,50 +195,6 @@ zones:
           - ["06:00", "19:00"]
 
 # ============================================================
-# RANDOM SEARCH CONFIGURATION
-# ============================================================
-
-random_search:
-  samples_per_zone: 150
-  method: latin_hypercube
-
-# ============================================================
-# GENETIC ALGORITHM BASE CONFIGURATION (for backward compatibility)
-# ============================================================
-
-genetic:
-  population_size: 40
-  generations: 15
-  mutation_rate: 0.15
-  crossover_rate: 0.6
-  elite_fraction: 0.2
-
-# ============================================================
-# WALK-FORWARD OPTIMIZATION WINDOWS (Alternative to fixed train/test days)
-# ============================================================
-
-walk_forward:
-  windows:
-    - train: ["2024-01-01", "2024-06-30"]
-      test:  ["2024-07-01", "2024-08-31"]
-
-    - train: ["2024-03-01", "2024-08-31"]
-      test:  ["2024-09-01", "2024-10-31"]
-
-    - train: ["2024-05-01", "2024-10-31"]
-      test:  ["2024-11-01", "2024-12-31"]
-
-# ============================================================
-# MONTE CARLO STRESS TESTING OLD CONFIG (for backward compatibility)
-# ============================================================
-
-monte_carlo_old:
-  simulations: 500
-  shuffle_trades: true
-  slippage_points: [0, 2]
-  execution_delay_seconds: [0, 3]
-
-# ============================================================
 # OUTPUT SETTINGS
 # ============================================================
 
@@ -214,3 +203,11 @@ output:
   save_equity_curves: true
   save_trade_logs: true
   save_yaml_used: true
+  save_candidate_configs: true
+  
+  # Report generation
+  generate_summary_report: true
+  generate_comparison_report: true
+  
+  # Verbosity control
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR

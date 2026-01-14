@@ -278,6 +278,11 @@ class BacktestOrchestrator:
         zones = self.config.get("zones", {})
         
         for zone_name, zone_cfg in zones.items():
+            # Check if zone is enabled
+            if not zone_cfg.get("enabled", True):
+                print(f"⏭️  Skipping disabled zone: {zone_name}")
+                continue
+            
             print(f"\n🔹 Processing zone: {zone_name}")
             print(f"   {zone_cfg.get('description', '')}")
             
@@ -286,8 +291,13 @@ class BacktestOrchestrator:
             zone_dir.mkdir(parents=True, exist_ok=True)
             
             # Build parameter space
-            n_samples = self.config.get("random_search", {}).get("samples_per_zone", 150)
-            
+            random_search_config = self.config.get("random_search", {})
+            if not random_search_config.get("enabled", True):
+                print(f"  ⏭️ Random search disabled, skipping zone {zone_name}")
+                continue  # ✅ This skips only this zone
+                
+            n_samples = random_search_config.get("samples_per_zone", 150)
+                       
             try:
                 space = ParameterSpace(zone_cfg).build()
                 sampler = ParameterSampler(space, n_samples=n_samples)
@@ -304,7 +314,7 @@ class BacktestOrchestrator:
                 store = CandidateStore(zone_dir)
                 
                 successful = 0
-                total_to_process = min(10, len(samples))  # Process first 10 for testing
+                total_to_process = min(5, len(samples))  # Process first 10 for testing
                 
                 print(f"   Processing first {total_to_process} samples...")
                 
@@ -317,26 +327,57 @@ class BacktestOrchestrator:
                     
                     # For now, simulate running the strategy
                     print(f"   📄 Config: {temp_yaml.name}")
+
+                    # Run the actual strategy
+                    report_path = self.run_strategy(temp_yaml, zone_dir, i)
                     
-                    # Create complete simulated metrics
-                    simulated_metrics = self.create_simulated_metrics(i)
-                    
-                    # Check constraints
-                    if fitness_engine.passes_constraints(simulated_metrics):
-                        score = fitness_engine.score(simulated_metrics)
-                        print(f"   ✅ Passed, score: {score:.4f}")
+                    if report_path and report_path.exists():
+                        # Get real metrics from the report
+                        metrics_extractor = OptimizationMetrics(str(report_path))
+
+                        metrics_extractor.debug_info()
+
+                        real_metrics = metrics_extractor.get()
                         
-                        store.add(
-                            params=params,
-                            metrics=simulated_metrics,
-                            score=score,
-                            zone_name=zone_name,
-                            sample_index=i,
-                            source="random"
-                        )
-                        successful += 1
+                        print(f"    📊 Extracted metrics:")
+                        for key, value in real_metrics.items():
+                            print(f"      {key}: {value}")
+
+                        # Check constraints
+                        if fitness_engine.passes_constraints(real_metrics):
+                            score = fitness_engine.score(real_metrics)
+                            print(f"    ✅ Passed constraints, score: {score:.4f}")
+                            
+                            store.add(
+                                params=params,
+                                metrics=real_metrics,
+                                fitness=score,
+                                zone_name=zone_name,
+                                sample_index=i,
+                                source="random"
+                            )
+                            successful += 1
+                        else:
+                            print(f"   ❌ Failed constraints")
                     else:
-                        print(f"   ❌ Failed constraints")
+                        print(f"   ⚠️  No report generated, using simulated metrics")
+                        # Fallback to simulated metrics for testing
+                        simulated_metrics = self.create_simulated_metrics(i)
+                        if fitness_engine.passes_constraints(simulated_metrics):
+                            score = fitness_engine.score(simulated_metrics)
+                            print(f"   ✅ Simulated passed, score: {score:.4f}")
+                            
+                            store.add(
+                                params=params,
+                                metrics=simulated_metrics,
+                                fitness=score,
+                                zone_name=zone_name,
+                                sample_index=i,
+                                source="random_simulated"
+                            )
+                            successful += 1
+                        else:
+                            print(f"   ❌ Simulated failed constraints")
                 
                 # Save results
                 store.save()
@@ -358,7 +399,7 @@ class BacktestOrchestrator:
                     # Show top 3
                     print(f"\n   Top 3 candidates:")
                     for j, candidate in enumerate(top[:3], 1):
-                        print(f"   {j}. Score: {candidate['score']:.4f}")
+                        print(f"   {j}. Fitness: {candidate['fitness']:.4f}")  # Changed 'Score' to 'Fitness'
                 
                 else:
                     print(f"\n   ⚠️  No candidates passed constraints")
@@ -373,6 +414,89 @@ class BacktestOrchestrator:
         print("\n" + "=" * 70)
         print("✅ OPTIMIZATION COMPLETED")
         print("=" * 70)
+            
+    def run_strategy(self, strategy_yaml_path: Path, output_dir: Path, sample_index: int) -> Path:
+        print(f"    ▶ Running strategy with config: {strategy_yaml_path.name}")
+        
+        project_root = Path(__file__).parent.parent.parent
+        
+        # Set encoding for Windows
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        
+        cmd = [
+            sys.executable,
+            "-X", "utf8",  # Enable UTF-8 mode
+            "scripts/run_wbws_strategy.py",
+            str(strategy_yaml_path)
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd, 
+                check=True, 
+                capture_output=True, 
+                text=True,
+                cwd=str(project_root),
+                env=env,
+                encoding='utf-8',  # Explicit encoding
+                errors='replace'   # Replace invalid chars instead of failing
+            )
+                        
+            if result.stdout:
+                # Look for success message
+                if "ENHANCED STRATEGY EXECUTION COMPLETED" in result.stdout:
+                    print(f"    ✅ Strategy completed successfully")
+                print(f"    📋 Stdout snippet: {result.stdout[-500:] if len(result.stdout) > 500 else result.stdout}")
+            
+            if result.stderr:
+                print(f"    ⚠ Stderr: {result.stderr[:500]}...")
+                
+        except subprocess.CalledProcessError as e:
+            print(f"    ❌ Strategy execution failed with exit code: {e.returncode}")
+            print(f"    🔍 Working directory was: {project_root}")
+            
+            if e.stdout:
+                print(f"    📋 Stdout (last 500 chars): {e.stdout[-500:] if len(e.stdout) > 500 else e.stdout}")
+            if e.stderr:
+                print(f"    🔴 Stderr (first 500 chars): {e.stderr[:500]}...")
+                
+                # Check for specific errors
+                if "ModuleNotFoundError" in e.stderr:
+                    print(f"    💡 Module error detected!")
+                    if "pandas" in e.stderr:
+                        print(f"    💡 Pandas not found. Check if venv is activated in subprocess.")
+                    if "strategy_modules" in e.stderr:
+                        print(f"    💡 strategy_modules import error - likely wrong working directory")
+            
+            return None
+        except Exception as e:
+            print(f"    ❌ Unexpected error running strategy: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+        # Find the latest report
+        reports_dir = project_root / "outputs" / "reports" / "WBWS"  # Use full path
+        print(f"    🔍 Looking for reports in: {reports_dir}")
+        
+        if reports_dir.exists():
+            json_files = list(reports_dir.glob("strategy_report_*.json"))
+            print(f"    🔍 Found {len(json_files)} JSON files")
+            
+            if json_files:
+                latest_report = max(json_files, key=lambda f: f.stat().st_mtime)
+                # Copy report to zone directory
+                report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
+                shutil.copy(latest_report, report_copy)
+                print(f"    ✔ Report saved to {report_copy}")
+                return report_copy
+            else:
+                print(f"    ⚠ No report files found in {reports_dir}")
+                return None
+        else:
+            print(f"    ⚠ Reports directory not found: {reports_dir}")
+            return None
     
     def create_simulated_metrics(self, sample_index: int) -> dict:
         """Create complete simulated metrics with all required keys"""
@@ -398,46 +522,13 @@ class BacktestOrchestrator:
             "trades_per_day": 4.0 + sample_index * 0.2
         }
     
-    def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "test") -> Path:
-        """Create a temporary YAML file with cleaned types"""
-        # Start with template
-        config = self.strategy_template.copy()
-        
-        # Apply parameter mapping
-        config_updates = self.map_parameters_to_config(params)
-        for section, updates in config_updates.items():
-            if section not in config:
-                config[section] = updates
-            elif isinstance(config[section], dict) and isinstance(updates, dict):
-                config[section].update(updates)
-            else:
-                config[section] = updates
-        
-        # Clean any numpy types before saving
-        config = self.clean_numpy_types(config)
-        
-        # Create temp file
-        temp_dir = Path(tempfile.gettempdir())
-        temp_file = temp_dir / f"wbws_{zone_name}_{source}_{sample_index}.yaml"
-        
-        with open(temp_file, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
-        
-        # Save a copy for debugging
-        debug_dir = self.base_dir / "debug" / self.timestamp
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        debug_file = debug_dir / f"{zone_name}_{source}_{sample_index}.yaml"
-        
-        with open(debug_file, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        
-        print(f"   💾 Debug copy: {debug_file.relative_to(self.base_dir)}")
-        
-        return temp_file
-    
     def map_parameters_to_config(self, flat_params: dict) -> dict:
         """Convert flat parameters to nested structure"""
         config_updates = {}
+        
+        # Get project root
+        project_root = Path(__file__).parent.parent.parent
+        data_dir = project_root / "data" / "processed" / "ohlcv"
         
         # RSI Filter
         if "rsi_overbought" in flat_params or "rsi_oversold" in flat_params:
@@ -491,7 +582,61 @@ class BacktestOrchestrator:
                 }
             }
         
+        # Data section with absolute paths
+        config_updates["data"] = {
+            "file": str(data_dir / "DEUIDXEUR_1min_20240101_20260104.csv"),
+            "file_htf": str(data_dir / "DEUIDXEUR_1H_20230101_20260104.csv"),
+            "file_ltf": str(data_dir / "DEUIDXEUR_1s_20240101_20260104.csv"),
+            "format": "csv",
+            "date_range": {
+                "start": "2024-01-01",  # Use a range that exists in your data
+                "end": "2024-01-07"
+            },
+            "validation": {
+                "check_ohlc": True,
+                "check_gaps": False,
+                "max_price_move": 0.1
+            }
+        }
+        
         return config_updates
+
+    def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "test") -> Path:
+        """Create a temporary YAML file with cleaned types"""
+        # Start with template
+        config = self.strategy_template.copy()
+        
+        # Apply parameter mapping
+        config_updates = self.map_parameters_to_config(params)
+        for section, updates in config_updates.items():
+            if section not in config:
+                config[section] = updates
+            elif isinstance(config[section], dict) and isinstance(updates, dict):
+                config[section].update(updates)
+            else:
+                config[section] = updates
+        
+        # Clean any numpy types before saving
+        config = self.clean_numpy_types(config)
+        
+        # Create temp file
+        temp_dir = Path(tempfile.gettempdir())
+        temp_file = temp_dir / f"wbws_{zone_name}_{source}_{sample_index}.yaml"
+        
+        with open(temp_file, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+        
+        # Save a copy for debugging
+        debug_dir = self.base_dir / "debug" / self.timestamp
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_file = debug_dir / f"{zone_name}_{source}_{sample_index}.yaml"
+        
+        with open(debug_file, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        
+        print(f"   💾 Debug copy: {debug_file.relative_to(self.base_dir)}")
+        
+        return temp_file
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

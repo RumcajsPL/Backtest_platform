@@ -1,5 +1,6 @@
 # 📊 WBWS Backtesting & Optimization Framework  
 **Systematic Strategy Evaluation, Optimization & Robustness Testing**
+# Environement OS = Microsoft Windows [version 10.0.22621.4317]
 ---
 ## 1. General Description
 The **WBWS Backtesting & Optimization Framework** is designed to go beyond simple strategy testing.  
@@ -132,8 +133,8 @@ The orchestrator is the **central control unit** of the system.
 - Session windows  
 ### Example Constraints
 - min_winrate: 0.55
-- max_drawdown: 0.25
-- max_losing_streak: 12
+- max_drawdown: 0.25 # (disabled for instant)
+- max_losing_streak: 12 # (disabled for instant)
 - min_trades_per_day: 4
 - min_expectancy: 0.2
 ---
@@ -217,32 +218,19 @@ The orchestrator is the **central control unit** of the system.
 - mc_ruin_prob  
 ------------------------------------------
 # 10. Concerns & Configuration Issues Log  
-## 10.1 YAML Configuration Discrepancies
-### 10.1.1 Duplicate GA Configuration
-Two GA configuration sections exist. Only `ga` is used.  
-The `genetic` section is ignored, causing important parameters to be unused.
-### 10.1.2 Duplicate WFO Configuration
-Both `wfo` and `walk_forward` exist.  
-This creates ambiguity about which controls the optimization behavior.
-### 10.1.3 Duplicate Monte Carlo Configuration
-`monte_carlo_old` is ignored in favor of `monte_carlo`.
-### 10.1.4 Missing Parameter Structure Contract
-`config['optimization'] = params` assumes a specific structure that is not formally defined.
----
-## 10.2 Orchestrator Discrepancies
+## 10.1 Orchestrator Troubleshooting
 ### Fixed Issues
-| Issue | Fix |
-|------|-----|
-| run_and_evaluate() returned bool | Now returns metrics |
-| GA lacked Monte Carlo | MC added |
-| Store API inconsistent | Standardized |
-| No error handling | Try-catch added |
+- Yaml configuration file cleaned and unified
+- orchestrator_fixed.py created as troubleshooting copy of orchestrator.py
+- orchestrator_fixed.py troubleshooted succesfully optimization, evaluation, strategy integration
 ### Remaining Issues
-- Parameter structure mismatch  
-- Mixed WFO configuration  
-- Assumed metric fields  
+- Re-integration of GA in orchestrator_fixed.py  
+- Re-integration of WFO in orchestrator_fixed.py 
+- Re-integration of Monte Carlo in orchestrator_fixed.py
+- Final updates of orchestrator_fixed.py
+- Switch from orchestrator_fixed.py into orchestrator_fixed.py (clean version no debug or troubleshooting code)
 ---
-## 10.3 Dependency Requirements
+## 10.2 Dependency Requirements
 | Module | Required Methods |
 |--------|------------------|
 | ParameterSpace | build() |
@@ -254,18 +242,4 @@ This creates ambiguity about which controls the optimization behavior.
 | WalkForwardEngine | run() |
 | GeneticOptimizer | run() |
 | MonteCarloEngine | run() |
----
-## 10.4 Resolution Priority
-### High Priority
-1. Consolidate YAML configs  
-2. Define parameter structure  
-3. Validate metrics  
-### Medium Priority
-1. Standardize config access  
-2. Add YAML schema  
-3. Improve errors  
-### Low Priority
-1. Remove unused configs  
-2. Add versioning  
-3. Enhance logs  
 ---

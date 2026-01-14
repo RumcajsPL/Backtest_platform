@@ -1,49 +1,36 @@
-# WBWS Strategy with RSI Filter Configuration
-# All timestamps are in CET/CEST (Europe/Berlin) as naive datetimes
-
 strategy:
-  name: "WBWS strategy with RSI Filter"
-  description: "We Buy/We Sell Trigger combined with RSI signal validation"
-  version: "1.2.0"  # Updated for spread integration
-  author: "Backtest Platform"
-  created: "2025-12-17"
-  updated: "2025-12-30"  # Spread integration added
-
+  name: WBWS strategy with RSI Filter
+  description: We Buy/We Sell Trigger combined with RSI signal validation
+  version: 1.2.0
+  author: Backtest Platform
+  created: '2025-12-17'
+  updated: '2025-12-30'
 asset:
-  symbol: "DEUIDXEUR"
-  name: "DAX 40 Index"
-  exchange: "EUREX"
-  currency: "EUR"
-
-# Chose ohlcv data source and date range for backtest
+  symbol: DEUIDXEUR
+  name: DAX 40 Index
+  exchange: EUREX
+  currency: EUR
 data:
-  file: "data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260104.csv"
-  file_htf: "data/processed/ohlcv/DEUIDXEUR_1H_20230101_20260104.csv"
-  file_ltf: "data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv" # For future evolution
-  format: "csv"
-  
-  # Date range (in CSV timestamps timezone)
+  file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260104.csv
+  file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20230101_20260104.csv
+  file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv
+  format: csv
   date_range:
-    start: "2025-12-15 01:12:00" 
-    end: "2025-12-26 23:00:00"
-  
+    start: '2025-12-15 01:12:00'
+    end: '2025-12-26 23:00:00'
   validation:
     check_ohlc: true
     check_gaps: false
-    max_price_move: 0.10
-
+    max_price_move: 0.1
 indicator:
-  name: "WBWS_Trigger"
-  htf_period: "1H"
-
+  name: WBWS_Trigger
+  htf_period: 1H
 filters:
   rsi_filter:
     enabled: true
     length: 14
     overbought: 70
     oversold: 30
-
-# Trade management => time management
 trade_management:
   time_filter:
     enabled: true
@@ -53,49 +40,30 @@ trade_management:
     session_end:
       hour: 20
       minute: 30
-  
-  # Trade management => POSITION CONTROL
   position_control:
     close_on_opposite: false
     pyramiding_enabled: false
-  
-  # Trade management => opposite signal management (DEPRECATED)
   opposite_signal:
     enabled: false
-  
-  # Trade management => risk management
   sl_tp:
     enabled: true
     atr_length: 14
     sl_multiplier: 1.4
     risk_to_reward_ratio: 5.7
-  
   risk_management:
     enabled: true
     max_risk_percentile: 0.0016
     allow_exceed_limit: false
-  
-  # Spread simulation settings
   spread:
-    enabled: true  # Set to false to disable spread simulation
-    
-    # Path to spread config file (optional - uses default if not specified)
-    # config_path: "configs/spreads/broker_spreads.yaml"
-    
-    # Whether spread config is required (error if missing)
+    enabled: true
     required: false
-    
-    # Application settings (can override defaults from spread config)
     apply_to_long: true
     apply_to_short: true
-    
-    # Logging
-    log_spread_impact: true  # Log spread adjustments in reports
-
+    log_spread_impact: true
 output:
-  outputs_dir: "outputs"
-  reports_dir: "reports/WBWS"
-  signals_dir: "signals/strategy"
+  outputs_dir: outputs
+  reports_dir: reports/WBWS
+  signals_dir: signals/strategy
   save_signals_csv: true
   save_execution_report: true
   verbose: false
