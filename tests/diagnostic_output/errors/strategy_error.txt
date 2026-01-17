@@ -1,0 +1,49 @@
+==================================================
+COMMAND:
+==================================================
+E:\Trading\Backtest_platform\venv\Scripts\python.exe -X utf8 scripts/run_wbws_strategy.py e:\Trading\Backtest_platform\tests\diagnostic_output\test_config.yaml
+
+==================================================
+STDOUT:
+==================================================
+
+======================================================================
+🚀 WBWS STRATEGY WORKFLOW 
+======================================================================
+
+📊 STEP 1: LOADING DATA
+  Full dataset: 669,698 bars
+  Strategy period: 5,105 bars
+  HTF dataset: 91 bars (loaded from file)
+  LTF dataset: 110,498 bars for execution (TF: 1s)
+  Date range: 2024-01-02T00:05:00 to 2024-01-05T21:59:00
+
+📈 STEP 2: GENERATING SIGNALS
+Warning: HTF freq None may not match 1H
+  Recording raw signals in progressive tracker...
+  Raw BUY: 231, Raw SELL: 358, Total: 589
+
+🎯 STEP 3: APPLYING FILTERS WITH PROGRESSIVE TRACKING
+  Applying time filter with detailed tracking...
+    → Time filtered: 117 signals (64 BUY, 53 SELL)
+  Applying RSI filter with detailed tracking...
+    → RSI filtered: 101 signals (54 BUY, 47 SELL)
+
+🔄 STEP 4: SIMULATING TRADES
+✅ TradeManager initialized:
+   - Close on Opposite: False
+   - Pyramiding: DISABLED
+  Simulated trades: 35 closed, 0 open, 66 rejected
+  Execution precision: LTF (1s) used for SL/TP checks
+
+❌ ERROR: 'position_control'
+
+
+==================================================
+STDERR:
+==================================================
+Traceback (most recent call last):
+  File "e:\Trading\Backtest_platform\scripts\run_wbws_strategy.py", line 169, in run_wbws_strategy
+    pyramiding_enabled=config['trade_management']['position_control'].get('pyramiding_enabled', False),
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+KeyError: 'position_control'

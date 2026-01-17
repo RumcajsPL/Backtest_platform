@@ -19,7 +19,7 @@ import subprocess
 import shutil
 import tempfile
 import json
-from datetime import datetime
+from datetime import date, datetime
 import numpy as np  # For type conversion
 
 from optimization.parameter_space import ParameterSpace
@@ -28,6 +28,8 @@ from evaluation.metrics import OptimizationMetrics
 from evaluation.fitness import FitnessEvaluator
 from evaluation.candidate_store import CandidateStore
 from evaluation.ranker import CandidateRanker
+
+from ga.ga_engine import GeneticOptimizer
 
 print("✅ All imports successful")
 
@@ -290,20 +292,22 @@ class BacktestOrchestrator:
             zone_dir = self.base_dir / zone_name / self.timestamp
             zone_dir.mkdir(parents=True, exist_ok=True)
             
-            # Build parameter space
+            # Check if random search is enabled
             random_search_config = self.config.get("random_search", {})
             if not random_search_config.get("enabled", True):
                 print(f"  ⏭️ Random search disabled, skipping zone {zone_name}")
-                continue  # ✅ This skips only this zone
-                
+                continue
+            
             n_samples = random_search_config.get("samples_per_zone", 150)
-                       
+            
             try:
+                # Build parameter space and sampler
                 space = ParameterSpace(zone_cfg).build()
                 sampler = ParameterSampler(space, n_samples=n_samples)
-                samples = sampler.random_sample()
                 
-                print(f"   Generated {len(samples)} parameter sets")
+                # Get samples for random search
+                samples = sampler.random_sample()
+                print(f"   Generated {len(samples)} parameter sets for random search")
                 
                 # Initialize fitness evaluator
                 fitness_engine = FitnessEvaluator(
@@ -311,43 +315,38 @@ class BacktestOrchestrator:
                     weights=self.config["fitness"]["weights"]
                 )
                 
+                # Initialize candidate store
                 store = CandidateStore(zone_dir)
                 
-                successful = 0
-                total_to_process = min(5, len(samples))  # Process first 10 for testing
+                # ========== RANDOM SEARCH PHASE ==========
+                print(f"\n   🎯 Starting Random Search Phase")
+                random_candidates = []
+                successful_random = 0
                 
-                print(f"   Processing first {total_to_process} samples...")
+                # Process random samples (limited for testing)
+                total_to_process = min(len(samples), 5)  # Process first 5 for testing
                 
                 for i in range(total_to_process):
                     params = samples[i]
-                    print(f"\n   Sample {i+1}/{total_to_process}")
+                    print(f"\n   Random Sample {i+1}/{total_to_process}")
                     
                     # Create config file
                     temp_yaml = self.create_temp_yaml(params, zone_name, i, "random")
                     
-                    # For now, simulate running the strategy
-                    print(f"   📄 Config: {temp_yaml.name}")
-
-                    # Run the actual strategy
+                    # Run strategy
                     report_path = self.run_strategy(temp_yaml, zone_dir, i)
                     
                     if report_path and report_path.exists():
-                        # Get real metrics from the report
+                        # Extract metrics
                         metrics_extractor = OptimizationMetrics(str(report_path))
-
-                        metrics_extractor.debug_info()
-
                         real_metrics = metrics_extractor.get()
                         
-                        print(f"    📊 Extracted metrics:")
-                        for key, value in real_metrics.items():
-                            print(f"      {key}: {value}")
-
                         # Check constraints
                         if fitness_engine.passes_constraints(real_metrics):
                             score = fitness_engine.score(real_metrics)
                             print(f"    ✅ Passed constraints, score: {score:.4f}")
                             
+                            # Store candidate
                             store.add(
                                 params=params,
                                 metrics=real_metrics,
@@ -356,30 +355,48 @@ class BacktestOrchestrator:
                                 sample_index=i,
                                 source="random"
                             )
-                            successful += 1
-                        else:
-                            print(f"   ❌ Failed constraints")
-                    else:
-                        print(f"   ⚠️  No report generated, using simulated metrics")
-                        # Fallback to simulated metrics for testing
-                        simulated_metrics = self.create_simulated_metrics(i)
-                        if fitness_engine.passes_constraints(simulated_metrics):
-                            score = fitness_engine.score(simulated_metrics)
-                            print(f"   ✅ Simulated passed, score: {score:.4f}")
                             
+                            # Add to list for GA initialization
+                            random_candidates.append({
+                                'parameters': params,
+                                'metrics': real_metrics,
+                                'fitness': score
+                            })
+                            
+                            successful_random += 1
+                        else:
+                            print(f"    ❌ Failed constraints")
+                    else:
+                        print(f"    ⚠️  Strategy execution failed")
+                
+                print(f"\n   ✅ Random Search completed")
+                print(f"   - Processed: {total_to_process}")
+                print(f"   - Successful: {successful_random}")
+                
+                # ========== GENETIC ALGORITHM PHASE ==========
+                if successful_random > 0:
+                    ga_results = self.integrate_genetic_algorithm(
+                        zone_name=zone_name,
+                        zone_cfg=zone_cfg,
+                        zone_dir=zone_dir,
+                        fitness_engine=fitness_engine,
+                        initial_candidates=random_candidates,
+                        sampler=sampler
+                    )
+                    
+                    # Store GA candidates
+                    if ga_results:
+                        for i, (params, score, metrics) in enumerate(ga_results):
                             store.add(
                                 params=params,
-                                metrics=simulated_metrics,
+                                metrics=metrics,
                                 fitness=score,
                                 zone_name=zone_name,
-                                sample_index=i,
-                                source="random_simulated"
+                                sample_index=i + len(samples),  # Continue numbering
+                                source="ga"
                             )
-                            successful += 1
-                        else:
-                            print(f"   ❌ Simulated failed constraints")
                 
-                # Save results
+                # Save all candidates
                 store.save()
                 
                 # Rank and save top candidates
@@ -387,19 +404,23 @@ class BacktestOrchestrator:
                     ranker = CandidateRanker(store.candidates)
                     top = ranker.top_n(n=5)
                     
+                    top_clean = self.clean_for_json(top)
+
                     results_file = zone_dir / "top_candidates.json"
                     with open(results_file, 'w') as f:
-                        json.dump(top, f, indent=2)
+                        json.dump(top_clean, f, indent=2)
                     
-                    print(f"\n   🏆 Results saved:")
-                    print(f"   - Total processed: {total_to_process}")
-                    print(f"   - Passed constraints: {successful}")
-                    print(f"   - Top candidates: {results_file}")
+                    print(f"\n   🏆 Final Results:")
+                    print(f"   - Total candidates: {len(store.candidates)}")
+                    print(f"   - Results saved: {results_file}")
                     
-                    # Show top 3
+                    # Show top candidates
                     print(f"\n   Top 3 candidates:")
                     for j, candidate in enumerate(top[:3], 1):
-                        print(f"   {j}. Fitness: {candidate['fitness']:.4f}")  # Changed 'Score' to 'Fitness'
+                        print(f"   {j}. Source: {candidate.get('source', 'unknown')}")
+                        print(f"      Fitness: {candidate.get('fitness', 0):.4f}")
+                        print(f"      Net P&L: {candidate.get('metrics', {}).get('net_pnl', 0):.2f}")
+                        print(f"      Win Rate: {candidate.get('metrics', {}).get('winrate', 0):.2%}")
                 
                 else:
                     print(f"\n   ⚠️  No candidates passed constraints")
@@ -522,6 +543,113 @@ class BacktestOrchestrator:
             "trades_per_day": 4.0 + sample_index * 0.2
         }
     
+    def clean_for_json(self, obj):
+        """Recursively clean numpy types for JSON serialization"""
+        if isinstance(obj, dict):
+            return {k: self.clean_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.clean_for_json(v) for v in obj]
+        elif isinstance(obj, (np.integer, np.floating)):
+            return obj.item()  # Convert to Python int/float
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()  # Convert numpy arrays to lists
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()  # Convert dates to strings
+        else:
+            return obj
+        
+    def integrate_genetic_algorithm(self, zone_name, zone_cfg, zone_dir, fitness_engine, 
+                                   initial_candidates, sampler):
+        """Integrate GA optimization into the pipeline"""
+        
+        # Check if GA is enabled in config
+        ga_config = self.config.get("genetic", {})
+        if not ga_config.get("enabled", False):
+            print(f"   ⏭️ GA optimization disabled, skipping")
+            return []
+        
+        print(f"\n   🧬 Starting Genetic Algorithm optimization for zone: {zone_name}")
+        
+        try:
+            # Import GA optimizer (delayed import to avoid circular dependencies)
+            from ga.ga_engine import GeneticOptimizer
+            
+            # Create GA optimizer
+            ga_optimizer = GeneticOptimizer(
+                sampler=sampler,
+                orchestrator=self,
+                fitness_engine=fitness_engine,
+                config=ga_config,
+                zone_name=zone_name,
+                zone_dir=zone_dir
+            )
+            
+            # Prepare initial population from best random candidates
+            if initial_candidates:
+                # Sort by fitness first
+                sorted_candidates = sorted(
+                    initial_candidates,
+                    key=lambda x: x.get('fitness', -1000),
+                    reverse=True
+                )
+                
+                # Convert initial candidates to parameter sets
+                initial_population = []
+                for candidate in sorted_candidates[:10]:  # Take top 10
+                    if isinstance(candidate, dict) and 'parameters' in candidate:
+                        initial_population.append(candidate['parameters'])
+                    elif isinstance(candidate, tuple) and len(candidate) > 0:
+                        initial_population.append(candidate[0])  # Assuming (params, score, metrics)
+                
+                print(f"   Using {len(initial_population)} best candidates as initial population")
+            else:
+                initial_population = None
+                print(f"   No initial candidates, starting with random population")
+            
+            # Run GA
+            ga_results = ga_optimizer.run(initial_population=initial_population)
+            
+            if ga_results:
+                print(f"   ✅ GA completed with {len(ga_results)} candidates")
+                
+                # Save GA results
+                ga_results_file = zone_dir / "ga_results.json"
+                ga_summary = []
+                
+                for i, (params, score, metrics) in enumerate(ga_results):
+                    ga_summary.append({
+                        "rank": i + 1,
+                        "fitness": score,
+                        "parameters": params,
+                        "metrics_summary": {
+                            "net_pnl": metrics.get("net_pnl", 0),
+                            "winrate": metrics.get("winrate", 0),
+                            "drawdown": metrics.get("drawdown", 0),
+                            "expectancy": metrics.get("expectancy", 0)
+                        }
+                    })
+                
+                # Clean numpy types before saving
+                ga_summary_clean = self.clean_for_json(ga_summary)
+                
+                with open(ga_results_file, "w") as f:
+                    json.dump(ga_summary_clean, f, indent=2)
+                
+                print(f"   📊 GA results saved to: {ga_results_file}")
+                
+                # Return GA results
+                return ga_results
+            
+            else:
+                print(f"   ⚠️ GA optimization produced no results")
+                return []
+                
+        except Exception as e:
+            print(f"   ❌ GA optimization failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
     def map_parameters_to_config(self, flat_params: dict) -> dict:
         """Convert flat parameters to nested structure"""
         config_updates = {}

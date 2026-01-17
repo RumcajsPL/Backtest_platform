@@ -1,0 +1,45 @@
+asset:
+  currency: EUR
+  symbol: DEUIDXEUR
+data:
+  date_range:
+    end: '2024-01-07'
+    start: '2024-01-01'
+  file: Backtest_platform/data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260104.csv
+  file_htf: Backtest_platform/data/processed/ohlcv/DEUIDXEUR_1H_20230101_20260104.csv
+  file_ltf: Backtest_platform/data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv
+  format: csv
+filters:
+  rsi_filter:
+    enabled: true
+    length: 14
+    overbought: 64
+    oversold: 36
+indicator:
+  htf_period: 1H
+  name: WBWS_Trigger
+output:
+  outputs_dir: outputs
+  reports_dir: reports/WBWS
+  save_signals_csv: true
+strategy:
+  name: WBWS Diagnostic Test
+  version: 1.0.0
+trade_management:
+  risk_management:
+    allow_exceed_limit: false
+    enabled: true
+    max_risk_percentile: 0.09
+  sl_tp:
+    atr_length: 11
+    enabled: true
+    risk_to_reward_ratio: 3.5
+    sl_multiplier: 2.0
+  time_filter:
+    enabled: true
+    session_end:
+      hour: 11
+      minute: 30
+    session_start:
+      hour: 7
+      minute: 0

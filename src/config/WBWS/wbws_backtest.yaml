@@ -47,8 +47,8 @@ random_search:
 
 genetic:
   enabled: true
-  population_size: 40
-  generations: 15
+  population_size: 4  #40
+  generations: 2  #15
   mutation_rate: 0.15
   crossover_rate: 0.6
   elite_fraction: 0.2
@@ -118,13 +118,13 @@ zones:
         # timeframe: ["15min", "30min", "1h"]
         timeframe: ["1H"]
       atr:
-        length: [10, 14]
-        multiplier: [1.5, 2.0]
+        length: [12, 14]
+        multiplier: [1.5, 1.8]
 
       risk:
-        max_risk_percentile: [0.08, 0.12]   # 0.08% – 0.12%
+        max_risk_percentile: [0.0025, 0.003]   # 0.08% – 0.12%
 
-      rr_target: [3.0, 4.0]
+      rr_target: [3.0, 3.5]
 
       session:
         windows:
