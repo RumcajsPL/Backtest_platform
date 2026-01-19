@@ -1,9 +1,16 @@
-"""
-FIXED orchestrator.py - Cleans YAML and handles metrics properly
-"""
+import yaml
+import subprocess
+import shutil
+import tempfile
+import json
+from datetime import date, datetime
+import numpy as np  # For type conversion
+import hashlib
+from functools import lru_cache
 import sys
 import os
 from pathlib import Path
+import pickle
 
 print("=" * 70)
 print("🚀 WBWS Backtest Orchestrator - FIXED VERSION")
@@ -14,29 +21,176 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # Import everything
-import yaml
-import subprocess
-import shutil
-import tempfile
-import json
-from datetime import date, datetime
-import numpy as np  # For type conversion
-
 from optimization.parameter_space import ParameterSpace
 from optimization.sampler import ParameterSampler
 from evaluation.metrics import OptimizationMetrics
 from evaluation.fitness import FitnessEvaluator
 from evaluation.candidate_store import CandidateStore
 from evaluation.ranker import CandidateRanker
-
 from ga.ga_engine import GeneticOptimizer
 
 print("✅ All imports successful")
 
+class HybridCacheManager:
+    """Hybrid caching system - simple but effective"""
+    
+    def __init__(self, cache_dir=".orchestrator_cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        
+        # Simple memory caches (dictionaries)
+        self.data_cache = {}          # For loaded data
+        self.yaml_config_cache = {}   # For generated YAML configs (NEW)
+        self.yaml_file_cache = {}     # For YAML file paths (NEW)
+        self.result_cache = {}        # For strategy results
+        self.metric_cache = {}        # For extracted metrics
+        
+        # Persistent disk cache
+        self.disk_cache_file = self.cache_dir / "disk_cache.pkl"
+        self.disk_cache = self._load_disk_cache()
+        
+        # Statistics
+        self.hits = 0
+        self.misses = 0
+    
+    def _load_disk_cache(self):
+        """Load disk cache if exists"""
+        try:
+            if self.disk_cache_file.exists():
+                with open(self.disk_cache_file, 'rb') as f:
+                    return pickle.load(f)
+        except Exception as e:
+            print(f"⚠️  Could not load disk cache: {e}")
+        return {}
+    
+    def save_disk_cache(self):
+        """Save disk cache"""
+        try:
+            with open(self.disk_cache_file, 'wb') as f:
+                pickle.dump(self.disk_cache, f)
+        except Exception as e:
+            print(f"⚠️  Could not save disk cache: {e}")
+    
+    def generate_key(self, *args, **kwargs):
+        """Generate cache key from arguments"""
+        # Convert to JSON string for consistent hashing
+        key_data = {
+            'args': args,
+            'kwargs': kwargs
+        }
+        key_str = json.dumps(key_data, sort_keys=True, default=str)
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
+    @staticmethod
+    def disk_cache():
+        """Decorator factory for disk caching"""
+        def decorator(func):
+            def wrapper(self_instance, *args, **kwargs):
+                # Note: self_instance is the BacktestOrchestrator instance
+                key = self_instance.cache.generate_key(func.__name__, *args, **kwargs)
+                
+                if key in self_instance.cache.disk_cache:
+                    self_instance.cache.hits += 1
+                    return self_instance.cache.disk_cache[key]
+                
+                self_instance.cache.misses += 1
+                result = func(self_instance, *args, **kwargs)
+                self_instance.cache.disk_cache[key] = result
+                return result
+            
+            return wrapper
+        return decorator
+    
+    @classmethod
+    def memory_cache(cls, cache_name="default"):
+        """Decorator factory for memory caching with named cache"""
+        def decorator(func):
+            def wrapper(self_instance, *args, **kwargs):
+                # Generate key
+                key = self_instance.cache.generate_key(func.__name__, *args, **kwargs)
+                
+                # Select cache dictionary
+                cache_dict = cls._get_cache_dict(self_instance, cache_name)
+                
+                if key in cache_dict:
+                    self_instance.cache.hits += 1
+                    return cache_dict[key]
+                
+                self_instance.cache.misses += 1
+                result = func(self_instance, *args, **kwargs)
+                cache_dict[key] = result
+                return result
+            
+            return wrapper
+        return decorator
+    
+    @staticmethod
+    def _get_cache_dict(instance, cache_name):
+        """Helper to get the right cache dictionary"""
+        if cache_name == "data":
+            return instance.cache.data_cache
+        elif cache_name == "yaml_config":
+            return instance.cache.yaml_config_cache
+        elif cache_name == "yaml_file":
+            return instance.cache.yaml_file_cache
+        elif cache_name == "result":
+            return instance.cache.result_cache
+        elif cache_name == "metric":
+            return instance.cache.metric_cache
+        else:
+            return instance.cache.disk_cache  # fallback
+    
+    def get_stats(self):
+        """Get cache statistics"""
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total * 100) if total > 0 else 0
+        
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": f"{hit_rate:.1f}%",
+            "memory_caches": {
+                "data": len(self.data_cache),
+                "yaml_config": len(self.yaml_config_cache),
+                "yaml_file": len(self.yaml_file_cache),
+                "result": len(self.result_cache),
+                "metric": len(self.metric_cache)
+            },
+            "disk_cache": len(self.disk_cache)
+        }
+    
+    def print_stats(self):
+        """Print cache statistics"""
+        stats = self.get_stats()
+        print("\n" + "=" * 60)
+        print("📊 CACHE STATISTICS")
+        print("=" * 60)
+        print(f"Hits: {stats['hits']} | Misses: {stats['misses']}")
+        print(f"Hit Rate: {stats['hit_rate']}")
+        print(f"\nMemory Cache Sizes:")
+        print(f"  Data: {stats['memory_caches']['data']}")
+        print(f"  YAML Config: {stats['memory_caches']['yaml_config']}")
+        print(f"  YAML Files: {stats['memory_caches']['yaml_file']}")
+        print(f"  Results: {stats['memory_caches']['result']}")
+        print(f"  Metrics: {stats['memory_caches']['metric']}")
+        print(f"\nDisk Cache: {stats['disk_cache']} entries")
+        print("=" * 60)
+    
+    def clear_memory(self):
+        """Clear all memory caches"""
+        self.data_cache.clear()
+        self.yaml_config_cache.clear()
+        self.yaml_file_cache.clear()
+        self.result_cache.clear()
+        self.metric_cache.clear()
+        print("🧹 Cleared all memory caches")
 class BacktestOrchestrator:
     def __init__(self, backtest_yaml_path: str):
-        print(f"\n🔧 Initializing with: {backtest_yaml_path}")
         
+        print(f"\n🔧 Initializing cache manager")
+        self.cache = HybridCacheManager()
+        
+        print(f"\n🔧 Initializing with: {backtest_yaml_path}")
         self.backtest_yaml_path = Path(backtest_yaml_path)
         
         if not self.backtest_yaml_path.exists():
@@ -50,9 +204,10 @@ class BacktestOrchestrator:
         self.base_dir = Path("outputs/backtests")
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Load and clean strategy template
+        # Load and cache template
         self.strategy_template = self.load_and_clean_template()
-    
+
+    @lru_cache(maxsize=1)
     def load_and_clean_template(self):
         """Load strategy template and convert numpy types to Python types"""
         config_dir = self.backtest_yaml_path.parent
@@ -191,14 +346,23 @@ class BacktestOrchestrator:
     
     def run(self):
         print("\n" + "=" * 70)
-        print("🎯 STARTING ORCHESTRATION")
+        print("🎯 STARTING ORCHESTRATION (WITH HYBRID CACHING)")
         print("=" * 70)
         
-        # First, test that we can create and read YAML files
-        self.test_yaml_creation()
+        # Clear previous memory cache if needed (optional)
+        # self.cache.clear_memory()
         
-        # Then run the actual optimization
+        # Run optimization
         self.run_full_optimization()
+        
+        # Print cache statistics
+        self.cache.print_stats()
+        
+        # Save disk cache for next run
+        self.cache.save_disk_cache()
+        
+        print(f"\n💾 Disk cache saved for next run")
+        print("=" * 70)
     
     def test_yaml_creation(self):
         """Test YAML creation and reading"""
@@ -437,8 +601,27 @@ class BacktestOrchestrator:
         print("=" * 70)
             
     def run_strategy(self, strategy_yaml_path: Path, output_dir: Path, sample_index: int) -> Path:
+        """Run strategy with result caching"""
         print(f"    ▶ Running strategy with config: {strategy_yaml_path.name}")
         
+        # Create cache key from file content
+        with open(strategy_yaml_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        content_hash = hashlib.md5(content.encode()).hexdigest()
+        cache_key = f"strategy_result_{content_hash}"
+        
+        # Check cache
+        if cache_key in self.cache.result_cache:
+            cached_report = self.cache.result_cache[cache_key]
+            if cached_report.exists():
+                print(f"    🔄 Using cached strategy results")
+                # Copy to output directory
+                report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
+                if not report_copy.exists():
+                    shutil.copy(cached_report, report_copy)
+                return report_copy
+        
+        # Run strategy (your existing code)
         project_root = Path(__file__).parent.parent.parent
         
         # Set encoding for Windows
@@ -460,36 +643,23 @@ class BacktestOrchestrator:
                 text=True,
                 cwd=str(project_root),
                 env=env,
-                encoding='utf-8',  # Explicit encoding
-                errors='replace'   # Replace invalid chars instead of failing
+                encoding='utf-8',
+                errors='replace'
             )
                         
             if result.stdout:
-                # Look for success message
                 if "ENHANCED STRATEGY EXECUTION COMPLETED" in result.stdout:
                     print(f"    ✅ Strategy completed successfully")
-                print(f"    📋 Stdout snippet: {result.stdout[-500:] if len(result.stdout) > 500 else result.stdout}")
             
             if result.stderr:
                 print(f"    ⚠ Stderr: {result.stderr[:500]}...")
                 
         except subprocess.CalledProcessError as e:
             print(f"    ❌ Strategy execution failed with exit code: {e.returncode}")
-            print(f"    🔍 Working directory was: {project_root}")
-            
             if e.stdout:
                 print(f"    📋 Stdout (last 500 chars): {e.stdout[-500:] if len(e.stdout) > 500 else e.stdout}")
             if e.stderr:
                 print(f"    🔴 Stderr (first 500 chars): {e.stderr[:500]}...")
-                
-                # Check for specific errors
-                if "ModuleNotFoundError" in e.stderr:
-                    print(f"    💡 Module error detected!")
-                    if "pandas" in e.stderr:
-                        print(f"    💡 Pandas not found. Check if venv is activated in subprocess.")
-                    if "strategy_modules" in e.stderr:
-                        print(f"    💡 strategy_modules import error - likely wrong working directory")
-            
             return None
         except Exception as e:
             print(f"    ❌ Unexpected error running strategy: {e}")
@@ -498,7 +668,7 @@ class BacktestOrchestrator:
             return None
 
         # Find the latest report
-        reports_dir = project_root / "outputs" / "reports" / "WBWS"  # Use full path
+        reports_dir = project_root / "outputs" / "reports" / "WBWS"
         print(f"    🔍 Looking for reports in: {reports_dir}")
         
         if reports_dir.exists():
@@ -511,6 +681,9 @@ class BacktestOrchestrator:
                 report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
                 shutil.copy(latest_report, report_copy)
                 print(f"    ✔ Report saved to {report_copy}")
+                
+                # Cache the result
+                self.cache.result_cache[cache_key] = report_copy
                 return report_copy
             else:
                 print(f"    ⚠ No report files found in {reports_dir}")
@@ -518,7 +691,7 @@ class BacktestOrchestrator:
         else:
             print(f"    ⚠ Reports directory not found: {reports_dir}")
             return None
-    
+
     def create_simulated_metrics(self, sample_index: int) -> dict:
         """Create complete simulated metrics with all required keys"""
         base_value = 1000 + sample_index * 50
@@ -571,9 +744,7 @@ class BacktestOrchestrator:
         print(f"\n   🧬 Starting Genetic Algorithm optimization for zone: {zone_name}")
         
         try:
-            # Import GA optimizer (delayed import to avoid circular dependencies)
-            from ga.ga_engine import GeneticOptimizer
-            
+                      
             # Create GA optimizer
             ga_optimizer = GeneticOptimizer(
                 sampler=sampler,
@@ -650,6 +821,7 @@ class BacktestOrchestrator:
             traceback.print_exc()
             return []
 
+    @HybridCacheManager.disk_cache()
     def map_parameters_to_config(self, flat_params: dict) -> dict:
         """Convert flat parameters to nested structure"""
         config_updates = {}
@@ -728,14 +900,17 @@ class BacktestOrchestrator:
         }
         
         return config_updates
-
-    def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "test") -> Path:
-        """Create a temporary YAML file with cleaned types"""
+    
+    @HybridCacheManager.memory_cache(cache_name="yaml_config")
+    def _generate_yaml_config(self, params: dict, zone_name: str) -> dict:
+        """Cached: Pure function that generates YAML config dict"""
         # Start with template
         config = self.strategy_template.copy()
         
-        # Apply parameter mapping
+        # Apply parameter mapping (already cached via @disk_cache)
         config_updates = self.map_parameters_to_config(params)
+        
+        # Apply updates to config
         for section, updates in config_updates.items():
             if section not in config:
                 config[section] = updates
@@ -744,28 +919,51 @@ class BacktestOrchestrator:
             else:
                 config[section] = updates
         
-        # Clean any numpy types before saving
+        # Clean any numpy types
         config = self.clean_numpy_types(config)
         
-        # Create temp file
+        return config
+
+    def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "test") -> Path:
+        """Create temp YAML file with intelligent caching"""
+        print(f"   💾 Creating YAML for {zone_name}_{source}_{sample_index}")
+        
+        # 1. Generate/retrieve config (cached via decorator)
+        config = self._generate_yaml_config(params, zone_name)
+        
+        # 2. Check for existing file (manual file cache)
+        file_key = self.cache.generate_key("yaml_file", zone_name, params, source)
+        if file_key in self.cache.yaml_file_cache:
+            cached_file = self.cache.yaml_file_cache[file_key]
+            if cached_file.exists():
+                print(f"   🔄 Using cached YAML file")
+                return cached_file
+        
+        # 3. Convert config to YAML string
+        yaml_content = yaml.dump(config, default_flow_style=False, sort_keys=False)
+        
+        # 4. Create temp file with unique name
         temp_dir = Path(tempfile.gettempdir())
         temp_file = temp_dir / f"wbws_{zone_name}_{source}_{sample_index}.yaml"
         
         with open(temp_file, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
+            f.write(yaml_content)
         
-        # Save a copy for debugging
+        # 5. Save a debug copy
         debug_dir = self.base_dir / "debug" / self.timestamp
         debug_dir.mkdir(parents=True, exist_ok=True)
         debug_file = debug_dir / f"{zone_name}_{source}_{sample_index}.yaml"
         
         with open(debug_file, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            f.write(yaml_content)
         
         print(f"   💾 Debug copy: {debug_file.relative_to(self.base_dir)}")
         
+        # 6. Cache file path
+        self.cache.yaml_file_cache[file_key] = temp_file
+        
         return temp_file
-
+    
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("❌ Usage: python orchestrator_fixed.py <backtest_yaml>")

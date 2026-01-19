@@ -2,6 +2,7 @@ import random
 from ga.selection import TournamentSelection
 from ga.crossover import UniformCrossover
 from ga.mutation import ParameterMutation
+from ga.population import Population  
 
 class GeneticOptimizer:
     def __init__(self, sampler, orchestrator, fitness_engine, config, zone_name, zone_dir):
@@ -24,16 +25,11 @@ class GeneticOptimizer:
         self.selector = TournamentSelection(self.tournament_k)
         self.crossover_op = UniformCrossover()
         self.mutation_op = ParameterMutation(sampler, self.mutation_rate)
+        self.population_generator = Population(sampler, self.population_size)
     
     def get_random_parameters(self):
-        """Get random parameters using the sampler"""
-        # Check if sampler has sample() method, otherwise use random_sample()
-        if hasattr(self.sampler, 'sample'):
-            return self.sampler.sample()
-        else:
-            # Fallback to random_sample()[0]
-            samples = self.sampler.random_sample(n_samples=1)
-            return samples[0] if samples else {}
+        """Get random parameters using the Population generator"""
+        return self.population_generator.get_random_parameters()
     
     def evaluate_individual(self, params, individual_index):
         """Evaluate a single parameter set"""
@@ -57,12 +53,12 @@ class GeneticOptimizer:
                 return (params, score, real_metrics)
             else:
                 # Return metrics anyway, but with penalty score
-                return (params, -1000, real_metrics)  # Or add a note like real_metrics['failure_reason'] = 'Constraints violated'
-
-        if not self.fitness.passes_constraints(real_metrics):
-            print(f"⚠️ Candidate {individual_index} failed constraints: {real_metrics}")  # Or log to file    
+                return (params, -1000, real_metrics)
         
-        return (params, -1000, {})  # Fallback for no-report cases (rare now)
+        if not self.fitness.passes_constraints(real_metrics):
+            print(f"⚠️ Candidate {individual_index} failed constraints: {real_metrics}")
+        
+        return (params, -1000, {})  # Fallback for no-report cases
     
     def run(self, initial_population=None):
         """Run GA optimization"""
@@ -71,15 +67,30 @@ class GeneticOptimizer:
         print(f"   Generations: {self.generations}")
         print(f"   Mutation rate: {self.mutation_rate}")
         
-        # Initialize population
+        # Initialize population using Population class
         if initial_population:
+            # Use provided initial population
             population = initial_population[:self.population_size]
+            
+            # If initial population is smaller than required, generate the rest
+            if len(population) < self.population_size:
+                remaining_count = self.population_size - len(population)
+                additional = self.population_generator.generate()[:remaining_count]
+                population.extend(additional)
         else:
-            population = []
+            # Generate full random population
+            population = self.population_generator.generate()
         
-        # Fill population if needed
-        while len(population) < self.population_size:
-            population.append(self.get_random_parameters())
+        # Validate population size
+        if len(population) != self.population_size:
+            print(f"⚠️  Warning: Population size mismatch. Expected {self.population_size}, got {len(population)}")
+            # Adjust if needed
+            if len(population) > self.population_size:
+                population = population[:self.population_size]
+            else:
+                # Fallback: generate missing individuals
+                while len(population) < self.population_size:
+                    population.append(self.get_random_parameters())
         
         # Evaluate initial population
         evaluated = []

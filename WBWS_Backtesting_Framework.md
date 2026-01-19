@@ -112,8 +112,8 @@ The orchestrator is the **central control unit** of the system.
 - Reads JSON / CSV outputs
 - Computes fitness
 - Selects best configs
-- Runs Walk-Forward Optimization
-- Runs Monte Carlo simulations
+- (Runs Walk-Forward Optimization)
+- (Runs Monte Carlo simulations)
 - Saves and compares results
 ---
 ## 7. Configuration File – `wbws_backtest.yaml`
@@ -169,17 +169,8 @@ The orchestrator is the **central control unit** of the system.
 - Sort by fitness
 - Extract Top-N
 - Optionally filter by robustness metrics
-### 8.4 Walk-Forward Optimization (WFO)
-- Train on in-sample window
-- Test on out-of-sample window
-- Roll forward
-- Aggregate performance
-- Rank by stability + performance
-`window_generator.py` (Defines rolling train/test splits)
-`wfo_evaluator.py` (Runs strategy per window and scores robustness)
-`wfo_engine.py` (Orchestrates rolling evaluation)
-### 8.5 Genetic Algorithm (GA)
-- Uses WFO fitness (not in-sample luck)
+### 8.4 Genetic Algorithm (GA)
+- Uses fitness (not in-sample luck)
 - Evolves parameter sets
 - Respects your parameter zones
 - Avoids brute-force explosion
@@ -190,6 +181,15 @@ The orchestrator is the **central control unit** of the system.
 `crossover.py`
 `mutation.py`
 `ga_engine.py`
+### 8.5 Walk-Forward Optimization (WFO)
+- Train on in-sample window
+- Test on out-of-sample window
+- Roll forward
+- Aggregate performance
+- Rank by stability + performance
+`window_generator.py` (Defines rolling train/test splits)
+`wfo_evaluator.py` (Runs strategy per window and scores robustness)
+`wfo_engine.py` (Orchestrates rolling evaluation)
 ### 8.6 Monte Carlo Testing
 - Trade shuffling - Order dependency
 - Return resampling - Distribution robustness
@@ -219,16 +219,37 @@ The orchestrator is the **central control unit** of the system.
 ------------------------------------------
 # 10. Concerns & Configuration Issues Log  
 ## 10.1 Orchestrator Troubleshooting
-### Fixed Issues
+### Fixed Issues / Concern points
 - Yaml configuration file cleaned and unified
 - orchestrator_fixed.py created as troubleshooting copy of orchestrator.py
 - orchestrator_fixed.py troubleshooted succesfully optimization, evaluation, strategy integration
-### Remaining Issues
-- Re-integration of GA in orchestrator_fixed.py  
-- Re-integration of WFO in orchestrator_fixed.py 
-- Re-integration of Monte Carlo in orchestrator_fixed.py
+- integration of GA in orchestrator_fixed.py  
+### Remaining Issues / Concern points
+### 10.1.1 Non critical issues / concern points
+- GA population.py reintegration
+- Perf improvment cache integration
+- Better Random Search + GA Integration
+  - GA starts with ALL best random candidates
+  - No dilution with random individuals
+  - Focused search around promising regions
+- Rest of perf optimizations:
+  - Parallel execution
+  - Vectorized operations in strategy
+  - Reduced I/O (batch file operations) 
+- Recovery mechanism (continue from last good state)
+- Inconsistencies in Data Handling and Dates
+- Floating-point precision and type handling could introduce subtle inconsistencie in some scripts
+- Subprocess and file handling lacks full error resilience in some scripts GA
+- Error handling for rest pending edge cases
+- Metrics Extraction Assumptions
+- Add Deduplication (analyze 1st as might be no issue with bigger populations)
+- latin_hypercube in config unused—sampler is random
+- Logging system with levels ?
 - Final updates of orchestrator_fixed.py
 - Switch from orchestrator_fixed.py into orchestrator_fixed.py (clean version no debug or troubleshooting code)
+### 10.1.2 Future evolutions
+- Re-integration of WFO in orchestrator_fixed.py 
+- Re-integration of Monte Carlo in orchestrator_fixed.py
 ---
 ## 10.2 Dependency Requirements
 | Module | Required Methods |
