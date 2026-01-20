@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 import hashlib
 import pickle
-
 class DataLoader:
     def __init__(self, config_path: str):
         self.config_path = Path(config_path).resolve()
@@ -14,9 +13,9 @@ class DataLoader:
         self.df_full = None
         self.df_strategy = None
         self.df_htf = None
-        self.df_ltf = None  # New: LTF DataFrame for execution
+        self.df_ltf = None  # LTF DataFrame for execution
         
-        # CACHE INITIALIZATION - NEW
+        # CACHE INITIALIZATION
         self.cache_dir = Path.home() / ".wbws_data_cache"
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_hits = 0
@@ -28,7 +27,6 @@ class DataLoader:
             self.config = yaml.safe_load(f)
         return self.config
     
-    # NEW: CACHE HELPER METHODS
     def _get_cache_key(self, file_path: Path, start_date=None, end_date=None):
         """Generate unique cache key for file and date range"""
         if not file_path.exists():
@@ -115,7 +113,7 @@ class DataLoader:
         
         # Construct and ensure base file path is Path
         data_file = data_cfg['file']
-        data_file = Path(data_file)  # Zawsze konwertuj na Path
+        data_file = Path(data_file)  # conversion to Path
         if not data_file.is_absolute():
             data_file = self.project_root / data_file
         
@@ -132,7 +130,7 @@ class DataLoader:
         self.df_htf = None
         if 'file_htf' in data_cfg:
             htf_file = data_cfg['file_htf']
-            htf_file = Path(htf_file)  # Zawsze konwertuj na Path
+            htf_file = Path(htf_file)  # conversion to Path
             if not htf_file.is_absolute():
                 htf_file = self.project_root / htf_file
             
@@ -142,7 +140,7 @@ class DataLoader:
         self.df_ltf = None
         if 'file_ltf' in data_cfg:
             ltf_file = data_cfg['file_ltf']
-            ltf_file = Path(ltf_file)  # Zawsze konwertuj na Path
+            ltf_file = Path(ltf_file)  # conversion to Path
             if not ltf_file.is_absolute():
                 ltf_file = self.project_root / ltf_file
             
@@ -216,8 +214,7 @@ class DataLoader:
         
         validation['is_valid'] = all(validation.values())
         return validation
-    
-    # NEW: Cache management methods
+        
     def get_cache_stats(self) -> Dict:
         """Get cache statistics"""
         total = self.cache_hits + self.cache_misses

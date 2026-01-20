@@ -5,6 +5,8 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
+from scipy import stats
+
 # Get project root
 project_root = Path(__file__).resolve().parent.parent
 
@@ -256,6 +258,17 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             performance_metrics, csv_path
         )
         
+        # Get DataLoader cache stats
+        data_loader_stats = data_loader.get_cache_stats()
+
+        # Add DataLoader stats to report_data
+        if 'validation' not in report_data:
+            report_data['validation'] = {}
+        report_data['validation']['data_loader_cache_stats'] = data_loader_stats
+
+        # Also add to top level for easy access
+        report_data['data_loader_cache_stats'] = data_loader_stats
+
         # Add progressive tracking info to report
         if 'progressive_tracking' not in report_data:
             report_data['progressive_tracking'] = {}
@@ -325,6 +338,8 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print(f"\n⏱️  Execution Time:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("\n" + "="*70)
         
+        data_loader_stats = data_loader.get_cache_stats()
+                        
         print("\n" + "="*50)
         print("FINAL CACHE STATISTICS (for data_loader)")
         stats = data_loader.get_cache_stats()
@@ -336,6 +351,15 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print(f"Cache dir: {stats['cache_dir']}")
         print("="*50 + "\n")
 
+      # ======== ADD THIS SECTION ========
+        # Add DataLoader stats to report_data for orchestrator to extract
+        if 'validation' not in report_data:
+            report_data['validation'] = {}
+        report_data['validation']['data_loader_cache_stats'] = stats
+
+        # Also add to top level for easy access (optional but helpful)
+        report_data['data_loader_cache_stats'] = stats
+
         return df_strategy, simulation_results['all_trades'], report_data
 
     except Exception as e:
@@ -345,7 +369,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         sys.exit(1)
     
 if __name__ == "__main__":
-    import pandas as pd
+    # import pandas as pd
     
     if len(sys.argv) > 1:
         verbose_flag = '--verbose' in sys.argv

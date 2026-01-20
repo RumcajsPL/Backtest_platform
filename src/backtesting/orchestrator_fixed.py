@@ -4,13 +4,14 @@ import shutil
 import tempfile
 import json
 from datetime import date, datetime
-import numpy as np  # For type conversion
+import numpy as np
 import hashlib
 from functools import lru_cache
 import sys
 import os
 from pathlib import Path
 import pickle
+from typing import List, Dict
 
 print("=" * 70)
 print("🚀 WBWS Backtest Orchestrator - FIXED VERSION")
@@ -40,8 +41,8 @@ class HybridCacheManager:
         
         # Simple memory caches (dictionaries)
         self.data_cache = {}          # For loaded data
-        self.yaml_config_cache = {}   # For generated YAML configs (NEW)
-        self.yaml_file_cache = {}     # For YAML file paths (NEW)
+        self.yaml_config_cache = {}   # For generated YAML configs
+        self.yaml_file_cache = {}     # For YAML file paths
         self.result_cache = {}        # For strategy results
         self.metric_cache = {}        # For extracted metrics
         
@@ -52,6 +53,7 @@ class HybridCacheManager:
         # Statistics
         self.hits = 0
         self.misses = 0
+        self.data_loader_stats_collector = None  # Set by orchestrator
     
     def _load_disk_cache(self):
         """Load disk cache if exists"""
@@ -139,43 +141,90 @@ class HybridCacheManager:
             return instance.cache.metric_cache
         else:
             return instance.cache.disk_cache  # fallback
-    
+    def set_data_loader_stats_collector(self, stats_collector):
+        """Set reference to DataLoader stats collector"""
+        self.data_loader_stats_collector = stats_collector
+
     def get_stats(self):
         """Get cache statistics"""
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
         
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "hit_rate": f"{hit_rate:.1f}%",
-            "memory_caches": {
-                "data": len(self.data_cache),
-                "yaml_config": len(self.yaml_config_cache),
-                "yaml_file": len(self.yaml_file_cache),
-                "result": len(self.result_cache),
-                "metric": len(self.metric_cache)
-            },
-            "disk_cache": len(self.disk_cache)
+        stats = {
+            "orchestrator": {
+                "hits": self.hits,
+                "misses": self.misses,
+                "hit_rate": f"{hit_rate:.1f}%",
+                "memory_caches": {
+                    "data": len(self.data_cache),
+                    "yaml_config": len(self.yaml_config_cache),
+                    "yaml_file": len(self.yaml_file_cache),
+                    "result": len(self.result_cache),
+                    "metric": len(self.metric_cache)
+                },
+                "disk_cache": len(self.disk_cache)
+            }
         }
-    
+        
+        # Add DataLoader stats if available
+        if self.data_loader_stats_collector:
+            data_loader_summary = self.data_loader_stats_collector.get_summary()
+            stats["data_loader"] = data_loader_summary
+        
+        return stats
+
     def print_stats(self):
-        """Print cache statistics"""
+        """Print cache statistics including DataLoader stats"""
         stats = self.get_stats()
-        print("\n" + "=" * 60)
-        print("📊 CACHE STATISTICS")
-        print("=" * 60)
-        print(f"Hits: {stats['hits']} | Misses: {stats['misses']}")
-        print(f"Hit Rate: {stats['hit_rate']}")
-        print(f"\nMemory Cache Sizes:")
-        print(f"  Data: {stats['memory_caches']['data']}")
-        print(f"  YAML Config: {stats['memory_caches']['yaml_config']}")
-        print(f"  YAML Files: {stats['memory_caches']['yaml_file']}")
-        print(f"  Results: {stats['memory_caches']['result']}")
-        print(f"  Metrics: {stats['memory_caches']['metric']}")
-        print(f"\nDisk Cache: {stats['disk_cache']} entries")
-        print("=" * 60)
-    
+        print("\n" + "="*60)
+        print("📊 UNIFIED CACHE STATISTICS")
+        print("="*60)
+        
+        # Orchestrator stats
+        orchestrator_stats = stats["orchestrator"]
+        print(f"\n🧠 ORCHESTRATOR CACHES (YAML/Results):")
+        print(f"  Hits: {orchestrator_stats['hits']} | Misses: {orchestrator_stats['misses']}")
+        print(f"  Hit Rate: {orchestrator_stats['hit_rate']}")
+        print(f"\n  Memory Cache Sizes:")
+        print(f"    Data: {orchestrator_stats['memory_caches']['data']}")
+        print(f"    YAML Config: {orchestrator_stats['memory_caches']['yaml_config']}")
+        print(f"    YAML Files: {orchestrator_stats['memory_caches']['yaml_file']}")
+        print(f"    Results: {orchestrator_stats['memory_caches']['result']}")
+        print(f"    Metrics: {orchestrator_stats['memory_caches']['metric']}")
+        print(f"  Disk Cache: {orchestrator_stats['disk_cache']} entries")
+        
+        # DataLoader stats
+        if "data_loader" in stats:
+            dl_stats = stats["data_loader"]
+            print(f"\n💽 DATALOADER CACHE (OHLCV Data):")
+            print(f"  Hits: {dl_stats.get('hits', 0)} | Misses: {dl_stats.get('misses', 0)}")
+            print(f"  Hit Rate: {dl_stats.get('hit_rate', '0%')}")
+            print(f"  Total Requests: {dl_stats.get('total_requests', 0)}")
+            print(f"  Cache Files: {dl_stats.get('cache_files', 0)}")
+            print(f"  Cache Size: {dl_stats.get('cache_size_mb', 0):.2f} MB")
+            print(f"  Cache Dir: {dl_stats.get('cache_dir', '~/.wbws_data_cache/')}")
+            
+            # Show summary if we have stats
+            if self.data_loader_stats_collector:
+                total_runs = len(self.data_loader_stats_collector.all_stats)
+                if total_runs > 0:
+                    print(f"\n  Summary across {total_runs} strategy runs:")
+                    print(f"    Average hits per run: {dl_stats.get('hits', 0) // max(total_runs, 1)}")
+                    print(f"    Average misses per run: {dl_stats.get('misses', 0) // max(total_runs, 1)}")
+                    
+                    # Show per-run stats if few runs
+                    if total_runs <= 10:
+                        print(f"\n  Per-run breakdown:")
+                        for i, run_stats in enumerate(self.data_loader_stats_collector.all_stats):
+                            run_hits = run_stats.get('hits', 0)
+                            run_misses = run_stats.get('misses', 0)
+                            run_total = run_hits + run_misses
+                            run_hit_rate = f"{(run_hits/run_total*100):.1f}%" if run_total > 0 else "N/A"
+                            print(f"    Run {i+1}: {run_hits} hits, {run_misses} misses, "
+                                f"Hit rate: {run_hit_rate}")
+        
+        print("="*60)
+
     def clear_memory(self):
         """Clear all memory caches"""
         self.data_cache.clear()
@@ -184,12 +233,77 @@ class HybridCacheManager:
         self.result_cache.clear()
         self.metric_cache.clear()
         print("🧹 Cleared all memory caches")
+
+class DataLoaderStatsCollector:
+    """Collects and aggregates DataLoader cache statistics across strategy runs"""
+    
+    def __init__(self):
+        self.all_stats = []
+        self.aggregated = self._create_empty_stats()
+    
+    def _create_empty_stats(self):
+        """Create empty stats structure"""
+        return {
+            'hits': 0,
+            'misses': 0,
+            'total_requests': 0,
+            'hit_rate': "0%",
+            'cache_files': 0,
+            'cache_size_mb': 0.0,
+            'cache_dir': '~/.wbws_data_cache/'
+        }
+    
+    def add_stats(self, stats: Dict):
+        """Add stats from a DataLoader instance"""
+        if not isinstance(stats, dict):
+            return
+        
+        # Store individual stats
+        self.all_stats.append(stats.copy())
+        
+        # Aggregate hits and misses
+        self.aggregated['hits'] += stats.get('hits', 0)
+        self.aggregated['misses'] += stats.get('misses', 0)
+        
+        # Use latest cache size info (shared across runs)
+        if 'cache_files' in stats:
+            self.aggregated['cache_files'] = stats['cache_files']
+        if 'cache_size_mb' in stats:
+            self.aggregated['cache_size_mb'] = stats['cache_size_mb']
+        if 'cache_dir' in stats:
+            self.aggregated['cache_dir'] = stats['cache_dir']
+        
+        # Recalculate totals and hit rate
+        self.aggregated['total_requests'] = self.aggregated['hits'] + self.aggregated['misses']
+        
+        if self.aggregated['total_requests'] > 0:
+            hit_rate = (self.aggregated['hits'] / self.aggregated['total_requests']) * 100
+            self.aggregated['hit_rate'] = f"{hit_rate:.1f}%"
+        else:
+            self.aggregated['hit_rate'] = "0%"
+    
+    def get_summary(self) -> Dict:
+        """Get summary of all DataLoader cache usage"""
+        return self.aggregated.copy()
+    
+    def get_detailed(self) -> List[Dict]:
+        """Get detailed stats for each strategy run"""
+        return self.all_stats.copy()
+    
+    def clear(self):
+        """Clear collected stats"""
+        self.all_stats = []
+        self.aggregated = self._create_empty_stats()
 class BacktestOrchestrator:
     def __init__(self, backtest_yaml_path: str):
         
         print(f"\n🔧 Initializing cache manager")
         self.cache = HybridCacheManager()
         
+        # Initialize DataLoader stats collector
+        self.data_loader_stats = DataLoaderStatsCollector()
+        self.cache.set_data_loader_stats_collector(self.data_loader_stats)        
+
         print(f"\n🔧 Initializing with: {backtest_yaml_path}")
         self.backtest_yaml_path = Path(backtest_yaml_path)
         
@@ -350,7 +464,7 @@ class BacktestOrchestrator:
         print("=" * 70)
         
         # Clear previous memory cache if needed (optional)
-        # self.cache.clear_memory()
+        self.cache.clear_memory()
         
         # Run optimization
         self.run_full_optimization()
@@ -615,13 +729,16 @@ class BacktestOrchestrator:
             cached_report = self.cache.result_cache[cache_key]
             if cached_report.exists():
                 print(f"    🔄 Using cached strategy results")
+                
+                self._extract_dataloader_stats_from_report(cached_report) # Extract DataLoader stats from cached report
+                
                 # Copy to output directory
                 report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
                 if not report_copy.exists():
                     shutil.copy(cached_report, report_copy)
                 return report_copy
         
-        # Run strategy (your existing code)
+        # Run strategy
         project_root = Path(__file__).parent.parent.parent
         
         # Set encoding for Windows
@@ -677,6 +794,22 @@ class BacktestOrchestrator:
             
             if json_files:
                 latest_report = max(json_files, key=lambda f: f.stat().st_mtime)
+                
+                # DEBUG: Print report content
+                print(f"    🔍 Checking report: {latest_report.name}")
+                try:
+                    with open(latest_report, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        if 'data_loader_cache' in content or 'dataloader_cache_stats' in content:
+                            print(f"    ✅ DataLoader stats found in report")
+                        else:
+                            print(f"    ⚠️ DataLoader stats NOT found in report")
+                            print(f"    Sample of report keys: {list(json.loads(content).keys())[:5]}")
+                except Exception as e:
+                    print(f"    ⚠️ Could not read report: {e}")
+
+                self._extract_dataloader_stats_from_report(latest_report) # Extract DataLoader stats from report
+
                 # Copy report to zone directory
                 report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
                 shutil.copy(latest_report, report_copy)
@@ -691,6 +824,55 @@ class BacktestOrchestrator:
         else:
             print(f"    ⚠ Reports directory not found: {reports_dir}")
             return None
+    
+    def _extract_dataloader_stats_from_report(self, report_path: Path):
+        """Extract DataLoader cache statistics from strategy report"""
+        try:
+            with open(report_path, 'r', encoding='utf-8') as f:
+                report_data = json.load(f)
+            
+            # Try multiple locations for DataLoader stats
+            stats = None
+            
+            # 1. Check top level
+            if 'data_loader_cache_stats' in report_data:
+                stats = report_data['data_loader_cache_stats']
+            
+            # 2. Check validation section
+            elif 'validation' in report_data and 'data_loader_cache' in report_data['validation']:
+                stats = report_data['validation']['data_loader_cache']
+            
+            # 3. Check validation section with different key
+            elif 'validation' in report_data and 'dataloader_cache_stats' in report_data['validation']:
+                stats = report_data['validation']['dataloader_cache_stats']
+            
+            if stats:
+                # Ensure we have the expected keys
+                if isinstance(stats, dict):
+                    # Calculate total_requests if not present
+                    if 'total_requests' not in stats:
+                        hits = stats.get('hits', 0)
+                        misses = stats.get('misses', 0)
+                        stats['total_requests'] = hits + misses
+                    
+                    self.data_loader_stats.add_stats(stats)
+                    
+                    # Print summary
+                    hit_rate = stats.get('hit_rate', 'N/A')
+                    hits = stats.get('hits', 0)
+                    misses = stats.get('misses', 0)
+                    
+                    print(f"    📊 DataLoader: {hit_rate} hit rate "
+                        f"({hits} hits, {misses} misses)")
+                    return True
+                    
+        except Exception as e:
+            print(f"    ⚠️ Could not extract DataLoader stats: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print(f"    ⚠️ No DataLoader stats found in report")
+        return False
 
     def create_simulated_metrics(self, sample_index: int) -> dict:
         """Create complete simulated metrics with all required keys"""
