@@ -325,6 +325,17 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         print(f"\n⏱️  Execution Time:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("\n" + "="*70)
         
+        print("\n" + "="*50)
+        print("FINAL CACHE STATISTICS (for data_loader)")
+        stats = data_loader.get_cache_stats()
+        print(f"Hits: {stats['hits']}")
+        print(f"Misses: {stats['misses']}")
+        print(f"Hit rate: {stats['hit_rate']}")
+        print(f"Cache files: {stats['cache_files']}")
+        print(f"Cache size: {stats['cache_size_mb']:.2f} MB")
+        print(f"Cache dir: {stats['cache_dir']}")
+        print("="*50 + "\n")
+
         return df_strategy, simulation_results['all_trades'], report_data
 
     except Exception as e:
@@ -332,7 +343,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
+    
 if __name__ == "__main__":
     import pandas as pd
     

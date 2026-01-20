@@ -55,7 +55,7 @@ Robust Ranking
 From `<project root>`:
 ```
 script/
-└── run_wbws_strategy.py (strategy runner script uses wbws_rsi_strategy.yaml as its config)
+└── run_wbws_strategy.py (strategy runner script uses .yaml as its config)
 src/
 ├── backtesting/
     ├── __init__.py
@@ -223,11 +223,11 @@ The orchestrator is the **central control unit** of the system.
 - Yaml configuration file cleaned and unified
 - orchestrator_fixed.py created as troubleshooting copy of orchestrator.py
 - orchestrator_fixed.py troubleshooted succesfully optimization, evaluation, strategy integration
-- integration of GA in orchestrator_fixed.py  
+- integration of GA in orchestrator_fixed.py
+- GA population.py reintegrated  
 ### Remaining Issues / Concern points
 ### 10.1.1 Non critical issues / concern points
-- GA population.py reintegration
-- Perf improvment cache integration
+- Perf improvment cache integration (in progress)
 - Better Random Search + GA Integration
   - GA starts with ALL best random candidates
   - No dilution with random individuals

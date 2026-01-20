@@ -599,7 +599,7 @@ class BacktestOrchestrator:
         print("\n" + "=" * 70)
         print("✅ OPTIMIZATION COMPLETED")
         print("=" * 70)
-            
+         
     def run_strategy(self, strategy_yaml_path: Path, output_dir: Path, sample_index: int) -> Path:
         """Run strategy with result caching"""
         print(f"    ▶ Running strategy with config: {strategy_yaml_path.name}")
