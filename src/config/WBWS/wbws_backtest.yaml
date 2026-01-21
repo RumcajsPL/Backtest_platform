@@ -211,3 +211,13 @@ output:
   
   # Verbosity control
   log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+# ============================================================
+# Execution Settings
+# ============================================================
+parallel_execution:
+  enabled: true
+  max_workers: 6          
+  max_retries: 2
+  retry_delay_seconds: 5
+  memory_warning_threshold: 90

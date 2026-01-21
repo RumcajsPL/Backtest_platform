@@ -231,6 +231,8 @@ project_root/
 - pyyaml==6.0.3
 # Additional packages for trade management modules
 - pytz==2025.2
+# Additional packages for for resource monitoring
+- psutil==7.2.1
 ---
 🔄 Development Roadmap (In Progress – target 11/01/2026)
 ### Prepare automated, parameter‑driven backtesting pipelines and algoritms

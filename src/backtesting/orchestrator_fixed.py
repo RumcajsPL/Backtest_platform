@@ -11,10 +11,14 @@ import sys
 import os
 from pathlib import Path
 import pickle
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
+import concurrent.futures
+from threading import Lock, RLock
+import psutil  # For resource monitoring
+import time
 
 print("=" * 70)
-print("🚀 WBWS Backtest Orchestrator - FIXED VERSION")
+print("🚀 WBWS Backtest Orchestrator - PRODUCTION VERSION")
 print("=" * 70)
 
 # Add project root to path
@@ -32,26 +36,55 @@ from ga.ga_engine import GeneticOptimizer
 
 print("✅ All imports successful")
 
+class ThreadSafeCache:
+    """Thread-safe cache wrapper for parallel execution"""
+    
+    def __init__(self):
+        self.lock = RLock()  # Reentrant lock for nested access
+        self._cache = {}
+    
+    def get(self, key, default=None):
+        with self.lock:
+            return self._cache.get(key, default)
+    
+    def set(self, key, value):
+        with self.lock:
+            self._cache[key] = value
+    
+    def __contains__(self, key):
+        with self.lock:
+            return key in self._cache
+    
+    def __len__(self):
+        with self.lock:
+            return len(self._cache)
+    
+    def clear(self):
+        with self.lock:
+            self._cache.clear()
+
 class HybridCacheManager:
-    """Hybrid caching system - simple but effective"""
+    """Enhanced hybrid caching system with thread safety"""
     
     def __init__(self, cache_dir=".orchestrator_cache"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
         
-        # Simple memory caches (dictionaries)
-        self.data_cache = {}          # For loaded data
-        self.yaml_config_cache = {}   # For generated YAML configs
-        self.yaml_file_cache = {}     # For YAML file paths
-        self.result_cache = {}        # For strategy results
-        self.metric_cache = {}        # NEW: For extracted metrics (I/O heavy)
-        self.fitness_cache = {}       # NEW: For fitness scores (CPU bound)
+        # Thread-safe memory caches
+        self.data_cache = ThreadSafeCache()
+        self.yaml_config_cache = ThreadSafeCache()
+        self.yaml_file_cache = ThreadSafeCache()
+        self.result_cache = ThreadSafeCache()
+        self.metric_cache = ThreadSafeCache()
+        self.fitness_cache = ThreadSafeCache()
         
-        # Persistent disk cache
+        # Persistent disk cache with lock
+        self.disk_cache_lock = Lock()
         self.disk_cache_file = self.cache_dir / "disk_cache.pkl"
         self.disk_cache = self._load_disk_cache()
         
-        # Statistics
+        # Statistics with lock
+        self.stats_lock = Lock()
         self.hits = 0
         self.misses = 0
         self.data_loader_stats_collector = None
@@ -66,29 +99,43 @@ class HybridCacheManager:
         return {}
     
     def save_disk_cache(self):
-        try:
-            with open(self.disk_cache_file, 'wb') as f:
-                pickle.dump(self.disk_cache, f)
-        except Exception as e:
-            print(f"⚠️  Could not save disk cache: {e}")
+        with self.disk_cache_lock:
+            try:
+                with open(self.disk_cache_file, 'wb') as f:
+                    pickle.dump(self.disk_cache, f)
+            except Exception as e:
+                print(f"⚠️  Could not save disk cache: {e}")
     
     def generate_key(self, *args, **kwargs):
         key_data = {'args': args, 'kwargs': kwargs}
-        # Use sort_keys=True to ensure consistent hashing for dictionaries
         key_str = json.dumps(key_data, sort_keys=True, default=str)
         return hashlib.md5(key_str.encode()).hexdigest()
+    
+    def increment_hit(self):
+        with self.stats_lock:
+            self.hits += 1
+    
+    def increment_miss(self):
+        with self.stats_lock:
+            self.misses += 1
     
     @staticmethod
     def disk_cache():
         def decorator(func):
             def wrapper(self_instance, *args, **kwargs):
                 key = self_instance.cache.generate_key(func.__name__, *args, **kwargs)
-                if key in self_instance.cache.disk_cache:
-                    self_instance.cache.hits += 1
-                    return self_instance.cache.disk_cache[key]
-                self_instance.cache.misses += 1
+                
+                with self_instance.cache.disk_cache_lock:
+                    if key in self_instance.cache.disk_cache:
+                        self_instance.cache.increment_hit()
+                        return self_instance.cache.disk_cache[key]
+                
+                self_instance.cache.increment_miss()
                 result = func(self_instance, *args, **kwargs)
-                self_instance.cache.disk_cache[key] = result
+                
+                with self_instance.cache.disk_cache_lock:
+                    self_instance.cache.disk_cache[key] = result
+                
                 return result
             return wrapper
         return decorator
@@ -101,12 +148,12 @@ class HybridCacheManager:
                 cache_dict = cls._get_cache_dict(self_instance, cache_name)
                 
                 if key in cache_dict:
-                    self_instance.cache.hits += 1
-                    return cache_dict[key]
+                    self_instance.cache.increment_hit()
+                    return cache_dict.get(key)
                 
-                self_instance.cache.misses += 1
+                self_instance.cache.increment_miss()
                 result = func(self_instance, *args, **kwargs)
-                cache_dict[key] = result
+                cache_dict.set(key, result)
                 return result
             return wrapper
         return decorator
@@ -125,28 +172,29 @@ class HybridCacheManager:
         self.data_loader_stats_collector = stats_collector
 
     def get_stats(self):
-        total = self.hits + self.misses
-        hit_rate = (self.hits / total * 100) if total > 0 else 0
-        
-        stats = {
-            "orchestrator": {
-                "hits": self.hits,
-                "misses": self.misses,
-                "hit_rate": f"{hit_rate:.1f}%",
-                "memory_caches": {
-                    "data": len(self.data_cache),
-                    "yaml_config": len(self.yaml_config_cache),
-                    "yaml_file": len(self.yaml_file_cache),
-                    "result": len(self.result_cache),
-                    "metric": len(self.metric_cache),
-                    "fitness": len(self.fitness_cache)
-                },
-                "disk_cache": len(self.disk_cache)
+        with self.stats_lock:
+            total = self.hits + self.misses
+            hit_rate = (self.hits / total * 100) if total > 0 else 0
+            
+            stats = {
+                "orchestrator": {
+                    "hits": self.hits,
+                    "misses": self.misses,
+                    "hit_rate": f"{hit_rate:.1f}%",
+                    "memory_caches": {
+                        "data": len(self.data_cache),
+                        "yaml_config": len(self.yaml_config_cache),
+                        "yaml_file": len(self.yaml_file_cache),
+                        "result": len(self.result_cache),
+                        "metric": len(self.metric_cache),
+                        "fitness": len(self.fitness_cache)
+                    },
+                    "disk_cache": len(self.disk_cache)
+                }
             }
-        }
-        if self.data_loader_stats_collector:
-            stats["data_loader"] = self.data_loader_stats_collector.get_summary()
-        return stats
+            if self.data_loader_stats_collector:
+                stats["data_loader"] = self.data_loader_stats_collector.get_summary()
+            return stats
 
     def print_stats(self):
         stats = self.get_stats()
@@ -188,11 +236,11 @@ class DataLoaderStatsCollector:
     """Collects and aggregates DataLoader cache statistics across strategy runs"""
     
     def __init__(self):
+        self.lock = Lock()
         self.all_stats = []
         self.aggregated = self._create_empty_stats()
     
     def _create_empty_stats(self):
-        """Create empty stats structure"""
         return {
             'hits': 0,
             'misses': 0,
@@ -204,46 +252,84 @@ class DataLoaderStatsCollector:
         }
     
     def add_stats(self, stats: Dict):
-        """Add stats from a DataLoader instance"""
         if not isinstance(stats, dict):
             return
         
-        # Store individual stats
-        self.all_stats.append(stats.copy())
-        
-        # Aggregate hits and misses
-        self.aggregated['hits'] += stats.get('hits', 0)
-        self.aggregated['misses'] += stats.get('misses', 0)
-        
-        # Use latest cache size info (shared across runs)
-        if 'cache_files' in stats:
-            self.aggregated['cache_files'] = stats['cache_files']
-        if 'cache_size_mb' in stats:
-            self.aggregated['cache_size_mb'] = stats['cache_size_mb']
-        if 'cache_dir' in stats:
-            self.aggregated['cache_dir'] = stats['cache_dir']
-        
-        # Recalculate totals and hit rate
-        self.aggregated['total_requests'] = self.aggregated['hits'] + self.aggregated['misses']
-        
-        if self.aggregated['total_requests'] > 0:
-            hit_rate = (self.aggregated['hits'] / self.aggregated['total_requests']) * 100
-            self.aggregated['hit_rate'] = f"{hit_rate:.1f}%"
-        else:
-            self.aggregated['hit_rate'] = "0%"
+        with self.lock:
+            self.all_stats.append(stats.copy())
+            self.aggregated['hits'] += stats.get('hits', 0)
+            self.aggregated['misses'] += stats.get('misses', 0)
+            
+            if 'cache_files' in stats:
+                self.aggregated['cache_files'] = stats['cache_files']
+            if 'cache_size_mb' in stats:
+                self.aggregated['cache_size_mb'] = stats['cache_size_mb']
+            if 'cache_dir' in stats:
+                self.aggregated['cache_dir'] = stats['cache_dir']
+            
+            self.aggregated['total_requests'] = self.aggregated['hits'] + self.aggregated['misses']
+            
+            if self.aggregated['total_requests'] > 0:
+                hit_rate = (self.aggregated['hits'] / self.aggregated['total_requests']) * 100
+                self.aggregated['hit_rate'] = f"{hit_rate:.1f}%"
+            else:
+                self.aggregated['hit_rate'] = "0%"
     
     def get_summary(self) -> Dict:
-        """Get summary of all DataLoader cache usage"""
-        return self.aggregated.copy()
+        with self.lock:
+            return self.aggregated.copy()
     
     def get_detailed(self) -> List[Dict]:
-        """Get detailed stats for each strategy run"""
-        return self.all_stats.copy()
+        with self.lock:
+            return self.all_stats.copy()
     
     def clear(self):
-        """Clear collected stats"""
-        self.all_stats = []
-        self.aggregated = self._create_empty_stats()
+        with self.lock:
+            self.all_stats = []
+            self.aggregated = self._create_empty_stats()
+
+class ResourceMonitor:
+    """Monitor system resources during parallel execution"""
+    
+    def __init__(self, warning_threshold_percent=80):
+        self.warning_threshold = warning_threshold_percent
+        self.initial_memory = None
+        self.peak_memory = 0
+    
+    def start_monitoring(self):
+        """Record initial memory state"""
+        self.initial_memory = psutil.virtual_memory().percent
+        self.peak_memory = self.initial_memory
+        print(f"📊 Initial memory usage: {self.initial_memory:.1f}%")
+    
+    def check_resources(self) -> Tuple[bool, str]:
+        """
+        Check if system resources are healthy
+        
+        Returns:
+            Tuple of (is_healthy, message)
+        """
+        mem = psutil.virtual_memory()
+        current_mem_percent = mem.percent
+        
+        # Update peak
+        if current_mem_percent > self.peak_memory:
+            self.peak_memory = current_mem_percent
+        
+        # Check if we're approaching limits
+        if current_mem_percent > self.warning_threshold:
+            return False, f"⚠️  High memory usage: {current_mem_percent:.1f}%"
+        
+        return True, f"✅ Memory: {current_mem_percent:.1f}%"
+    
+    def print_summary(self):
+        """Print resource usage summary"""
+        mem = psutil.virtual_memory()
+        print(f"\n📊 Resource Usage Summary:")
+        print(f"   Initial: {self.initial_memory:.1f}%")
+        print(f"   Peak: {self.peak_memory:.1f}%")
+        print(f"   Final: {mem.percent:.1f}%")
+        print(f"   Available: {mem.available / (1024**3):.1f} GB")
 
 class BacktestOrchestrator:
     def __init__(self, backtest_yaml_path: str):
@@ -253,8 +339,11 @@ class BacktestOrchestrator:
         
         # Initialize DataLoader stats collector
         self.data_loader_stats = DataLoaderStatsCollector()
-        self.cache.set_data_loader_stats_collector(self.data_loader_stats)        
-
+        self.cache.set_data_loader_stats_collector(self.data_loader_stats)
+        
+        # Initialize resource monitor
+        self.resource_monitor = ResourceMonitor(warning_threshold_percent=80)
+        
         print(f"\n🔧 Initializing with: {backtest_yaml_path}")
         self.backtest_yaml_path = Path(backtest_yaml_path)
         
@@ -272,30 +361,57 @@ class BacktestOrchestrator:
         # Load and cache template
         self.strategy_template = self.load_and_clean_template()
 
-        # Initialize Fitness Engine globally for use in cached methods
+        # Initialize Fitness Engine globally
         self.fitness_engine = FitnessEvaluator(
             constraints=self.config.get("constraints", {}),
             weights=self.config.get("fitness", {}).get("weights", {})
         )
+        
+        # Configure parallel execution
+        parallel_config = self.config.get("parallel_execution", {})
+        self.parallel_enabled = parallel_config.get("enabled", True)
+        
+        # Auto-detect optimal worker count if not specified
+        max_workers_config = parallel_config.get("max_workers", None)
+        if max_workers_config is None:
+            # Use 75% of CPU cores, minimum 2, maximum 8
+            cpu_count = os.cpu_count() or 4
+            self.max_workers = max(2, min(8, int(cpu_count * 0.75)))
+        else:
+            self.max_workers = max_workers_config
+        
+        # Safety limits
+        self.max_workers = min(self.max_workers, 12)  # Hard cap
+        
+        # Retry configuration
+        self.max_retries = parallel_config.get("max_retries", 2)
+        self.retry_delay = parallel_config.get("retry_delay_seconds", 5)
+        
+        print(f"⚡ Parallel execution: {'Enabled' if self.parallel_enabled else 'Disabled'}")
+        if self.parallel_enabled:
+            print(f"   Max workers: {self.max_workers}")
+            print(f"   Max retries: {self.max_retries}")
+            print(f"   Retry delay: {self.retry_delay}s")
 
     @HybridCacheManager.memory_cache(cache_name="metric")
     def get_cached_metrics(self, report_path: Path) -> dict:
-        """
-        Cached wrapper for OptimizationMetrics.
-        Prevents re-reading and re-parsing JSON files for the same report path.
-        """
+        """Thread-safe cached metrics extraction"""
         if not Path(report_path).exists():
             return {}
-        # This triggers the I/O only on cache miss
         return OptimizationMetrics(str(report_path)).get()
 
     @HybridCacheManager.memory_cache(cache_name="fitness")
     def get_cached_fitness(self, metrics: dict) -> float:
-        """
-        Cached wrapper for FitnessEvaluator.
-        Prevents re-calculating score for identical metrics dictionaries.
-        """
-        return self.fitness_engine.score(metrics)    
+        """Thread-safe cached fitness calculation"""
+        return self.fitness_engine.score(metrics)
+
+    @HybridCacheManager.memory_cache(cache_name="data")
+    def get_cached_parameter_space(self, zone_name: str, zone_cfg: dict) -> dict:
+        """Thread-safe cached parameter space building"""
+        print(f"   🔧 Building parameter space for zone: {zone_name}")
+        space = ParameterSpace(zone_cfg).build()
+        print(f"   ✅ Parameter space built: {len(space)} parameters")
+        return space
 
     @lru_cache(maxsize=1)
     def load_and_clean_template(self):
@@ -304,7 +420,6 @@ class BacktestOrchestrator:
         template_path = config_dir / "wbws_rsi_strategy.yaml"
         
         if not template_path.exists():
-            # Try other locations
             possible_paths = [
                 Path("src/config/WBWS/wbws_rsi_strategy.yaml"),
                 Path("configs/WBWS/wbws_rsi_strategy.yaml"),
@@ -321,23 +436,16 @@ class BacktestOrchestrator:
         
         print(f"📄 Loading template from: {template_path}")
         
-        # Read the YAML content
         with open(template_path, "r") as f:
             content = f.read()
         
-        # Clean any numpy tags from the YAML
-        # Remove numpy-specific YAML tags
         content = content.replace('!!python/object/apply:numpy.core.multiarray.scalar', '')
         content = content.replace('!!python/object/apply:numpy._core.multiarray.scalar', '')
         content = content.replace('!!python/object/apply:array', '')
         
-        # Also try to load with custom cleaner
         try:
             template = yaml.safe_load(content)
-            
-            # Clean the loaded dictionary of any numpy types
             template = self.clean_numpy_types(template)
-            
             print(f"✅ Template loaded and cleaned")
             return template
             
@@ -352,10 +460,9 @@ class BacktestOrchestrator:
         elif isinstance(obj, list):
             return [self.clean_numpy_types(v) for v in obj]
         elif isinstance(obj, (np.integer, np.floating)):
-            # Convert numpy numbers to Python native types
-            return obj.item()  # Convert to Python int/float
-        elif hasattr(obj, 'dtype'):  # numpy array
-            return obj.tolist()  # Convert to Python list
+            return obj.item()
+        elif hasattr(obj, 'dtype'):
+            return obj.tolist()
         else:
             return obj
     
@@ -434,99 +541,182 @@ class BacktestOrchestrator:
             }
         }
     
+    def run_strategy_wrapper(self, args: Tuple) -> Tuple[int, Optional[Path], Optional[str]]:
+        """
+        Thread-safe wrapper for run_strategy with retry logic
+        
+        Args:
+            args: Tuple of (temp_yaml, output_dir, sample_index)
+            
+        Returns:
+            Tuple of (sample_index, report_path, error_message)
+        """
+        temp_yaml, output_dir, sample_index = args
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                report_path = self.run_strategy(temp_yaml, output_dir, sample_index)
+                
+                if report_path and report_path.exists():
+                    return (sample_index, report_path, None)
+                else:
+                    error_msg = "Strategy completed but no report generated"
+                    if attempt < self.max_retries:
+                        print(f"    ⚠️  Attempt {attempt + 1} failed: {error_msg}, retrying...")
+                        time.sleep(self.retry_delay)
+                    else:
+                        return (sample_index, None, error_msg)
+                        
+            except Exception as e:
+                error_msg = str(e)
+                if attempt < self.max_retries:
+                    print(f"    ⚠️  Attempt {attempt + 1} failed: {error_msg}, retrying...")
+                    time.sleep(self.retry_delay)
+                else:
+                    print(f"    ❌ All {self.max_retries + 1} attempts failed for strategy {sample_index}")
+                    return (sample_index, None, error_msg)
+        
+        return (sample_index, None, "Max retries exceeded")
+    
+    def run_strategies_parallel(
+        self, 
+        strategy_configs: List[Tuple[Path, Path, int]],
+        phase_name: str = "Strategy Execution"
+    ) -> List[Tuple[int, Optional[Path], Optional[str]]]:
+        """
+        Run multiple strategies in parallel with safety checks
+        
+        Args:
+            strategy_configs: List of (temp_yaml, output_dir, sample_index) tuples
+            phase_name: Name of the execution phase (for logging)
+            
+        Returns:
+            List of (sample_index, report_path, error_message) tuples
+        """
+        if not self.parallel_enabled or len(strategy_configs) == 1:
+            print(f"   ⚙️  Running {len(strategy_configs)} strategies sequentially")
+            return [self.run_strategy_wrapper(config) for config in strategy_configs]
+        
+        print(f"   ⚡ {phase_name}: Running {len(strategy_configs)} strategies in parallel")
+        print(f"      Workers: {min(self.max_workers, len(strategy_configs))}")
+        
+        # Check initial resources
+        self.resource_monitor.start_monitoring()
+        
+        results = {}
+        errors = {}
+        completed = 0
+        start_time = time.time()
+        
+        actual_workers = min(self.max_workers, len(strategy_configs))
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as executor:
+            # Submit all jobs
+            future_to_index = {
+                executor.submit(self.run_strategy_wrapper, config): config[2]
+                for config in strategy_configs
+            }
+            
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_index):
+                sample_index = future_to_index[future]
+                
+                try:
+                    idx, report_path, error_msg = future.result(timeout=300)  # 5 min timeout
+                    results[idx] = report_path
+                    errors[idx] = error_msg
+                    completed += 1
+                    
+                    # Progress indicator
+                    progress = (completed / len(strategy_configs)) * 100
+                    status = "✅" if report_path else "❌"
+                    
+                    print(f"   {status} Strategy {idx} completed [{progress:.0f}% - {completed}/{len(strategy_configs)}]")
+                    
+                    if error_msg:
+                        print(f"      Error: {error_msg}")
+                    
+                    # Check resources every 5 completions
+                    if completed % 5 == 0:
+                        is_healthy, msg = self.resource_monitor.check_resources()
+                        if not is_healthy:
+                            print(f"      {msg}")
+                    
+                except concurrent.futures.TimeoutError:
+                    print(f"   ⏱️  Strategy {sample_index} timed out after 300s")
+                    results[sample_index] = None
+                    errors[sample_index] = "Timeout after 300 seconds"
+                    completed += 1
+                    
+                except Exception as e:
+                    print(f"   ❌ Strategy {sample_index} raised exception: {e}")
+                    results[sample_index] = None
+                    errors[sample_index] = str(e)
+                    completed += 1
+        
+        # Summary
+        elapsed = time.time() - start_time
+        successful = sum(1 for r in results.values() if r is not None)
+        failed = len(results) - successful
+        
+        print(f"\n   📊 {phase_name} Summary:")
+        print(f"      Total: {len(strategy_configs)}")
+        print(f"      Successful: {successful}")
+        print(f"      Failed: {failed}")
+        print(f"      Time: {elapsed:.1f}s")
+        print(f"      Avg: {elapsed/len(strategy_configs):.1f}s per strategy")
+        
+        if failed > 0:
+            print(f"\n   ⚠️  Failed strategies:")
+            for idx, error in errors.items():
+                if error:
+                    print(f"      - Strategy {idx}: {error}")
+        
+        # Resource summary
+        self.resource_monitor.print_summary()
+        
+        # Return results in original order
+        return [(idx, results.get(idx), errors.get(idx)) for idx in range(len(strategy_configs))]
+    
     def run(self):
         print("\n" + "=" * 70)
-        print("🎯 STARTING ORCHESTRATION (WITH HYBRID CACHING)")
+        print("🎯 STARTING ORCHESTRATION (PRODUCTION MODE)")
         print("=" * 70)
         
-        # Clear previous memory cache if needed (optional)
-        self.cache.clear_memory()
-        
-        # Run optimization
-        self.run_full_optimization()
-        
-        # Print cache statistics
-        self.cache.print_stats()
-        
-        # Save disk cache for next run
-        self.cache.save_disk_cache()
-        
-        print(f"\n💾 Disk cache saved for next run")
-        print("=" * 70)
-    
-    def test_yaml_creation(self):
-        """Test YAML creation and reading"""
-        print("\n🔧 Testing YAML creation...")
-        
-        # Create a simple test config
-        test_config = {
-            "test": "value",
-            "number": 123,
-            "float": 45.67,
-            "nested": {
-                "key": "nested_value"
-            }
-        }
-        
-        # Save it
-        temp_dir = Path(tempfile.gettempdir())
-        test_file = temp_dir / "test_yaml.yaml"
-        
-        with open(test_file, "w") as f:
-            yaml.dump(test_config, f, default_flow_style=False)
-        
-        print(f"✅ Created test YAML: {test_file}")
-        
-        # Try to read it back
         try:
-            with open(test_file, "r") as f:
-                loaded = yaml.safe_load(f)
-            print(f"✅ Successfully read back YAML")
-            print(f"   Loaded keys: {list(loaded.keys())}")
+            # Run optimization
+            self.run_full_optimization()
+            
+            # Print cache statistics
+            self.cache.print_stats()
+            
+            # Save disk cache for next run
+            self.cache.save_disk_cache()
+            
+            print(f"\n💾 Disk cache saved for next run")
+            print("=" * 70)
+            
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Orchestration interrupted by user")
+            print("   Saving cache state...")
+            self.cache.save_disk_cache()
+            print("   ✅ Cache saved")
+            sys.exit(0)
+            
         except Exception as e:
-            print(f"❌ Failed to read YAML: {e}")
-        
-        # Now test with a parameter sample
-        zones = self.config.get("zones", {})
-        if zones:
-            zone_name = list(zones.keys())[0]
-            zone_cfg = zones[zone_name]
-            
-            print(f"\n🔧 Testing parameter mapping for zone: {zone_name}")
-            
+            print(f"\n\n❌ Orchestration failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\n   Attempting to save cache state...")
             try:
-                space = ParameterSpace(zone_cfg).build()
-                sampler = ParameterSampler(space, n_samples=1)
-                samples = sampler.random_sample()
-                
-                if samples:
-                    # Create config with the sample
-                    temp_yaml = self.create_temp_yaml(samples[0], zone_name, 0, "test")
-                    print(f"✅ Created config file: {temp_yaml}")
-                    
-                    # Try to read it
-                    with open(temp_yaml, "r") as f:
-                        config_content = yaml.safe_load(f)
-                    
-                    print(f"✅ Successfully read generated config")
-                    print(f"   Main sections: {list(config_content.keys())}")
-                    
-                    # Save a copy for inspection
-                    inspect_dir = self.base_dir / "inspect"
-                    inspect_dir.mkdir(parents=True, exist_ok=True)
-                    inspect_file = inspect_dir / f"{zone_name}_test.yaml"
-                    
-                    with open(inspect_file, "w") as f:
-                        yaml.dump(config_content, f, default_flow_style=False)
-                    
-                    print(f"📄 Config saved for inspection: {inspect_file}")
-                    
-            except Exception as e:
-                print(f"❌ Error in parameter mapping: {e}")
-                import traceback
-                traceback.print_exc()
+                self.cache.save_disk_cache()
+                print("   ✅ Cache saved")
+            except:
+                print("   ❌ Could not save cache")
+            sys.exit(1)
     
     def run_full_optimization(self):
+        """Main optimization with parallel execution and safety checks"""
         print("\n" + "=" * 70)
         print("🏃 STARTING OPTIMIZATION")
         print("=" * 70)
@@ -534,7 +724,6 @@ class BacktestOrchestrator:
         zones = self.config.get("zones", {})
         
         for zone_name, zone_cfg in zones.items():
-            # Check if zone is enabled
             if not zone_cfg.get("enabled", True):
                 print(f"⏭️  Skipping disabled zone: {zone_name}")
                 continue
@@ -542,11 +731,9 @@ class BacktestOrchestrator:
             print(f"\n🔹 Processing zone: {zone_name}")
             print(f"   {zone_cfg.get('description', '')}")
             
-            # Create zone directory
             zone_dir = self.base_dir / zone_name / self.timestamp
             zone_dir.mkdir(parents=True, exist_ok=True)
             
-            # Check if random search is enabled
             random_search_config = self.config.get("random_search", {})
             if not random_search_config.get("enabled", True):
                 print(f"  ⏭️ Random search disabled, skipping zone {zone_name}")
@@ -555,53 +742,48 @@ class BacktestOrchestrator:
             n_samples = random_search_config.get("samples_per_zone", 150)
             
             try:
-                # Build parameter space and sampler
-                space = ParameterSpace(zone_cfg).build()
+                # Build parameter space (cached)
+                space = self.get_cached_parameter_space(zone_name, zone_cfg)
                 sampler = ParameterSampler(space, n_samples=n_samples)
-                
-                # Get samples for random search
                 samples = sampler.random_sample()
                 print(f"   Generated {len(samples)} parameter sets for random search")
                 
-                # Initialize fitness evaluator
                 fitness_engine = FitnessEvaluator(
                     constraints=self.config["constraints"],
                     weights=self.config["fitness"]["weights"]
                 )
                 
-                # Initialize candidate store
                 store = CandidateStore(zone_dir)
                 
-                # ========== RANDOM SEARCH PHASE ==========
+                # ========== PARALLEL RANDOM SEARCH PHASE ==========
                 print(f"\n   🎯 Starting Random Search Phase")
                 random_candidates = []
-                successful_random = 0
                 
-                # Process random samples (limited for testing)
-                total_to_process = min(len(samples), 5)  # Process first 5 for testing
+                total_to_process = min(len(samples), 5)  # Testing with 5
                 
+                # Prepare batch of configs
+                strategy_configs = []
                 for i in range(total_to_process):
                     params = samples[i]
-                    print(f"\n   Random Sample {i+1}/{total_to_process}")
-                    
-                    # Create config file
                     temp_yaml = self.create_temp_yaml(params, zone_name, i, "random")
-                    
-                    # Run strategy
-                    report_path = self.run_strategy(temp_yaml, zone_dir, i)
+                    strategy_configs.append((temp_yaml, zone_dir, i))
+                
+                # Run in parallel with safety checks
+                results = self.run_strategies_parallel(strategy_configs, "Random Search")
+                
+                # Process results
+                successful_random = 0
+                for i, report_path, error in results:
+                    params = samples[i]
+                    print(f"\n   Processing Random Sample {i+1}/{total_to_process}")
                     
                     if report_path and report_path.exists():
-                        # --- UPDATED CACHING LOGIC START ---
-                        # Use cached metrics extractor (I/O optimization)
                         real_metrics = self.get_cached_metrics(report_path)
                         
-                        # Check constraints using the global engine
                         if self.fitness_engine.passes_constraints(real_metrics):
-                            # Use cached fitness calculator (CPU optimization)
                             score = self.get_cached_fitness(real_metrics)
                             print(f"    ✅ Passed constraints, score: {score:.4f}")
                             
-                            # Store candidate
                             store.add(
                                 params=params,
                                 metrics=real_metrics,
@@ -611,7 +793,6 @@ class BacktestOrchestrator:
                                 source="random"
                             )
                             
-                            # Add to list for GA initialization
                             random_candidates.append({
                                 'parameters': params,
                                 'metrics': real_metrics,
@@ -622,7 +803,8 @@ class BacktestOrchestrator:
                         else:
                             print(f"    ❌ Failed constraints")
                     else:
-                        print(f"    ⚠️  Strategy execution failed")
+                        error_msg = error or "Unknown error"
+                        print(f"    ⚠️  Strategy execution failed: {error_msg}")
                 
                 print(f"\n   ✅ Random Search completed")
                 print(f"   - Processed: {total_to_process}")
@@ -639,7 +821,6 @@ class BacktestOrchestrator:
                         sampler=sampler
                     )
                     
-                    # Store GA candidates
                     if ga_results:
                         for i, (params, score, metrics) in enumerate(ga_results):
                             store.add(
@@ -647,7 +828,7 @@ class BacktestOrchestrator:
                                 metrics=metrics,
                                 fitness=score,
                                 zone_name=zone_name,
-                                sample_index=i + len(samples),  # Continue numbering
+                                sample_index=i + len(samples),
                                 source="ga"
                             )
                 
@@ -658,9 +839,8 @@ class BacktestOrchestrator:
                 if store.candidates:
                     ranker = CandidateRanker(store.candidates)
                     top = ranker.top_n(n=5)
-                    
                     top_clean = self.clean_for_json(top)
-
+                    
                     results_file = zone_dir / "top_candidates.json"
                     with open(results_file, 'w') as f:
                         json.dump(top_clean, f, indent=2)
@@ -669,14 +849,12 @@ class BacktestOrchestrator:
                     print(f"   - Total candidates: {len(store.candidates)}")
                     print(f"   - Results saved: {results_file}")
                     
-                    # Show top candidates
                     print(f"\n   Top 3 candidates:")
                     for j, candidate in enumerate(top[:3], 1):
                         print(f"   {j}. Source: {candidate.get('source', 'unknown')}")
                         print(f"      Fitness: {candidate.get('fitness', 0):.4f}")
                         print(f"      Net P&L: {candidate.get('metrics', {}).get('net_pnl', 0):.2f}")
                         print(f"      Win Rate: {candidate.get('metrics', {}).get('winrate', 0):.2%}")
-                
                 else:
                     print(f"\n   ⚠️  No candidates passed constraints")
                 
@@ -690,41 +868,33 @@ class BacktestOrchestrator:
         print("\n" + "=" * 70)
         print("✅ OPTIMIZATION COMPLETED")
         print("=" * 70)
-         
+    
     def run_strategy(self, strategy_yaml_path: Path, output_dir: Path, sample_index: int) -> Path:
-        """Run strategy with result caching"""
+        """Run strategy with result caching (existing implementation)"""
         print(f"    ▶ Running strategy with config: {strategy_yaml_path.name}")
         
-        # Create cache key from file content
         with open(strategy_yaml_path, 'r', encoding='utf-8') as f:
             content = f.read()
         content_hash = hashlib.md5(content.encode()).hexdigest()
         cache_key = f"strategy_result_{content_hash}"
         
-        # Check cache
-        if cache_key in self.cache.result_cache:
-            cached_report = self.cache.result_cache[cache_key]
-            if cached_report.exists():
-                print(f"    🔄 Using cached strategy results")
-                
-                self._extract_dataloader_stats_from_report(cached_report) # Extract DataLoader stats from cached report
-                
-                # Copy to output directory
-                report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
-                if not report_copy.exists():
-                    shutil.copy(cached_report, report_copy)
-                return report_copy
+        # Thread-safe cache check
+        cached_report = self.cache.result_cache.get(cache_key)
+        if cached_report and cached_report.exists():
+            print(f"    🔄 Using cached strategy results")
+            self._extract_dataloader_stats_from_report(cached_report)
+            report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
+            if not report_copy.exists():
+                shutil.copy(cached_report, report_copy)
+            return report_copy
         
-        # Run strategy
         project_root = Path(__file__).parent.parent.parent
-        
-        # Set encoding for Windows
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
         
         cmd = [
             sys.executable,
-            "-X", "utf8",  # Enable UTF-8 mode
+            "-X", "utf8",
             "scripts/run_wbws_strategy.py",
             str(strategy_yaml_path)
         ]
@@ -738,16 +908,20 @@ class BacktestOrchestrator:
                 cwd=str(project_root),
                 env=env,
                 encoding='utf-8',
-                errors='replace'
+                errors='replace',
+                timeout=300  # 5 minute timeout
             )
                         
-            if result.stdout:
-                if "ENHANCED STRATEGY EXECUTION COMPLETED" in result.stdout:
-                    print(f"    ✅ Strategy completed successfully")
+            if result.stdout and "ENHANCED STRATEGY EXECUTION COMPLETED" in result.stdout:
+                print(f"    ✅ Strategy completed successfully")
             
             if result.stderr:
                 print(f"    ⚠ Stderr: {result.stderr[:500]}...")
                 
+        except subprocess.TimeoutExpired:
+            print(f"    ⏱️  Strategy execution timed out after 300s")
+            return None
+            
         except subprocess.CalledProcessError as e:
             print(f"    ❌ Strategy execution failed with exit code: {e.returncode}")
             if e.stdout:
@@ -755,125 +929,57 @@ class BacktestOrchestrator:
             if e.stderr:
                 print(f"    🔴 Stderr (first 500 chars): {e.stderr[:500]}...")
             return None
+            
         except Exception as e:
             print(f"    ❌ Unexpected error running strategy: {e}")
-            import traceback
-            traceback.print_exc()
             return None
 
-        # Find the latest report
         reports_dir = project_root / "outputs" / "reports" / "WBWS"
-        print(f"    🔍 Looking for reports in: {reports_dir}")
         
         if reports_dir.exists():
             json_files = list(reports_dir.glob("strategy_report_*.json"))
-            print(f"    🔍 Found {len(json_files)} JSON files")
             
             if json_files:
                 latest_report = max(json_files, key=lambda f: f.stat().st_mtime)
+                self._extract_dataloader_stats_from_report(latest_report)
                 
-                # DEBUG: Print report content
-                print(f"    🔍 Checking report: {latest_report.name}")
-                try:
-                    with open(latest_report, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        if 'data_loader_cache' in content or 'dataloader_cache_stats' in content:
-                            print(f"    ✅ DataLoader stats found in report")
-                        else:
-                            print(f"    ⚠️ DataLoader stats NOT found in report")
-                            print(f"    Sample of report keys: {list(json.loads(content).keys())[:5]}")
-                except Exception as e:
-                    print(f"    ⚠️ Could not read report: {e}")
-
-                self._extract_dataloader_stats_from_report(latest_report) # Extract DataLoader stats from report
-
-                # Copy report to zone directory
                 report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
                 shutil.copy(latest_report, report_copy)
                 print(f"    ✔ Report saved to {report_copy}")
                 
-                # Cache the result
-                self.cache.result_cache[cache_key] = report_copy
+                # Thread-safe cache update
+                self.cache.result_cache.set(cache_key, report_copy)
                 return report_copy
-            else:
-                print(f"    ⚠ No report files found in {reports_dir}")
-                return None
-        else:
-            print(f"    ⚠ Reports directory not found: {reports_dir}")
-            return None
+        
+        return None
     
     def _extract_dataloader_stats_from_report(self, report_path: Path):
-        """Extract DataLoader cache statistics from strategy report"""
+        """Extract DataLoader cache statistics from strategy report (existing implementation)"""
         try:
             with open(report_path, 'r', encoding='utf-8') as f:
                 report_data = json.load(f)
             
-            # Try multiple locations for DataLoader stats
             stats = None
-            
-            # 1. Check top level
             if 'data_loader_cache_stats' in report_data:
                 stats = report_data['data_loader_cache_stats']
-            
-            # 2. Check validation section
             elif 'validation' in report_data and 'data_loader_cache' in report_data['validation']:
                 stats = report_data['validation']['data_loader_cache']
-            
-            # 3. Check validation section with different key
             elif 'validation' in report_data and 'dataloader_cache_stats' in report_data['validation']:
                 stats = report_data['validation']['dataloader_cache_stats']
             
-            if stats:
-                # Ensure we have the expected keys
-                if isinstance(stats, dict):
-                    # Calculate total_requests if not present
-                    if 'total_requests' not in stats:
-                        hits = stats.get('hits', 0)
-                        misses = stats.get('misses', 0)
-                        stats['total_requests'] = hits + misses
-                    
-                    self.data_loader_stats.add_stats(stats)
-                    
-                    # Print summary
-                    hit_rate = stats.get('hit_rate', 'N/A')
+            if stats and isinstance(stats, dict):
+                if 'total_requests' not in stats:
                     hits = stats.get('hits', 0)
                     misses = stats.get('misses', 0)
-                    
-                    print(f"    📊 DataLoader: {hit_rate} hit rate "
-                        f"({hits} hits, {misses} misses)")
-                    return True
+                    stats['total_requests'] = hits + misses
+                
+                self.data_loader_stats.add_stats(stats)
+                return True
                     
         except Exception as e:
-            print(f"    ⚠️ Could not extract DataLoader stats: {e}")
-            import traceback
-            traceback.print_exc()
+            pass
         
-        print(f"    ⚠️ No DataLoader stats found in report")
         return False
-
-    def create_simulated_metrics(self, sample_index: int) -> dict:
-        """Create complete simulated metrics with all required keys"""
-        base_value = 1000 + sample_index * 50
-        
-        return {
-            "net_pnl": base_value,
-            "expectancy": 0.5 + (sample_index % 10) * 0.05,
-            "drawdown": 0.1 + (sample_index % 5) * 0.02,
-            "max_drawdown": 0.15,  # Added this key
-            "losing_streak": 3 + (sample_index % 3),
-            "winrate": 0.55 + (sample_index % 10) * 0.03,
-            "profit_factor": 1.2 + (sample_index % 10) * 0.1,
-            "total_trades": 50 + sample_index * 5,
-            "winning_trades": int((50 + sample_index * 5) * 0.6),
-            "losing_trades": int((50 + sample_index * 5) * 0.4),
-            "avg_win": base_value * 0.1,
-            "avg_loss": base_value * 0.05,
-            "largest_win": base_value * 0.2,
-            "largest_loss": base_value * 0.1,
-            "sharpe_ratio": 1.5 + sample_index * 0.1,
-            "calmar_ratio": 2.0 + sample_index * 0.1,
-            "trades_per_day": 4.0 + sample_index * 0.2
-        }
     
     def clean_for_json(self, obj):
         """Recursively clean numpy types for JSON serialization"""
@@ -882,19 +988,17 @@ class BacktestOrchestrator:
         elif isinstance(obj, list):
             return [self.clean_for_json(v) for v in obj]
         elif isinstance(obj, (np.integer, np.floating)):
-            return obj.item()  # Convert to Python int/float
+            return obj.item()
         elif isinstance(obj, np.ndarray):
-            return obj.tolist()  # Convert numpy arrays to lists
+            return obj.tolist()
         elif isinstance(obj, (datetime, date)):
-            return obj.isoformat()  # Convert dates to strings
+            return obj.isoformat()
         else:
             return obj
-        
+    
     def integrate_genetic_algorithm(self, zone_name, zone_cfg, zone_dir, fitness_engine, 
                                    initial_candidates, sampler):
-        """Integrate GA optimization into the pipeline"""
-        
-        # Check if GA is enabled in config
+        """Integrate GA optimization (existing implementation)"""
         ga_config = self.config.get("genetic", {})
         if not ga_config.get("enabled", False):
             print(f"   ⏭️ GA optimization disabled, skipping")
@@ -903,46 +1007,39 @@ class BacktestOrchestrator:
         print(f"\n   🧬 Starting Genetic Algorithm optimization for zone: {zone_name}")
         
         try:
-                      
-            # Create GA optimizer
             ga_optimizer = GeneticOptimizer(
                 sampler=sampler,
-                orchestrator=self,     # <-- This is key: passing 'self' gives GA access to the cache
-                fitness_engine=self.fitness_engine, # Use the global fitness engine
+                orchestrator=self,
+                fitness_engine=self.fitness_engine,
                 config=ga_config,
                 zone_name=zone_name,
                 zone_dir=zone_dir
             )
             
-            # Prepare initial population from best random candidates
+            initial_population = None
             if initial_candidates:
-                # Sort by fitness first
                 sorted_candidates = sorted(
                     initial_candidates,
                     key=lambda x: x.get('fitness', -1000),
                     reverse=True
                 )
                 
-                # Convert initial candidates to parameter sets
                 initial_population = []
-                for candidate in sorted_candidates[:10]:  # Take top 10
+                for candidate in sorted_candidates[:10]:
                     if isinstance(candidate, dict) and 'parameters' in candidate:
                         initial_population.append(candidate['parameters'])
                     elif isinstance(candidate, tuple) and len(candidate) > 0:
-                        initial_population.append(candidate[0])  # Assuming (params, score, metrics)
+                        initial_population.append(candidate[0])
                 
                 print(f"   Using {len(initial_population)} best candidates as initial population")
             else:
-                initial_population = None
                 print(f"   No initial candidates, starting with random population")
             
-            # Run GA
             ga_results = ga_optimizer.run(initial_population=initial_population)
             
             if ga_results:
                 print(f"   ✅ GA completed with {len(ga_results)} candidates")
                 
-                # Save GA results
                 ga_results_file = zone_dir / "ga_results.json"
                 ga_summary = []
                 
@@ -959,17 +1056,13 @@ class BacktestOrchestrator:
                         }
                     })
                 
-                # Clean numpy types before saving
                 ga_summary_clean = self.clean_for_json(ga_summary)
                 
                 with open(ga_results_file, "w") as f:
                     json.dump(ga_summary_clean, f, indent=2)
                 
                 print(f"   📊 GA results saved to: {ga_results_file}")
-                
-                # Return GA results
                 return ga_results
-            
             else:
                 print(f"   ⚠️ GA optimization produced no results")
                 return []
@@ -979,17 +1072,14 @@ class BacktestOrchestrator:
             import traceback
             traceback.print_exc()
             return []
-
+    
     @HybridCacheManager.disk_cache()
     def map_parameters_to_config(self, flat_params: dict) -> dict:
-        """Convert flat parameters to nested structure"""
+        """Convert flat parameters to nested structure (existing implementation)"""
         config_updates = {}
-        
-        # Get project root
         project_root = Path(__file__).parent.parent.parent
         data_dir = project_root / "data" / "processed" / "ohlcv"
         
-        # RSI Filter
         if "rsi_overbought" in flat_params or "rsi_oversold" in flat_params:
             config_updates["filters"] = {
                 "rsi_filter": {
@@ -1000,14 +1090,12 @@ class BacktestOrchestrator:
                 }
             }
         
-        # HTF
         if "htf_timeframe" in flat_params:
             config_updates["indicator"] = {
                 "name": "WBWS_Trigger",
                 "htf_period": str(flat_params["htf_timeframe"])
             }
         
-        # ATR & Risk-Reward
         if any(k in flat_params for k in ["atr_length", "atr_multiplier", "rr_target"]):
             config_updates.setdefault("trade_management", {})
             config_updates["trade_management"]["sl_tp"] = {
@@ -1017,7 +1105,6 @@ class BacktestOrchestrator:
                 "risk_to_reward_ratio": float(flat_params.get("rr_target", 5.7))
             }
         
-        # Risk management
         if "max_risk_percentile" in flat_params:
             config_updates.setdefault("trade_management", {})
             config_updates["trade_management"]["risk_management"] = {
@@ -1026,7 +1113,6 @@ class BacktestOrchestrator:
                 "allow_exceed_limit": False
             }
         
-        # Session windows
         if "session_window" in flat_params:
             config_updates.setdefault("trade_management", {})
             config_updates["trade_management"]["time_filter"] = {
@@ -1041,14 +1127,13 @@ class BacktestOrchestrator:
                 }
             }
         
-        # Data section with absolute paths
         config_updates["data"] = {
             "file": str(data_dir / "DEUIDXEUR_1min_20240101_20260104.csv"),
             "file_htf": str(data_dir / "DEUIDXEUR_1H_20230101_20260104.csv"),
             "file_ltf": str(data_dir / "DEUIDXEUR_1s_20240101_20260104.csv"),
             "format": "csv",
             "date_range": {
-                "start": "2024-01-01",  # Use a range that exists in your data
+                "start": "2024-01-01",
                 "end": "2024-01-07"
             },
             "validation": {
@@ -1063,13 +1148,9 @@ class BacktestOrchestrator:
     @HybridCacheManager.memory_cache(cache_name="yaml_config")
     def _generate_yaml_config(self, params: dict, zone_name: str) -> dict:
         """Cached: Pure function that generates YAML config dict"""
-        # Start with template
         config = self.strategy_template.copy()
-        
-        # Apply parameter mapping (already cached via @disk_cache)
         config_updates = self.map_parameters_to_config(params)
         
-        # Apply updates to config
         for section, updates in config_updates.items():
             if section not in config:
                 config[section] = updates
@@ -1078,37 +1159,27 @@ class BacktestOrchestrator:
             else:
                 config[section] = updates
         
-        # Clean any numpy types
         config = self.clean_numpy_types(config)
-        
         return config
 
     def create_temp_yaml(self, params: dict, zone_name: str, sample_index: int, source: str = "test") -> Path:
         """Create temp YAML file with intelligent caching"""
-        print(f"   💾 Creating YAML for {zone_name}_{source}_{sample_index}")
-        
-        # 1. Generate/retrieve config (cached via decorator)
         config = self._generate_yaml_config(params, zone_name)
         
-        # 2. Check for existing file (manual file cache)
         file_key = self.cache.generate_key("yaml_file", zone_name, params, source)
-        if file_key in self.cache.yaml_file_cache:
-            cached_file = self.cache.yaml_file_cache[file_key]
-            if cached_file.exists():
-                print(f"   🔄 Using cached YAML file")
-                return cached_file
+        cached_file = self.cache.yaml_file_cache.get(file_key)
         
-        # 3. Convert config to YAML string
+        if cached_file and cached_file.exists():
+            return cached_file
+        
         yaml_content = yaml.dump(config, default_flow_style=False, sort_keys=False)
         
-        # 4. Create temp file with unique name
         temp_dir = Path(tempfile.gettempdir())
         temp_file = temp_dir / f"wbws_{zone_name}_{source}_{sample_index}.yaml"
         
         with open(temp_file, "w") as f:
             f.write(yaml_content)
         
-        # 5. Save a debug copy
         debug_dir = self.base_dir / "debug" / self.timestamp
         debug_dir.mkdir(parents=True, exist_ok=True)
         debug_file = debug_dir / f"{zone_name}_{source}_{sample_index}.yaml"
@@ -1116,18 +1187,14 @@ class BacktestOrchestrator:
         with open(debug_file, "w") as f:
             f.write(yaml_content)
         
-        print(f"   💾 Debug copy: {debug_file.relative_to(self.base_dir)}")
-        
-        # 6. Cache file path
-        self.cache.yaml_file_cache[file_key] = temp_file
-        
+        self.cache.yaml_file_cache.set(file_key, temp_file)
         return temp_file
-    
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("❌ Usage: python orchestrator_fixed.py <backtest_yaml>")
+        print("❌ Usage: python orchestrator_production.py <backtest_yaml>")
         print("\nExample:")
-        print("  python src/backtesting/orchestrator_fixed.py src/config/WBWS/wbws_backtest.yaml")
+        print("  python src/backtesting/orchestrator_production.py src/config/WBWS/wbws_backtest.yaml")
         sys.exit(1)
     
     try:

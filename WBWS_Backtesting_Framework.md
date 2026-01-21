@@ -224,17 +224,23 @@ The orchestrator is the **central control unit** of the system.
 - orchestrator_fixed.py created as troubleshooting copy of orchestrator.py
 - orchestrator_fixed.py troubleshooted succesfully optimization, evaluation, strategy integration
 - integration of GA in orchestrator_fixed.py
-- GA population.py reintegrated  
+- GA population.py reintegrated
+- Perf improvment 
+    - cache integration
+    - parallel execution  
 ### Remaining Issues / Concern points
 ### 10.1.1 Non critical issues / concern points
-- Perf improvment cache integration (in progress)
 - Better Random Search + GA Integration
   - GA starts with ALL best random candidates
   - No dilution with random individuals
   - Focused search around promising regions
 - Rest of perf optimizations:
-  - Parallel execution
-  - Vectorized operations in strategy
+  - Strategy
+      - Cache indicator calculations (to check if worth of doing)  
+      - Vectorize signal generation (to check if worth of doing - if using loops)
+      - Cache trade simulation results (to check if worth of doing - if deterministic)
+      - Parallelize multi-timeframe processing (maybe: to check if worth of doing)
+      - Batch indicator calculations (maybe: to check if worth of doing)
   - Reduced I/O (batch file operations) 
 - Recovery mechanism (continue from last good state)
 - Inconsistencies in Data Handling and Dates
