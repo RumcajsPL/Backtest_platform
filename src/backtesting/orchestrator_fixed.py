@@ -44,7 +44,8 @@ class HybridCacheManager:
         self.yaml_config_cache = {}   # For generated YAML configs
         self.yaml_file_cache = {}     # For YAML file paths
         self.result_cache = {}        # For strategy results
-        self.metric_cache = {}        # For extracted metrics
+        self.metric_cache = {}        # NEW: For extracted metrics (I/O heavy)
+        self.fitness_cache = {}       # NEW: For fitness scores (CPU bound)
         
         # Persistent disk cache
         self.disk_cache_file = self.cache_dir / "disk_cache.pkl"
@@ -53,10 +54,9 @@ class HybridCacheManager:
         # Statistics
         self.hits = 0
         self.misses = 0
-        self.data_loader_stats_collector = None  # Set by orchestrator
+        self.data_loader_stats_collector = None
     
     def _load_disk_cache(self):
-        """Load disk cache if exists"""
         try:
             if self.disk_cache_file.exists():
                 with open(self.disk_cache_file, 'rb') as f:
@@ -66,7 +66,6 @@ class HybridCacheManager:
         return {}
     
     def save_disk_cache(self):
-        """Save disk cache"""
         try:
             with open(self.disk_cache_file, 'wb') as f:
                 pickle.dump(self.disk_cache, f)
@@ -74,44 +73,31 @@ class HybridCacheManager:
             print(f"⚠️  Could not save disk cache: {e}")
     
     def generate_key(self, *args, **kwargs):
-        """Generate cache key from arguments"""
-        # Convert to JSON string for consistent hashing
-        key_data = {
-            'args': args,
-            'kwargs': kwargs
-        }
+        key_data = {'args': args, 'kwargs': kwargs}
+        # Use sort_keys=True to ensure consistent hashing for dictionaries
         key_str = json.dumps(key_data, sort_keys=True, default=str)
         return hashlib.md5(key_str.encode()).hexdigest()
     
     @staticmethod
     def disk_cache():
-        """Decorator factory for disk caching"""
         def decorator(func):
             def wrapper(self_instance, *args, **kwargs):
-                # Note: self_instance is the BacktestOrchestrator instance
                 key = self_instance.cache.generate_key(func.__name__, *args, **kwargs)
-                
                 if key in self_instance.cache.disk_cache:
                     self_instance.cache.hits += 1
                     return self_instance.cache.disk_cache[key]
-                
                 self_instance.cache.misses += 1
                 result = func(self_instance, *args, **kwargs)
                 self_instance.cache.disk_cache[key] = result
                 return result
-            
             return wrapper
         return decorator
     
     @classmethod
     def memory_cache(cls, cache_name="default"):
-        """Decorator factory for memory caching with named cache"""
         def decorator(func):
             def wrapper(self_instance, *args, **kwargs):
-                # Generate key
                 key = self_instance.cache.generate_key(func.__name__, *args, **kwargs)
-                
-                # Select cache dictionary
                 cache_dict = cls._get_cache_dict(self_instance, cache_name)
                 
                 if key in cache_dict:
@@ -122,31 +108,23 @@ class HybridCacheManager:
                 result = func(self_instance, *args, **kwargs)
                 cache_dict[key] = result
                 return result
-            
             return wrapper
         return decorator
     
     @staticmethod
     def _get_cache_dict(instance, cache_name):
-        """Helper to get the right cache dictionary"""
-        if cache_name == "data":
-            return instance.cache.data_cache
-        elif cache_name == "yaml_config":
-            return instance.cache.yaml_config_cache
-        elif cache_name == "yaml_file":
-            return instance.cache.yaml_file_cache
-        elif cache_name == "result":
-            return instance.cache.result_cache
-        elif cache_name == "metric":
-            return instance.cache.metric_cache
-        else:
-            return instance.cache.disk_cache  # fallback
+        if cache_name == "data": return instance.cache.data_cache
+        elif cache_name == "yaml_config": return instance.cache.yaml_config_cache
+        elif cache_name == "yaml_file": return instance.cache.yaml_file_cache
+        elif cache_name == "result": return instance.cache.result_cache
+        elif cache_name == "metric": return instance.cache.metric_cache
+        elif cache_name == "fitness": return instance.cache.fitness_cache
+        else: return instance.cache.disk_cache
+
     def set_data_loader_stats_collector(self, stats_collector):
-        """Set reference to DataLoader stats collector"""
         self.data_loader_stats_collector = stats_collector
 
     def get_stats(self):
-        """Get cache statistics"""
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
         
@@ -160,78 +138,50 @@ class HybridCacheManager:
                     "yaml_config": len(self.yaml_config_cache),
                     "yaml_file": len(self.yaml_file_cache),
                     "result": len(self.result_cache),
-                    "metric": len(self.metric_cache)
+                    "metric": len(self.metric_cache),
+                    "fitness": len(self.fitness_cache)
                 },
                 "disk_cache": len(self.disk_cache)
             }
         }
-        
-        # Add DataLoader stats if available
         if self.data_loader_stats_collector:
-            data_loader_summary = self.data_loader_stats_collector.get_summary()
-            stats["data_loader"] = data_loader_summary
-        
+            stats["data_loader"] = self.data_loader_stats_collector.get_summary()
         return stats
 
     def print_stats(self):
-        """Print cache statistics including DataLoader stats"""
         stats = self.get_stats()
         print("\n" + "="*60)
         print("📊 UNIFIED CACHE STATISTICS")
         print("="*60)
         
-        # Orchestrator stats
-        orchestrator_stats = stats["orchestrator"]
-        print(f"\n🧠 ORCHESTRATOR CACHES (YAML/Results):")
-        print(f"  Hits: {orchestrator_stats['hits']} | Misses: {orchestrator_stats['misses']}")
-        print(f"  Hit Rate: {orchestrator_stats['hit_rate']}")
-        print(f"\n  Memory Cache Sizes:")
-        print(f"    Data: {orchestrator_stats['memory_caches']['data']}")
-        print(f"    YAML Config: {orchestrator_stats['memory_caches']['yaml_config']}")
-        print(f"    YAML Files: {orchestrator_stats['memory_caches']['yaml_file']}")
-        print(f"    Results: {orchestrator_stats['memory_caches']['result']}")
-        print(f"    Metrics: {orchestrator_stats['memory_caches']['metric']}")
-        print(f"  Disk Cache: {orchestrator_stats['disk_cache']} entries")
+        o_stats = stats["orchestrator"]
+        print(f"\n🧠 ORCHESTRATOR CACHES:")
+        print(f"  Hits: {o_stats['hits']} | Misses: {o_stats['misses']}")
+        print(f"  Hit Rate: {o_stats['hit_rate']}")
+        print(f"\n  Memory Cache Breakdown:")
+        print(f"    1. Data: {o_stats['memory_caches']['data']}")
+        print(f"    2. YAML Config: {o_stats['memory_caches']['yaml_config']}")
+        print(f"    3. YAML Files: {o_stats['memory_caches']['yaml_file']}")
+        print(f"    4. Results (Run): {o_stats['memory_caches']['result']}")
+        print(f"    5. Metrics (IO): {o_stats['memory_caches']['metric']}")
+        print(f"    6. Fitness (CPU): {o_stats['memory_caches']['fitness']}")
+        print(f"  Disk Cache: {o_stats['disk_cache']} entries")
         
-        # DataLoader stats
         if "data_loader" in stats:
             dl_stats = stats["data_loader"]
             print(f"\n💽 DATALOADER CACHE (OHLCV Data):")
             print(f"  Hits: {dl_stats.get('hits', 0)} | Misses: {dl_stats.get('misses', 0)}")
             print(f"  Hit Rate: {dl_stats.get('hit_rate', '0%')}")
-            print(f"  Total Requests: {dl_stats.get('total_requests', 0)}")
-            print(f"  Cache Files: {dl_stats.get('cache_files', 0)}")
-            print(f"  Cache Size: {dl_stats.get('cache_size_mb', 0):.2f} MB")
-            print(f"  Cache Dir: {dl_stats.get('cache_dir', '~/.wbws_data_cache/')}")
-            
-            # Show summary if we have stats
-            if self.data_loader_stats_collector:
-                total_runs = len(self.data_loader_stats_collector.all_stats)
-                if total_runs > 0:
-                    print(f"\n  Summary across {total_runs} strategy runs:")
-                    print(f"    Average hits per run: {dl_stats.get('hits', 0) // max(total_runs, 1)}")
-                    print(f"    Average misses per run: {dl_stats.get('misses', 0) // max(total_runs, 1)}")
-                    
-                    # Show per-run stats if few runs
-                    if total_runs <= 10:
-                        print(f"\n  Per-run breakdown:")
-                        for i, run_stats in enumerate(self.data_loader_stats_collector.all_stats):
-                            run_hits = run_stats.get('hits', 0)
-                            run_misses = run_stats.get('misses', 0)
-                            run_total = run_hits + run_misses
-                            run_hit_rate = f"{(run_hits/run_total*100):.1f}%" if run_total > 0 else "N/A"
-                            print(f"    Run {i+1}: {run_hits} hits, {run_misses} misses, "
-                                f"Hit rate: {run_hit_rate}")
         
         print("="*60)
 
     def clear_memory(self):
-        """Clear all memory caches"""
         self.data_cache.clear()
         self.yaml_config_cache.clear()
         self.yaml_file_cache.clear()
         self.result_cache.clear()
         self.metric_cache.clear()
+        self.fitness_cache.clear()
         print("🧹 Cleared all memory caches")
 
 class DataLoaderStatsCollector:
@@ -294,6 +244,7 @@ class DataLoaderStatsCollector:
         """Clear collected stats"""
         self.all_stats = []
         self.aggregated = self._create_empty_stats()
+
 class BacktestOrchestrator:
     def __init__(self, backtest_yaml_path: str):
         
@@ -320,6 +271,31 @@ class BacktestOrchestrator:
         
         # Load and cache template
         self.strategy_template = self.load_and_clean_template()
+
+        # Initialize Fitness Engine globally for use in cached methods
+        self.fitness_engine = FitnessEvaluator(
+            constraints=self.config.get("constraints", {}),
+            weights=self.config.get("fitness", {}).get("weights", {})
+        )
+
+    @HybridCacheManager.memory_cache(cache_name="metric")
+    def get_cached_metrics(self, report_path: Path) -> dict:
+        """
+        Cached wrapper for OptimizationMetrics.
+        Prevents re-reading and re-parsing JSON files for the same report path.
+        """
+        if not Path(report_path).exists():
+            return {}
+        # This triggers the I/O only on cache miss
+        return OptimizationMetrics(str(report_path)).get()
+
+    @HybridCacheManager.memory_cache(cache_name="fitness")
+    def get_cached_fitness(self, metrics: dict) -> float:
+        """
+        Cached wrapper for FitnessEvaluator.
+        Prevents re-calculating score for identical metrics dictionaries.
+        """
+        return self.fitness_engine.score(metrics)    
 
     @lru_cache(maxsize=1)
     def load_and_clean_template(self):
@@ -615,13 +591,14 @@ class BacktestOrchestrator:
                     report_path = self.run_strategy(temp_yaml, zone_dir, i)
                     
                     if report_path and report_path.exists():
-                        # Extract metrics
-                        metrics_extractor = OptimizationMetrics(str(report_path))
-                        real_metrics = metrics_extractor.get()
+                        # --- UPDATED CACHING LOGIC START ---
+                        # Use cached metrics extractor (I/O optimization)
+                        real_metrics = self.get_cached_metrics(report_path)
                         
-                        # Check constraints
-                        if fitness_engine.passes_constraints(real_metrics):
-                            score = fitness_engine.score(real_metrics)
+                        # Check constraints using the global engine
+                        if self.fitness_engine.passes_constraints(real_metrics):
+                            # Use cached fitness calculator (CPU optimization)
+                            score = self.get_cached_fitness(real_metrics)
                             print(f"    ✅ Passed constraints, score: {score:.4f}")
                             
                             # Store candidate
@@ -930,8 +907,8 @@ class BacktestOrchestrator:
             # Create GA optimizer
             ga_optimizer = GeneticOptimizer(
                 sampler=sampler,
-                orchestrator=self,
-                fitness_engine=fitness_engine,
+                orchestrator=self,     # <-- This is key: passing 'self' gives GA access to the cache
+                fitness_engine=self.fitness_engine, # Use the global fitness engine
                 config=ga_config,
                 zone_name=zone_name,
                 zone_dir=zone_dir
