@@ -227,13 +227,13 @@ The orchestrator is the **central control unit** of the system.
 - GA population.py reintegrated
 - Perf improvment 
     - cache integration
-    - parallel execution  
-### Remaining Issues / Concern points
-### 10.1.1 Non critical issues / concern points
+    - parallel execution
 - Better Random Search + GA Integration
   - GA starts with ALL best random candidates
   - No dilution with random individuals
-  - Focused search around promising regions
+  - Focused search around promising regions  
+### Remaining Issues / Concern points
+### 10.1.1 Non critical issues / concern points
 - Rest of perf optimizations:
   - Strategy
       - Cache indicator calculations (to check if worth of doing)  

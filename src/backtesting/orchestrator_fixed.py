@@ -415,10 +415,22 @@ class BacktestOrchestrator:
 
     @lru_cache(maxsize=1)
     def load_and_clean_template(self):
-        """Load strategy template and convert numpy types to Python types"""
+        """
+        Load strategy template and convert numpy types to Python types
+        
+        PRODUCTION VERSION: Fails fast with clear error if template not found
+        No fallback to hardcoded defaults - ensures single source of truth
+        
+        Returns:
+            dict: Cleaned strategy template configuration
+            
+        Raises:
+            SystemExit: If template file not found or contains invalid YAML
+        """
         config_dir = self.backtest_yaml_path.parent
         template_path = config_dir / "wbws_rsi_strategy.yaml"
         
+        # Try alternative paths if not found in config directory
         if not template_path.exists():
             possible_paths = [
                 Path("src/config/WBWS/wbws_rsi_strategy.yaml"),
@@ -430,28 +442,198 @@ class BacktestOrchestrator:
                     template_path = path
                     break
         
+        # === FAIL FAST: Template is required, no silent fallback ===
         if not template_path.exists():
-            print(f"⚠️  Strategy template not found, creating minimal one")
-            return self.create_minimal_template()
+            error_msg = f"""
+    {'=' * 70}
+    ❌ CRITICAL ERROR: Strategy Template Not Found
+    {'=' * 70}
+
+    The required strategy template file 'wbws_rsi_strategy.yaml' could not be found.
+
+    Searched in the following locations:
+    1. {config_dir / "wbws_rsi_strategy.yaml"}
+    2. src/config/WBWS/wbws_rsi_strategy.yaml
+    3. configs/WBWS/wbws_rsi_strategy.yaml
+    4. {Path.cwd() / "wbws_rsi_strategy.yaml"}
+
+    This file is REQUIRED for the orchestrator to function correctly.
+
+    Action Required:
+    ✓ Ensure the file exists in one of the above locations
+    ✓ Verify the file path matches your project structure
+    ✓ Check you have read permissions for the file
+
+    Cannot proceed without strategy template.
+    {'=' * 70}
+    """
+            print(error_msg)
+            sys.exit(1)
         
         print(f"📄 Loading template from: {template_path}")
         
-        with open(template_path, "r") as f:
-            content = f.read()
+        # Load file content
+        try:
+            with open(template_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            error_msg = f"""
+    {'=' * 70}
+    ❌ CRITICAL ERROR: Cannot Read Strategy Template
+    {'=' * 70}
+
+    File: {template_path}
+    Error: {str(e)}
+
+    Action Required:
+    ✓ Check file permissions (needs read access)
+    ✓ Verify file is not corrupted
+    ✓ Ensure file is not locked by another process
+
+    Cannot proceed without readable template.
+    {'=' * 70}
+    """
+            print(error_msg)
+            sys.exit(1)
         
+        # Clean numpy-specific YAML tags that might cause parsing issues
         content = content.replace('!!python/object/apply:numpy.core.multiarray.scalar', '')
         content = content.replace('!!python/object/apply:numpy._core.multiarray.scalar', '')
         content = content.replace('!!python/object/apply:array', '')
         
+        # Parse YAML
         try:
             template = yaml.safe_load(content)
-            template = self.clean_numpy_types(template)
-            print(f"✅ Template loaded and cleaned")
-            return template
-            
         except yaml.YAMLError as e:
-            print(f"⚠️  Could not parse template, creating fresh one: {e}")
-            return self.create_minimal_template()
+            error_msg = f"""
+    {'=' * 70}
+    ❌ CRITICAL ERROR: Invalid YAML in Strategy Template
+    {'=' * 70}
+
+    File: {template_path}
+    YAML Error: {str(e)}
+
+    The strategy template file exists but contains invalid YAML syntax.
+
+    Common YAML Issues:
+    ✓ Indentation must use spaces (not tabs)
+    ✓ Keys must be followed by colons: "key: value"
+    ✓ Strings with special characters need quotes
+    ✓ List items must start with "- "
+    ✓ Check for unmatched brackets/braces
+
+    How to Fix:
+    1. Validate YAML syntax: yamllint {template_path}
+    2. Use online validator: http://www.yamllint.com/
+    3. Check line {getattr(e, 'problem_mark', 'unknown')}
+
+    Cannot proceed with invalid template.
+    {'=' * 70}
+    """
+            print(error_msg)
+            sys.exit(1)
+        
+        # Verify template is not empty
+        if not template or not isinstance(template, dict):
+            error_msg = f"""
+    {'=' * 70}
+    ❌ CRITICAL ERROR: Empty or Invalid Strategy Template
+    {'=' * 70}
+
+    File: {template_path}
+
+    The template file was parsed but contains no valid configuration.
+
+    Action Required:
+    ✓ Ensure file is not empty
+    ✓ Verify file contains valid YAML dictionary structure
+    ✓ Check file was saved correctly
+
+    Cannot proceed with empty template.
+    {'=' * 70}
+    """
+            print(error_msg)
+            sys.exit(1)
+        
+        # Clean numpy types from the template
+        template = self.clean_numpy_types(template)
+        
+        # Validate template has required sections
+        self._validate_template_structure(template, template_path)
+        
+        print(f"✅ Template loaded and validated successfully")
+        return template
+
+
+    def _validate_template_structure(self, template: dict, template_path: Path):
+        """
+        Validate that template contains all required sections
+        
+        Args:
+            template: Loaded template dictionary
+            template_path: Path to template file (for error messages)
+            
+        Raises:
+            SystemExit: If template is missing required sections
+        """
+        required_sections = {
+            'strategy': 'Strategy metadata (name, version, description)',
+            'asset': 'Asset information (symbol, exchange)',
+            'data': 'Data configuration (format, date_range)',
+            'indicator': 'Indicator settings (name, htf_period)',
+            'filters': 'Entry filters (rsi_filter, etc.)',
+            'trade_management': 'Trade management rules (sl_tp, risk_management)',
+            'output': 'Output settings (reports_dir, save options)'
+        }
+        
+        missing_sections = []
+        for section, description in required_sections.items():
+            if section not in template:
+                missing_sections.append(f"  ✗ {section}: {description}")
+        
+        if missing_sections:
+            error_msg = f"""
+    {'=' * 70}
+    ❌ ERROR: Incomplete Strategy Template Structure
+    {'=' * 70}
+
+    File: {template_path}
+
+    The strategy template is missing required sections:
+
+    {chr(10).join(missing_sections)}
+
+    Found sections:
+    {chr(10).join(f"  ✓ {section}" for section in template.keys())}
+
+    Action Required:
+    ✓ Add missing sections to the template file
+    ✓ Use a complete template as reference
+    ✓ Ensure all sections are properly formatted
+
+    Cannot proceed with incomplete template.
+    {'=' * 70}
+    """
+            print(error_msg)
+            sys.exit(1)
+        
+        # Validate critical subsections in trade_management
+        if 'trade_management' in template and isinstance(template['trade_management'], dict):
+            required_tm_sections = {
+                'sl_tp': 'Stop Loss / Take Profit settings',
+                'risk_management': 'Risk management configuration'
+            }
+            
+            missing_tm = []
+            tm = template['trade_management']
+            for section, description in required_tm_sections.items():
+                if section not in tm:
+                    missing_tm.append(f"  ✗ trade_management.{section}: {description}")
+            
+            if missing_tm:
+                print(f"\n⚠️  WARNING: Template missing recommended subsections:")
+                print('\n'.join(missing_tm))
+                print("Continuing anyway, but strategy behavior may be affected.\n")
     
     def clean_numpy_types(self, obj):
         """Recursively convert numpy types to Python native types"""
@@ -465,82 +647,7 @@ class BacktestOrchestrator:
             return obj.tolist()
         else:
             return obj
-    
-    def create_minimal_template(self):
-        """Create a clean minimal strategy template"""
-        return {
-            "strategy": {
-                "name": "WBWS Backtest",
-                "version": "1.0.0",
-                "description": "We Buy/We Sell Trigger",
-                "author": "Backtest Platform"
-            },
-            "asset": {
-                "symbol": "DEUIDXEUR",
-                "name": "DAX 40 Index",
-                "exchange": "EUREX",
-                "currency": "EUR"
-            },
-            "data": {
-                "format": "csv",
-                "date_range": {
-                    "start": "2024-01-01",
-                    "end": "2024-12-31"
-                }
-            },
-            "indicator": {
-                "name": "WBWS_Trigger",
-                "htf_period": "1H"
-            },
-            "filters": {
-                "rsi_filter": {
-                    "enabled": True,
-                    "length": 14,
-                    "overbought": 70,
-                    "oversold": 30
-                }
-            },
-            "trade_management": {
-                "time_filter": {
-                    "enabled": True,
-                    "session_start": {"hour": 8, "minute": 30},
-                    "session_end": {"hour": 20, "minute": 30}
-                },
-                "position_control": {
-                    "close_on_opposite": False,
-                    "pyramiding_enabled": False
-                },
-                "opposite_signal": {
-                    "enabled": False
-                },
-                "sl_tp": {
-                    "enabled": True,
-                    "atr_length": 14,
-                    "sl_multiplier": 1.4,
-                    "risk_to_reward_ratio": 5.7
-                },
-                "risk_management": {
-                    "enabled": True,
-                    "max_risk_percentile": 0.0016,
-                    "allow_exceed_limit": False
-                },
-                "spread": {
-                    "enabled": True,
-                    "required": False,
-                    "apply_to_long": True,
-                    "apply_to_short": True,
-                    "log_spread_impact": True
-                }
-            },
-            "output": {
-                "outputs_dir": "outputs",
-                "reports_dir": "reports/WBWS",
-                "save_signals_csv": True,
-                "save_execution_report": True,
-                "verbose": False
-            }
-        }
-    
+        
     def run_strategy_wrapper(self, args: Tuple) -> Tuple[int, Optional[Path], Optional[str]]:
         """
         Thread-safe wrapper for run_strategy with retry logic
@@ -725,7 +832,7 @@ class BacktestOrchestrator:
         
         for zone_name, zone_cfg in zones.items():
             if not zone_cfg.get("enabled", True):
-                print(f"⏭️  Skipping disabled zone: {zone_name}")
+                print(f"⭐️ Skipping disabled zone: {zone_name}")
                 continue
             
             print(f"\n🔹 Processing zone: {zone_name}")
@@ -736,7 +843,7 @@ class BacktestOrchestrator:
             
             random_search_config = self.config.get("random_search", {})
             if not random_search_config.get("enabled", True):
-                print(f"  ⏭️ Random search disabled, skipping zone {zone_name}")
+                print(f"  ⭐️ Random search disabled, skipping zone {zone_name}")
                 continue
             
             n_samples = random_search_config.get("samples_per_zone", 150)
@@ -759,7 +866,10 @@ class BacktestOrchestrator:
                 print(f"\n   🎯 Starting Random Search Phase")
                 random_candidates = []
                 
-                total_to_process = min(len(samples), 5)  # Testing with 5
+                # 🔴 CRITICAL FIX: Process ALL samples (removed testing limit)
+                total_to_process = len(samples)
+                
+                print(f"   📊 Processing {total_to_process} random samples")
                 
                 # Prepare batch of configs
                 strategy_configs = []
@@ -775,14 +885,12 @@ class BacktestOrchestrator:
                 successful_random = 0
                 for i, report_path, error in results:
                     params = samples[i]
-                    print(f"\n   Processing Random Sample {i+1}/{total_to_process}")
                     
                     if report_path and report_path.exists():
                         real_metrics = self.get_cached_metrics(report_path)
                         
                         if self.fitness_engine.passes_constraints(real_metrics):
                             score = self.get_cached_fitness(real_metrics)
-                            print(f"    ✅ Passed constraints, score: {score:.4f}")
                             
                             store.add(
                                 params=params,
@@ -800,15 +908,11 @@ class BacktestOrchestrator:
                             })
                             
                             successful_random += 1
-                        else:
-                            print(f"    ❌ Failed constraints")
-                    else:
-                        error_msg = error or "Unknown error"
-                        print(f"    ⚠️  Strategy execution failed: {error_msg}")
                 
                 print(f"\n   ✅ Random Search completed")
                 print(f"   - Processed: {total_to_process}")
                 print(f"   - Successful: {successful_random}")
+                print(f"   - Pass rate: {successful_random/total_to_process*100:.1f}%")
                 
                 # ========== GENETIC ALGORITHM PHASE ==========
                 if successful_random > 0:
@@ -831,6 +935,9 @@ class BacktestOrchestrator:
                                 sample_index=i + len(samples),
                                 source="ga"
                             )
+                else:
+                    print(f"\n   ⚠️  No successful candidates from random search")
+                    print(f"   Skipping GA optimization for zone {zone_name}")
                 
                 # Save all candidates
                 store.save()
@@ -870,7 +977,7 @@ class BacktestOrchestrator:
         print("=" * 70)
     
     def run_strategy(self, strategy_yaml_path: Path, output_dir: Path, sample_index: int) -> Path:
-        """Run strategy with result caching (existing implementation)"""
+        """Run strategy with result caching"""
         print(f"    ▶ Running strategy with config: {strategy_yaml_path.name}")
         
         with open(strategy_yaml_path, 'r', encoding='utf-8') as f:
@@ -881,7 +988,7 @@ class BacktestOrchestrator:
         # Thread-safe cache check
         cached_report = self.cache.result_cache.get(cache_key)
         if cached_report and cached_report.exists():
-            print(f"    🔄 Using cached strategy results")
+            print(f"    📋 Using cached strategy results")
             self._extract_dataloader_stats_from_report(cached_report)
             report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
             if not report_copy.exists():
@@ -916,7 +1023,7 @@ class BacktestOrchestrator:
                 print(f"    ✅ Strategy completed successfully")
             
             if result.stderr:
-                print(f"    ⚠ Stderr: {result.stderr[:500]}...")
+                print(f"    ⚠  Stderr: {result.stderr[:500]}...")
                 
         except subprocess.TimeoutExpired:
             print(f"    ⏱️  Strategy execution timed out after 300s")
@@ -945,7 +1052,7 @@ class BacktestOrchestrator:
                 
                 report_copy = output_dir / f"report_{strategy_yaml_path.stem}.json"
                 shutil.copy(latest_report, report_copy)
-                print(f"    ✔ Report saved to {report_copy}")
+                print(f"    ✓ Report saved to {report_copy}")
                 
                 # Thread-safe cache update
                 self.cache.result_cache.set(cache_key, report_copy)
@@ -954,7 +1061,7 @@ class BacktestOrchestrator:
         return None
     
     def _extract_dataloader_stats_from_report(self, report_path: Path):
-        """Extract DataLoader cache statistics from strategy report (existing implementation)"""
+        """Extract DataLoader cache statistics from strategy report"""
         try:
             with open(report_path, 'r', encoding='utf-8') as f:
                 report_data = json.load(f)
@@ -998,14 +1105,80 @@ class BacktestOrchestrator:
     
     def integrate_genetic_algorithm(self, zone_name, zone_cfg, zone_dir, fitness_engine, 
                                    initial_candidates, sampler):
-        """Integrate GA optimization (existing implementation)"""
+        """
+        🟡 ENHANCED: Integrate GA optimization with PURE ELITE seeding
+        
+        This method implements the Random Search + GA Enhancement strategy:
+        - Uses ALL successful random candidates (not just top 10)
+        - Ensures no random dilution in elite mode
+        - Applies diversity-aware selection to avoid parameter clustering
+        """
         ga_config = self.config.get("genetic", {})
         if not ga_config.get("enabled", False):
-            print(f"   ⏭️ GA optimization disabled, skipping")
+            print(f"   ⭐️ GA optimization disabled, skipping")
             return []
         
         print(f"\n   🧬 Starting Genetic Algorithm optimization for zone: {zone_name}")
         
+        # === ENHANCEMENT 1: Prepare Elite-Only Population ===
+        initial_population = None
+        elite_mode = False
+        
+        if initial_candidates:
+            # Sort by fitness
+            sorted_candidates = sorted(
+                initial_candidates,
+                key=lambda x: x.get('fitness', -1000),
+                reverse=True
+            )
+            
+            # Extract ALL successful candidates (not just top 10)
+            elite_params = []
+            for candidate in sorted_candidates:
+                if isinstance(candidate, dict) and 'parameters' in candidate:
+                    params = candidate['parameters']
+                    fitness = candidate.get('fitness', 0)
+                    
+                    # Only include candidates with positive fitness
+                    if fitness > 0:
+                        elite_params.append({
+                            'parameters': params,
+                            'fitness': fitness
+                        })
+            
+            desired_pop_size = ga_config.get("population_size", 40)
+            
+            if len(elite_params) >= desired_pop_size:
+                # Case 1: We have enough elites - use pure elite population
+                print(f"   ✅ Elite-Only Mode: Using {desired_pop_size} best candidates")
+                print(f"      Available elites: {len(elite_params)}")
+                
+                # === ENHANCEMENT 2: Diversity-Aware Selection ===
+                initial_population = self._select_diverse_elites(
+                    elite_params, 
+                    desired_pop_size
+                )
+                elite_mode = True
+                
+            elif len(elite_params) > 0:
+                # Case 2: Some elites but not enough - use all we have
+                print(f"   ⚠️  Partial Elite Mode: Using {len(elite_params)} elites")
+                print(f"      Needed: {desired_pop_size}, Available: {len(elite_params)}")
+                print(f"      GA will add {desired_pop_size - len(elite_params)} random individuals")
+                
+                initial_population = [e['parameters'] for e in elite_params]
+                elite_mode = False
+            else:
+                # Case 3: No successful candidates
+                print(f"   ⚠️  No elite candidates available, starting with random population")
+                initial_population = None
+                elite_mode = False
+        else:
+            print(f"   ⚠️  No initial candidates provided")
+            initial_population = None
+            elite_mode = False
+        
+        # === ENHANCEMENT 3: Configure GA for Elite Mode ===
         try:
             ga_optimizer = GeneticOptimizer(
                 sampler=sampler,
@@ -1016,26 +1189,11 @@ class BacktestOrchestrator:
                 zone_dir=zone_dir
             )
             
-            initial_population = None
-            if initial_candidates:
-                sorted_candidates = sorted(
-                    initial_candidates,
-                    key=lambda x: x.get('fitness', -1000),
-                    reverse=True
-                )
-                
-                initial_population = []
-                for candidate in sorted_candidates[:10]:
-                    if isinstance(candidate, dict) and 'parameters' in candidate:
-                        initial_population.append(candidate['parameters'])
-                    elif isinstance(candidate, tuple) and len(candidate) > 0:
-                        initial_population.append(candidate[0])
-                
-                print(f"   Using {len(initial_population)} best candidates as initial population")
-            else:
-                print(f"   No initial candidates, starting with random population")
-            
-            ga_results = ga_optimizer.run(initial_population=initial_population)
+            # Pass elite mode flag to GA (requires updated ga_engine.py)
+            ga_results = ga_optimizer.run(
+                initial_population=initial_population,
+                elite_mode=elite_mode  # NEW PARAMETER
+            )
             
             if ga_results:
                 print(f"   ✅ GA completed with {len(ga_results)} candidates")
@@ -1073,9 +1231,131 @@ class BacktestOrchestrator:
             traceback.print_exc()
             return []
     
+    def _select_diverse_elites(self, elite_params: list, target_size: int) -> list:
+        """
+        🟡 NEW METHOD: Select diverse elite candidates using parameter space distance
+        
+        Strategy:
+        1. Always include top candidate (best fitness)
+        2. Iteratively select candidates that maximize minimum distance to selected set
+        3. Ensures parameter diversity while respecting fitness ranking
+        
+        Args:
+            elite_params: List of dicts with 'parameters' and 'fitness' keys
+            target_size: Number of candidates to select
+            
+        Returns:
+            List of parameter dictionaries (diverse subset of elites)
+        """
+        if len(elite_params) <= target_size:
+            return [e['parameters'] for e in elite_params]
+        
+        selected = []
+        remaining = elite_params.copy()
+        
+        # Always pick the best
+        best = remaining.pop(0)
+        selected.append(best)
+        
+        print(f"      🎯 Selecting diverse elites: 1/{target_size}")
+        
+        # Iteratively pick most diverse candidates
+        while len(selected) < target_size and remaining:
+            max_min_distance = -1
+            best_candidate = None
+            best_idx = -1
+            
+            for idx, candidate in enumerate(remaining):
+                # Calculate minimum distance to already selected candidates
+                min_distance = float('inf')
+                for selected_candidate in selected:
+                    distance = self._parameter_distance(
+                        candidate['parameters'],
+                        selected_candidate['parameters']
+                    )
+                    min_distance = min(min_distance, distance)
+                
+                # Pick candidate with maximum minimum distance
+                if min_distance > max_min_distance:
+                    max_min_distance = min_distance
+                    best_candidate = candidate
+                    best_idx = idx
+            
+            if best_candidate:
+                selected.append(best_candidate)
+                remaining.pop(best_idx)
+                if len(selected) % 10 == 0 or len(selected) == target_size:
+                    print(f"      🎯 Selecting diverse elites: {len(selected)}/{target_size}")
+            else:
+                break
+        
+        print(f"      ✅ Selected {len(selected)} diverse elite candidates")
+        return [e['parameters'] for e in selected]
+    
+    def _parameter_distance(self, params1: dict, params2: dict) -> float:
+        """
+        🟡 NEW METHOD: Calculate normalized distance between two parameter sets
+        
+        Uses weighted Euclidean distance with normalization based on parameter ranges
+        
+        Args:
+            params1: First parameter dictionary
+            params2: Second parameter dictionary
+            
+        Returns:
+            Normalized distance (0.0 = identical, higher = more different)
+        """
+        distance = 0.0
+        count = 0
+        
+        for key in params1:
+            if key not in params2:
+                continue
+            
+            val1 = params1[key]
+            val2 = params2[key]
+            
+            # Handle different parameter types
+            if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+                # Numeric parameters - normalize by parameter range
+                if key == "rsi_overbought":
+                    range_val = 90 - 50
+                elif key == "rsi_oversold":
+                    range_val = 50 - 10
+                elif key == "atr_length":
+                    range_val = 30 - 5
+                elif key == "atr_multiplier":
+                    range_val = 3.0 - 0.8
+                elif key == "max_risk_percentile":
+                    range_val = 0.20 - 0.03
+                elif key == "rr_target":
+                    range_val = 6.0 - 2.0
+                else:
+                    range_val = 1.0  # Default normalization
+                
+                normalized_diff = abs(val1 - val2) / range_val if range_val > 0 else 0
+                distance += normalized_diff ** 2
+                count += 1
+                
+            elif isinstance(val1, str) and isinstance(val2, str):
+                # Categorical parameters (like htf_timeframe)
+                # Different values = max distance for this dimension
+                distance += 0 if val1 == val2 else 1
+                count += 1
+                
+            elif isinstance(val1, list) and isinstance(val2, list):
+                # Session windows - compare as tuples
+                if len(val1) == 2 and len(val2) == 2:
+                    # Consider different if either start or end differs
+                    distance += 0 if val1 == val2 else 0.5
+                    count += 1
+        
+        # Return normalized Euclidean distance
+        return (distance / count) ** 0.5 if count > 0 else 0.0
+    
     @HybridCacheManager.disk_cache()
     def map_parameters_to_config(self, flat_params: dict) -> dict:
-        """Convert flat parameters to nested structure (existing implementation)"""
+        """Convert flat parameters to nested structure"""
         config_updates = {}
         project_root = Path(__file__).parent.parent.parent
         data_dir = project_root / "data" / "processed" / "ohlcv"

@@ -38,7 +38,7 @@ fitness:
 
 random_search:
   enabled: true
-  samples_per_zone: 150
+  samples_per_zone: 8 #150
   method: latin_hypercube
 
 # ============================================================

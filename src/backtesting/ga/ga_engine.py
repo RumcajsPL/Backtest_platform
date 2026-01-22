@@ -59,24 +59,49 @@ class GeneticOptimizer:
         
         return (params, -1000, {})  # Fallback for no-report cases
     
-    def run(self, initial_population=None):
-        """Run GA optimization"""
+    def run(self, initial_population=None, elite_mode=False):
+        """
+        Run GA optimization
+        
+        Args:
+            initial_population: List of parameter dicts to seed population
+            elite_mode: If True, ONLY use initial_population (no random dilution)
+        """
         print(f"🧬 Starting Genetic Algorithm optimization")
         print(f"   Population: {self.population_size}")
         print(f"   Generations: {self.generations}")
+        print(f"   Elite Mode: {'✅ PURE ELITE' if elite_mode else '⚠️  WITH RANDOM FILL'}")
         
-        # Initialize population
-        if initial_population:
+        # === ENHANCEMENT: Elite-Only Population Initialization ===
+        if initial_population and elite_mode:
+            # PURE ELITE MODE - No random dilution
+            if len(initial_population) >= self.population_size:
+                # We have enough elites
+                population = initial_population[:self.population_size]
+                print(f"   ✅ Using {len(population)} elite candidates (no random fill)")
+            else:
+                # Not enough elites - adjust population size down
+                print(f"   ⚠️  Only {len(initial_population)} elites available")
+                print(f"   📉 Reducing population size from {self.population_size} to {len(initial_population)}")
+                self.population_size = len(initial_population)
+                population = initial_population
+                
+        elif initial_population:
+            # HYBRID MODE - Fill with random if needed
             population = initial_population[:self.population_size]
             if len(population) < self.population_size:
-                population.extend(self.population_generator.generate()[:self.population_size - len(population)])
+                needed = self.population_size - len(population)
+                print(f"   ⚠️  Adding {needed} random individuals to reach population size")
+                population.extend(self.population_generator.generate()[:needed])
         else:
+            # RANDOM MODE - No elites provided
+            print(f"   🎲 Starting with fully random population")
             population = self.population_generator.generate()
         
-        # Ensure population size
-        while len(population) < self.population_size:
-            population.append(self.get_random_parameters())
+        # Ensure exact population size
         population = population[:self.population_size]
+        
+        print(f"   📊 Final population size: {len(population)}")
         
         # Evaluate initial population
         evaluated = []
