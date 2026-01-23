@@ -17,6 +17,9 @@ At a detailed level, the platform aims to:
 * Offer a **modular and maintainable framework** for translating TradingView Pine Script strategies into Python.
 * Enable **automated backtesting** to identify optimal parameter configurations for strategies executed live on TradingView.
 * Use GitHub as a structured workspace for version control and AI‑assisted development.
+* Support backtesting across multiple:
+  * Asset classes (Forex, indices, gold, etc.)
+  * Timeframes
 ---
 ## 🧱 Code Structure & Design Principles
 * As far as possible, scripts should remain **small, reusable, and well‑encapsulated**: 
@@ -45,6 +48,48 @@ At a detailed level, the platform aims to:
 | USDCAD           | usdcad                  | 1.5                      | pips   |
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
+---
+## 📅 Project Status (as of 08/01/2026)
+### General
+* **Project start date:** 05/12/2025
+* **First selected strategy:** *We Buy / We Sell Trigger* (Pine Script v6)
+### Data Pipeline
+* Raw tick data (.bi5) download from Dukascopy implemented and tested
+* Incremental tick updates supported
+* Tick‑to‑OHLCV transformation validated (all prices are BID prices!)
+* At least **2 years of real tick data** available
+### Strategy Translation
+* WBWS Trigger indicator fully translated to Python
+* RSI filter translated and validated
+* Time‑based trade filtering implemented
+* ATR‑based risk management (SL/TP + RR) implemented
+* Trade/position management integrated (managing pyramiding and oposit signal detection)
+* Spread management integrated and tested
+* High similarity with TradingView results confirmed across components
+### Configuration
+* YAML‑based, asset‑agnostic configuration system implemented
+### Flowchart of the strategy data processing:
+  %% =========================
+  %% SIGNAL DOMAIN
+  %% =========================
+  subgraph SD["🔴 SIGNAL DOMAIN (Decision Logic)"]
+      S0["STAGE 0<br/>SignalCandidate<br/><br/>M1 OHLCV<br/>+ H1 OHLCV Bias (closed bars)"] --> S1
+      S1["STAGE 1<br/>TimeFilter<br/><br/><br/>M1 OHLCV<br/>Sessions<br/>News<br/>Day-of-Week"] --> S2
+      S2["STAGE 2<br/>RSIFilter<br/><br/>M1 OHLCV<br/><br/>Momentum / Regime"] --> S3
+      S3["STAGE 3<br/>PositionManagement<br/><br/>M1 OHLCV<br/><br/>Pyramiding<br/>Exposure<br/>Cooldowns"]
+  end
+  %% =========================
+  %% SIGNAL → TRADE BOUNDARY
+  %% =========================
+  S3 -->|Trade permission granted| TI["TradeIntent"] --> S4
+  %% =========================
+  %% EXECUTION DOMAIN
+  %% =========================
+  subgraph ED["🔵 EXECUTION DOMAIN (Market Simulation)"]
+      S4["STAGE 4<br/>RiskManagement<br/><br/>M1 OHLCV<br/><br/>Spread<br/>SL / TP<br/>Position Sizing"] --> S5
+      S5["STAGE 5<br/>TradeExecution<br/><br/>S1 OHLCV<br/>Bid / Ask Logic"]
+  end
+  S5 --> TR["TradeResult<br/><br/>PnL · MAE · MFE<br/>Exit Reason"]
 ---
 ## 📂 Repository Structure (Current)
 project_root/
@@ -77,13 +122,6 @@ project_root/
 │
 ├── outputs/                                     # All output files
 │   ├── backtests/                               # backtest results/outputs
-│   │   ├── safe/yyyymmdd_hhss/
-│   │   |   ├── candidates.json
-│   │   |   ├── top_candidates.json
-│   │   |   └── strategy_report_001.json
-│   │   ├── exploration/
-│   │   ├── discovery/
-│   │   └── comparison_report.json
 │   ├── logs/                                    # logs for strategies and platform functionning
 │   ├── reports/
 │   │   ├── Data_quality/                        # Data quality check reports
@@ -141,35 +179,12 @@ project_root/
 │
 ├── src/                                # Basctesting platform sources, utilities
 │   ├── __init__.py
-│   ├── backtesting/                    # Backtesting automatation scripts
-|   |   ├── optimization/
-|   |   │   ├── parameter_space.py
-|   |   │   └── sampler.py
-|   |   ├── ga/
-|   |   │   ├── crossover.py
-|   |   |   ├── ga_engine.py
-|   |   |   ├── mutation.py
-|   |   |   ├── population.py
-|   |   │   └── selection.py
-|   |   ├── monte_carlo/
-|   |   │   ├── equity_simulator.py
-|   |   |   ├── mc_engine.py
-|   |   |   ├── mc_metrics.py
-|   |   │   └── perturbation.py
-|   |   ├── evaluation/
-|   |   |   ├── candidate_store.py
-|   |   |   ├── ranker.py
-|   |   │   ├── metrics.py
-|   |   │   └── fitness.py
-|   |   ├── wfo/
-|   |   │   ├── wfo_engine.py
-|   |   │   ├── wfo_evaluator.py
-|   |   │   └── window_generator.py
-|   ├── config/
-|   |   └── WBWS/
-|   |       ├── __init__.py
-|   |       ├── wbws_backtest.yaml (orchestrator.py yaml config)
-|   |       └── wbws_rsi_strategy.yaml (strategy yaml stand alone config for testing)
+│   ├── backtesting/                    # Backtesting automatation
+│   ├── config/                         # Configuration management
+│   │   ├── __init__.py
+│   │   └── WBWS/                       # specifig WBWS 
+│   |       ├── filter_configs.yaml     # Filter configuration settings (stand alone used for testing only)
+|   |       └── wbws_rsi_strategy.yaml  # WBWS Strategy with filter configurations settings
 │   ├── indicators/                     # indicator scripts for backtesting
 │   │   ├── __init__.py
 │   │   └── wbws_trigger.py             # WBWS calculation engine and signal trigger (HTF not repaints)
@@ -220,7 +235,24 @@ project_root/
 # Additional packages for for resource monitoring
 - psutil==7.2.1
 ---
-## Existing features:
+🔄 Development Roadmap (In Progress – target 11/01/2026)
+### Prepare automated, parameter‑driven backtesting pipelines and algoritms
+### Continue translation of TradingView filters into Python:
+* Consider WSWB Trigger (change the logic to non repainting)
+* DPO
+* Bollinger Bands
+* Choppiness Index 
+---
+## 📖 Key Backtest testing & execution components
+---
+## 🚀 Quick Start ### Prerequisites / Guidances
+---
+### Raw and preprocessed data management
+## 3 data suources (exemples):
+* data\processed\ohlcv\DEUIDXEUR_1s_20240101_20260104.csv => 1 second bars for trade execution precision
+* data\processed\ohlcv\DEUIDXEUR_1min_20240101_20260104.csv => 1 minute bars for signal management
+* data\processed\ohlcv\DEUIDXEUR_1H_20230101_20260104.csv => 1 hour for Higher TF signal confirmation
+---
 # Run ducascopy dowloader tick to get raw real tick data (.bi5 hourly files) for an instrument
 `python scripts/data_scripts/download_raw_ticks.py`  - settings inside the script
 # Run ducascopy dowloader tick to get delta of raw real tick data (.bi5 hourly files) for an instrument => checs the last available .bi5 file and gets the most recent .bi5 files
@@ -237,35 +269,40 @@ timestamp,open,high,low,close,volume
 `.\venv\Scripts\Activate.ps1`
 ---
 ### Main Orchestrators/Runners
-## The Orchestrator - `src/backtesting/orchestrator_fixed.py` **central control unit** of the system.
-- Loads `wbws_backtest.yaml`
-- Generates parameter sets
-- Creates temporary strategy YAMLs
-- Calls `run_wbws_strategy.py`
-- Reads JSON / CSV outputs
-- Computes fitness
-- Selects best configs
-- (Runs Walk-Forward Optimization)
-- (Runs Monte Carlo simulations)
-- Saves and compares results
-## High Level flow
-[Random Search]
-      ↓
-[Genetic Optimization]
-      ↓
-[Walk-Forward] (Placeholder for future)
-      ↓
-[Monte Carlo] (Placeholder for future)
-      ↓
-[Final Report]
-**Usage:** `src/backtesting/orchestrator_fixed.py src/config/WBWS/wbws_backtest.yaml`
-## Strategy stand-alone: **`scripts/run_wbws_strategy.py` => for WBWS strategy**
-- **Purpose:** End-to-end workflow runner assembling signal triggering indicator, filters, time manager, risk manager & initial metrics
+**`scripts/run_wbws_strategy.py` => for WBWS strategy**
+- **Purpose:** End-to-end workflow orchestrator assembling signal triggering indicator, filters, time manager, risk manager & initial metrics
 - **Workflow:**
   1. Load YAML configuration
   2. Run WBWS Trigger indicator
   3. Run Filetrs (currently only RSI) agains triggered signals
-  3. Generate report for pipeline script
+  3. Generate reports and outputs
 - **Usage:** `python scripts/run_wbws_strategy.py src\config\WBWS\wbws_rsi_strategy.yaml`
+---
+## 🚀 Enhanced Performance Dashboard 
+### **📊 Comprehensive Metrics Display:**
+- **Basic Performance**: Win rate, profit factor, total P&L, expectancy, spread - costs
+- **Advanced Metrics**: Kelly Criterion, System Quality Number (SQN), Calmar Ratio
+- **Risk Analysis**: Max drawdown, recovery factor, risk of ruin
+- **Trade Statistics**: Duration analysis, exit reasons, hourly performance
+- **Position Management**: Pyramiding stats, rejection reasons, signal flow
+- **Usage:** `python scripts/dashboard_standalone.py outputs/reports/WBWS/strategy_report_20251227_224945.json --visualize` (--visualize optional)
+---
+### Auxiliary tools
+---
+### Validation Scripts
+- **Purpose:** Test on simple config data of RSI filter
+- **Features:** - Prints simple signal reports
+**Usage:** `python scripts\validation_scripts\Filters\test_rsi_filter.py`
+- **Purpose:** Validates time management script against serveral test scenarios
+- **Features:** - Tests time manager(trading session) script
+  - Uses same .yaml config file as strategy orchestrators for input
+  **Usage:** `tests\test_time_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
+  - **Purpose:** Validates risk management script against serveral test scenarios
+- **Features:** - Tests SL, RR TP and risk percentile
+  - Uses same .yaml config file as strategy orchestrators for input
+  **Usage:** `tests\test_risk_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
+  **Features:** - Tests pyramiding and opposit signal management
+  - Uses same .yaml config file as strategy orchestrators for input
+  **Usage:** `tests\test_trade_manager.py src\config\WBWS\wbws_rsi_strategy.yaml`
 ---
 *End of README*
