@@ -5,8 +5,144 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 
-def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd.DataFrame] = None) -> Dict:
-    """Calculate comprehensive performance metrics from trades including spread analysis"""
+def calculate_drawdown(trades_df: pd.DataFrame) -> Dict:
+    """
+    Calculate maximum drawdown from trade P&L
+    
+    Args:
+        trades_df: DataFrame with closed trades
+        
+    Returns:
+        Dictionary with:
+        - max_drawdown_points: Maximum drawdown in points
+        - max_drawdown_percent: Maximum drawdown as percentage of peak
+        - current_drawdown_points: Current drawdown in points
+        - recovery_factor: Ratio of total P&L to max drawdown
+    """
+    if trades_df.empty:
+        return {
+            'max_drawdown_points': 0,
+            'max_drawdown_percent': 0,
+            'current_drawdown_points': 0,
+            'recovery_factor': 0
+        }
+    
+    # Sort by exit time to get chronological order
+    trades_sorted = trades_df.sort_values('exit_time').copy()
+    
+    # Calculate cumulative P&L
+    trades_sorted['cumulative_pnl'] = trades_sorted['pnl_points'].cumsum()
+    
+    # Calculate running maximum (peak)
+    trades_sorted['running_max'] = trades_sorted['cumulative_pnl'].cummax()
+    
+    # Calculate drawdown (negative values indicate drawdown)
+    trades_sorted['drawdown'] = trades_sorted['cumulative_pnl'] - trades_sorted['running_max']
+    
+    # Get maximum drawdown (most negative value)
+    max_drawdown_points = trades_sorted['drawdown'].min()
+    
+    # Calculate drawdown as percentage of peak
+    max_drawdown_percent = 0
+    if trades_sorted['running_max'].max() > 0:
+        max_drawdown_percent = (max_drawdown_points / trades_sorted['running_max'].max()) * 100
+    
+    # Current drawdown (last value)
+    current_drawdown_points = trades_sorted['drawdown'].iloc[-1] if len(trades_sorted) > 0 else 0
+    
+    # Recovery factor (how many times profit covers max drawdown)
+    total_pnl = trades_sorted['pnl_points'].sum()
+    recovery_factor = 0
+    if max_drawdown_points < 0:
+        recovery_factor = abs(total_pnl / max_drawdown_points)
+    elif total_pnl > 0:
+        recovery_factor = float('inf')  # No drawdown but positive P&L
+    
+    return {
+        'max_drawdown_points': max_drawdown_points,
+        'max_drawdown_percent': max_drawdown_percent,
+        'current_drawdown_points': current_drawdown_points,
+        'recovery_factor': recovery_factor if recovery_factor != float('inf') else 0
+    }
+
+
+def calculate_losing_streak(trades_df: pd.DataFrame) -> Dict:
+    """
+    Calculate maximum consecutive losing trades
+    
+    Args:
+        trades_df: DataFrame with closed trades
+        
+    Returns:
+        Dictionary with:
+        - max_losing_streak: Maximum consecutive losing trades
+        - current_streak: Current streak (positive for wins, negative for losses)
+        - avg_losing_streak_length: Average length of losing streaks
+        - total_losing_streaks: Number of losing streaks
+    """
+    if trades_df.empty:
+        return {
+            'max_losing_streak': 0,
+            'current_streak': 0,
+            'avg_losing_streak_length': 0,
+            'total_losing_streaks': 0
+        }
+    
+    # Sort by exit time to get chronological order
+    trades_sorted = trades_df.sort_values('exit_time').copy()
+    
+    # Create win/loss indicator (True for win, False for loss)
+    trades_sorted['is_winner'] = trades_sorted['pnl_points'] > 0
+    
+    max_losing_streak = 0
+    current_streak = 0
+    losing_streaks = []
+    current_losing_streak = 0
+    
+    for is_win in trades_sorted['is_winner']:
+        if is_win:
+            # Winning trade
+            if current_losing_streak > 0:
+                losing_streaks.append(current_losing_streak)
+                current_losing_streak = 0
+            current_streak = max(1, current_streak + 1) if current_streak >= 0 else 1
+        else:
+            # Losing trade
+            current_losing_streak += 1
+            max_losing_streak = max(max_losing_streak, current_losing_streak)
+            current_streak = min(-1, current_streak - 1) if current_streak <= 0 else -1
+    
+    # Don't forget the last streak if it was losing
+    if current_losing_streak > 0:
+        losing_streaks.append(current_losing_streak)
+    
+    # Calculate average losing streak length
+    avg_losing_streak_length = 0
+    if losing_streaks:
+        avg_losing_streak_length = sum(losing_streaks) / len(losing_streaks)
+    
+    return {
+        'max_losing_streak': max_losing_streak,
+        'current_streak': current_streak,
+        'avg_losing_streak_length': avg_losing_streak_length,
+        'total_losing_streaks': len(losing_streaks)
+    }
+
+
+def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd.DataFrame] = None, 
+                                 detailed: bool = True) -> Dict:
+    """
+    Calculate performance metrics from trades
+    
+    Args:
+        trades_df: DataFrame with trade data
+        ohlcv_df: Optional OHLCV data for additional calculations
+        detailed: If False, skip expensive calculations (spread analysis, monthly performance, 
+                 drawdown details, losing streak details). Only core metrics for orchestrator.
+    
+    Returns:
+        Dictionary with performance metrics
+    """
     if trades_df.empty:
         return {
             'total_trades': 0,
@@ -84,6 +220,32 @@ def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd
         avg_win = metrics['avg_win_points']
         avg_loss = metrics['avg_loss_points']
         metrics['expectancy_points'] = (win_rate * avg_win) - ((1 - win_rate) * abs(avg_loss))
+    
+    # NEW: Calculate drawdown metrics (always needed for Part 1)
+    if not closed_trades.empty:
+        drawdown_metrics = calculate_drawdown(closed_trades)
+        # Extract only max_drawdown_points for core metrics
+        metrics['max_drawdown_points'] = drawdown_metrics['max_drawdown_points']
+        if detailed:
+            metrics['drawdown_analysis'] = drawdown_metrics
+    else:
+        metrics['max_drawdown_points'] = 0
+    
+    # NEW: Calculate losing streak metrics (always needed for Part 1)
+    if not closed_trades.empty:
+        losing_streak_metrics = calculate_losing_streak(closed_trades)
+        # Extract only max_losing_streak for core metrics
+        metrics['max_losing_streak'] = losing_streak_metrics['max_losing_streak']
+        if detailed:
+            metrics['losing_streak_analysis'] = losing_streak_metrics
+    else:
+        metrics['max_losing_streak'] = 0
+    
+    # CORE MODE: Early exit if detailed metrics not needed
+    if not detailed:
+        return metrics
+    
+    # === DETAILED METRICS BELOW (only calculated in debug mode) ===
     
     # Exit reasons breakdown
     if not closed_trades.empty and 'exit_reason' in closed_trades.columns:
@@ -171,27 +333,12 @@ def calculate_performance_metrics(trades_df: pd.DataFrame, ohlcv_df: Optional[pd
             if net_returns.std() > 0:
                 metrics['sharpe_ratio_net_spread'] = net_returns.mean() / net_returns.std()
                 metrics['spread_impact_on_sharpe'] = metrics.get('sharpe_ratio', 0) - metrics.get('sharpe_ratio_net_spread', 0)
-        
-        return metrics
     
     # Calculate realized risk:reward
     if not closed_trades.empty:
         winning = closed_trades[closed_trades['pnl_points'] > 0]
         if len(winning) > 0 and winning['sl_distance'].mean() > 0:
             metrics['avg_risk_reward_realized'] = winning['tp_distance'].mean() / winning['sl_distance'].mean()
-    
-    # Drawdown analysis
-    if not closed_trades.empty:
-        closed_trades_sorted = closed_trades.sort_values('exit_time').copy()
-        closed_trades_sorted['cumulative_pnl'] = closed_trades_sorted['pnl_points'].cumsum()
-        closed_trades_sorted['running_max'] = closed_trades_sorted['cumulative_pnl'].cummax()
-        closed_trades_sorted['drawdown'] = closed_trades_sorted['cumulative_pnl'] - closed_trades_sorted['running_max']
-        
-        metrics['drawdown_analysis'] = {
-            'max_drawdown_points': closed_trades_sorted['drawdown'].min(),
-            'max_drawdown_percent': (closed_trades_sorted['drawdown'].min() / closed_trades_sorted['running_max'].max() * 100) if closed_trades_sorted['running_max'].max() > 0 else 0,
-            'recovery_factor': abs(closed_trades_sorted['pnl_points'].sum() / closed_trades_sorted['drawdown'].min()) if closed_trades_sorted['drawdown'].min() < 0 else float('inf')
-        }
     
     # Rejection analysis
     if len(rejected_trades) > 0 and 'reject_reason' in rejected_trades.columns:

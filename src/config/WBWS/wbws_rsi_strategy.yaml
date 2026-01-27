@@ -16,8 +16,8 @@ data:
   file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv
   format: csv
   date_range:
-    start: '2025-12-15 01:12:00'
-    end: '2025-12-26 23:00:00'
+    start: '2025-12-15 08:00:00'
+    end: '2025-12-17 21:00:00'
   validation:
     check_ohlc: true
     check_gaps: false
@@ -60,10 +60,53 @@ trade_management:
     apply_to_long: true
     apply_to_short: true
     log_spread_impact: true
+# =============================================================================
+# EXECUTION MODE CONFIGURATION (NEW)
+# =============================================================================
+execution:
+  mode: "core"  # Options: "core" | "debug"
+  # 
+  # "core"  - Optimized for pipeline orchestrator (45-65% faster)
+  #           - Skips progressive tracking
+  #           - Skips detailed metrics calculation
+  #           - Skips CSV generation
+  #           - Generates minimal JSON report (Part 1 only)
+  #
+  # "debug" - Full detailed tracking and analysis (default if not specified)
+  #           - Generates all CSV files
+  #           - Calculates all detailed metrics
+  #           - Generates complete JSON report (Part 1 + Part 2)
+  #           - Shows cache statistics
+  #
+# =============================================================================
+# OUTPUT CONFIGURATION (AUTO-CONFIGURED BY MODE)
+# =============================================================================
+# Note: These settings are automatically set based on execution.mode
+# You can override them manually if needed
+
 output:
-  outputs_dir: outputs
-  reports_dir: reports/WBWS
-  signals_dir: signals/strategy
-  save_signals_csv: true
-  save_execution_report: true
+  # Progressive tracking (signal-by-signal detailed analysis)
+  enable_progressive_tracking: false  # true in debug, false in core
+  
+  # Detailed metrics (spread analysis, monthly performance, etc.)
+  enable_detailed_metrics: false      # true in debug, false in core
+  
+  # CSV file generation
+  save_signals_csv: false             # true in debug, false in core
+  
+  # Cache statistics collection and display
+  enable_cache_stats: false           # true in debug, false in core
+  
+  # Output directories (same in both modes)
+  outputs_dir: "outputs"
+  reports_dir: "reports/WBWS"
+  signals_dir: "signals/strategy"
   verbose: false
+
+#output:
+#  outputs_dir: outputs
+#  reports_dir: reports/WBWS
+#  signals_dir: signals/strategy
+#  save_signals_csv: true
+#  save_execution_report: true
+#  verbose: false

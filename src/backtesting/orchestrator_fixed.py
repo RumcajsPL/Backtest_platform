@@ -306,8 +306,6 @@ class ResourceMonitor:
         """
         Check if system resources are healthy
         
-        Returns:
-            Tuple of (is_healthy, message)
         """
         mem = psutil.virtual_memory()
         current_mem_percent = mem.percent
@@ -418,14 +416,6 @@ class BacktestOrchestrator:
         """
         Load strategy template and convert numpy types to Python types
         
-        PRODUCTION VERSION: Fails fast with clear error if template not found
-        No fallback to hardcoded defaults - ensures single source of truth
-        
-        Returns:
-            dict: Cleaned strategy template configuration
-            
-        Raises:
-            SystemExit: If template file not found or contains invalid YAML
         """
         config_dir = self.backtest_yaml_path.parent
         template_path = config_dir / "wbws_rsi_strategy.yaml"
@@ -450,20 +440,6 @@ class BacktestOrchestrator:
     {'=' * 70}
 
     The required strategy template file 'wbws_rsi_strategy.yaml' could not be found.
-
-    Searched in the following locations:
-    1. {config_dir / "wbws_rsi_strategy.yaml"}
-    2. src/config/WBWS/wbws_rsi_strategy.yaml
-    3. configs/WBWS/wbws_rsi_strategy.yaml
-    4. {Path.cwd() / "wbws_rsi_strategy.yaml"}
-
-    This file is REQUIRED for the orchestrator to function correctly.
-
-    Action Required:
-    ✓ Ensure the file exists in one of the above locations
-    ✓ Verify the file path matches your project structure
-    ✓ Check you have read permissions for the file
-
     Cannot proceed without strategy template.
     {'=' * 70}
     """
@@ -484,11 +460,6 @@ class BacktestOrchestrator:
 
     File: {template_path}
     Error: {str(e)}
-
-    Action Required:
-    ✓ Check file permissions (needs read access)
-    ✓ Verify file is not corrupted
-    ✓ Ensure file is not locked by another process
 
     Cannot proceed without readable template.
     {'=' * 70}
@@ -514,19 +485,6 @@ class BacktestOrchestrator:
     YAML Error: {str(e)}
 
     The strategy template file exists but contains invalid YAML syntax.
-
-    Common YAML Issues:
-    ✓ Indentation must use spaces (not tabs)
-    ✓ Keys must be followed by colons: "key: value"
-    ✓ Strings with special characters need quotes
-    ✓ List items must start with "- "
-    ✓ Check for unmatched brackets/braces
-
-    How to Fix:
-    1. Validate YAML syntax: yamllint {template_path}
-    2. Use online validator: http://www.yamllint.com/
-    3. Check line {getattr(e, 'problem_mark', 'unknown')}
-
     Cannot proceed with invalid template.
     {'=' * 70}
     """
@@ -543,12 +501,6 @@ class BacktestOrchestrator:
     File: {template_path}
 
     The template file was parsed but contains no valid configuration.
-
-    Action Required:
-    ✓ Ensure file is not empty
-    ✓ Verify file contains valid YAML dictionary structure
-    ✓ Check file was saved correctly
-
     Cannot proceed with empty template.
     {'=' * 70}
     """
@@ -569,12 +521,6 @@ class BacktestOrchestrator:
         """
         Validate that template contains all required sections
         
-        Args:
-            template: Loaded template dictionary
-            template_path: Path to template file (for error messages)
-            
-        Raises:
-            SystemExit: If template is missing required sections
         """
         required_sections = {
             'strategy': 'Strategy metadata (name, version, description)',
@@ -598,18 +544,6 @@ class BacktestOrchestrator:
     {'=' * 70}
 
     File: {template_path}
-
-    The strategy template is missing required sections:
-
-    {chr(10).join(missing_sections)}
-
-    Found sections:
-    {chr(10).join(f"  ✓ {section}" for section in template.keys())}
-
-    Action Required:
-    ✓ Add missing sections to the template file
-    ✓ Use a complete template as reference
-    ✓ Ensure all sections are properly formatted
 
     Cannot proceed with incomplete template.
     {'=' * 70}
@@ -651,12 +585,6 @@ class BacktestOrchestrator:
     def run_strategy_wrapper(self, args: Tuple) -> Tuple[int, Optional[Path], Optional[str]]:
         """
         Thread-safe wrapper for run_strategy with retry logic
-        
-        Args:
-            args: Tuple of (temp_yaml, output_dir, sample_index)
-            
-        Returns:
-            Tuple of (sample_index, report_path, error_message)
         """
         temp_yaml, output_dir, sample_index = args
         
@@ -692,13 +620,6 @@ class BacktestOrchestrator:
     ) -> List[Tuple[int, Optional[Path], Optional[str]]]:
         """
         Run multiple strategies in parallel with safety checks
-        
-        Args:
-            strategy_configs: List of (temp_yaml, output_dir, sample_index) tuples
-            phase_name: Name of the execution phase (for logging)
-            
-        Returns:
-            List of (sample_index, report_path, error_message) tuples
         """
         if not self.parallel_enabled or len(strategy_configs) == 1:
             print(f"   ⚙️  Running {len(strategy_configs)} strategies sequentially")
@@ -1107,11 +1028,6 @@ class BacktestOrchestrator:
                                    initial_candidates, sampler):
         """
         🟡 ENHANCED: Integrate GA optimization with PURE ELITE seeding
-        
-        This method implements the Random Search + GA Enhancement strategy:
-        - Uses ALL successful random candidates (not just top 10)
-        - Ensures no random dilution in elite mode
-        - Applies diversity-aware selection to avoid parameter clustering
         """
         ga_config = self.config.get("genetic", {})
         if not ga_config.get("enabled", False):
@@ -1233,19 +1149,7 @@ class BacktestOrchestrator:
     
     def _select_diverse_elites(self, elite_params: list, target_size: int) -> list:
         """
-        🟡 NEW METHOD: Select diverse elite candidates using parameter space distance
-        
-        Strategy:
-        1. Always include top candidate (best fitness)
-        2. Iteratively select candidates that maximize minimum distance to selected set
-        3. Ensures parameter diversity while respecting fitness ranking
-        
-        Args:
-            elite_params: List of dicts with 'parameters' and 'fitness' keys
-            target_size: Number of candidates to select
-            
-        Returns:
-            List of parameter dictionaries (diverse subset of elites)
+        🟡 Select diverse elite candidates using parameter space distance
         """
         if len(elite_params) <= target_size:
             return [e['parameters'] for e in elite_params]
@@ -1294,16 +1198,7 @@ class BacktestOrchestrator:
     
     def _parameter_distance(self, params1: dict, params2: dict) -> float:
         """
-        🟡 NEW METHOD: Calculate normalized distance between two parameter sets
-        
-        Uses weighted Euclidean distance with normalization based on parameter ranges
-        
-        Args:
-            params1: First parameter dictionary
-            params2: Second parameter dictionary
-            
-        Returns:
-            Normalized distance (0.0 = identical, higher = more different)
+        🟡 Calculate normalized distance between two parameter sets
         """
         distance = 0.0
         count = 0
