@@ -1,21 +1,63 @@
 """
 Trade Simulation Module with LTF Execution Support
+OPTIMIZED VERSION with vectorized exit checking
 Uses actual OHLC prices from 1-second bars for realistic exit pricing
 """
 import pandas as pd
+import numpy as np
+import time #profiler
 from typing import Dict, List, Optional
 from .trade_tracker import TradeTracker
 from src.strategies.trade_management.risk_manager import RiskManager
 from src.strategies.trade_management.spread_manager import SpreadManager
+from collections import defaultdict #profiler
+
+# Profiler class to measure execution time of methods
+class TradeSimulatorProfiler:
+    def __init__(self):
+        self.timings = defaultdict(list)
+    
+    def profile(self, name):
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                start = time.perf_counter()
+                result = func(*args, **kwargs)
+                elapsed = time.perf_counter() - start
+                self.timings[name].append(elapsed)
+                return result
+            return wrapper
+        return decorator
+    
+    def print_report(self):
+        print("\n" + "="*60)
+        print("TRADE SIMULATOR PROFILING REPORT")
+        print("="*60)
+        for name, times in self.timings.items():
+            total = sum(times)
+            avg = total / len(times) if times else 0
+            print(f"{name:30s}: {total:.3f}s total, {avg:.3f}s avg, {len(times)} calls")
 
 class TradeSimulator:
     def __init__(self, config: Dict):
         self.config = config
         self.trade_tracker = TradeTracker()
+        self.profiler = TradeSimulatorProfiler()  # Profiler instance
         self.trade_manager = None
         self.spread_manager = None
         self.progressive_tracker = None
+        self.df_ltf = None
+        self._ltf_windows = None  # Cache for pre-computed LTF windows
+                        
         self.initialize_managers()
+
+        # NEW: Wrap the methods with profiling here (after self.profiler exists)
+        self._check_exits_with_ltf_ohlc = self.profiler.profile("check_exits_ltf")(
+            self._check_exits_with_ltf_ohlc
+        )
+        
+        self._check_exits_with_strategy_tf_ohlc = self.profiler.profile("check_exits_strategy")(
+            self._check_exits_with_strategy_tf_ohlc
+        )
         
     def initialize_managers(self):
         """Initialize trade manager and spread manager"""
@@ -29,22 +71,422 @@ class TradeSimulator:
             config_path = spread_config.get('config_path')
             self.spread_manager = SpreadManager(asset_symbol, config_path)
     
+    def _precompute_ltf_windows(self, df_strategy: pd.DataFrame) -> Dict:
+        """
+        Pre-compute LTF data grouped by strategy minutes
+        Returns: Dict with {timestamp: {'min_low': float, 'max_high': float, 'bars': DataFrame}}
+        """
+        if self.df_ltf is None or self.df_ltf.empty:
+            return {}
+        
+        ltf_windows = {}
+        
+        for strategy_time in df_strategy.index:
+            window_end = strategy_time + pd.Timedelta(minutes=1)
+            
+            # Get LTF bars in this window
+            mask = (self.df_ltf.index >= strategy_time) & (self.df_ltf.index < window_end)
+            window_bars = self.df_ltf[mask]
+            
+            if not window_bars.empty:
+                ltf_windows[strategy_time] = {
+                    'min_low': window_bars['low'].min(),
+                    'max_high': window_bars['high'].max(),
+                    'bars': window_bars
+                }
+            else:
+                ltf_windows[strategy_time] = {
+                    'min_low': float('inf'),
+                    'max_high': float('-inf'),
+                    'bars': pd.DataFrame()
+                }
+        
+        return ltf_windows
+    
+    def _find_exact_exit_bar(self, trade: Dict, window_bars: pd.DataFrame, 
+                           exit_reason: str, is_long: bool) -> tuple:
+        """
+        Find the exact bar where exit occurred (vectorized)
+        Returns: (exit_bar, exit_price) or (None, None)
+        """
+        if window_bars.empty:
+            return None, None
+        
+        if is_long:
+            if exit_reason == 'STOP_LOSS':
+                # Find first bar where low <= SL
+                hit_mask = window_bars['low'] <= trade['sl_price']
+            else:  # TAKE_PROFIT
+                # Find first bar where high >= TP
+                hit_mask = window_bars['high'] >= trade['tp_price']
+        else:  # SHORT
+            if exit_reason == 'STOP_LOSS':
+                hit_mask = window_bars['high'] >= trade['sl_price']
+            else:  # TAKE_PROFIT
+                hit_mask = window_bars['low'] <= trade['tp_price']
+        
+        if hit_mask.any():
+            # Get first hitting bar
+            if isinstance(window_bars, pd.DataFrame):
+                exit_idx = hit_mask.idxmax()
+                exit_bar = window_bars.loc[exit_idx]
+            else:
+                exit_idx = np.argmax(hit_mask)
+                exit_bar = window_bars.iloc[exit_idx]
+            
+            # Calculate exact exit price
+            if is_long:
+                if exit_reason == 'STOP_LOSS':
+                    exit_price = min(exit_bar['low'], trade['sl_price'])
+                else:  # TAKE_PROFIT
+                    exit_price = min(exit_bar['high'], trade['tp_price'])
+            else:  # SHORT
+                if exit_reason == 'STOP_LOSS':
+                    exit_price = max(exit_bar['high'], trade['sl_price'])
+                else:  # TAKE_PROFIT
+                    exit_price = max(exit_bar['low'], trade['tp_price'])
+            
+            return exit_bar, exit_price
+        
+        return None, None
+    
+    def _execute_trade_exit(self, trade: Dict, exit_bar: pd.Series, exit_price: float, 
+                          exit_reason: str, exit_stats: Dict, verbose: bool):
+        """Execute trade exit with all necessary updates"""
+        # Calculate P&L
+        if trade['direction'] == 'BUY':
+            pnl_points = exit_price - trade['entry_price']
+        else:
+            pnl_points = trade['entry_price'] - exit_price
+        
+        pnl_percent = (pnl_points / trade['entry_price']) * 100 if trade['entry_price'] else 0
+        
+        # Calculate duration
+        entry_time = trade.get('entry_time') or trade.get('timestamp')
+        if entry_time:
+            duration_minutes = (exit_bar.name - entry_time).total_seconds() / 60
+        else:
+            duration_minutes = None
+        
+        # Close trade in tracker
+        self.trade_tracker.close_position(
+            trade['trade_id'], 
+            exit_bar.name,  # timestamp
+            exit_price, 
+            exit_reason, 
+            None
+        )
+        
+        # Close in trade manager if applicable
+        if trade.get('trade_manager_trade_id'):
+            self.trade_manager.close_positions([trade['trade_manager_trade_id']])
+        
+        exit_stats[exit_reason] += 1
+        
+        # Update progressive tracker
+        if self.progressive_tracker and 'signal_id' in trade and trade['signal_id']:
+            self.progressive_tracker.update_trade_execution_details(
+                trade['signal_id'],
+                trade_id=trade['trade_id'],
+                exit_time=exit_bar.name,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                pnl_points=pnl_points,
+                pnl_percent=pnl_percent,
+                duration_bars=None,
+                duration_minutes=duration_minutes,
+                is_win=pnl_points > 0,
+                is_loss=pnl_points < 0,
+                exit_check_high=exit_bar['high'],
+                exit_check_low=exit_bar['low'],
+                reason=f'Trade closed ({exit_reason}) - BID OHLC execution'
+            )
+        
+        if verbose:
+            theoretical = trade['sl_price'] if exit_reason == 'STOP_LOSS' else trade['tp_price']
+            diff = exit_price - theoretical
+            sign = '+' if diff > 0 else ''
+            print(f"  [EXIT-LTF] {exit_bar.name} {trade['direction']} {exit_reason}")
+            print(f"    Theoretical: {theoretical:.5f}")
+            print(f"    Actual BID:  {exit_price:.5f} ({sign}{diff:.5f})")
+            print(f"    Bar H/L:     {exit_bar['high']:.5f}/{exit_bar['low']:.5f}")
+            print(f"    P&L:         {pnl_points:+.2f} pts")
+    
+    def _check_exits_with_ltf_ohlc(self, strategy_timestamp: pd.Timestamp, 
+                                 exit_stats: Dict, verbose: bool):
+        """
+        VECTORIZED VERSION - Check exits using pre-computed LTF data
+        Replaces the original nested loop implementation
+        """
+        # If no LTF data or windows not pre-computed, use fallback
+        if not hasattr(self, '_ltf_windows') or self._ltf_windows is None:
+            self._check_exits_with_strategy_tf_ohlc(
+                0, strategy_timestamp, 
+                self.df_ltf.iloc[0] if self.df_ltf is not None else pd.Series(),
+                exit_stats, verbose, pd.DataFrame()
+            )
+            return
+        
+        if strategy_timestamp not in self._ltf_windows:
+            return
+        
+        window_data = self._ltf_windows[strategy_timestamp]
+        
+        # Quick check: if no LTF bars or no trades, return early
+        if window_data['bars'].empty or not self.trade_tracker.get_open_trades():
+            return
+        
+        # Get ALL open trades
+        open_trades = list(self.trade_tracker.get_open_trades())
+        
+        # Filter trades that could exit in this window (entry_time < current_time)
+        valid_trades = [
+            t for t in open_trades 
+            if (t.get('entry_time') or t.get('timestamp')) < strategy_timestamp
+        ]
+        
+        if not valid_trades:
+            return
+        
+        # Separate LONG and SHORT trades for vectorized processing
+        long_trades = [t for t in valid_trades if t['direction'] == 'BUY']
+        short_trades = [t for t in valid_trades if t['direction'] == 'SELL']
+        
+        # Process LONG trades (BUY) - VECTORIZED
+        if long_trades:
+            # Extract arrays for vectorized operations
+            sl_prices = np.array([t['sl_price'] for t in long_trades])
+            tp_prices = np.array([t['tp_price'] for t in long_trades])
+            
+            # Vectorized checks using window extremes
+            window_min_low = window_data['min_low']
+            window_max_high = window_data['max_high']
+            
+            # Check which trades hit SL or TP in this window
+            sl_hit_mask = window_min_low <= sl_prices
+            tp_hit_mask = window_max_high >= tp_prices
+            
+            # Determine exit reason (SL takes priority)
+            exit_mask = sl_hit_mask | tp_hit_mask
+            exit_reasons = np.where(sl_hit_mask, 'STOP_LOSS', 
+                                   np.where(tp_hit_mask, 'TAKE_PROFIT', None))
+            
+            # Process trades that hit exits
+            for idx in np.where(exit_mask)[0]:
+                trade = long_trades[idx]
+                exit_reason = exit_reasons[idx]
+                
+                if exit_reason:  # Should always be True due to mask
+                    exit_bar, exit_price = self._find_exact_exit_bar(
+                        trade, window_data['bars'], exit_reason, is_long=True
+                    )
+                    
+                    if exit_bar is not None:
+                        self._execute_trade_exit(
+                            trade, exit_bar, exit_price, exit_reason, 
+                            exit_stats, verbose
+                        )
+        
+        # Process SHORT trades (SELL) - VECTORIZED
+        if short_trades:
+            sl_prices = np.array([t['sl_price'] for t in short_trades])
+            tp_prices = np.array([t['tp_price'] for t in short_trades])
+            
+            window_min_low = window_data['min_low']
+            window_max_high = window_data['max_high']
+            
+            # For SHORT: SL hit when high >= SL, TP hit when low <= TP
+            sl_hit_mask = window_max_high >= sl_prices
+            tp_hit_mask = window_min_low <= tp_prices
+            
+            exit_mask = sl_hit_mask | tp_hit_mask
+            exit_reasons = np.where(sl_hit_mask, 'STOP_LOSS', 
+                                   np.where(tp_hit_mask, 'TAKE_PROFIT', None))
+            
+            for idx in np.where(exit_mask)[0]:
+                trade = short_trades[idx]
+                exit_reason = exit_reasons[idx]
+                
+                if exit_reason:
+                    exit_bar, exit_price = self._find_exact_exit_bar(
+                        trade, window_data['bars'], exit_reason, is_long=False
+                    )
+                    
+                    if exit_bar is not None:
+                        self._execute_trade_exit(
+                            trade, exit_bar, exit_price, exit_reason, 
+                            exit_stats, verbose
+                        )
+    
+    def _check_exit_with_bid_ohlc(self, trade: Dict, bar: pd.Series) -> Dict:
+        """
+        Check exit based on BID OHLC prices touching SL/TP levels
+        Same as original - kept for compatibility
+        """
+        if trade['direction'] == 'BUY':
+            # LONG position
+            if bar['low'] <= trade['sl_price']:
+                actual_price = min(bar['low'], trade['sl_price'])
+                return {'exit_reason': 'STOP_LOSS', 'exit_price': actual_price}
+            elif bar['high'] >= trade['tp_price']:
+                actual_price = min(bar['high'], trade['tp_price'])
+                return {'exit_reason': 'TAKE_PROFIT', 'exit_price': actual_price}
+        else:  # SELL (SHORT)
+            if bar['high'] >= trade['sl_price']:
+                actual_price = max(bar['high'], trade['sl_price'])
+                return {'exit_reason': 'STOP_LOSS', 'exit_price': actual_price}
+            elif bar['low'] <= trade['tp_price']:
+                actual_price = max(bar['low'], trade['tp_price'])
+                return {'exit_reason': 'TAKE_PROFIT', 'exit_price': actual_price}
+        
+        return {'exit_reason': None, 'exit_price': None}
+    
+    def _check_exit_with_ohlc_prices(self, trade: Dict, bar: pd.Series) -> Dict:
+        """
+        Check if trade should exit based on actual OHLC prices
+        Same as original - kept for compatibility
+        """
+        if trade['direction'] == 'BUY':
+            if bar['low'] <= trade['sl_price']:
+                return {'exit_reason': 'STOP_LOSS'}
+            elif bar['high'] >= trade['tp_price']:
+                return {'exit_reason': 'TAKE_PROFIT'}
+        else:
+            if bar['high'] >= trade['sl_price']:
+                return {'exit_reason': 'STOP_LOSS'}
+            elif bar['low'] <= trade['tp_price']:
+                return {'exit_reason': 'TAKE_PROFIT'}
+        
+        return {'exit_reason': None}
+    
+    def _calculate_actual_exit_price(self, trade: Dict, exit_reason: str, bar: pd.Series) -> float:
+        """
+        Calculate actual exit price from OHLC bar
+        Same as original - kept for compatibility
+        """
+        spread = 0.0
+        if self.spread_manager:
+            mid_price = bar['close']
+            spread = self.spread_manager.get_spread_in_points(mid_price)
+        
+        if exit_reason == 'STOP_LOSS':
+            if trade['direction'] == 'BUY':
+                exit_price = bar['low'] - spread
+                slippage = spread * 0.3
+                exit_price -= slippage
+            else:  # SELL
+                exit_price = bar['high'] + spread
+                slippage = spread * 0.3
+                exit_price += slippage
+        elif exit_reason == 'TAKE_PROFIT':
+            if trade['direction'] == 'BUY':
+                exit_price = min(bar['high'], trade['tp_price'])
+                if exit_price > trade['tp_price']:
+                    exit_price = trade['tp_price']
+            else:  # SELL
+                exit_price = max(bar['low'], trade['tp_price'])
+                if exit_price < trade['tp_price']:
+                    exit_price = trade['tp_price']
+        else:
+            if trade['direction'] == 'BUY':
+                exit_price = bar['close'] - spread
+            else:
+                exit_price = bar['close'] + spread
+        
+        return round(exit_price, 5)
+    
+    def _check_exits_with_strategy_tf_ohlc(self, bar_index: int, timestamp: pd.Timestamp, 
+                                         bar: pd.Series, exit_stats: Dict, verbose: bool,
+                                         df_strategy: pd.DataFrame):
+        """
+        Exit checking using actual OHLC prices from strategy timeframe
+        Same as original - kept for fallback when LTF not available
+        """
+        for open_trade in list(self.trade_tracker.get_open_trades()):
+            exit_info = self._check_exit_with_ohlc_prices(open_trade, bar)
+            
+            if exit_info['exit_reason']:
+                actual_exit_price = self._calculate_actual_exit_price(
+                    open_trade, exit_info['exit_reason'], bar
+                )
+                
+                if open_trade['direction'] == 'BUY':
+                    pnl_points = actual_exit_price - open_trade['entry_price']
+                else:
+                    pnl_points = open_trade['entry_price'] - actual_exit_price
+                
+                pnl_percent = (pnl_points / open_trade['entry_price']) * 100 if open_trade['entry_price'] else 0
+                
+                entry_time = open_trade.get('entry_time') or open_trade.get('timestamp')
+                if entry_time and entry_time in df_strategy.index:
+                    duration_bars = bar_index - df_strategy.index.get_loc(entry_time)
+                else:
+                    duration_bars = None
+                
+                if entry_time:
+                    duration_minutes = (timestamp - entry_time).total_seconds() / 60
+                else:
+                    duration_minutes = None
+                
+                self.trade_tracker.close_position(
+                    open_trade['trade_id'], 
+                    timestamp, 
+                    actual_exit_price, 
+                    exit_info['exit_reason'], 
+                    df_strategy
+                )
+                
+                if open_trade.get('trade_manager_trade_id'):
+                    self.trade_manager.close_positions([open_trade['trade_manager_trade_id']])
+                
+                exit_stats[exit_info['exit_reason']] += 1
+                
+                if self.progressive_tracker and 'signal_id' in open_trade and open_trade['signal_id']:
+                    self.progressive_tracker.update_trade_execution_details(
+                        open_trade['signal_id'],
+                        trade_id=open_trade['trade_id'],
+                        exit_time=timestamp,
+                        exit_price=actual_exit_price,
+                        exit_reason=exit_info['exit_reason'],
+                        pnl_points=pnl_points,
+                        pnl_percent=pnl_percent,
+                        duration_bars=duration_bars,
+                        duration_minutes=duration_minutes,
+                        is_win=pnl_points > 0,
+                        is_loss=pnl_points < 0,
+                        exit_check_high=bar['high'],
+                        exit_check_low=bar['low'],
+                        reason='Trade closed (Strategy TF OHLC)'
+                    )
+                
+                if verbose:
+                    theoretical_price = open_trade['sl_price'] if exit_info['exit_reason'] == 'STOP_LOSS' else open_trade['tp_price']
+                    price_diff = actual_exit_price - theoretical_price
+                    sign = '+' if price_diff > 0 else ''
+                    print(f"  [EXIT] {timestamp} {open_trade['direction']} {exit_info['exit_reason']}")
+                    print(f"    Actual: {actual_exit_price:.5f} ({sign}{price_diff:.5f})")
+                    print(f"    P&L:    {pnl_points:+.2f} pts")
+    
     def simulate_trades(self, df_strategy: pd.DataFrame, filtered_signals: pd.Series, 
-                        verbose: bool = False, progressive_tracker=None, risk_manager: RiskManager = None,
-                        signal_id_map: Dict = None, df_ltf: Optional[pd.DataFrame] = None) -> Dict:
-        """Simulate trades with LTF execution using actual OHLC prices"""
+                       verbose: bool = False, progressive_tracker=None, risk_manager: RiskManager = None,
+                       signal_id_map: Dict = None, df_ltf: Optional[pd.DataFrame] = None) -> Dict:
+        """
+        Simulate trades with LTF execution using actual OHLC prices
+        OPTIMIZED VERSION with pre-computed LTF windows
+        """
         self.progressive_tracker = progressive_tracker
-        
-        if risk_manager is None:
-            raise ValueError("RiskManager required for simulation")
-        
-        # Store LTF data if provided
         self.df_ltf = df_ltf
         
-        # Debug output
+        # Store LTF data if provided
         if verbose and df_ltf is not None:
             print(f"🔍 LTF Execution: Using {len(df_ltf):,} 1-second bars")
             print(f"🔍 Price source: Actual OHLC prices from LTF bars")
+        
+        # PRE-COMPUTE LTF WINDOWS (ONCE, at simulation start)
+        if self.df_ltf is not None:
+            self._ltf_windows = self._precompute_ltf_windows(df_strategy)
+            if verbose:
+                print(f"🔍 Pre-computed {len(self._ltf_windows):,} minute windows")
         
         position_rejected_count = {'buy': 0, 'sell': 0}
         exit_stats = {
@@ -66,13 +508,13 @@ class TradeSimulator:
         for i, (timestamp, row) in enumerate(df_strategy.iterrows()):
             # Check exits using appropriate method
             if self.df_ltf is not None:
-                # Use LTF for precise exit timing with actual OHLC prices
+                # Use OPTIMIZED LTF method with pre-computed windows
                 self._check_exits_with_ltf_ohlc(timestamp, exit_stats, verbose)
             else:
-                # Fallback to strategy timeframe with actual bar prices
+                # Fallback to strategy timeframe
                 self._check_exits_with_strategy_tf_ohlc(i, timestamp, row, exit_stats, verbose, df_strategy)
             
-            # Process signal if present at this timestamp (unchanged)
+            # Process signal if present at this timestamp
             if timestamp in filtered_signals.index and pd.notna(filtered_signals[timestamp]):
                 signal_type = filtered_signals[timestamp]
                 is_long = (signal_type == 'BUY')
@@ -168,14 +610,13 @@ class TradeSimulator:
                         
                         sl_distance_raw = atr_value * atr_multiplier if atr_value else None
                         risk_percentile_calculated = abs(params['executed_entry'] - params['raw_sl']) / annual_range_value if annual_range_value else None
-                        risk_percentile_passed = True  # Since approved
+                        risk_percentile_passed = True
                         
                         spread_enabled = self.config.get('spread', {}).get('enabled', False)
                         spread_type = risk_manager.spread_manager.asset_config.get('spread_type') if risk_manager.spread_manager else None
                         spread_value = params.get('spread_value', 0.0)
                         spread_points = params.get('spread_value', 0.0)
                         
-                        # Calculate spread efficiency
                         entry_price_mid = bid_price
                         entry_price_adjusted = params['executed_entry']
                         spread_efficiency_percent = (spread_value / bid_price * 100) if spread_value and bid_price else None
@@ -221,6 +662,10 @@ class TradeSimulator:
         # Close any remaining positions at end of data
         self._close_remaining_positions(df_strategy, exit_stats, verbose)
         
+        # Print profiling report if enabled
+        if verbose and hasattr(self, 'profiler'):
+            self.profiler.print_report()
+        
         return {
             'all_trades': self.trade_tracker.get_trades(),
             'closed_trades': self.trade_tracker.get_closed_trades(),
@@ -230,355 +675,13 @@ class TradeSimulator:
             'position_rejected_count': position_rejected_count,
             'risk_stats': risk_stats,
             'trade_manager_metrics': self.trade_manager.get_metrics(),
-            'execution_mode': 'LTF_OHLC' if self.df_ltf is not None else 'Strategy_TF_OHLC'
+            'execution_mode': 'LTF_OHLC_VECTORIZED' if self.df_ltf is not None else 'Strategy_TF_OHLC'
         }
     
-    def _check_exits_with_ltf_ohlc(self, strategy_timestamp: pd.Timestamp, 
-                                exit_stats: Dict, verbose: bool):
-        """Check exits using LTF BID OHLC prices"""
-        if self.df_ltf is None:
-            return
-        
-        # Find LTF bars for this strategy minute
-        next_timestamp = strategy_timestamp + pd.Timedelta(minutes=1)
-        ltf_bars = self.df_ltf[
-            (self.df_ltf.index >= strategy_timestamp) & 
-            (self.df_ltf.index < next_timestamp)
-        ]
-        
-        if ltf_bars.empty:
-            return
-        
-        # Check each open trade
-        for open_trade in list(self.trade_tracker.get_open_trades()):
-            entry_time = open_trade.get('entry_time') or open_trade.get('timestamp')
-            
-            if entry_time is None or entry_time >= strategy_timestamp:
-                continue
-            
-            # Check each LTF bar
-            for ltf_index, (ltf_timestamp, ltf_row) in enumerate(ltf_bars.iterrows()):
-                exit_info = self._check_exit_with_bid_ohlc(open_trade, ltf_row)
-                
-                if exit_info['exit_reason']:
-                    # Calculate P&L with actual exit price
-                    if open_trade['direction'] == 'BUY':
-                        pnl_points = exit_info['exit_price'] - open_trade['entry_price']
-                    else:
-                        pnl_points = open_trade['entry_price'] - exit_info['exit_price']
-                    
-                    pnl_percent = (pnl_points / open_trade['entry_price']) * 100 if open_trade['entry_price'] else 0
-                    
-                    # Calculate duration
-                    if entry_time:
-                        duration_minutes = (ltf_timestamp - entry_time).total_seconds() / 60
-                    else:
-                        duration_minutes = None
-                    
-                    # Close trade
-                    self.trade_tracker.close_position(
-                        open_trade['trade_id'], 
-                        ltf_timestamp, 
-                        exit_info['exit_price'], 
-                        exit_info['exit_reason'], 
-                        None
-                    )
-                    
-                    if open_trade.get('trade_manager_trade_id'):
-                        self.trade_manager.close_positions([open_trade['trade_manager_trade_id']])
-                    
-                    exit_stats[exit_info['exit_reason']] += 1
-                    
-                    # Update progressive tracker
-                    if self.progressive_tracker and 'signal_id' in open_trade and open_trade['signal_id']:
-                        self.progressive_tracker.update_trade_execution_details(
-                            open_trade['signal_id'],
-                            trade_id=open_trade['trade_id'],
-                            exit_time=ltf_timestamp,
-                            exit_price=exit_info['exit_price'],
-                            exit_reason=exit_info['exit_reason'],
-                            pnl_points=pnl_points,
-                            pnl_percent=pnl_percent,
-                            duration_bars=None,
-                            duration_minutes=duration_minutes,
-                            is_win=pnl_points > 0,
-                            is_loss=pnl_points < 0,
-                            exit_check_high=ltf_row['high'],
-                            exit_check_low=ltf_row['low'],
-                            reason=f'Trade closed ({exit_info["exit_reason"]}) - BID OHLC execution'
-                        )
-                    
-                    if verbose:
-                        theoretical = open_trade['sl_price'] if exit_info['exit_reason'] == 'STOP_LOSS' else open_trade['tp_price']
-                        diff = exit_info['exit_price'] - theoretical
-                        sign = '+' if diff > 0 else ''
-                        print(f"  [EXIT-LTF] {ltf_timestamp} {open_trade['direction']} {exit_info['exit_reason']}")
-                        print(f"    Theoretical: {theoretical:.5f}")
-                        print(f"    Actual BID:  {exit_info['exit_price']:.5f} ({sign}{diff:.5f})")
-                        print(f"    Bar H/L:     {ltf_row['high']:.5f}/{ltf_row['low']:.5f}")
-                        print(f"    P&L:         {pnl_points:+.2f} pts")
-                    
-                    break  # Exit this trade, move to next
-    
-    def _check_exit_with_bid_ohlc(self, trade: Dict, bar: pd.Series) -> Dict:
-        """
-        Check exit based on BID OHLC prices touching SL/TP levels
-        
-        Since SL/TP already include spread, we check if BID prices touch these levels
-        
-        Returns:
-            Dict with 'exit_reason' and 'exit_price' or None for no exit
-        """
-        if trade['direction'] == 'BUY':
-            # LONG position
-            # SL hit: BID low touches or goes below SL (already spread-adjusted)
-            if bar['low'] <= trade['sl_price']:
-                # When SL is hit, fill at SL price or worse
-                # Most conservative: use bar low (could be worse than SL)
-                actual_price = min(bar['low'], trade['sl_price'])
-                return {'exit_reason': 'STOP_LOSS', 'exit_price': actual_price}
-                
-            # TP hit: BID high touches or goes above TP (already spread-adjusted)
-            elif bar['high'] >= trade['tp_price']:
-                # When TP is hit, fill at TP price or better
-                # Most favorable: use bar high (could be better than TP)
-                actual_price = min(bar['high'], trade['tp_price'])
-                return {'exit_reason': 'TAKE_PROFIT', 'exit_price': actual_price}
-                
-        else:  # SELL (SHORT)
-            # SHORT position
-            # SL hit: BID high touches or goes above SL (already spread-adjusted)
-            if bar['high'] >= trade['sl_price']:
-                actual_price = max(bar['high'], trade['sl_price'])
-                return {'exit_reason': 'STOP_LOSS', 'exit_price': actual_price}
-                
-            # TP hit: BID low touches or goes below TP (already spread-adjusted)
-            elif bar['low'] <= trade['tp_price']:
-                actual_price = max(bar['low'], trade['tp_price'])
-                return {'exit_reason': 'TAKE_PROFIT', 'exit_price': actual_price}
-        
-        return {'exit_reason': None, 'exit_price': None}
-    
-    def _check_exit_with_ohlc_prices(self, trade: Dict, bar: pd.Series) -> Dict:
-        """
-        Check if trade should exit based on actual OHLC prices
-        
-        Uses the actual high/low of the bar, not theoretical prices
-        """
-        if trade['direction'] == 'BUY':
-            # LONG position
-            # SL hit: price goes DOWN to or below stop loss
-            if bar['low'] <= trade['sl_price']:
-                return {'exit_reason': 'STOP_LOSS'}
-            # TP hit: price goes UP to or above take profit
-            elif bar['high'] >= trade['tp_price']:
-                return {'exit_reason': 'TAKE_PROFIT'}
-        else:
-            # SHORT position  
-            # SL hit: price goes UP to or above stop loss
-            if bar['high'] >= trade['sl_price']:
-                return {'exit_reason': 'STOP_LOSS'}
-            # TP hit: price goes DOWN to or below take profit
-            elif bar['low'] <= trade['tp_price']:
-                return {'exit_reason': 'TAKE_PROFIT'}
-        
-        return {'exit_reason': None}
-    
-    def _calculate_actual_exit_price(self, trade: Dict, exit_reason: str, bar: pd.Series) -> float:
-        """
-        Calculate actual exit price from OHLC bar
-        
-        Professional approach:
-        - SL hits: Worst price (low for long, high for short)
-        - TP hits: Best possible fill (high for long, low for short)
-        """
-        # Get spread if available
-        spread = 0.0
-        if self.spread_manager:
-            mid_price = bar['close']
-            spread = self.spread_manager.get_spread_in_points(mid_price)
-        
-        if exit_reason == 'STOP_LOSS':
-            if trade['direction'] == 'BUY':
-                # Long position hitting SL: Market sell at BID price
-                # Worst case: bar low minus spread
-                exit_price = bar['low'] - spread
-                # Add small slippage for SL (market moving against you)
-                slippage = spread * 0.3  # 30% of spread as slippage
-                exit_price -= slippage
-            else:  # SELL
-                # Short position hitting SL: Market buy at ASK price
-                # Worst case: bar high plus spread
-                exit_price = bar['high'] + spread
-                slippage = spread * 0.3
-                exit_price += slippage
-                
-        elif exit_reason == 'TAKE_PROFIT':
-            if trade['direction'] == 'BUY':
-                # Long position hitting TP: Limit sell at BID price
-                # Best case: bar high (or TP if it's lower)
-                exit_price = min(bar['high'], trade['tp_price'])
-                # Limit orders can get filled at limit price or better
-                if exit_price > trade['tp_price']:
-                    exit_price = trade['tp_price']
-            else:  # SELL
-                # Short position hitting TP: Limit buy at ASK price
-                # Best case: bar low (or TP if it's higher)
-                exit_price = max(bar['low'], trade['tp_price'])
-                if exit_price < trade['tp_price']:
-                    exit_price = trade['tp_price']
-        
-        else:
-            # Other exit reasons
-            if trade['direction'] == 'BUY':
-                exit_price = bar['close'] - spread  # Market sell
-            else:
-                exit_price = bar['close'] + spread  # Market buy
-        
-        return round(exit_price, 5)
-    
-    def _execute_trade_exit_ohlc(self, trade: Dict, exit_time: pd.Timestamp, 
-                               exit_price: float, exit_reason: str, verbose: bool,
-                               exit_bar: pd.Series = None):
-        """Execute trade exit with actual OHLC-based prices"""
-        entry_time = trade.get('entry_time') or trade.get('timestamp')
-        
-        # Calculate P&L with actual price
-        if trade['direction'] == 'BUY':
-            pnl_points = exit_price - trade['entry_price']
-        else:  # SELL
-            pnl_points = trade['entry_price'] - exit_price
-        
-        pnl_percent = (pnl_points / trade['entry_price']) * 100 if trade['entry_price'] else 0
-        
-        # Calculate duration
-        if entry_time:
-            duration_minutes = (exit_time - entry_time).total_seconds() / 60
-        else:
-            duration_minutes = None
-        
-        # Calculate how much worse/better than theoretical price
-        theoretical_price = trade['sl_price'] if exit_reason == 'STOP_LOSS' else trade['tp_price']
-        price_diff = exit_price - theoretical_price
-        
-        # Close in trade tracker
-        self.trade_tracker.close_position(
-            trade['trade_id'], 
-            exit_time, 
-            exit_price,  # Actual OHLC-based price
-            exit_reason, 
-            None
-        )
-        
-        # Close in trade manager if applicable
-        if trade.get('trade_manager_trade_id'):
-            self.trade_manager.close_positions([trade['trade_manager_trade_id']])
-        
-        # Update progressive tracker
-        if self.progressive_tracker and 'signal_id' in trade and trade['signal_id']:
-            self.progressive_tracker.update_trade_execution_details(
-                trade['signal_id'],
-                trade_id=trade['trade_id'],
-                exit_time=exit_time,
-                exit_price=exit_price,
-                exit_reason=exit_reason,
-                pnl_points=pnl_points,
-                pnl_percent=pnl_percent,
-                duration_bars=None,
-                duration_minutes=duration_minutes,
-                is_win=pnl_points > 0,
-                is_loss=pnl_points < 0,
-                exit_check_high=exit_bar['high'] if exit_bar is not None else None,
-                exit_check_low=exit_bar['low'] if exit_bar is not None else None,
-                reason=f'Trade closed ({exit_reason}) - OHLC execution'
-            )
-        
-        if verbose:
-            sign = '+' if price_diff > 0 else ''
-            print(f"  [EXIT-OHLC] {exit_time} {trade['direction']} {exit_reason}")
-            print(f"    Theoretical: {theoretical_price:.5f}")
-            print(f"    Actual OHLC: {exit_price:.5f} ({sign}{price_diff:.5f})")
-            print(f"    P&L:         {pnl_points:+.2f} pts")
-            if exit_bar is not None:
-                print(f"    Bar H/L:     {exit_bar['high']:.5f}/{exit_bar['low']:.5f}")
-    
-    def _check_exits_with_strategy_tf_ohlc(self, bar_index: int, timestamp: pd.Timestamp, 
-                                          bar: pd.Series, exit_stats: Dict, verbose: bool,
-                                          df_strategy: pd.DataFrame):
-        """Exit checking using actual OHLC prices from strategy timeframe"""
-        for open_trade in list(self.trade_tracker.get_open_trades()):
-            exit_info = self._check_exit_with_ohlc_prices(open_trade, bar)
-            
-            if exit_info['exit_reason']:
-                # Calculate actual exit price from OHLC bar
-                actual_exit_price = self._calculate_actual_exit_price(
-                    open_trade, exit_info['exit_reason'], bar
-                )
-                
-                # Calculate P&L
-                if open_trade['direction'] == 'BUY':
-                    pnl_points = actual_exit_price - open_trade['entry_price']
-                else:
-                    pnl_points = open_trade['entry_price'] - actual_exit_price
-                
-                pnl_percent = (pnl_points / open_trade['entry_price']) * 100 if open_trade['entry_price'] else 0
-                
-                # Calculate duration
-                entry_time = open_trade.get('entry_time') or open_trade.get('timestamp')
-                if entry_time and entry_time in df_strategy.index:
-                    duration_bars = bar_index - df_strategy.index.get_loc(entry_time)
-                else:
-                    duration_bars = None
-                
-                if entry_time:
-                    duration_minutes = (timestamp - entry_time).total_seconds() / 60
-                else:
-                    duration_minutes = None
-                
-                # Close position with actual price
-                self.trade_tracker.close_position(
-                    open_trade['trade_id'], 
-                    timestamp, 
-                    actual_exit_price, 
-                    exit_info['exit_reason'], 
-                    df_strategy
-                )
-                
-                if open_trade.get('trade_manager_trade_id'):
-                    self.trade_manager.close_positions([open_trade['trade_manager_trade_id']])
-                
-                exit_stats[exit_info['exit_reason']] += 1
-                
-                # Update progressive tracker
-                if self.progressive_tracker and 'signal_id' in open_trade and open_trade['signal_id']:
-                    self.progressive_tracker.update_trade_execution_details(
-                        open_trade['signal_id'],
-                        trade_id=open_trade['trade_id'],
-                        exit_time=timestamp,
-                        exit_price=actual_exit_price,
-                        exit_reason=exit_info['exit_reason'],
-                        pnl_points=pnl_points,
-                        pnl_percent=pnl_percent,
-                        duration_bars=duration_bars,
-                        duration_minutes=duration_minutes,
-                        is_win=pnl_points > 0,
-                        is_loss=pnl_points < 0,
-                        exit_check_high=bar['high'],
-                        exit_check_low=bar['low'],
-                        reason='Trade closed (Strategy TF OHLC)'
-                    )
-                
-                if verbose:
-                    theoretical_price = open_trade['sl_price'] if exit_info['exit_reason'] == 'STOP_LOSS' else open_trade['tp_price']
-                    price_diff = actual_exit_price - theoretical_price
-                    sign = '+' if price_diff > 0 else ''
-                    print(f"  [EXIT] {timestamp} {open_trade['direction']} {exit_info['exit_reason']}")
-                    print(f"    Actual: {actual_exit_price:.5f} ({sign}{price_diff:.5f})")
-                    print(f"    P&L:    {pnl_points:+.2f} pts")
+    # The following helper methods remain UNCHANGED from your original:
     
     def _get_next_strategy_timestamp(self, timestamp: pd.Timestamp) -> pd.Timestamp:
         """Get next strategy timeframe timestamp"""
-        # Assuming 1-minute bars
         return timestamp + pd.Timedelta(minutes=1)
     
     def _handle_close(self, timestamp: pd.Timestamp, close_trade_ids: List[int], row: pd.Series, verbose: bool):
@@ -600,7 +703,8 @@ class TradeSimulator:
                 if verbose:
                     print(f"  [CLOSE] {timestamp} {track_trade['direction']} OPPOSITE at {exit_price:.2f}")
     
-    def _handle_open(self, timestamp: pd.Timestamp, direction: str, params: Dict, new_trade_id: int, verbose: bool, comment_suffix: str = '', signal_id: int = None):
+    def _handle_open(self, timestamp: pd.Timestamp, direction: str, params: Dict, new_trade_id: int, 
+                    verbose: bool, comment_suffix: str = '', signal_id: int = None):
         """Handle opening new positions"""
         self.trade_tracker.open_position(
             timestamp=timestamp,

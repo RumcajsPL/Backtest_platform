@@ -83,30 +83,17 @@ execution:
 # =============================================================================
 # Note: These settings are automatically set based on execution.mode
 # You can override them manually if needed
-
 output:
   # Progressive tracking (signal-by-signal detailed analysis)
   enable_progressive_tracking: false  # true in debug, false in core
-  
   # Detailed metrics (spread analysis, monthly performance, etc.)
   enable_detailed_metrics: false      # true in debug, false in core
-  
   # CSV file generation
   save_signals_csv: false             # true in debug, false in core
-  
   # Cache statistics collection and display
   enable_cache_stats: false           # true in debug, false in core
-  
   # Output directories (same in both modes)
   outputs_dir: "outputs"
   reports_dir: "reports/WBWS"
   signals_dir: "signals/strategy"
   verbose: false
-
-#output:
-#  outputs_dir: outputs
-#  reports_dir: reports/WBWS
-#  signals_dir: signals/strategy
-#  save_signals_csv: true
-#  save_execution_report: true
-#  verbose: false

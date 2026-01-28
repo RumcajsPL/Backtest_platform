@@ -1,7 +1,6 @@
 # src/indicators/wbws_trigger.py
 """
 We Buy / We Sell Trigger Indicator - Pure Calculation Engine
-OPTIMIZED VERSION with vectorized operations (14.9x faster)
 
 SCOPE: Signal calculation logic ONLY
 - Candle classification (inside, outside, 2u, 2d)
@@ -25,7 +24,6 @@ from typing import Tuple, Optional
 class WBWSTrigger:
     """
     Pure signal calculation engine for We Buy / We Sell Trigger indicator.
-    VECTORIZED VERSION - 14.9x faster than original
     
     Pine Script Translation:
     - Uses higher timeframe for trend bias (default 60min)
@@ -72,9 +70,9 @@ class WBWSTrigger:
         Prepare HTF data: Use provided df_htf if available, else resample from base df.
         """
         if df_htf is not None:
-            # Validate HTF freq roughly matches htf_period
+            # Validate HTF freq roughly matches htf_period (e.g., '60min' -> '1H')
             inferred_freq = pd.infer_freq(df_htf.index)
-            if inferred_freq != self.htf_period.upper().replace('MIN', 'T'):
+            if inferred_freq != self.htf_period.upper().replace('MIN', 'T'):  # Basic check, e.g., '60T' for 60min
                 print(f"Warning: HTF freq {inferred_freq} may not match {self.htf_period}")
             
             # Ensure required columns
@@ -108,61 +106,40 @@ class WBWSTrigger:
         
         return df_copy, df_htf
     
-    def _classify_candles_vectorized(self, df: pd.DataFrame) -> np.ndarray:
+    def classify_candle(self, current_bar: pd.Series, previous_bar: pd.Series) -> Optional[int]:
         """
-        VECTORIZED candle classification (replaces Python loop)
+        Classify a candle according to Pine Script logic.
         
-        Pine Script logic:
-        1: Inside bar    (high <= prev_high AND low >= prev_low)
-        3: Outside bar   (high > prev_high AND low < prev_low)  
-        2: 2u bar        (high > prev_high AND low >= prev_low)
-        -2: 2d bar       (low < prev_low AND high <= prev_high)
-        None: Not classified
-        
-        Returns: numpy array of candle types
+        Returns:
+            1: Inside bar, 3: Outside bar, 2: 2u, -2: 2d, None: Not classified
         """
-        # Convert to numpy for speed
-        high = df['high'].values
-        low = df['low'].values
+        # Check for NA values
+        if (pd.isna(previous_bar['high']) or pd.isna(previous_bar['low']) or
+            pd.isna(current_bar['high']) or pd.isna(current_bar['low'])):
+            return None
         
-        # Create shifted arrays (first bar gets NaN)
-        high_prev = np.empty_like(high)
-        high_prev[0] = np.nan
-        high_prev[1:] = high[:-1]
+        # Pine Script classification
+        if (current_bar['high'] <= previous_bar['high'] and 
+            current_bar['low'] >= previous_bar['low']):
+            return 1  # Inside
+            
+        elif (current_bar['high'] > previous_bar['high'] and 
+              current_bar['low'] < previous_bar['low']):
+            return 3  # Outside
+            
+        elif (current_bar['high'] > previous_bar['high'] and 
+              current_bar['low'] >= previous_bar['low']):
+            return 2  # 2u
+            
+        elif (current_bar['low'] < previous_bar['low'] and 
+              current_bar['high'] <= previous_bar['high']):
+            return -2  # 2d
         
-        low_prev = np.empty_like(low)
-        low_prev[0] = np.nan
-        low_prev[1:] = low[:-1]
-        
-        # Initialize with NaN
-        candle_types = np.full(len(df), np.nan, dtype=np.float64)
-        
-        # Vectorized conditions (order matters - Pine checks inside first)
-        
-        # 1. Inside bars (high <= prev_high AND low >= prev_low)
-        # Note: For first bar, high_prev[0] = NaN, so condition is False
-        inside_mask = (high <= high_prev) & (low >= low_prev)
-        candle_types[inside_mask] = 1
-        
-        # 2. Outside bars (high > prev_high AND low < prev_low)
-        outside_mask = (high > high_prev) & (low < low_prev)
-        candle_types[outside_mask] = 3
-        
-        # 3. 2u bars (high > prev_high AND low >= prev_low)
-        # Exclude bars already classified as outside
-        two_u_mask = (high > high_prev) & (low >= low_prev) & ~outside_mask
-        candle_types[two_u_mask] = 2
-        
-        # 4. 2d bars (low < prev_low AND high <= prev_high)
-        # Exclude bars already classified as outside
-        two_d_mask = (low < low_prev) & (high <= high_prev) & ~outside_mask
-        candle_types[two_d_mask] = -2
-        
-        return candle_types
+        return None
     
     def calculate_signals(self, df_ohlcv: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, verbose: bool = False) -> pd.DataFrame:
         """
-        Calculate We Buy/We Sell signals with VECTORIZED operations.
+        Calculate We Buy/We Sell signals.
         
         Args:
             df_ohlcv: Preprocessed OHLCV DataFrame (DatetimeIndex, required columns)
@@ -182,46 +159,47 @@ class WBWSTrigger:
         
         # Prepare HTF data
         df, df_htf = self.prepare_htf_data(df_ohlcv, df_htf)
-                        
-        # Reset index for operations (creates 'timestamp' column)
+        
+        # Reset index for operations (but keep timestamp as column)
         df = df.reset_index()
         
         if verbose:
-            print(f"      Processing {len(df):,} bars (VECTORIZED)...")
+            print(f"      Processing {len(df):,} bars...")
         
-        # VECTORIZED CANDLE CLASSIFICATION
-        df['candle_type'] = self._classify_candles_vectorized(df)
+        # Classify candles
+        candle_types = []
+        for i in range(len(df)):
+            if i == 0:
+                candle_types.append(np.nan)
+            else:
+                candle_type = self.classify_candle(df.iloc[i], df.iloc[i-1])
+                candle_types.append(candle_type if candle_type is not None else np.nan)
         
-        # Vectorized reversal detection
-        candle_series = df['candle_type']
+        df['candle_type'] = candle_types
         
-        # rev_2d_2u: previous = -2, current = 2
-        rev_2d_2u = (
-            candle_series.notna() & 
-            candle_series.shift(1).notna() &
-            (candle_series.shift(1) == -2) & 
-            (candle_series == 2)
+        # Detect reversals with explicit NA checks
+        df['rev_2d_2u'] = (
+            df['candle_type'].notna() &
+            df['candle_type'].shift(1).notna() &
+            (df['candle_type'].shift(1) == -2) &
+            (df['candle_type'] == 2)
         )
         
-        # rev_2u_2d: previous = 2, current = -2  
-        rev_2u_2d = (
-            candle_series.notna() &
-            candle_series.shift(1).notna() &
-            (candle_series.shift(1) == 2) &
-            (candle_series == -2)
+        df['rev_2u_2d'] = (
+            df['candle_type'].notna() &
+            df['candle_type'].shift(1).notna() &
+            (df['candle_type'].shift(1) == 2) &
+            (df['candle_type'] == -2)
         )
         
-        df['rev_2d_2u'] = rev_2d_2u
-        df['rev_2u_2d'] = rev_2u_2d
-        
-        # Vectorized signal generation
+        # Generate signals
         df['we_buy'] = df['rev_2d_2u'] & df['htf_bull']
         df['we_sell'] = df['rev_2u_2d'] & df['htf_bear']
         
         # Store results
         self.signals_df = df
         
-        # Statistics
+        # Calculate stats
         buy_count = int(df['we_buy'].sum())
         sell_count = int(df['we_sell'].sum())
         total_signals = buy_count + sell_count
@@ -276,10 +254,12 @@ class WBWSTrigger:
     
     def print_summary(self):
         """
-        Print execution summary.
+        Print execution summary (deprecated - use report_generator instead).
+        Kept for backwards compatibility.
         """
         if self.execution_stats is None:
             return
         
+        # Minimal output - just counts
         stats = self.execution_stats
         print(f"   Signals: {stats['signals']['total']:,} ({stats['signals']['buy']:,} buy, {stats['signals']['sell']:,} sell)")

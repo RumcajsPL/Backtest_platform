@@ -231,17 +231,21 @@ The orchestrator is the **central control unit** of the system.
 - Better Random Search + GA Integration
   - GA starts with ALL best random candidates
   - No dilution with random individuals
-  - Focused search around promising regions  
+  - Focused search around promising regions
+- Strategy => Core vs Debug mode implemented (Core limited computation and outputs to required by orchestrator)
+Strategy perf
+      - Cache indicator calculations (to check if worth of doing)  
+      - Vectorize signal generation (to check if worth of doing - if using loops)
+      - Cache trade simulation results (to check if worth of doing - if deterministic)    
 ### Remaining Issues / Concern points
 ### 10.1.1 Non critical issues / concern points
 - Rest of perf optimizations:
   - Strategy
-      - Cache indicator calculations (to check if worth of doing)  
-      - Vectorize signal generation (to check if worth of doing - if using loops)
-      - Cache trade simulation results (to check if worth of doing - if deterministic)
       - Parallelize multi-timeframe processing (maybe: to check if worth of doing)
       - Batch indicator calculations (maybe: to check if worth of doing)
-  - Reduced I/O (batch file operations) 
+  - Reduced I/O (batch file operations)
+- Analyze if update required for Strategy core mode in orchestrator
+- Implement Core vs Debug mode to orchestrator
 - Recovery mechanism (continue from last good state)
 - Inconsistencies in Data Handling and Dates
 - Floating-point precision and type handling could introduce subtle inconsistencie in some scripts
