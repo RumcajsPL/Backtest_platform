@@ -4,8 +4,15 @@ import sys
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import logging
+from logging.handlers import RotatingFileHandler
 
-from scipy import stats
+# Force UTF-8 for console (Windows safeguard)
+if sys.platform.startswith('win'):
+    import os
+    os.system('chcp 65001 > nul')  # Switch cmd to UTF-8 if possible
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 # Get project root
 project_root = Path(__file__).resolve().parent.parent
@@ -22,35 +29,54 @@ from strategy_modules.metrics_calculator import calculate_performance_metrics
 from strategy_modules.progressive_tracker import EnhancedProgressiveTracker
 from strategy_modules.null_progressive_tracker import NullProgressiveTracker
 
+# Logging setup
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Console handler
+console = logging.StreamHandler(sys.stdout)
+console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+logger.addHandler(console)
+
+# File handler with rotation and explicit UTF-8
+log_file = project_root / 'outputs' / 'logs' / 'wbws_strategy.log'
+file_handler = RotatingFileHandler(
+    log_file,
+    maxBytes=10*1024*1024,
+    backupCount=5,
+    encoding='utf-8'
+)
+file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+logger.addHandler(file_handler)
+
 def run_wbws_strategy(config_path: str, verbose: bool = False):
     """
-    Main orchestrator for WBWS strategy execution with enhanced progressive tracking
+    Main orchestrator for WBWS strategy execution.
     """
-    print("\n" + "="*70)
-    print("🚀 WBWS STRATEGY WORKFLOW ")
-    print("="*70 + "\n")
+    logger.info("="*70)
+    logger.info("WBWS STRATEGY WORKFLOW")
+    logger.info("="*70)
     
     try:
         # 1. Load configuration and data
-        print("📊 STEP 1: LOADING DATA")
+        logger.info("STEP 1: LOADING DATA")
         data_loader = DataLoader(config_path)
         config = data_loader.load_config()
         
-        # ===== MODE DETECTION AND CONFIGURATION =====
-        # Detect execution mode: 'core' (minimal, fast) or 'debug' (full, detailed)
+        # MODE DETECTION AND CONFIGURATION
         execution_mode = config.get('execution', {}).get('mode', 'debug')
         is_core_mode = (execution_mode == 'core')
         
-        # Override output settings based on mode
         if is_core_mode:
-            print("  ⚡ CORE MODE: Optimized for pipeline performance")
+            logger.info("  CORE MODE: Optimized for pipeline performance")
             config.setdefault('output', {})
             config['output']['enable_progressive_tracking'] = False
             config['output']['enable_detailed_metrics'] = False
             config['output']['save_signals_csv'] = False
             config['output']['enable_cache_stats'] = False
+            verbose = False
         else:
-            print("  🔍 DEBUG MODE: Full detailed tracking and outputs")
+            logger.info("  DEBUG MODE: Full detailed tracking and outputs")
             config.setdefault('output', {})
             config['output'].setdefault('enable_progressive_tracking', True)
             config['output'].setdefault('enable_detailed_metrics', True)
@@ -60,45 +86,46 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         # Load data
         df_full, df_strategy, df_htf, df_ltf = data_loader.load_data()
         
-        # Initialize progressive tracker based on mode (Null Object Pattern)
-        enable_tracking = config['output'].get('enable_progressive_tracking', True)
+        # Mandatory LTF check
+        if df_ltf is None or df_ltf.empty:
+            raise ValueError(
+                "Low Timeframe (LTF) data is mandatory for realistic execution simulation. "
+                "Check your config paths for LTF data file."
+            )
+        
+        # Initialize progressive tracker
+        enable_tracking = config['output'].get('enable_progressive_tracking', not is_core_mode)
         if enable_tracking:
             progressive_tracker = EnhancedProgressiveTracker(config)
             if not is_core_mode:
-                print("  ✓ Progressive tracking: ENABLED")
+                logger.info("  Progressive tracking: ENABLED")
         else:
             progressive_tracker = NullProgressiveTracker(config)
-            print("  ✓ Progressive tracking: DISABLED (using null tracker)")
-        
+            logger.info("  Progressive tracking: DISABLED (null tracker)")
         
         data_info = data_loader.get_data_info()
-        print(f"  Full dataset: {data_info['full_bars']:,} bars")
-        print(f"  Strategy period: {data_info['strategy_bars']:,} bars")
+        logger.info(f"  Full dataset: {data_info['full_bars']:,} bars")
+        logger.info(f"  Strategy period: {data_info['strategy_bars']:,} bars")
         if df_htf is not None:
-            print(f"  HTF dataset: {data_info['htf_bars']:,} bars (loaded from file)")
-        if df_ltf is not None:
-            print(f"  LTF dataset: {data_info['ltf_bars']:,} bars for execution (TF: {data_info.get('ltf_tf', 'N/A')})")
-        print(f"  Date range: {data_info['date_range'][0]} to {data_info['date_range'][1]}")
+            logger.info(f"  HTF dataset: {data_info['htf_bars']:,} bars")
+        logger.info(f"  LTF dataset: {data_info['ltf_bars']:,} bars (TF: {data_info.get('ltf_tf', 'N/A')})")
+        logger.info(f"  Date range: {data_info['date_range'][0]} to {data_info['date_range'][1]}")
 
-        # Validate data including HTF
+        # Validate data
         validation = data_loader.validate_data()
         if not validation['is_valid']:
             raise ValueError(f"Data validation failed: {validation}")
         
-        # 2. Generate signals (STAGE 0)
-        print("\n📈 STEP 2: GENERATING SIGNALS")
+        # 2. Generate signals
+        logger.info("STEP 2: GENERATING SIGNALS")
         signal_gen = SignalGenerator(config['indicator']['htf_period'])
-        raw_signals, indicator_values = signal_gen.generate_signals(df_strategy, df_htf=df_htf)  # Pass df_htf
+        raw_signals, indicator_values = signal_gen.generate_signals(df_strategy, df_htf=df_htf)
         
-        # Get HTF signals if available
-        htf_signals = None
-        if hasattr(signal_gen, 'htf_signals'):
-            htf_signals = signal_gen.htf_signals
+        htf_signals = getattr(signal_gen, 'htf_signals', None)
         
-        # Record ALL raw signals in progressive tracker with detailed info (if enabled)
-        signal_id_map = {}  # Map timestamp -> signal_id
+        signal_id_map = {}
         if enable_tracking:
-            print("  Recording raw signals in progressive tracker...")
+            logger.info("  Recording raw signals...")
             for timestamp, signal in raw_signals.dropna().items():
                 mid_price = df_strategy.loc[timestamp, 'close']
                 indicator_row = indicator_values.loc[timestamp] if timestamp in indicator_values.index else None
@@ -108,71 +135,60 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
                     timestamp=timestamp,
                     signal=signal,
                     mid_price=mid_price,
-                    indicator_row=indicator_row,  # Pass entire row
+                    indicator_row=indicator_row,
                     htf_signal=htf_signal
                 )
                 signal_id_map[timestamp] = signal_id
         else:
-            # Core mode: No signal tracking, use dummy signal_id_map
-            for timestamp, signal in raw_signals.dropna().items():
-                signal_id_map[timestamp] = 0  # Dummy ID
+            signal_id_map = {ts: 0 for ts in raw_signals.dropna().index}
         
         signal_stats = signal_gen.get_signal_stats(raw_signals)
-        print(f"  Raw BUY: {signal_stats['buy']:,}, Raw SELL: {signal_stats['sell']:,}, "
-              f"Total: {signal_stats['total']:,}")
+        logger.info(f"  Raw BUY: {signal_stats['buy']:,}, SELL: {signal_stats['sell']:,}, Total: {signal_stats['total']:,}")
         
-        # 3. Apply filters with progressive tracking (STAGES 1-2)
-        print("\n🎯 STEP 3: APPLYING FILTERS WITH PROGRESSIVE TRACKING")
+        # 3. Apply filters
+        logger.info("STEP 3: APPLYING FILTERS")
         filter_pipeline = FilterPipeline(config)
-        filter_pipeline.initialize_risk_manager(df_full)  # Prep risk_manager for later use
-        filter_pipeline.set_progressive_tracker(progressive_tracker)  # Connect tracker
+        filter_pipeline.initialize_risk_manager(df_full)
+        filter_pipeline.set_progressive_tracker(progressive_tracker)
         
-        # Time filter with detailed tracking (STAGE 1)
-        print("  Applying time filter with detailed tracking...")
+        logger.info("  Applying time filter...")
         time_filtered = filter_pipeline.apply_time_filter(raw_signals, signal_id_map)
-        
         time_stats = {
             'buy': int((time_filtered == 'BUY').sum()),
             'sell': int((time_filtered == 'SELL').sum()),
-            'total': int((time_filtered.notna()).sum())
+            'total': int(time_filtered.notna().sum())
         }
-        print(f"    → Time filtered: {time_stats['total']:,} signals "
-              f"({time_stats['buy']:,} BUY, {time_stats['sell']:,} SELL)")
+        logger.info(f"    Time filtered: {time_stats['total']:,} ({time_stats['buy']:,} BUY, {time_stats['sell']:,} SELL)")
         
-        # RSI filter with detailed tracking (STAGE 2)
-        print("  Applying RSI filter with detailed tracking...")
+        logger.info("  Applying RSI filter...")
         rsi_filtered = filter_pipeline.apply_rsi_filter(df_strategy, time_filtered, signal_id_map)
-        
         rsi_stats = {
             'buy': int((rsi_filtered == 'BUY').sum()),
             'sell': int((rsi_filtered == 'SELL').sum()),
-            'total': int((rsi_filtered.notna()).sum())
+            'total': int(rsi_filtered.notna().sum())
         }
-        print(f"    → RSI filtered: {rsi_stats['total']:,} signals "
-              f"({rsi_stats['buy']:,} BUY, {rsi_stats['sell']:,} SELL)")
+        logger.info(f"    RSI filtered: {rsi_stats['total']:,} ({rsi_stats['buy']:,} BUY, {rsi_stats['sell']:,} SELL)")
         
-        # Get filter stats
         filter_stats = filter_pipeline.get_filter_stats(raw_signals, time_filtered, rsi_filtered)
         
-        # 4. Simulate trades (STAGES 3-5: Position mgmt, risk, execution)
-        print("\n🔄 STEP 4: SIMULATING TRADES")
+        # 4. Simulate trades
+        logger.info("STEP 4: SIMULATING TRADES")
         trade_simulator = TradeSimulator(config)
         simulation_results = trade_simulator.simulate_trades(
             df_strategy, rsi_filtered, 
-            verbose=verbose, df_ltf=df_ltf,
+            verbose=verbose and not is_core_mode,
             progressive_tracker=progressive_tracker,
-            risk_manager=filter_pipeline.filters['risk'], # Pass for Stage 4
-            signal_id_map=signal_id_map  # Pass signal_id_map
+            risk_manager=filter_pipeline.filters['risk'],
+            signal_id_map=signal_id_map,
+            df_ltf=df_ltf
         )
-
-        print(f"  Simulated trades: {len(simulation_results['closed_trades']):,} closed, "
-            f"{len(simulation_results['open_trades']):,} open, "
-            f"{len(simulation_results['rejected_trades']):,} rejected")
-        if df_ltf is not None:
-            print(f"  Execution precision: LTF ({data_info.get('ltf_tf', 'N/A')}) used for SL/TP checks")
-        all_trades = simulation_results['all_trades']
         
-        # Add risk stats from simulation to filter_stats
+        logger.info(f"  Simulated: {len(simulation_results['closed_trades']):,} closed, "
+                    f"{len(simulation_results['open_trades']):,} open, "
+                    f"{len(simulation_results['rejected_trades']):,} rejected")
+        logger.info(f"  Execution: LTF ({data_info.get('ltf_tf', 'N/A')}) for SL/TP")
+        
+        all_trades = simulation_results['all_trades']
         filter_stats['risk_filtered'] = simulation_results.get('risk_stats', {})
         
         # We need to update trade simulator to provide detailed exit information
@@ -252,184 +268,127 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
                         reason=f"Trade REJECTED - {trade.get('reject_reason')}"
                     )
         
-        # 5. Calculate metrics
-        print("\n📊 STEP 5: CALCULATING METRICS")
+        # 5. Metrics
+        logger.info("STEP 5: CALCULATING METRICS")
         if simulation_results['all_trades']:
             trades_df = pd.DataFrame(simulation_results['all_trades'])
-            # Pass detailed flag based on mode
-            detailed = config['output'].get('enable_detailed_metrics', True)
+            detailed = config['output'].get('enable_detailed_metrics', not is_core_mode)
             performance_metrics = calculate_performance_metrics(trades_df, df_strategy, detailed=detailed)
             
-            print(f"  Total P&L: {performance_metrics['total_pnl_points']:+,.2f} pts")
-            print(f"  Win Rate: {performance_metrics['win_rate']:.1f}%")
-            print(f"  Profit Factor: {performance_metrics['profit_factor']:.2f}")
+            logger.info(f"  Total P&L: {performance_metrics['total_pnl_points']:+,.2f} pts")
+            logger.info(f"  Win Rate: {performance_metrics['win_rate']:.1f}%")
+            logger.info(f"  Profit Factor: {performance_metrics['profit_factor']:.2f}")
             if not is_core_mode:
-                print(f"  Max Drawdown: {performance_metrics.get('max_drawdown_points', 0):.2f} pts")
-                print(f"  Max Losing Streak: {performance_metrics.get('max_losing_streak', 0)}")
+                logger.info(f"  Max Drawdown: {performance_metrics.get('max_drawdown_points', 0):.2f} pts")
         else:
             performance_metrics = {'total_trades': 0, 'message': 'No trades executed'}
-            print("  No trades executed")
+            logger.info("  No trades executed")
         
-        # 6. Generate reports
-        print("\n📄 STEP 6: GENERATING REPORTS")
+        # 6. Reports
+        logger.info("STEP 6: GENERATING REPORTS")
         timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         report_gen = ReportGenerator(config, project_root)
         
-        # Generate progressive CSV with enhanced details (if enabled)
         progressive_csv_path = None
         if enable_tracking and not is_core_mode:
-            print("  Generating enhanced progressive signals CSV...")
+            logger.info("  Generating enhanced progressive CSV...")
             progressive_csv_path = progressive_tracker.save_to_csv(project_root, timestamp_str)
-            print(f"    → Progressive CSV saved: {progressive_csv_path.relative_to(project_root)}")
-        else:
-            print("  ⚡ Progressive CSV: SKIPPED (core mode)")
+            logger.info(f"    Saved: {progressive_csv_path.relative_to(project_root)}")
         
-        # Generate regular CSV (conditional based on config)
         csv_path = None
-        if config['output'].get('save_signals_csv', True):
-            print("  Generating trade details CSV...")
+        if config['output'].get('save_signals_csv', not is_core_mode):
+            logger.info("  Generating trade CSV...")
             csv_path = report_gen.generate_csv(simulation_results['all_trades'], timestamp_str)
             if csv_path:
-                print(f"    → Trade CSV saved: {csv_path.relative_to(project_root)}")
-        else:
-            print("  ⚡ Trade CSV: SKIPPED (core mode)")
+                logger.info(f"    Saved: {csv_path.relative_to(project_root)}")
         
-        # Build and save JSON report
-        print("  Generating JSON report...")
-        
-        # Get progressive statistics
+        logger.info("  Generating JSON report...")
         progressive_stats = progressive_tracker.get_statistics()
-        
-        # Add progressive data to filter_stats
         filter_stats['progressive'] = progressive_stats
         
-        # Pass execution mode to report builder
         report_data = report_gen.build_report_data(
             config, data_info, filter_stats, simulation_results,
             performance_metrics, csv_path, mode=execution_mode
         )
         
-        # Get DataLoader cache stats (conditional in core mode)
-        enable_cache_stats = config['output'].get('enable_cache_stats', True)
-        if enable_cache_stats:
+        if config['output'].get('enable_cache_stats', not is_core_mode):
             data_loader_stats = data_loader.get_cache_stats()
-            # Add DataLoader stats to report_data
-            if 'validation' not in report_data:
-                report_data['validation'] = {}
-            report_data['validation']['data_loader_cache_stats'] = data_loader_stats
-            # Also add to top level for easy access
+            report_data.setdefault('validation', {})['data_loader_cache_stats'] = data_loader_stats
             report_data['data_loader_cache_stats'] = data_loader_stats
         
-        # Add progressive tracking info to report (only in debug mode)
-        if not is_core_mode:
-            if 'progressive_tracking' not in report_data:
-                report_data['progressive_tracking'] = {}
-            if progressive_csv_path:
-                report_data['progressive_tracking'].update({
-                    'progressive_csv_file': str(progressive_csv_path.relative_to(project_root)),
-                    'signal_progression_summary': progressive_stats,
-                    'total_signals_tracked': progressive_stats.get('total_signals', 0),
-                    'tracking_columns_count': len(progressive_tracker.columns)
-                })
+        if not is_core_mode and progressive_csv_path:
+            report_data.setdefault('progressive_tracking', {}).update({
+                'progressive_csv_file': str(progressive_csv_path.relative_to(project_root)),
+                'signal_progression_summary': progressive_stats,
+                'total_signals_tracked': progressive_stats.get('total_signals', 0),
+            })
         
         json_path = report_gen.generate_json(report_data, timestamp_str)
-        print(f"    → JSON saved: {json_path.relative_to(project_root)}")
+        logger.info(f"    JSON saved: {json_path.relative_to(project_root)}")
         
-        # 7. Display final summary
-        print("\n" + "="*70)
-        if is_core_mode:
-            print("✅ STRATEGY EXECUTION COMPLETED (CORE MODE)")
-        else:
-            print("✅ ENHANCED STRATEGY EXECUTION COMPLETED (DEBUG MODE)")
-        print("="*70)
+        # Final summary
+        logger.info("="*70)
+        logger.info(f"EXECUTION COMPLETED ({execution_mode.upper()} MODE)")
+        logger.info("="*70)
         
         total_raw = filter_stats['raw']['total']
         total_executed = len(simulation_results['closed_trades'])
         rejection_rate = ((total_raw - total_executed) / total_raw * 100) if total_raw > 0 else 0
         
-        print(f"\n📈 PERFORMANCE SUMMARY:")
-        print(f"  Execution Mode:       {execution_mode.upper()}")
-        print(f"  Raw Signals:          {total_raw:,}")
-        print(f"  Executed Trades:      {total_executed:,}")
-        print(f"  Overall Rejection:    {rejection_rate:.1f}%")
+        logger.info(f"PERFORMANCE SUMMARY:")
+        logger.info(f"  Mode:              {execution_mode.upper()}")
+        logger.info(f"  Raw Signals:       {total_raw:,}")
+        logger.info(f"  Executed Trades:   {total_executed:,}")
+        logger.info(f"  Rejection Rate:    {rejection_rate:.1f}%")
         
         if performance_metrics.get('total_trades', 0) > 0:
-            print(f"  Total P&L:           {performance_metrics['total_pnl_points']:+,.2f} pts")
-            print(f"  Win Rate:            {performance_metrics['win_rate']:.1f}%")
-            print(f"  Profit Factor:       {performance_metrics['profit_factor']:.2f}")
-            print(f"  Avg P&L/Trade:       {performance_metrics['avg_pnl_points']:+,.2f} pts")
-            print(f"  Max Drawdown:        {performance_metrics.get('max_drawdown_points', 0):.2f} pts")
-            print(f"  Max Losing Streak:   {performance_metrics.get('max_losing_streak', 0)}")
+            logger.info(f"  Total P&L:         {performance_metrics['total_pnl_points']:+,.2f} pts")
+            logger.info(f"  Win Rate:          {performance_metrics['win_rate']:.1f}%")
+            logger.info(f"  Profit Factor:     {performance_metrics['profit_factor']:.2f}")
         
-        # Display enhanced progressive tracking summary (only in debug mode)
         if not is_core_mode and progressive_stats and progressive_stats.get('total_signals', 0) > 0:
-            print(f"\n📊 ENHANCED PROGRESSIVE TRACKING SUMMARY:")
-            print(f"  Total Signals Tracked: {progressive_stats.get('total_signals', 0):,}")
-            print(f"  Tracking Columns:      {len(progressive_tracker.columns)}")
-            
+            logger.info("PROGRESSIVE SUMMARY:")
+            logger.info(f"  Tracked Signals:   {progressive_stats.get('total_signals', 0):,}")
             if 'by_final_status' in progressive_stats:
-                print(f"  Final Status Breakdown:")
+                logger.info("  Final Status:")
                 for status, count in sorted(progressive_stats['by_final_status'].items()):
                     if count > 0:
-                        percentage = (count / progressive_stats.get('total_signals', 1)) * 100
-                        print(f"    - {status:25s}: {count:4d} ({percentage:.1f}%)")
-            
-            # Show rejection breakdown
-            if 'rejection_breakdown' in progressive_stats:
-                total_rejected = sum(
-                    sum(stage_counts.values()) 
-                    for stage_counts in progressive_stats['rejection_breakdown'].values()
-                )
-                if total_rejected > 0:
-                    print(f"  Rejection Breakdown:")
-                    for stage, reasons in progressive_stats['rejection_breakdown'].items():
-                        stage_total = sum(reasons.values())
-                        print(f"    - {stage}: {stage_total}")
+                        pct = (count / progressive_stats.get('total_signals', 1)) * 100
+                        logger.info(f"    - {status:25s}: {count:4d} ({pct:.1f}%)")
         
-        print(f"\n📁 OUTPUT FILES:")
-        print(f"  Configuration:       {Path(config_path).name}")
-        print(f"  JSON Report:         {json_path.relative_to(project_root)}")
+        logger.info("OUTPUT FILES:")
+        logger.info(f"  Config:            {Path(config_path).name}")
+        logger.info(f"  JSON Report:       {json_path.relative_to(project_root)}")
         if csv_path:
-            print(f"  CSV Trades:          {csv_path.relative_to(project_root)}")
+            logger.info(f"  Trade CSV:         {csv_path.relative_to(project_root)}")
         if not is_core_mode and progressive_csv_path:
-            print(f"  Enhanced Progressive CSV: {progressive_csv_path.relative_to(project_root)}")
-            print(f"  Total Columns in CSV: {len(progressive_tracker.columns)}")
+            logger.info(f"  Progressive CSV:   {progressive_csv_path.relative_to(project_root)}")
         
-        print(f"\n⏱️  Execution Time:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("\n" + "="*70)
+        logger.info(f"Completed:         {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("="*70)
         
-        # Display cache statistics (only in debug mode)
-        if enable_cache_stats and not is_core_mode:
-            data_loader_stats = data_loader.get_cache_stats()
-                            
-            print("\n" + "="*50)
-            print("FINAL CACHE STATISTICS (for data_loader)")
+        if config['output'].get('enable_cache_stats', not is_core_mode):
             stats = data_loader.get_cache_stats()
-            print(f"Hits: {stats['hits']}")
-            print(f"Misses: {stats['misses']}")
-            print(f"Hit rate: {stats['hit_rate']}")
-            print(f"Cache files: {stats['cache_files']}")
-            print(f"Cache size: {stats['cache_size_mb']:.2f} MB")
-            print(f"Cache dir: {stats['cache_dir']}")
-            print("="*50 + "\n")
-
+            logger.info("="*50)
+            logger.info("DATA LOADER CACHE STATISTICS")
+            logger.info(f"Hits: {stats['hits']}")
+            logger.info(f"Misses: {stats['misses']}")
+            logger.info(f"Hit rate: {stats['hit_rate']}")
+            logger.info("="*50)
+        
         return df_strategy, simulation_results['all_trades'], report_data
 
     except Exception as e:
-        print(f"\n❌ ERROR: {str(e)}")
+        logger.error(f"ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     
 if __name__ == "__main__":
-    # import pandas as pd
-    
     if len(sys.argv) > 1:
         verbose_flag = '--verbose' in sys.argv
         config_arg = sys.argv[1] if not sys.argv[1] == '--verbose' else sys.argv[2]
         run_wbws_strategy(config_arg, verbose=verbose_flag)
     else:
-        print("❌ Usage: python scripts/run_wbws_strategy.py <config_path> [--verbose]")
-        print("\nExample:")
-        print("  python scripts/run_wbws_strategy.py src/config/WBWS/wbws_rsi_strategy.yaml")
-        print("  python scripts/run_wbws_strategy.py src/config/WBWS/wbws_rsi_strategy.yaml --verbose")
+        print("Usage: python scripts/run_wbws_strategy.py <config_path> [--verbose]")
+        sys.exit(1)
