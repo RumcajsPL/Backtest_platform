@@ -1,285 +1,90 @@
-# src/indicators/wbws_trigger.py
-"""
-We Buy / We Sell Trigger Indicator - Pure Calculation Engine
-OPTIMIZED VERSION with vectorized operations (14.9x faster)
-
-SCOPE: Signal calculation logic ONLY
-- Candle classification (inside, outside, 2u, 2d)
-- Reversal pattern detection
-- HTF trend alignment
-- Signal generation
-
-ASSUMPTIONS: Input DataFrame MUST be preprocessed with:
-- Index: DatetimeIndex (timestamp as index)
-- Columns: 'open', 'high', 'low', 'close', 'volume' (lowercase, no missing values)
-- Sorted by timestamp ascending
-- No duplicates
-
-PREPROCESSING: Use scripts/data_preprocessing/ to prepare data
-"""
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from typing import Tuple, Optional
+import logging
+from typing import Tuple
+
+logger = logging.getLogger(__name__)
 
 class WBWSTrigger:
-    """
-    Pure signal calculation engine for We Buy / We Sell Trigger indicator.
-    VECTORIZED VERSION - 14.9x faster than original
-    
-    Pine Script Translation:
-    - Uses higher timeframe for trend bias (default 60min)
-    - Classifies 1-minute candles into 4 types
-    - Triggers on specific reversal patterns
-    - Requires HTF trend alignment
-    """
-    
-    def __init__(self, htf_period: str = '60min'):
-        """
-        Initialize the indicator.
-        
-        Args:
-            htf_period: Higher timeframe period ('60min', '30min', '4H', '1D', etc.)
-        """
+    def __init__(self, htf_period: str):
+        if not htf_period:
+            raise ValueError("htf_period argument is mandatory.")
         self.htf_period = htf_period
         self.signals_df = None
-        self.execution_time = None
-        self.execution_stats = None
         
     def _validate_input(self, df: pd.DataFrame):
-        """
-        Validate input DataFrame meets requirements.
-        
-        Raises:
-            ValueError: If DataFrame doesn't meet requirements
-        """
-        # Check index is DatetimeIndex
         if not isinstance(df.index, pd.DatetimeIndex):
-            raise ValueError("DataFrame index must be DatetimeIndex. Use prepare_dataframe() first.")
+            raise ValueError("DataFrame index must be DatetimeIndex.")
+        required = ['open', 'high', 'low', 'close']
+        if not all(col in df.columns for col in required):
+            raise ValueError(f"Missing required columns.")
+
+    def prepare_htf_data(self, df: pd.DataFrame, df_htf: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        if df_htf is None or df_htf.empty:
+            raise ValueError("HTF data is required.")
         
-        # Check required columns exist
-        required_cols = ['open', 'high', 'low', 'close', 'volume']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}. Use validate_schema() first.")
+        df_htf = df_htf.copy()
+        df_htf['htf_bull'] = (df_htf['close'] > df_htf['open'])
+        df_htf['htf_bear'] = (df_htf['close'] < df_htf['open'])
         
-        # Check for missing values
-        if df[required_cols].isnull().any().any():
-            raise ValueError("DataFrame contains missing values. Clean data first.")
-    
-    def prepare_htf_data(self, df: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Prepare HTF data: Use provided df_htf if available, else resample from base df.
-        """
-        if df_htf is not None:
-            # Validate HTF freq roughly matches htf_period
-            inferred_freq = pd.infer_freq(df_htf.index)
-            if inferred_freq != self.htf_period.upper().replace('MIN', 'T'):
-                print(f"Warning: HTF freq {inferred_freq} may not match {self.htf_period}")
-            
-            # Ensure required columns
-            required = ['open', 'high', 'low', 'close', 'volume']
-            if not all(col in df_htf.columns for col in required):
-                raise ValueError(f"HTF missing columns: {set(required) - set(df_htf.columns)}")
-            
-        else:
-            # Fallback: Resample from base
-            df_htf = df.resample(self.htf_period).agg({
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).dropna()
+        # Anti-Lookahead with fill_value to maintain bool type
+        df_htf['htf_bull'] = df_htf['htf_bull'].shift(1, fill_value=False)
+        df_htf['htf_bear'] = df_htf['htf_bear'].shift(1, fill_value=False)
         
-        # HTF conditions (if not pre-computed)
-        if 'htf_bull' not in df_htf.columns or 'htf_bear' not in df_htf.columns:
-            df_htf['htf_bull'] = (df_htf['close'] > df_htf['open'])
-            df_htf['htf_bear'] = (df_htf['close'] < df_htf['open'])
-        
-        # lookahead_off shift
-        df_htf['htf_bull'] = df_htf['htf_bull'].shift(1).where(lambda x: x.notna(), False)
-        df_htf['htf_bear'] = df_htf['htf_bear'].shift(1).where(lambda x: x.notna(), False)
-        
-        # Forward fill to base timeframe
         df_copy = df.copy()
-        df_copy['htf_bull'] = df_htf['htf_bull'].reindex(df.index, method='ffill').where(lambda x: x.notna(), False)
-        df_copy['htf_bear'] = df_htf['htf_bear'].reindex(df.index, method='ffill').where(lambda x: x.notna(), False)
+        with pd.option_context('future.no_silent_downcasting', True):
+            # Alignment using boolean types
+            df_copy['htf_bull'] = df_htf['htf_bull'].reindex(df.index, method='ffill').fillna(False).astype(bool)
+            df_copy['htf_bear'] = df_htf['htf_bear'].reindex(df.index, method='ffill').fillna(False).astype(bool)
         
         return df_copy, df_htf
-    
+
     def _classify_candles_vectorized(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        VECTORIZED candle classification (replaces Python loop)
+       
+        high = df['high'].values.astype(np.float32)
+        low = df['low'].values.astype(np.float32)
         
-        Pine Script logic:
-        1: Inside bar    (high <= prev_high AND low >= prev_low)
-        3: Outside bar   (high > prev_high AND low < prev_low)  
-        2: 2u bar        (high > prev_high AND low >= prev_low)
-        -2: 2d bar       (low < prev_low AND high <= prev_high)
-        None: Not classified
-        
-        Returns: numpy array of candle types
-        """
-        # Convert to numpy for speed
-        high = df['high'].values
-        low = df['low'].values
-        
-        # Create shifted arrays (first bar gets NaN)
-        high_prev = np.empty_like(high)
-        high_prev[0] = np.nan
+        high_prev = np.full_like(high, np.nan)
         high_prev[1:] = high[:-1]
-        
-        low_prev = np.empty_like(low)
-        low_prev[0] = np.nan
+        low_prev = np.full_like(low, np.nan)
         low_prev[1:] = low[:-1]
+                
+        candle_types = np.full(len(df), -128, dtype=np.int8)
         
-        # Initialize with NaN
-        candle_types = np.full(len(df), np.nan, dtype=np.float64)
+        # Masks
+        outside = (high > high_prev) & (low < low_prev)
+        inside = (high <= high_prev) & (low >= low_prev)
+        two_u = (high > high_prev) & (low >= low_prev) & ~outside
+        two_d = (low < low_prev) & (high <= high_prev) & ~outside
         
-        # Vectorized conditions (order matters - Pine checks inside first)
-        
-        # 1. Inside bars (high <= prev_high AND low >= prev_low)
-        # Note: For first bar, high_prev[0] = NaN, so condition is False
-        inside_mask = (high <= high_prev) & (low >= low_prev)
-        candle_types[inside_mask] = 1
-        
-        # 2. Outside bars (high > prev_high AND low < prev_low)
-        outside_mask = (high > high_prev) & (low < low_prev)
-        candle_types[outside_mask] = 3
-        
-        # 3. 2u bars (high > prev_high AND low >= prev_low)
-        # Exclude bars already classified as outside
-        two_u_mask = (high > high_prev) & (low >= low_prev) & ~outside_mask
-        candle_types[two_u_mask] = 2
-        
-        # 4. 2d bars (low < prev_low AND high <= prev_high)
-        # Exclude bars already classified as outside
-        two_d_mask = (low < low_prev) & (high <= high_prev) & ~outside_mask
-        candle_types[two_d_mask] = -2
+        candle_types[inside] = 1
+        candle_types[outside] = 3
+        candle_types[two_u] = 2
+        candle_types[two_d] = -2
         
         return candle_types
-    
-    def calculate_signals(self, df_ohlcv: pd.DataFrame, df_htf: Optional[pd.DataFrame] = None, verbose: bool = False) -> pd.DataFrame:
-        """
-        Calculate We Buy/We Sell signals with VECTORIZED operations.
-        
-        Args:
-            df_ohlcv: Preprocessed OHLCV DataFrame (DatetimeIndex, required columns)
-            df_htf: Optional pre-loaded HTF DataFrame
-            verbose: If True, print detailed progress
-            
-        Returns:
-            DataFrame with signals added
-            
-        Raises:
-            ValueError: If input DataFrame doesn't meet requirements
-        """
-        self.execution_time = datetime.now()
-        
-        # Validate input
+
+    def calculate_signals(self, df_ohlcv: pd.DataFrame, df_htf: pd.DataFrame) -> pd.DataFrame:
         self._validate_input(df_ohlcv)
-        
-        # Prepare HTF data
-        df, df_htf = self.prepare_htf_data(df_ohlcv, df_htf)
-                        
-        # Reset index for operations (creates 'timestamp' column)
-        df = df.reset_index()
-        
-        if verbose:
-            print(f"      Processing {len(df):,} bars (VECTORIZED)...")
-        
-        # VECTORIZED CANDLE CLASSIFICATION
+        df, _ = self.prepare_htf_data(df_ohlcv, df_htf)
+                
         df['candle_type'] = self._classify_candles_vectorized(df)
         
-        # Vectorized reversal detection
-        candle_series = df['candle_type']
-        
-        # rev_2d_2u: previous = -2, current = 2
-        rev_2d_2u = (
-            candle_series.notna() & 
-            candle_series.shift(1).notna() &
-            (candle_series.shift(1) == -2) & 
-            (candle_series == 2)
-        )
-        
-        # rev_2u_2d: previous = 2, current = -2  
-        rev_2u_2d = (
-            candle_series.notna() &
-            candle_series.shift(1).notna() &
-            (candle_series.shift(1) == 2) &
-            (candle_series == -2)
-        )
-        
-        df['rev_2d_2u'] = rev_2d_2u
-        df['rev_2u_2d'] = rev_2u_2d
-        
-        # Vectorized signal generation
+        # Reversal Logic
+        c = df['candle_type']
+        c_prev = c.shift(1, fill_value=-128)
+                
+        df['rev_2d_2u'] = (c_prev == -2) & (c == 2)
+        df['rev_2u_2d'] = (c_prev == 2) & (c == -2)
+                
         df['we_buy'] = df['rev_2d_2u'] & df['htf_bull']
         df['we_sell'] = df['rev_2u_2d'] & df['htf_bear']
+              
+        df.drop(columns=['rev_2d_2u', 'rev_2u_2d'], inplace=True)
         
-        # Store results
         self.signals_df = df
-        
-        # Statistics
-        buy_count = int(df['we_buy'].sum())
-        sell_count = int(df['we_sell'].sum())
-        total_signals = buy_count + sell_count
-        
-        if verbose:
-            print(f"      Signals: {total_signals:,} total ({buy_count:,} buy, {sell_count:,} sell)")
-        
-        self.execution_stats = {
-            'execution_time': self.execution_time.isoformat(),
-            'htf_period': self.htf_period,
-            'total_bars': len(df),
-            'data_period': {
-                'start': df['timestamp'].min().isoformat(),
-                'end': df['timestamp'].max().isoformat()
-            },
-            'signals': {
-                'buy': buy_count,
-                'sell': sell_count,
-                'total': total_signals
-            }
-        }
-        
         return df
-    
+
     def get_signals(self) -> pd.DataFrame:
-        """
-        Get the calculated signals DataFrame.
-        
-        Returns:
-            DataFrame with all signals and calculations
-            
-        Raises:
-            ValueError: If calculate_signals() hasn't been run yet
-        """
-        if self.signals_df is None:
-            raise ValueError("No signals calculated. Run calculate_signals() first.")
+        if self.signals_df is None: raise ValueError("Run calculate_signals() first.")
         return self.signals_df
-    
-    def get_execution_stats(self) -> dict:
-        """
-        Get execution statistics.
-        
-        Returns:
-            Dictionary with execution statistics
-            
-        Raises:
-            ValueError: If calculate_signals() hasn't been run yet
-        """
-        if self.execution_stats is None:
-            raise ValueError("No execution stats available. Run calculate_signals() first.")
-        return self.execution_stats
-    
-    def print_summary(self):
-        """
-        Print execution summary.
-        """
-        if self.execution_stats is None:
-            return
-        
-        stats = self.execution_stats
-        print(f"   Signals: {stats['signals']['total']:,} ({stats['signals']['buy']:,} buy, {stats['signals']['sell']:,} sell)")

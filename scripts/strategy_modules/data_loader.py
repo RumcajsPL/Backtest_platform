@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 import hashlib
 import pickle
+import logging
+
+logger = logging.getLogger(__name__)
+
 class DataLoader:
     def __init__(self, config_path: str):
         self.config_path = Path(config_path).resolve()
@@ -13,174 +17,189 @@ class DataLoader:
         self.df_full = None
         self.df_strategy = None
         self.df_htf = None
-        self.df_ltf = None  # LTF DataFrame for execution
+        self.df_ltf = None
         
-        # CACHE INITIALIZATION
         self.cache_dir = Path.home() / ".wbws_data_cache"
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_hits = 0
         self.cache_misses = 0
-        
+
     def load_config(self) -> Dict:
-        """Load YAML configuration file"""
         with open(self.config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         return self.config
-    
-    def _get_cache_key(self, file_path: Path, start_date=None, end_date=None):
-        """Generate unique cache key for file and date range"""
+
+    def _get_cache_key(self, file_path: Path, start_date=None, end_date=None) -> Optional[str]:
         if not file_path.exists():
             return None
-            
-        # Use file stats for change detection
+
         stat = file_path.stat()
-        key_parts = [
-            str(file_path.resolve()),
-            f"size:{stat.st_size}",
-            f"mtime:{stat.st_mtime}"
-        ]
-        
+        key_parts = [str(file_path.resolve()), f"size:{stat.st_size}", f"mtime:{stat.st_mtime}"]
+
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read(1024 * 1024)  # First 1MB
+            key_parts.append(f"content:{hashlib.md5(content).hexdigest()}")
+        except Exception as e:
+            logger.warning(f"Failed to compute content hash for {file_path.name}: {e}")
+
         if start_date:
             key_parts.append(f"start:{start_date}")
         if end_date:
             key_parts.append(f"end:{end_date}")
-        
-        key_str = "|".join(key_parts)
-        return hashlib.md5(key_str.encode()).hexdigest()
-    
-    def _load_cached_data(self, cache_key: str):
-        """Load data from cache if exists"""
+
+        return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+    def _load_cached_data(self, cache_key: str) -> Optional[pd.DataFrame]:
         if not cache_key:
             return None
-            
         cache_file = self.cache_dir / f"{cache_key}.pkl"
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'rb') as f:
-                    return pickle.load(f)
-            except (pickle.UnpicklingError, EOFError, AttributeError) as e:
-                # Cache corrupted, delete it
-                cache_file.unlink()
-                print(f"⚠️  Cache corrupted, deleted: {e}")
-                return None
-        return None
-    
+        if not cache_file.exists():
+            return None
+        try:
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        except (pickle.UnpicklingError, EOFError, AttributeError) as e:
+            cache_file.unlink(missing_ok=True)
+            logger.warning(f"Cache corrupted/deleted: {cache_file.name} ({e})")
+            return None
+
     def _save_to_cache(self, cache_key: str, df: pd.DataFrame):
-        """Save data to cache"""
         if not cache_key:
             return
-            
         cache_file = self.cache_dir / f"{cache_key}.pkl"
         try:
             with open(cache_file, 'wb') as f:
-                pickle.dump(df.copy(deep=True), f)  # Save deep copy
-            print(f"💾 Saved to cache: {cache_file.name}")
+                pickle.dump(df.copy(deep=True), f)
+            logger.debug(f"Saved cache: {cache_file.name}")
         except Exception as e:
-            print(f"⚠️  Could not save to cache: {e}")
-    
+            logger.warning(f"Cache save failed for {cache_file.name}: {e}")
+
+    def _validate_date_format(self, date_str: str, date_type: str):
+        """Validate that date string includes time component"""
+        if date_str and ' ' not in str(date_str):
+            raise ValueError(
+                f"{date_type} '{date_str}' must include time component (e.g., '2025-12-15 08:00:00'). "
+                f"Please check your config file: {self.config_path}"
+            )
+
     def _load_csv_with_cache(self, file_path: Path, data_type: str, start_date=None, end_date=None) -> pd.DataFrame:
-        """Load CSV with caching, return deep copy"""
+        if start_date:
+            self._validate_date_format(start_date, "start_date")
+        if end_date:
+            self._validate_date_format(end_date, "end_date")
+        
         cache_key = self._get_cache_key(file_path, start_date, end_date)
-        
-        cached_df = self._load_cached_data(cache_key)
-        if cached_df is not None:
+        cached = self._load_cached_data(cache_key)
+        if cached is not None:
             self.cache_hits += 1
-            print(f"   🔄 Cache hit for {data_type}: {file_path.name}")
-            return cached_df.copy(deep=True)  # Return deep copy
-        
+            logger.info(f"Cache hit for {data_type}: {file_path.name}")
+            return cached.copy(deep=True)
+
         self.cache_misses += 1
-        print(f"   📥 Loading fresh {data_type}: {file_path.name}")
-        
+        logger.info(f"Loading fresh {data_type}: {file_path.name}")
+
         df = pd.read_csv(file_path, parse_dates=['timestamp'])
         df.columns = df.columns.str.lower()
         df = df.set_index('timestamp').sort_index()
-        
-        # Apply date range if specified
+
+        price_cols = ['open', 'high', 'low', 'close']
+        available_prices = [col for col in price_cols if col in df.columns]
+        if available_prices:
+            df[available_prices] = df[available_prices].astype('float32')
+
         if start_date or end_date:
-            mask = True
+            mask = pd.Series(True, index=df.index)
             if start_date:
-                mask &= (df.index >= pd.to_datetime(start_date))
+                start_dt = pd.to_datetime(start_date)
+                mask &= (df.index >= start_dt)
             if end_date:
-                mask &= (df.index <= pd.to_datetime(end_date))
+                end_dt = pd.to_datetime(end_date)
+                mask &= (df.index <= end_dt)
             df = df[mask]
-        
+
         self._save_to_cache(cache_key, df)
-        return df.copy(deep=True)  # Return deep copy
-    
+        return df.copy(deep=True)
+
     def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
-        """Load OHLCV data and apply date range with caching. Supports optional HTF and LTF files."""
         data_cfg = self.config.get('data', {})
         
-        # Construct and ensure base file path is Path
-        data_file = data_cfg['file']
-        data_file = Path(data_file)  # conversion to Path
+        dr = data_cfg.get('date_range', {})
+        start_date_str = dr.get('start')
+        end_date_str = dr.get('end')
+        
+        if start_date_str:
+            self._validate_date_format(start_date_str, "start_date in config")
+        if end_date_str:
+            self._validate_date_format(end_date_str, "end_date in config")
+
+        start_dt = pd.to_datetime(start_date_str) if start_date_str else None
+        end_dt = pd.to_datetime(end_date_str) if end_date_str else None
+
+        data_file = Path(data_cfg['file'])
         if not data_file.is_absolute():
             data_file = self.project_root / data_file
         
-        # Load full base dataset (1min TF) - no date range for full
-        self.df_full = self._load_csv_with_cache(data_file, 'full')
-        
-        # Apply date range for strategy
-        dr = data_cfg.get('date_range', {})
-        start = pd.to_datetime(dr.get('start')) if dr.get('start') else self.df_full.index.min()
-        end = pd.to_datetime(dr.get('end')) if dr.get('end') else self.df_full.index.max()
-        self.df_strategy = self.df_full[(self.df_full.index >= start) & (self.df_full.index <= end)].copy(deep=True)
-        
-        # Load dedicated HTF if specified
+        self.df_full = self._load_csv_with_cache(data_file, 'full', None, None)
+
+        if start_dt or end_dt:
+            mask = pd.Series(True, index=self.df_full.index)
+            if start_dt:
+                mask &= (self.df_full.index >= start_dt)
+            if end_dt:
+                mask &= (self.df_full.index <= end_dt)
+            self.df_strategy = self.df_full[mask].copy(deep=True)
+        else:
+            self.df_strategy = self.df_full.copy(deep=True)
+
         self.df_htf = None
         if 'file_htf' in data_cfg:
-            htf_file = data_cfg['file_htf']
-            htf_file = Path(htf_file)  # conversion to Path
+            htf_file = Path(data_cfg['file_htf'])
             if not htf_file.is_absolute():
                 htf_file = self.project_root / htf_file
-            
-            self.df_htf = self._load_csv_with_cache(htf_file, 'htf', start, end)
+            # Cache with date range (smaller files, date filtering saves memory)
+            self.df_htf = self._load_csv_with_cache(htf_file, 'htf', start_dt, end_dt)
         
-        # Load dedicated LTF if specified
         self.df_ltf = None
         if 'file_ltf' in data_cfg:
-            ltf_file = data_cfg['file_ltf']
-            ltf_file = Path(ltf_file)  # conversion to Path
+            ltf_file = Path(data_cfg['file_ltf'])
             if not ltf_file.is_absolute():
                 ltf_file = self.project_root / ltf_file
-            
-            self.df_ltf = self._load_csv_with_cache(ltf_file, 'ltf', start, end)
+            # Cache with date range (smaller files, date filtering saves memory)
+            self.df_ltf = self._load_csv_with_cache(ltf_file, 'ltf', start_dt, end_dt)
         
         return self.df_full, self.df_strategy, self.df_htf, self.df_ltf
-    
+
     def get_data_info(self) -> Dict:
-        """Get data statistics including HTF and LTF info"""
         info = {
             'full_bars': len(self.df_full) if self.df_full is not None else 0,
             'strategy_bars': len(self.df_strategy) if self.df_strategy is not None else 0,
             'htf_bars': len(self.df_htf) if self.df_htf is not None else 0,
             'ltf_bars': len(self.df_ltf) if self.df_ltf is not None else 0,
             'date_range': (
-                self.df_strategy.index.min().strftime('%Y-%m-%d') if self.df_strategy is not None else None,
-                self.df_strategy.index.max().strftime('%Y-%m-%d') if self.df_strategy is not None else None
+                self.df_strategy.index.min().strftime('%Y-%m-%d %H:%M:%S') if self.df_strategy is not None else None,
+                self.df_strategy.index.max().strftime('%Y-%m-%d %H:%M:%S') if self.df_strategy is not None else None
             )
         }
         if self.df_ltf is not None:
             info['ltf_tf'] = self.config.get('data', {}).get('ltf_timeframe', '1s')
         return info
-    
+
     def validate_data(self) -> Dict:
-        """Validate loaded data including HTF and LTF"""
         validation = {
-            'has_data': len(self.df_strategy) > 0,
-            'ohlc_columns': all(col in self.df_strategy.columns for col in ['open', 'high', 'low', 'close']),
-            'no_nan': not self.df_strategy[['open', 'high', 'low', 'close']].isnull().any().any(),
-            'positive_prices': (self.df_strategy[['open', 'high', 'low', 'close']] > 0).all().all(),
-            'high_low_valid': (self.df_strategy['high'] >= self.df_strategy['low']).all(),
+            'has_data': len(self.df_strategy) > 0 if self.df_strategy is not None else False,
+            'ohlc_columns': all(col in self.df_strategy.columns for col in ['open', 'high', 'low', 'close']) if self.df_strategy is not None else False,
+            'no_nan': not self.df_strategy[['open', 'high', 'low', 'close']].isnull().any().any() if self.df_strategy is not None else False,
+            'positive_prices': (self.df_strategy[['open', 'high', 'low', 'close']] > 0).all().all() if self.df_strategy is not None else False,
+            'high_low_valid': (self.df_strategy['high'] >= self.df_strategy['low']).all() if self.df_strategy is not None else False,
             'open_close_valid': (
                 (self.df_strategy['open'] >= self.df_strategy['low']) & 
                 (self.df_strategy['open'] <= self.df_strategy['high']) &
                 (self.df_strategy['close'] >= self.df_strategy['low']) & 
                 (self.df_strategy['close'] <= self.df_strategy['high'])
-            ).all()
+            ).all() if self.df_strategy is not None else False
         }
-        
-        # Validate HTF if loaded
+
         if self.df_htf is not None:
             validation.update({
                 'htf_has_data': len(self.df_htf) > 0,
@@ -195,8 +214,7 @@ class DataLoader:
                     (self.df_htf['close'] <= self.df_htf['high'])
                 ).all()
             })
-        
-        # Validate LTF if loaded
+
         if self.df_ltf is not None:
             validation.update({
                 'ltf_has_data': len(self.df_ltf) > 0,
@@ -211,12 +229,11 @@ class DataLoader:
                     (self.df_ltf['close'] <= self.df_ltf['high'])
                 ).all()
             })
-        
-        validation['is_valid'] = all(validation.values())
+
+        validation['is_valid'] = all(v for k, v in validation.items() if k != 'is_valid')
         return validation
-        
+
     def get_cache_stats(self) -> Dict:
-        """Get cache statistics"""
         total = self.cache_hits + self.cache_misses
         hit_rate = (self.cache_hits / total * 100) if total > 0 else 0
         
@@ -231,15 +248,16 @@ class DataLoader:
             'cache_size_mb': total_size / (1024 * 1024),
             'cache_dir': str(self.cache_dir)
         }
-    
+
     def clear_cache(self, pattern: str = "*"):
-        """Clear cache files matching pattern"""
         cache_files = list(self.cache_dir.glob(f"{pattern}.pkl"))
+        deleted = 0
         for cache_file in cache_files:
             try:
                 cache_file.unlink()
+                deleted += 1
             except Exception as e:
-                print(f"⚠️  Could not delete {cache_file.name}: {e}")
+                logger.warning(f"Could not delete {cache_file.name}: {e}")
         
-        print(f"🧹 Cleared {len(cache_files)} cache files")
-        return len(cache_files)
+        logger.info(f"Cleared {deleted} cache files")
+        return deleted

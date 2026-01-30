@@ -85,6 +85,10 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         
         # Load data
         df_full, df_strategy, df_htf, df_ltf = data_loader.load_data()
+        if df_ltf is None or df_ltf.empty:
+            logger.error("Low Timeframe (LTF) data is mandatory for realistic execution simulation.")
+            logger.error("Check your config paths for LTF data file.")
+            raise ValueError("LTF data missing or empty")
         
         # Mandatory LTF check
         if df_ltf is None or df_ltf.empty:

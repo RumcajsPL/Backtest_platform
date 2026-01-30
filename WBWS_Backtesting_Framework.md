@@ -254,9 +254,7 @@ Strategy perf
 - Metrics Extraction Assumptions
 - Add Deduplication (analyze 1st as might be no issue with bigger populations)
 - latin_hypercube in config unused—sampler is random
-- Logging system with levels ?
 - Final updates of orchestrator_fixed.py
-- Switch from orchestrator_fixed.py into orchestrator_fixed.py (clean version no debug or troubleshooting code)
 ### 10.1.2 Future evolutions
 - Re-integration of WFO in orchestrator_fixed.py 
 - Re-integration of Monte Carlo in orchestrator_fixed.py
