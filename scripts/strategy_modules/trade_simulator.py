@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from .trade_tracker import TradeTracker
 from src.strategies.trade_management.risk_manager import RiskManager
 from src.strategies.trade_management.spread_manager import SpreadManager
+from strategy_modules.null_progressive_tracker import NullProgressiveTracker
 
 class TradeSimulatorProfiler:
     """Simple profiler for performance monitoring in debug mode"""
@@ -53,6 +54,10 @@ class TradeSimulator:
         self.trade_manager = None
         self.spread_manager = None
         self.progressive_tracker = None
+        self._tracking_enabled = (
+        self.progressive_tracker is not None and 
+            not isinstance(self.progressive_tracker, NullProgressiveTracker)
+)
         self.df_ltf = None
         self._ltf_windows: Dict = {}
         
@@ -286,7 +291,7 @@ class TradeSimulator:
                 result = self.trade_manager.handle_signal(timestamp, signal_type)
                 
                 # Update progressive tracker with position management details
-                if self.progressive_tracker and signal_id:
+                if self._tracking_enabled and signal_id:
                     needs_open = result['action'] in ['OPEN', 'CLOSE_AND_REVERSE']
                     self.progressive_tracker.update_position_management_details(
                         signal_id, result['action'], result['reason'],
@@ -317,7 +322,7 @@ class TradeSimulator:
                         risk_stats['rejected'][key] += 1
                         risk_stats['total_rejected'] += 1
                         
-                        if self.progressive_tracker and signal_id:
+                        if self._tracking_enabled and signal_id:
                             self.progressive_tracker.update_risk_management_details(
                                 signal_id, False, 'Risk validation failed'
                             )
@@ -344,7 +349,7 @@ class TradeSimulator:
                         risk_stats['adjusted'][key] += 1
                         risk_stats['total_adjusted'] += 1
                     
-                    if self.progressive_tracker and signal_id:
+                    if self._tracking_enabled and signal_id:
                         self.progressive_tracker.update_risk_management_details(
                             signal_id, True, params['comment']
                         )
@@ -408,7 +413,7 @@ class TradeSimulator:
         )
         self.trade_manager.open_position(new_trade_id, timestamp, direction)
         
-        if self.progressive_tracker and signal_id:
+        if self._tracking_enabled and signal_id:
             self.progressive_tracker.update_trade_execution_details(
                 signal_id, trade_id=new_trade_id, entry_time=timestamp,
                 entry_price_executed=params['executed_entry'],

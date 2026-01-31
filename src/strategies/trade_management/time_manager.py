@@ -64,7 +64,10 @@ class TimeManager:
             df[timestamp_col] = pd.to_datetime(df[timestamp_col])
         
         # Vectorized filtering: calculate minutes for entire column
-        minutes_col = df[timestamp_col].dt.hour * 60 + df[timestamp_col].dt.minute
+        # minutes_col = df[timestamp_col].dt.hour * 60 + df[timestamp_col].dt.minute
+        hours = df[timestamp_col].dt.hour.values
+        minutes = df[timestamp_col].dt.minute.values
+        minutes_col = hours * 60 + minutes
         trading_hours_mask = (minutes_col >= self.session_start_minutes) & \
                              (minutes_col < self.session_end_minutes)
         

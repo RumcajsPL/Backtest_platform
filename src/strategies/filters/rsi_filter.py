@@ -32,17 +32,11 @@ class RSIFilter:
         # Convert to float32 for memory efficiency
         return rsi.astype('float32')
 
-    def apply_filter(self, df: pd.DataFrame, is_long: bool = True, price_col: str = 'close') -> pd.Series:
-        """
-        Apply RSI filter logic       
-        """
+    #def apply_filter_with_rsi(self, df: pd.DataFrame, rsi: pd.Series, is_long: bool = True) -> pd.Series:
+        """Apply filter using pre-calculated RSI (avoids recalculation)"""
         if not self.enabled:
             return pd.Series(True, index=df.index)
         
-        # Calculate RSI directly on input df (no copy needed)
-        rsi = self._calculate_rsi_wilder(df[price_col])
-        
-        # Apply filter: BUY when not overbought, SELL when not oversold
         if is_long:
             return rsi < self.overbought
         else:
