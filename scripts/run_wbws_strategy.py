@@ -1,5 +1,5 @@
 # Updated: scripts/run_wbws_strategy.py
-"""WBWS Strategy Runner - Modular Version with Enhanced Progressive Tracking"""
+"""WBWS Strategy Runner - Production Optimized"""
 import sys
 import pandas as pd
 from pathlib import Path
@@ -10,14 +10,14 @@ from logging.handlers import RotatingFileHandler
 # Force UTF-8 for console (Windows safeguard)
 if sys.platform.startswith('win'):
     import os
-    os.system('chcp 65001 > nul')  # Switch cmd to UTF-8 if possible
+    os.system('chcp 65001 > nul')
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 
 # Get project root
 project_root = Path(__file__).resolve().parent.parent
 
-# Add project root to sys.path for imports from src/
+# Add project root to sys.path
 sys.path.insert(0, str(project_root))
 
 from strategy_modules.data_loader import DataLoader
@@ -33,12 +33,10 @@ from strategy_modules.null_progressive_tracker import NullProgressiveTracker
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Console handler
 console = logging.StreamHandler(sys.stdout)
 console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger.addHandler(console)
 
-# File handler with rotation and explicit UTF-8
 log_file = project_root / 'outputs' / 'logs' / 'wbws_strategy.log'
 file_handler = RotatingFileHandler(
     log_file,
@@ -50,9 +48,7 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(messa
 logger.addHandler(file_handler)
 
 def run_wbws_strategy(config_path: str, verbose: bool = False):
-    """
-    Main orchestrator for WBWS strategy execution.
-    """
+    """Main orchestrator for WBWS strategy execution"""
     logger.info("="*70)
     logger.info("WBWS STRATEGY WORKFLOW")
     logger.info("="*70)
@@ -63,7 +59,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         data_loader = DataLoader(config_path)
         config = data_loader.load_config()
         
-        # MODE DETECTION AND CONFIGURATION
+        # Mode detection
         execution_mode = config.get('execution', {}).get('mode', 'debug')
         is_core_mode = (execution_mode == 'core')
         
@@ -85,16 +81,15 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         
         # Load data
         df_full, df_strategy, df_htf, df_ltf = data_loader.load_data()
-        if df_ltf is None or df_ltf.empty:
-            logger.error("Low Timeframe (LTF) data is mandatory for realistic execution simulation.")
-            logger.error("Check your config paths for LTF data file.")
-            raise ValueError("LTF data missing or empty")
         
         # Mandatory LTF check
         if df_ltf is None or df_ltf.empty:
+            logger.error("EXECUTION ABORTED: LTF data missing")
+            logger.error("Low Timeframe (LTF) data is mandatory for realistic execution simulation.")
+            logger.error("Check your config paths for LTF data file.")
             raise ValueError(
-                "Low Timeframe (LTF) data is mandatory for realistic execution simulation. "
-                "Check your config paths for LTF data file."
+                "LTF data missing or empty. "
+                "Verify config paths.ltf_ohlcv_file points to valid data."
             )
         
         # Initialize progressive tracker
@@ -176,6 +171,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         filter_stats = filter_pipeline.get_filter_stats(raw_signals, time_filtered, rsi_filtered)
         
         # 4. Simulate trades
+        # TradeSimulator now handles ALL progressive tracking internally
         logger.info("STEP 4: SIMULATING TRADES")
         trade_simulator = TradeSimulator(config)
         simulation_results = trade_simulator.simulate_trades(
@@ -192,85 +188,7 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
                     f"{len(simulation_results['rejected_trades']):,} rejected")
         logger.info(f"  Execution: LTF ({data_info.get('ltf_tf', 'N/A')}) for SL/TP")
         
-        all_trades = simulation_results['all_trades']
         filter_stats['risk_filtered'] = simulation_results.get('risk_stats', {})
-        
-        # We need to update trade simulator to provide detailed exit information
-        # For now, update with basic trade information
-        for trade in all_trades:
-            timestamp = trade.get('entry_time')
-            signal_id = None
-            
-            # Find signal_id for this trade's entry_time
-            for ts, sid in signal_id_map.items():
-                if pd.Timestamp(ts) == pd.Timestamp(timestamp):
-                    signal_id = sid
-                    break
-            
-            if signal_id:
-                # Determine position action based on trade details
-                position_action = 'OPEN'
-                position_reason = 'New position opened'
-                if 'Reversal' in str(trade.get('comment', '')):
-                    position_action = 'CLOSE_AND_REVERSE'
-                    position_reason = 'Close and reverse position'
-                elif 'Rejected' in str(trade.get('comment', '')):
-                    position_action = 'REJECT'
-                    position_reason = trade.get('comment', 'Position rejected')
-                
-                # Update position management
-                progressive_tracker.update_position_management_details(
-                    signal_id=signal_id,
-                    action=position_action,
-                    reason=position_reason,
-                    current_direction=trade.get('direction', 'NONE'),
-                    open_positions_count=len(simulation_results['open_trades']) + 1,  # Approximate
-                    pyramiding_enabled=config['trade_management']['position_control'].get('pyramiding_enabled', False),
-                    close_on_opposite=config['trade_management']['position_control'].get('close_on_opposite', False),
-                    can_open_new_position=True  # Simplified
-                )
-                
-                # Update trade execution
-                if trade.get('status') == 'CLOSED':
-                    progressive_tracker.update_trade_execution_details(
-                        signal_id=signal_id,
-                        trade_id=trade.get('trade_id'),
-                        position_id=trade.get('position_id'),
-                        entry_time=trade.get('entry_time'),
-                        entry_price_executed=trade.get('entry_price'),
-                        sl_price_executed=trade.get('sl_price'),
-                        tp_price_executed=trade.get('tp_price'),
-                        exit_time=trade.get('exit_time'),
-                        exit_price=trade.get('exit_price'),
-                        exit_reason=trade.get('exit_reason'),
-                        pnl_points=trade.get('pnl_points'),
-                        pnl_percent=trade.get('pnl_percent'),
-                        duration_bars=trade.get('duration_bars'),
-                        duration_minutes=trade.get('duration_minutes'),
-                        is_win=trade.get('pnl_points', 0) > 0,
-                        is_loss=trade.get('pnl_points', 0) < 0,
-                        exit_check_high=None,  # These would come from enhanced trade simulator
-                        exit_check_low=None,
-                        spread_adjusted_high=None,
-                        spread_adjusted_low=None,
-                        reason=f"Trade CLOSED - {trade.get('exit_reason')}"
-                    )
-                elif trade.get('status') == 'OPEN':
-                    progressive_tracker.update_trade_execution_details(
-                        signal_id=signal_id,
-                        trade_id=trade.get('trade_id'),
-                        position_id=trade.get('position_id'),
-                        entry_time=trade.get('entry_time'),
-                        entry_price_executed=trade.get('entry_price'),
-                        sl_price_executed=trade.get('sl_price'),
-                        tp_price_executed=trade.get('tp_price'),
-                        reason="Trade OPEN"
-                    )
-                elif trade.get('status') == 'REJECTED':
-                    progressive_tracker.update_trade_execution_details(
-                        signal_id=signal_id,
-                        reason=f"Trade REJECTED - {trade.get('reject_reason')}"
-                    )
         
         # 5. Metrics
         logger.info("STEP 5: CALCULATING METRICS")

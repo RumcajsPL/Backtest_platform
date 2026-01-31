@@ -1,4 +1,4 @@
-"""Trade simulation with LTF OHLC execution"""
+"""Trade simulation with LTF OHLC execution - Production Optimized"""
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional
@@ -8,7 +8,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from .trade_tracker import TradeTracker
 from src.strategies.trade_management.risk_manager import RiskManager
 from src.strategies.trade_management.spread_manager import SpreadManager
 from strategy_modules.null_progressive_tracker import NullProgressiveTracker
@@ -40,24 +39,22 @@ class TradeSimulatorProfiler:
 
 class TradeSimulator:
     """
-    Trade simulator with LTF (1-second) OHLC execution for realistic SL/TP triggers.
-    ID System:
-    - trade_id: TradeTracker internal sequential ID (for CSV export)
-    - trade_manager_trade_id: TradeManager position ID (for position logic)
+    Trade simulator with LTF OHLC execution for realistic SL/TP triggers.
+    Direct trade tracking - no intermediate TradeTracker layer.
     """
     
     def __init__(self, config: Dict):
         self.config = config
         self.profile_enabled = config.get('debug', {}).get('profile_simulator', False)
         
-        self.trade_tracker = TradeTracker()
+        # Direct trade tracking (replaces TradeTracker)
+        self.all_trades: List[Dict] = []
+        self.trade_counter = 0
+        
         self.trade_manager = None
         self.spread_manager = None
         self.progressive_tracker = None
-        self._tracking_enabled = (
-        self.progressive_tracker is not None and 
-            not isinstance(self.progressive_tracker, NullProgressiveTracker)
-)
+        self._tracking_enabled = False
         self.df_ltf = None
         self._ltf_windows: Dict = {}
         
@@ -75,7 +72,6 @@ class TradeSimulator:
         """Initialize trade manager and spread manager"""
         from src.strategies.trade_management.trade_manager import TradeManager
         self.trade_manager = TradeManager(self.config)
-        self.trade_tracker.set_trade_manager(self.trade_manager)
         
         tm_config = self.config.get('trade_management', {})
         spread_config = tm_config.get('spread', {})
@@ -85,9 +81,15 @@ class TradeSimulator:
             self.spread_manager = SpreadManager(asset_symbol, config_path)
 
     def _precompute_ltf_windows(self, df_strategy: pd.DataFrame) -> None:
-        """Pre-compute LTF windows for each strategy bar for fast lookup"""
+        """Pre-compute LTF windows for each strategy bar"""
         if self.df_ltf is None or self.df_ltf.empty:
-            raise ValueError("LTF data required for simulation but not provided")
+            logger.error("EXECUTION ABORTED: LTF data missing")
+            logger.error("Required: 1-second OHLCV data for realistic SL/TP execution")
+            logger.error("Check config: paths.ltf_ohlcv_file")
+            raise ValueError(
+                "LTF execution data missing. "
+                "Verify config paths.ltf_ohlcv_file points to valid 1-second OHLCV data."
+            )
         
         self._ltf_windows = {}
         for strategy_time in df_strategy.index:
@@ -103,11 +105,10 @@ class TradeSimulator:
 
     def _find_exact_exit_bar(self, trade: Dict, window_bars: pd.DataFrame, 
                              exit_reason: str, is_long: bool) -> tuple[Optional[pd.Series], Optional[float]]:
-        """Find exact LTF bar where SL/TP was hit and calculate exit price"""
+        """Find exact LTF bar where SL/TP was hit"""
         if window_bars.empty:
             return None, None
         
-        # Determine which price level to check
         if is_long:
             hit_mask = window_bars['low'] <= trade['sl_price'] if exit_reason == 'STOP_LOSS' else window_bars['high'] >= trade['tp_price']
         else:
@@ -116,11 +117,10 @@ class TradeSimulator:
         if not hit_mask.any():
             return None, None
         
-        # Find first bar where condition met
         exit_idx = hit_mask.idxmax()
         exit_bar = window_bars.loc[exit_idx]
         
-        # Calculate actual exit price (best case within bar range)
+        # Calculate actual exit price
         if is_long:
             exit_price = min(exit_bar['low'], trade['sl_price']) if exit_reason == 'STOP_LOSS' else min(exit_bar['high'], trade['tp_price'])
         else:
@@ -130,7 +130,7 @@ class TradeSimulator:
 
     def _execute_trade_exit(self, trade: Dict, exit_bar: pd.Series, exit_price: float, 
                             exit_reason: str, exit_stats: Dict, verbose: bool):
-        """Execute trade exit and update all tracking"""
+        """Execute trade exit and update tracking"""
         # Calculate P&L
         if trade['direction'] == 'BUY':
             pnl_points = exit_price - trade['entry_price']
@@ -142,21 +142,27 @@ class TradeSimulator:
         entry_time = trade.get('entry_time') or trade.get('timestamp')
         duration_minutes = (exit_bar.name - entry_time).total_seconds() / 60 if entry_time else None
         
-        # Update trade tracker
-        self.trade_tracker.close_position(
-            trade['trade_id'], exit_bar.name, exit_price, exit_reason, None
-        )
+        # Update trade record directly
+        trade['status'] = 'CLOSED'
+        trade['exit_time'] = exit_bar.name
+        trade['exit_price'] = exit_price
+        trade['exit_reason'] = exit_reason
+        trade['pnl_points'] = pnl_points
+        trade['pnl_percent'] = pnl_percent
+        trade['duration_minutes'] = duration_minutes
+        trade['is_win'] = pnl_points > 0
+        trade['is_loss'] = pnl_points < 0
         
-        # Update trade manager
+        # Update trade manager state
         if trade.get('trade_manager_trade_id'):
             self.trade_manager.close_positions([trade['trade_manager_trade_id']])
         
         exit_stats[exit_reason] += 1
         
         # Update progressive tracker
-        if self.progressive_tracker and 'signal_id' in trade and trade['signal_id']:
+        if self._tracking_enabled and trade.get('signal_id'):
             self.progressive_tracker.update_trade_execution_details(
-                trade['signal_id'],
+                signal_id=trade['signal_id'],
                 trade_id=trade['trade_id'],
                 exit_time=exit_bar.name,
                 exit_price=exit_price,
@@ -168,7 +174,7 @@ class TradeSimulator:
                 is_loss=pnl_points < 0,
                 exit_check_high=exit_bar['high'],
                 exit_check_low=exit_bar['low'],
-                reason=f'Trade closed ({exit_reason}) - BID OHLC execution'
+                reason=f'CLOSED: {exit_reason}'
             )
         
         if verbose:
@@ -180,26 +186,27 @@ class TradeSimulator:
 
     def _check_exits_with_ltf_ohlc(self, strategy_timestamp: pd.Timestamp, 
                                    exit_stats: Dict, verbose: bool):
-        """Check for SL/TP exits using vectorized LTF OHLC data"""
+        """Check for SL/TP exits using vectorized LTF OHLC"""
         if strategy_timestamp not in self._ltf_windows:
             return
         
         window = self._ltf_windows[strategy_timestamp]
-        if window['bars'].empty or not self.trade_tracker.get_open_trades():
+        open_trades = [t for t in self.all_trades if t['status'] == 'OPEN']
+        
+        if window['bars'].empty or not open_trades:
             return
         
         # Filter trades that entered before current bar
-        open_trades = [t for t in self.trade_tracker.get_open_trades() 
-                       if (t.get('entry_time') or t.get('timestamp')) < strategy_timestamp]
+        open_trades = [t for t in open_trades if (t.get('entry_time') or t.get('timestamp')) < strategy_timestamp]
         
         if not open_trades:
             return
         
-        # Separate LONG and SHORT trades for vectorized checking
+        # Separate LONG and SHORT for vectorized checking
         long_trades = [t for t in open_trades if t['direction'] == 'BUY']
         short_trades = [t for t in open_trades if t['direction'] == 'SELL']
         
-        # Process LONG trades (vectorized)
+        # Process LONG trades
         if long_trades:
             sl_prices = np.array([t['sl_price'] for t in long_trades])
             tp_prices = np.array([t['tp_price'] for t in long_trades])
@@ -216,7 +223,7 @@ class TradeSimulator:
                     if bar is not None:
                         self._execute_trade_exit(trade, bar, price, reason, exit_stats, verbose)
         
-        # Process SHORT trades (vectorized)
+        # Process SHORT trades
         if short_trades:
             sl_prices = np.array([t['sl_price'] for t in short_trades])
             tp_prices = np.array([t['tp_price'] for t in short_trades])
@@ -236,16 +243,26 @@ class TradeSimulator:
     def simulate_trades(self, df_strategy: pd.DataFrame, filtered_signals: pd.Series, 
                         verbose: bool = False, progressive_tracker=None, risk_manager: RiskManager = None,
                         signal_id_map: Dict = None, df_ltf: Optional[pd.DataFrame] = None) -> Dict:
-        """
-        Simulate trades with realistic LTF execution.        
-        """
+        """Simulate trades with realistic LTF execution"""
+        
+        # Mandatory LTF check
         if df_ltf is None or df_ltf.empty:
-            raise ValueError("LTF (1-second) data is mandatory for realistic execution simulation")
+            logger.error("EXECUTION ABORTED: LTF data missing")
+            logger.error("Required: 1-second OHLCV data for realistic SL/TP execution")
+            logger.error("Check config: paths.ltf_ohlcv_file")
+            raise ValueError(
+                "LTF execution data missing. "
+                "Verify config paths.ltf_ohlcv_file points to valid 1-second OHLCV data."
+            )
 
         self.progressive_tracker = progressive_tracker
+        self._tracking_enabled = (
+            progressive_tracker is not None and 
+            not isinstance(progressive_tracker, NullProgressiveTracker)
+        )
         self.df_ltf = df_ltf
 
-        # Convert to float32 for memory efficiency in batch runs
+        # Memory optimization: convert to float32
         ohlc_cols = ['open', 'high', 'low', 'close']
         for df in [self.df_ltf, df_strategy]:
             available_cols = [c for c in ohlc_cols if c in df.columns]
@@ -257,7 +274,7 @@ class TradeSimulator:
         if verbose:
             logger.info(f"LTF Execution: {len(df_ltf):,} bars (float32 optimized)")
 
-        # Pre-compute LTF windows for fast lookup
+        # Pre-compute LTF windows
         self._precompute_ltf_windows(df_strategy)
         if verbose:
             logger.info(f"Pre-computed {len(self._ltf_windows):,} LTF windows")
@@ -276,109 +293,97 @@ class TradeSimulator:
         
         # Main simulation loop
         for timestamp, row in zip(df_strategy.index, df_strategy.itertuples(index=False)):
-            # Check for exits first
+            # Check exits first
             self._check_exits_with_ltf_ohlc(timestamp, exit_stats, verbose)
             
             # Process new signals
-            if timestamp in filtered_signals.index and pd.notna(filtered_signals[timestamp]):
-                signal_type = filtered_signals[timestamp]
-                is_long = (signal_type == 'BUY')
-                direction = 'BUY' if is_long else 'SELL'
-                bid_price = row.close
-                signal_id = signal_id_map.get(timestamp) if signal_id_map else None
-                
-                # Ask trade manager what to do with this signal
-                result = self.trade_manager.handle_signal(timestamp, signal_type)
-                
-                # Update progressive tracker with position management details
-                if self._tracking_enabled and signal_id:
-                    needs_open = result['action'] in ['OPEN', 'CLOSE_AND_REVERSE']
-                    self.progressive_tracker.update_position_management_details(
-                        signal_id, result['action'], result['reason'],
-                        self.trade_manager.current_direction,
-                        len(self.trade_manager.current_positions),
-                        self.trade_manager.pyramiding_enabled,
-                        self.trade_manager.close_on_opposite,
-                        needs_open
+            if timestamp not in filtered_signals.index or pd.isna(filtered_signals[timestamp]):
+                continue
+            
+            signal_type = filtered_signals[timestamp]
+            is_long = (signal_type == 'BUY')
+            direction = 'BUY' if is_long else 'SELL'
+            bid_price = row.close
+            signal_id = signal_id_map.get(timestamp) if signal_id_map else None
+            
+            # Get position management decision
+            result = self.trade_manager.handle_signal(timestamp, signal_type)
+            
+            # Update progressive tracker with position management
+            if self._tracking_enabled and signal_id:
+                needs_open = result['action'] in ['OPEN', 'CLOSE_AND_REVERSE']
+                self.progressive_tracker.update_position_management_details(
+                    signal_id, result['action'], result['reason'],
+                    self.trade_manager.current_direction,
+                    len(self.trade_manager.current_positions),
+                    self.trade_manager.pyramiding_enabled,
+                    self.trade_manager.close_on_opposite,
+                    needs_open
+                )
+            
+            # Handle REJECT
+            if result['action'] == 'REJECT':
+                self._reject_signal(timestamp, direction, signal_id, result.get('reason', 'Unknown'), verbose)
+                position_rejected_count['buy' if is_long else 'sell'] += 1
+                continue
+            
+            # Calculate trade parameters if opening
+            needs_open = result['action'] in ['OPEN', 'CLOSE_AND_REVERSE']
+            params = None
+            if needs_open:
+                params = risk_manager.compute_trade_parameters(timestamp, bid_price, is_long)
+                if params is None:
+                    # Risk rejected
+                    self._handle_risk_rejection(
+                        result['action'], result.get('close_trade_ids', []),
+                        timestamp, direction, signal_id, is_long,
+                        risk_stats, position_rejected_count, row, verbose
                     )
-                
-                # Handle REJECT action
-                if result['action'] == 'REJECT':
-                    self.trade_tracker.reject_signal(timestamp, direction, None, None, None, 
-                                                     result.get('reason', 'Unknown'), '')
-                    position_rejected_count['buy' if is_long else 'sell'] += 1
-                    if verbose:
-                        logger.debug(f"[REJECT] {timestamp} {direction} - {result.get('reason', 'Unknown')}")
                     continue
                 
-                # Calculate trade parameters if opening position
-                needs_open = result['action'] in ['OPEN', 'CLOSE_AND_REVERSE']
-                params = None
-                if needs_open:
-                    params = risk_manager.compute_trade_parameters(timestamp, bid_price, is_long)
-                    if params is None:
-                        # Risk validation rejected
-                        key = 'buy' if is_long else 'sell'
-                        risk_stats['rejected'][key] += 1
-                        risk_stats['total_rejected'] += 1
-                        
-                        if self._tracking_enabled and signal_id:
-                            self.progressive_tracker.update_risk_management_details(
-                                signal_id, False, 'Risk validation failed'
-                            )
-                        
-                        if result['action'] == 'OPEN':
-                            self.trade_tracker.reject_signal(timestamp, direction, None, None, None, 
-                                                           'Risk rejected', '')
-                            if verbose:
-                                logger.debug(f"[REJECT] {timestamp} {direction} - Risk rejected")
-                            continue
-                        elif result['action'] == 'CLOSE_AND_REVERSE':
-                            # Close existing but don't open new
-                            self._handle_close(timestamp, result.get('close_trade_ids', []), row, verbose)
-                            self.trade_manager.close_positions(result.get('close_trade_ids', []))
-                            if verbose:
-                                logger.debug(f"[CLOSE ONLY] {timestamp} {direction} - Risk rejected new position")
-                            continue
-                    
-                    # Risk approved - update stats
-                    key = 'buy' if is_long else 'sell'
-                    risk_stats['approved'][key] += 1
-                    risk_stats['total_approved'] += 1
-                    if params['sl_adjusted']:
-                        risk_stats['adjusted'][key] += 1
-                        risk_stats['total_adjusted'] += 1
-                    
-                    if self._tracking_enabled and signal_id:
-                        self.progressive_tracker.update_risk_management_details(
-                            signal_id, True, params['comment']
-                        )
+                # Risk approved
+                key = 'buy' if is_long else 'sell'
+                risk_stats['approved'][key] += 1
+                risk_stats['total_approved'] += 1
+                if params['sl_adjusted']:
+                    risk_stats['adjusted'][key] += 1
+                    risk_stats['total_adjusted'] += 1
                 
-                # Execute CLOSE_AND_REVERSE
-                if result['action'] == 'CLOSE_AND_REVERSE':
-                    self._handle_close(timestamp, result.get('close_trade_ids', []), row, verbose)
-                    self.trade_manager.close_positions(result.get('close_trade_ids', []))
-                    if params:
-                        self._handle_open(timestamp, direction, params, result['new_trade_id'], 
-                                        verbose, '(Reversal)', signal_id)
-                
-                # Execute OPEN
-                elif result['action'] == 'OPEN':
-                    if params:
-                        self._handle_open(timestamp, direction, params, result['new_trade_id'], 
-                                        verbose, '', signal_id)
+                if self._tracking_enabled and signal_id:
+                    self.progressive_tracker.update_risk_management_details(
+                        signal_id, True, params['comment']
+                    )
+            
+            # Execute CLOSE_AND_REVERSE
+            if result['action'] == 'CLOSE_AND_REVERSE':
+                self._handle_close(timestamp, result.get('close_trade_ids', []), row, exit_stats, verbose)
+                self.trade_manager.close_positions(result.get('close_trade_ids', []))
+                if params:
+                    self._handle_open(timestamp, direction, params, result['new_trade_id'], 
+                                    verbose, '(Reversal)', signal_id)
+            
+            # Execute OPEN
+            elif result['action'] == 'OPEN':
+                if params:
+                    self._handle_open(timestamp, direction, params, result['new_trade_id'], 
+                                    verbose, '', signal_id)
         
-        # Close remaining open positions at end of data
+        # Close remaining positions
         self._close_remaining_positions(df_strategy, exit_stats, verbose)
         
         if verbose and self.profiler:
             self.profiler.print_report()
         
+        # Return results
+        closed_trades = [t for t in self.all_trades if t['status'] == 'CLOSED']
+        open_trades = [t for t in self.all_trades if t['status'] == 'OPEN']
+        rejected_trades = [t for t in self.all_trades if t['status'] == 'REJECTED']
+        
         return {
-            'all_trades': self.trade_tracker.get_trades(),
-            'closed_trades': self.trade_tracker.get_closed_trades(),
-            'open_trades': self.trade_tracker.get_open_trades(),
-            'rejected_trades': self.trade_tracker.get_rejected_trades(),
+            'all_trades': self.all_trades,
+            'closed_trades': closed_trades,
+            'open_trades': open_trades,
+            'rejected_trades': rejected_trades,
             'exit_stats': exit_stats,
             'position_rejected_count': position_rejected_count,
             'risk_stats': risk_stats,
@@ -386,46 +391,142 @@ class TradeSimulator:
             'execution_mode': 'LTF_OHLC_VECTORIZED'
         }
 
+    def _reject_signal(self, timestamp: pd.Timestamp, direction: str, signal_id: Optional[int],
+                      reason: str, verbose: bool):
+        """Record rejected signal"""
+        self.trade_counter += 1
+        trade = {
+            'trade_id': self.trade_counter,
+            'trade_manager_trade_id': None,
+            'position_id': None,
+            'status': 'REJECTED',
+            'entry_time': timestamp,
+            'exit_time': None,
+            'direction': direction,
+            'entry_price': None,
+            'exit_price': None,
+            'sl_price': None,
+            'tp_price': None,
+            'exit_reason': None,
+            'pnl_points': 0,
+            'pnl_percent': 0,
+            'duration_bars': 0,
+            'duration_minutes': 0,
+            'sl_distance': 0,
+            'tp_distance': 0,
+            'risk_reward_ratio': 0,
+            'is_win': False,
+            'is_loss': False,
+            'comment': f'Rejected: {reason}',
+            'reject_reason': reason,
+            'signal_id': signal_id,
+        }
+        self.all_trades.append(trade)
+        
+        if verbose:
+            logger.debug(f"[REJECT] {timestamp} {direction} - {reason}")
+
+    def _handle_risk_rejection(self, action: str, close_trade_ids: List[int],
+                               timestamp: pd.Timestamp, direction: str, signal_id: Optional[int],
+                               is_long: bool, risk_stats: Dict, position_rejected_count: Dict,
+                               row: pd.Series, verbose: bool):
+        """Handle risk rejection scenarios"""
+        key = 'buy' if is_long else 'sell'
+        risk_stats['rejected'][key] += 1
+        risk_stats['total_rejected'] += 1
+        
+        if self._tracking_enabled and signal_id:
+            self.progressive_tracker.update_risk_management_details(
+                signal_id, False, 'Risk validation failed'
+            )
+        
+        if action == 'OPEN':
+            self._reject_signal(timestamp, direction, signal_id, 'Risk rejected', verbose)
+        elif action == 'CLOSE_AND_REVERSE':
+            # Close existing but don't open new
+            self._handle_close(timestamp, close_trade_ids, row, {}, verbose)
+            self.trade_manager.close_positions(close_trade_ids)
+            if verbose:
+                logger.debug(f"[CLOSE ONLY] {timestamp} {direction} - Risk rejected new position")
+
     def _handle_close(self, timestamp: pd.Timestamp, close_trade_ids: List[int], 
-                     row: pd.Series, verbose: bool):
+                     row: pd.Series, exit_stats: Dict, verbose: bool):
         """Close positions due to opposite signal"""
         current_bid = row['close']
         spread = self.spread_manager.get_spread_in_points(current_bid) if self.spread_manager else 0.0
         
         for tid in close_trade_ids:
-            track_trade = next((t for t in self.trade_tracker.get_open_trades() 
-                              if t['trade_manager_trade_id'] == tid), None)
-            if track_trade:
-                exit_price = current_bid if track_trade['direction'] == 'BUY' else current_bid + spread
-                self.trade_tracker.close_position(track_trade['trade_id'], timestamp, 
-                                                exit_price, 'OPPOSITE_SIGNAL', None)
+            trade = next((t for t in self.all_trades 
+                         if t['status'] == 'OPEN' and t.get('trade_manager_trade_id') == tid), None)
+            if trade:
+                exit_price = current_bid if trade['direction'] == 'BUY' else current_bid + spread
+                
+                # Calculate P&L
+                pnl_points = exit_price - trade['entry_price'] if trade['direction'] == 'BUY' else trade['entry_price'] - exit_price
+                
+                # Update trade
+                trade['status'] = 'CLOSED'
+                trade['exit_time'] = timestamp
+                trade['exit_price'] = exit_price
+                trade['exit_reason'] = 'OPPOSITE_SIGNAL'
+                trade['pnl_points'] = pnl_points
+                trade['pnl_percent'] = (pnl_points / trade['entry_price']) * 100 if trade['entry_price'] else 0
+                trade['is_win'] = pnl_points > 0
+                trade['is_loss'] = pnl_points < 0
+                
+                exit_stats['OPPOSITE_SIGNAL'] = exit_stats.get('OPPOSITE_SIGNAL', 0) + 1
+                
                 if verbose:
-                    logger.debug(f"[CLOSE] {timestamp} {track_trade['direction']} OPPOSITE at {exit_price:.2f}")
+                    logger.debug(f"[CLOSE] {timestamp} {trade['direction']} OPPOSITE at {exit_price:.2f}")
 
     def _handle_open(self, timestamp: pd.Timestamp, direction: str, params: Dict, 
                     new_trade_id: int, verbose: bool, comment_suffix: str = '', signal_id: int = None):
         """Open new position"""
-        self.trade_tracker.open_position(
-            timestamp=timestamp, direction=direction, entry_price=params['executed_entry'],
-            sl_price=params['trigger_sl'], tp_price=params['tp'],
-            comment=params['comment'] + comment_suffix,
-            trade_manager_action='OPEN', trade_manager_trade_id=new_trade_id, signal_id=signal_id
-        )
+        self.trade_counter += 1
+        
+        trade = {
+            'trade_id': self.trade_counter,
+            'trade_manager_trade_id': new_trade_id,
+            'position_id': new_trade_id,  # Simplified
+            'status': 'OPEN',
+            'entry_time': timestamp,
+            'exit_time': None,
+            'direction': direction,
+            'entry_price': params['executed_entry'],
+            'exit_price': None,
+            'sl_price': params['trigger_sl'],
+            'tp_price': params['tp'],
+            'exit_reason': None,
+            'pnl_points': 0,
+            'pnl_percent': 0,
+            'duration_bars': 0,
+            'duration_minutes': 0,
+            'sl_distance': abs(params['executed_entry'] - params['trigger_sl']),
+            'tp_distance': abs(params['tp'] - params['executed_entry']),
+            'risk_reward_ratio': abs(params['tp'] - params['executed_entry']) / abs(params['executed_entry'] - params['trigger_sl']) if abs(params['executed_entry'] - params['trigger_sl']) > 0 else 0,
+            'is_win': False,
+            'is_loss': False,
+            'comment': params['comment'] + comment_suffix,
+            'reject_reason': None,
+            'signal_id': signal_id,
+        }
+        
+        self.all_trades.append(trade)
         self.trade_manager.open_position(new_trade_id, timestamp, direction)
         
         if self._tracking_enabled and signal_id:
             self.progressive_tracker.update_trade_execution_details(
-                signal_id, trade_id=new_trade_id, entry_time=timestamp,
+                signal_id, trade_id=self.trade_counter, entry_time=timestamp,
                 entry_price_executed=params['executed_entry'],
                 sl_price_executed=params['trigger_sl'], tp_price_executed=params['tp'],
-                reason='Trade opened' + comment_suffix
+                reason='OPENED' + comment_suffix
             )
         
         if verbose:
             logger.debug(f"[OPEN] {timestamp} {direction} at {params['executed_entry']:.2f}{comment_suffix}")
 
     def _close_remaining_positions(self, df_strategy: pd.DataFrame, exit_stats: Dict, verbose: bool):
-        """Close all remaining open positions at end of backtest period"""
+        """Close all remaining open positions at end of backtest"""
         if df_strategy.empty:
             return
             
@@ -433,15 +534,26 @@ class TradeSimulator:
         last_bid = df_strategy.iloc[-1]['close']
         spread = self.spread_manager.get_spread_in_points(last_bid) if self.spread_manager else 0.0
         
-        for open_trade in list(self.trade_tracker.get_open_trades()):
-            exit_price = last_bid if open_trade['direction'] == 'BUY' else last_bid + spread
-            self.trade_tracker.close_position(open_trade['trade_id'], last_timestamp, 
-                                            exit_price, 'END_OF_DATA', df_strategy)
+        for trade in [t for t in self.all_trades if t['status'] == 'OPEN']:
+            exit_price = last_bid if trade['direction'] == 'BUY' else last_bid + spread
             
-            if 'trade_manager_trade_id' in open_trade:
-                self.trade_manager.close_positions([open_trade['trade_manager_trade_id']])
+            # Calculate P&L
+            pnl_points = exit_price - trade['entry_price'] if trade['direction'] == 'BUY' else trade['entry_price'] - exit_price
+            
+            # Update trade
+            trade['status'] = 'CLOSED'
+            trade['exit_time'] = last_timestamp
+            trade['exit_price'] = exit_price
+            trade['exit_reason'] = 'END_OF_DATA'
+            trade['pnl_points'] = pnl_points
+            trade['pnl_percent'] = (pnl_points / trade['entry_price']) * 100 if trade['entry_price'] else 0
+            trade['is_win'] = pnl_points > 0
+            trade['is_loss'] = pnl_points < 0
+            
+            if trade.get('trade_manager_trade_id'):
+                self.trade_manager.close_positions([trade['trade_manager_trade_id']])
             
             exit_stats['END_OF_DATA'] += 1
             
             if verbose:
-                logger.debug(f"[CLOSE] End of data {open_trade['direction']} at {exit_price:.2f}")
+                logger.debug(f"[CLOSE] End of data {trade['direction']} at {exit_price:.2f}")

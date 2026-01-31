@@ -10,7 +10,6 @@ from .data_loader import DataLoader
 from .signal_generator import SignalGenerator
 from .filter_pipeline import FilterPipeline
 from .trade_simulator import TradeSimulator
-from .trade_tracker import TradeTracker
 from .report_generator import ReportGenerator
 from .metrics_calculator import calculate_performance_metrics
 

@@ -91,7 +91,7 @@ output:
   # CSV file generation
   save_signals_csv: false             # true in debug, false in core
   # Cache statistics collection and display
-  enable_cache_stats: false           # true in debug, false in core
+  enable_cache_stats:  false          # true in debug, false in core
   # Output directories (same in both modes)
   outputs_dir: "outputs"
   reports_dir: "reports/WBWS"

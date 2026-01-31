@@ -1308,8 +1308,9 @@ class BacktestOrchestrator:
             "file_ltf": str(data_dir / "DEUIDXEUR_1s_20240101_20260104.csv"),
             "format": "csv",
             "date_range": {
-                "start": "2024-01-01",
-                "end": "2024-01-07"
+                "start": "2024-01-01 08:00:00",
+                "end": "2024-01-07 21:00:00"
+           
             },
             "validation": {
                 "check_ohlc": True,
