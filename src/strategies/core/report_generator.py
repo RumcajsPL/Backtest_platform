@@ -14,29 +14,10 @@ class ReportGenerator:
         self.project_root = project_root
         
     def generate_csv(self, trades: List[Dict], timestamp_str: str) -> Optional[Path]:
-        """Generate CSV report with all trades"""
-        save_csv = self.config.get('output', {}).get('save_signals_csv', True)
-        if not save_csv or not trades:
-            return None
-        
-        out_cfg = self.config.get('output', {})
-        signals_dir = self.project_root / out_cfg.get('outputs_dir', 'outputs') / out_cfg.get('signals_dir', 'signals/strategy')
-        signals_dir.mkdir(parents=True, exist_ok=True)
-        
-        csv_filename = f"trade_details_{timestamp_str}.csv"
-        csv_path = signals_dir / csv_filename
-        
-        trades_df = pd.DataFrame(trades)
-        
-        # Convert datetime objects to strings for CSV
-        for col in ['entry_time', 'exit_time']:
-            if col in trades_df.columns:
-                trades_df[col] = trades_df[col].apply(
-                    lambda x: x.isoformat() if pd.notnull(x) and not isinstance(x, str) else x
-                )
-        
-        trades_df.to_csv(csv_path, index=False)
-        return csv_path
+        """ CSV generation disabled. 
+        Progressive CSV replaces trade_details CSV. 
+        """ 
+        return None
     
     def generate_json(self, report_data: Dict, timestamp_str: str) -> Path:
         """Generate JSON report"""
@@ -60,7 +41,7 @@ class ReportGenerator:
         Args:
             mode: 'core' for minimal output (Part 1 only), 'debug' for full output (default)
         """
-        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        #timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         
         # Prepare CSV path for JSON
         csv_relative = None
@@ -118,13 +99,8 @@ class ReportGenerator:
         if mode == 'core':
             return {
                 "//_COMMENT": "=== CORE MODE: PIPELINE ESSENTIALS ONLY ===",
-                
                 "simulation_results": simulation_results_section,
-                
-                "validation": validation_section,
-                
                 "execution_time": datetime.now().isoformat(),
-                
                 "mode": "core"
             }
         

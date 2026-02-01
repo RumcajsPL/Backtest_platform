@@ -18,7 +18,6 @@ __all__ = [
     'SignalGenerator',
     'FilterPipeline',
     'TradeSimulator',
-    'TradeTracker',
     'ReportGenerator',
     'calculate_performance_metrics'
 ]

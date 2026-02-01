@@ -1,5 +1,4 @@
-# Updated: scripts/run_wbws_strategy.py
-"""WBWS Strategy Runner - Production Optimized"""
+# WBWS strategy runner: run_wbws_strategy.py
 import sys
 import pandas as pd
 from pathlib import Path
@@ -14,20 +13,24 @@ if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 
-# Get project root
-project_root = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2] 
+sys.path.insert(0, str(PROJECT_ROOT))
+# ---------------------------------------------------------
+# USE CENTRALIZED PATHS
+# ---------------------------------------------------------
+from src.utils.paths import ( 
+    PROJECT_ROOT, 
+    LOGS_DIR, 
+)
 
-# Add project root to sys.path
-sys.path.insert(0, str(project_root))
-
-from strategy_modules.data_loader import DataLoader
-from strategy_modules.signal_generator import SignalGenerator
-from strategy_modules.filter_pipeline import FilterPipeline
-from strategy_modules.trade_simulator import TradeSimulator
-from strategy_modules.report_generator import ReportGenerator
-from strategy_modules.metrics_calculator import calculate_performance_metrics
-from strategy_modules.progressive_tracker import EnhancedProgressiveTracker
-from strategy_modules.null_progressive_tracker import NullProgressiveTracker
+from src.strategies.core.data_loader import DataLoader
+from src.strategies.core.signal_generator import SignalGenerator
+from src.strategies.core.filter_pipeline import FilterPipeline
+from src.strategies.core.trade_simulator import TradeSimulator
+from src.strategies.core.report_generator import ReportGenerator
+from src.strategies.core.metrics_calculator import calculate_performance_metrics
+from src.strategies.core.progressive_tracker import EnhancedProgressiveTracker
+from src.strategies.core.null_progressive_tracker import NullProgressiveTracker
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -37,7 +40,7 @@ console = logging.StreamHandler(sys.stdout)
 console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger.addHandler(console)
 
-log_file = project_root / 'outputs' / 'logs' / 'wbws_strategy.log'
+log_file = LOGS_DIR / "wbws_strategy.log"
 file_handler = RotatingFileHandler(
     log_file,
     maxBytes=10*1024*1024,
@@ -209,20 +212,20 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         # 6. Reports
         logger.info("STEP 6: GENERATING REPORTS")
         timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-        report_gen = ReportGenerator(config, project_root)
+        report_gen = ReportGenerator(config, PROJECT_ROOT)
         
         progressive_csv_path = None
         if enable_tracking and not is_core_mode:
             logger.info("  Generating enhanced progressive CSV...")
-            progressive_csv_path = progressive_tracker.save_to_csv(project_root, timestamp_str)
-            logger.info(f"    Saved: {progressive_csv_path.relative_to(project_root)}")
+            progressive_csv_path = progressive_tracker.save_to_csv(PROJECT_ROOT, timestamp_str)
+            logger.info(f"    Saved: {progressive_csv_path.relative_to(PROJECT_ROOT)}")
         
         csv_path = None
         if config['output'].get('save_signals_csv', not is_core_mode):
             logger.info("  Generating trade CSV...")
             csv_path = report_gen.generate_csv(simulation_results['all_trades'], timestamp_str)
             if csv_path:
-                logger.info(f"    Saved: {csv_path.relative_to(project_root)}")
+                logger.info(f"    Saved: {csv_path.relative_to(PROJECT_ROOT)}")
         
         logger.info("  Generating JSON report...")
         progressive_stats = progressive_tracker.get_statistics()
@@ -240,13 +243,13 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         
         if not is_core_mode and progressive_csv_path:
             report_data.setdefault('progressive_tracking', {}).update({
-                'progressive_csv_file': str(progressive_csv_path.relative_to(project_root)),
+                'progressive_csv_file': str(progressive_csv_path.relative_to(PROJECT_ROOT)),
                 'signal_progression_summary': progressive_stats,
                 'total_signals_tracked': progressive_stats.get('total_signals', 0),
             })
         
         json_path = report_gen.generate_json(report_data, timestamp_str)
-        logger.info(f"    JSON saved: {json_path.relative_to(project_root)}")
+        logger.info(f"    JSON saved: {json_path.relative_to(PROJECT_ROOT)}")
         
         # Final summary
         logger.info("="*70)
@@ -280,11 +283,11 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         
         logger.info("OUTPUT FILES:")
         logger.info(f"  Config:            {Path(config_path).name}")
-        logger.info(f"  JSON Report:       {json_path.relative_to(project_root)}")
+        logger.info(f"  JSON Report:       {json_path.relative_to(PROJECT_ROOT)}")
         if csv_path:
-            logger.info(f"  Trade CSV:         {csv_path.relative_to(project_root)}")
+            logger.info(f"  Trade CSV:         {csv_path.relative_to(PROJECT_ROOT)}")
         if not is_core_mode and progressive_csv_path:
-            logger.info(f"  Progressive CSV:   {progressive_csv_path.relative_to(project_root)}")
+            logger.info(f"  Progressive CSV:   {progressive_csv_path.relative_to(PROJECT_ROOT)}")
         
         logger.info(f"Completed:         {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("="*70)
@@ -312,5 +315,5 @@ if __name__ == "__main__":
         config_arg = sys.argv[1] if not sys.argv[1] == '--verbose' else sys.argv[2]
         run_wbws_strategy(config_arg, verbose=verbose_flag)
     else:
-        print("Usage: python scripts/run_wbws_strategy.py <config_path> [--verbose]")
+        print("Usage: python scripts/runners/run_wbws_strategy.py <config_path> [--verbose]")
         sys.exit(1)

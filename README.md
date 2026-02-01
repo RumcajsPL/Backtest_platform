@@ -1,34 +1,56 @@
-# 📘 Backtesting Platform (BT)
-## 📌 Overview
-This project aims to build a **high‑precision trading backtesting environment** that complements TradingView rather than replacing it.
-The idea originates from practical limitations observed in the TradingView Strategy Tester (TV/ST):
-* Limited historical depth (typically ~5–40k bars)
-* Bar‑based simulation instead of true tick‑level execution
-**Conclusion:** TradingView backtests are useful for *high‑level validation* but are insufficient for designing or validating a professional trading system intended for live deployment.
- BT project therefore focuses on **accurate, data‑driven backtesting using real tick data**, while keeping TradingView as the primary platform for:
-* Live trading
-* Charting
-* Alerts and execution
-This repository is **not intended for commercialization or publication**. It exists solely to support and improve my personal trading workflow.
----
-## 🎯 Project Objectives
-At a detailed level, the platform aims to:
-* Provide access to high‑quality historical OHLCV data generated from **real tick data**, with at least **2 years of history**.
-* Offer a **modular and maintainable framework** for translating TradingView Pine Script strategies into Python.
-* Enable **automated backtesting** to identify optimal parameter configurations for strategies executed live on TradingView.
-* Use GitHub as a structured workspace for version control and AI‑assisted development.
----
-## 🧱 Code Structure & Design Principles
-* As far as possible, scripts should remain **small, reusable, and well‑encapsulated**: 
-* **Single Responsibility**: Each module handles one specific task
-* **Separation of Concerns**: Clear boundaries between data, logic, and presentation
-* **Reusability**: Modules can be reused across different strategies
-* **Testability**: Each module can be tested independently
-* **Maintainability**: Easy to update and extend individual components
-* **Automatation ready** scripts and configurations are compatible with automated runners and batch
-* **Caching/parallel execution** caching and performance optimisation mechanism to be a standard
----
-## 📊 Supported Assets (Dukascopy Naming Convention & eToro CFD Spreads)
+📘 Backtesting Platform (BT)
+📌 Overview
+This project provides a high‑precision, data‑driven backtesting environment designed to complement TradingView rather than replace it.
+
+TradingView is excellent for:
+      - Live trading
+      - Charting
+      - Alerts
+      - Visual strategy development
+…but its Strategy Tester has limitations:
+      - Limited historical depth (5k–40k bars)
+      - Bar‑based execution instead of tick‑accurate simulation
+      - No realistic spread/slippage modeling
+      - No multi‑timeframe execution with true LTF fills
+
+Conclusion: TradingView is ideal for high‑level validation, but insufficient for designing a professional trading system intended for live deployment.
+
+This BT fills that gap by providing:
+      - Real tick data ingestion
+      - High‑quality OHLCV generation
+      - Modular strategy translation from Pine Script to Python
+      - Automated backtesting, optimization, and evaluation
+
+BT is not intended for publication or commercial use. 
+It exists to support and improve a personal trading workflow.
+
+🧱 Design Principles
+Single Responsibility — each module does one thing well
+Separation of Concerns — data, logic, and presentation are isolated
+Reusability — modules can be reused across strategies
+Testability — each component is independently testable
+Maintainability — clear folder structure, consistent imports
+Automation Ready — scripts compatible with batch execution
+Performance First — caching, vectorization, and optimized data loading
+
+🎯 Development Principles
+Generate high‑quality OHLCV from real tick data (≥ 2 years)
+Provide a modular, maintainable Python framework for TradingView strategy translation
+Enable automated backtesting with GA, WFO, Monte Carlo, and parameter sweeps
+Support accurate execution modeling using LTF data for SL/TP fills
+Maintain a clean, testable, automation‑ready codebase
+Use GitHub as a structured workspace for version control and AI‑assisted development
+
+🧱 Design Principles
+Single Responsibility — each module does one thing well
+Separation of Concerns — data, logic, and presentation are isolated
+Reusability — modules can be reused across strategies
+Testability — each component is independently testable
+Maintainability — clear folder structure, consistent imports
+Automation Ready — scripts compatible with batch execution
+Performance First — caching, vectorization, and optimized data loading
+
+📊 Supported Assets (Dukascopy Naming Convention & eToro CFD Spreads)
 | Asset            | Dukascopy Datafeed Name | Spread / Fee (eToro CFD) | Unit   |
 | ---------------- | ----------------------- | ------------------------ | ------ |
 | GOLD (XAUUSD)    | xauusd                  | 0.025                    | %      |
@@ -45,227 +67,137 @@ At a detailed level, the platform aims to:
 | USDCAD           | usdcad                  | 1.5                      | pips   |
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
----
-## 📂 Repository Structure (Current)
+
+📂 Repository Structure
+Code
 project_root/
 │
-├── .gitignore
-├── README.md                           # This document
-├── requirements.txt                    # Required packages with versions
+├── configs/                        # All YAML configuration files
+│   ├── spreads/
+│   ├── data/
+│   ├── backtesting/
+│       └── configs\backtesting\wbws_backtest.yaml # Configuration files for run_wbws_strategy.py
+│   └── strategies/
+│       └── wbws/
+│           └── wbws_rsi_strategy.yaml # Model configuration files for run_wbws_strategy.py
 │
-├── configs/                            # YAML configuration files
-|   ├── spreads/
-|   |   └── broker_spreads.yaml         # Centralized broker spread config (all assets)
-│   └── data_aggregator.yaml            # Settings file for generate_ohlcv.py to create csv data files
-│
-├── data/
-│   ├── exports/
+├── data/                           # All input datasets
+│   ├── raw/                        # Tick data (.bi5)
+│   ├── processed/                  # OHLCV datasets
 │   ├── features/
-│   ├── processed/                               # Processed data ready for backtesting
-|   |   └──  ohlcv/ csv files => different instruments, time frames, full date ranges (~2 years)
-|   |       └── ... (csv files)
-│   ├── raw/                                    # Raw data files
-|   |   └──  dukascopy_bi5/             # Datafeed from Dukascopy
-|   |       └── ... subfolders with real tick data for at least 2 years (organized in hourly .bi5)
-│   │   
-│   └── results/
+│   └── exports/
 │
-├── docs/  # folder for documentation
-│
-├── notebooks/ # folder for notebooks in ipynb format
-│   └── example_usage.ipynb
-│
-├── outputs/                                     # All output files
-│   ├── backtests/                               # backtest results/outputs
-│   │   ├── safe/yyyymmdd_hhss/
-│   │   |   ├── candidates.json
-│   │   |   ├── top_candidates.json
-│   │   |   └── strategy_report_001.json
-│   │   ├── exploration/
-│   │   ├── discovery/
-│   │   └── comparison_report.json
-│   ├── logs/                                    # logs for strategies and platform functionning
+├── outputs/                        # All generated outputs
+│   ├── backtests/
+│   ├── logs/
 │   ├── reports/
-│   │   ├── Data_quality/                        # Data quality check reports
-│   │   └── WBWS/                                # WBWS execution and validation reports
-│   │       ├── repainting  # Temporary for trigger testing
-│   │       ├── strategy_report_YYYYMMDD_HHMMSS.json  # Execution reports from strategy runner
-│   │       └── validation_YYYYMMDD_HHMMSS.json # Data validation reports
-│   └── signals/ # Signal/trade exports (CSV)
-|       ├──progressive/
-|       |   └── signals_progressive_YYYYMMDD_HHMMSS.csv # Singal and trades detailed, phase by phase break down and analysis
-│       └── strategy/
-|           ├── trade_details_YYYYMMDD_HHMMSS.csv   # Trades simulated by strategy runner
-|           └── visualizations/                     # .png chart illustrations with results 
+│   └── signals/
 │
-├── pine_scripts/                               # Original TradingView Pine v6 scripts
-│   ├── StrategyBuilderLab.pine                 # Strategy components (filters, trade mgmt)
-│   └── WBWS_Trigger.pine                       # WeBuy WeSell TradingView indicator
+├── scripts/                        # Entry-point scripts (CLI only)
+│   ├── data/
+│   │   ├── generate_ohlcv.py
+│   │   ├── download_raw_ticks.py
+│   │   └── update_raw_ticks.py
+│   ├── validation/
+│   │   └── validate_strategy_data.py
+│   ├── runners/
+│   │   ├── run_wbws_strategy.py
+│   │   └── dashboard_standalone.py
+│   └── setup/
 │
-├── scripts/
-│   ├── data_preprocessing/                      # Data preprocessing utilities
-│   │   ├── __init__.py
-|   |   └── generate_ohlcv.py           # main script generating desired ohlcv csv files from real tick data
-│   ├── data_scripts/                           # Data helper scripts
-│   │   ├── download_raw_ticks.py               # Dukascopy datafeed real tick .bi5 file downloader
-|   |   └── update_raw_ticks                    # Dukascopy datafeed delta real tick .bi5 file downloader
-│   ├── setup_scripts/                          # Backtesting setup scripts
-│   └── validation_scripts/                     # Utilities to validate strategies and indicators
-│   |   ├── Filters/                            # Filters specific validations
-│   |   ├── Strategy/                           # Strategies specific validations
-|   |   └── WBWS/                               # WBWS-specific validations
-│   |      └── validate_strategy_data.py       # Script validating availability, structure and quality of historical ohlc data (.csv) for strategy runner
-|   ├── dashboard_standalone.py          # Orchestrator of Dashboard metrics modules (below)
-|   ├── dashboard_modules/               # All Dashboard orchestrator modules
-|   |   ├── __init__.py                 
-|   |   ├── data_loader.py              # Loading .json and signal .csv for calculation
-|   |   ├── display_engine.py           # Metrics display engine 
-|   |   ├── metrics_display.py          # Main metrics module
-|   |   ├── progressive_analysis.py     # Metrics on the base of signal_progressive...csv
-|   |   ├── signal_flow_display.py      # Signal metrics module
-|   |   ├── trade_analysis_display.py   # Trade matric and analysis module
-|   |   ├── drawdown_display.py         # Drawdown analysis and metrics module
-|   |   ├── position_management_display.py # Position analysis and metrics module
-|   |   ├── time_based_display.py       # Session time filter metrics module
-|   |   └── visualizations.py           # Chart .png export
-│   ├── run_wbws_strategy.py                    # Runner script assembling WeBuy WeSell trigger with filters
-│   └── strategy_modules/ # Modular components
-│       ├── data_loader.py # Data loading & validation
-│       ├── signal_generator.py # WBWS signal generation
-│       ├── filter_pipeline.py # Time, RSI, Risk filters
-│       ├── trade_tracker.py # Complete trade tracking
-│       ├── trade_simulator.py # Position management & simulation
-│       ├── metrics_calculator.py # Performance metrics
-│       ├── progressive_tracker.py # Capturing data for signal-progressive...csv
-│       └── report_generator.py # JSON/CSV report generation
+├── src/                            # Core library (importable, reusable modules)
+│   ├── backtesting/
+│   |   └── orchestrator_fixed.py # Backtester script
+│   ├── indicators/
+│   ├── strategies/ 
+│   │   ├── core/
+│   │   ├── filters/
+│   │   ├── trade_management/
+│   │   └── wbws/
+│   ├── validation/
+│   ├── dashboard/
+│   ├── utils/
+│   │   └── paths.py                # Centralized path resolver
+│   ├── visualization/
+│   ├── generate_ohlcv.py
+│   ├── download_raw_ticks.py
+│   └── update_raw_ticks.py
 │
-├── src/                                # Basctesting platform sources, utilities
-│   ├── __init__.py
-│   ├── backtesting/                    # Backtesting automatation scripts
-|   |   ├── optimization/
-|   |   │   ├── parameter_space.py
-|   |   │   └── sampler.py
-|   |   ├── ga/
-|   |   │   ├── crossover.py
-|   |   |   ├── ga_engine.py
-|   |   |   ├── mutation.py
-|   |   |   ├── population.py
-|   |   │   └── selection.py
-|   |   ├── monte_carlo/
-|   |   │   ├── equity_simulator.py
-|   |   |   ├── mc_engine.py
-|   |   |   ├── mc_metrics.py
-|   |   │   └── perturbation.py
-|   |   ├── evaluation/
-|   |   |   ├── candidate_store.py
-|   |   |   ├── ranker.py
-|   |   │   ├── metrics.py
-|   |   │   └── fitness.py
-|   |   ├── wfo/
-|   |   │   ├── wfo_engine.py
-|   |   │   ├── wfo_evaluator.py
-|   |   │   └── window_generator.py
-|   ├── config/
-|   |   └── WBWS/
-|   |       ├── __init__.py
-|   |       ├── wbws_backtest.yaml (orchestrator.py yaml config)
-|   |       └── wbws_rsi_strategy.yaml (strategy yaml stand alone config for testing)
-│   ├── indicators/                     # indicator scripts for backtesting
-│   │   ├── __init__.py
-│   │   └── wbws_trigger.py             # WBWS calculation engine and signal trigger (HTF not repaints)
-│   ├── strategies/                     # strategy scripts for backtesting 
-│   │   ├── filters/                    # strategy scripts for signal filtering
-|   |   |   └── rsi_filter.py           # WBWS Strategy with filter configurations settings
-│   │   ├── trade_management/           # strategy scripts for trage and risk management
-|   |   |   ├── __init__.py
-|   |   |   ├── time_manager.py         # Filtering signal for specific session time
-|   |   |   ├── trade_manager.py        # Managing pyramiding possibility and opposite signal detection
-|   |   |   ├── risk_manager.py         # Applying risk mgt StopLoss ATR based and RR TakeProfit
-|   |   |   └── spread_manager.py       # Spread calculation logic applied in risk manager
-│   │   └── WBWS                        # strategy scripts specific for WBWS strategy 
-│   ├── utils/                          # Utility modules
-│   │   ├── __init__.py
-|   |   ├── json_to_md                  # converter(for reports)
-│   │   └── report_generator.py         # Report generation utilities
-│   └── visualization/                  # Vizualization utilities
-│
-├── tests                               # folder for testing
-|   ├── test_risk_manager_spread.py     # test of risk_manager with spreads applied
-|   ├── test_time_repainting.py         # specific tests of original (repainting) WBWS trigger
-|   ├── test_time_manager.py            # basic tests script for time/session managment
-|   ├── test_risk_manager.py            # basic tests script for risk managment 
-|   └── test_trade_manager.py           # basic tests script for trade managment
-└── venv/                               # Venv specific folders and files
----
-## Key Development platform Components
-**`requirements.txt`**
-# Environement OS = Microsoft Windows [version 10.0.22621.4317]
-# Core tools/packages for data analysis and backtesting
-- python==3.13.9
-- pandas==2.3.3
-- numpy==2.3.5
-- matplotlib==3.10.7
-- seaborn==0.12.2
-- ta-lib==0.4.24
-# Backtesting and visualization libraries
-- vectorbt==0.28.1
-# Data handling and finance-specific packages
-- pyarrow==22.0.0
--  yfinance==0.2.66
-# Development and documentation tools
-- jupyterlab_widgets==3.0.16
-- pyyaml==6.0.3
-# Additional packages for trade management modules
-- pytz==2025.2
-# Additional packages for for resource monitoring
-- psutil==7.2.1
----
-## Existing features:
-# Run ducascopy dowloader tick to get raw real tick data (.bi5 hourly files) for an instrument
-`python scripts/data_scripts/download_raw_ticks.py`  - settings inside the script
-# Run ducascopy dowloader tick to get delta of raw real tick data (.bi5 hourly files) for an instrument => checs the last available .bi5 file and gets the most recent .bi5 files
-`python scripts/data_scripts/update_raw_ticks` - settings inside the script
-# Run transformating tool to generate time framed ohlcv csv file from .bi5 hourly files => uses yaml configuration file with settings like: instrument, desired TimeFrame, data range...
-# Remark: .bi5 file are in UTC timezone whilst all csv are converted to desired timeframe for exemple: CET/CEST
-`python scripts/data_preprocessing/generate_ohlcv.py configs/data_aggregator.yaml`
-# Example of ohlcv data file structure (Important all prices are BID prices):
-timestamp,open,high,low,close,volume
-2025-12-22 14:49:00,24252.788000,24254.777000,24249.777000,24251.799000,80305408680.000000
-2025-12-22 14:50:00,24250.755000,24252.299000,24249.255000,24249.755000,43976771420.000000
----
-### Activate virtual environment (venv).
-`.\venv\Scripts\Activate.ps1`
----
-### Main Orchestrators/Runners
-## The Orchestrator - `src/backtesting/orchestrator_fixed.py` **central control unit** of the system.
-- Loads `wbws_backtest.yaml`
-- Generates parameter sets
-- Creates temporary strategy YAMLs
-- Calls `run_wbws_strategy.py`
-- Reads JSON / CSV outputs
-- Computes fitness
-- Selects best configs
-- (Runs Walk-Forward Optimization)
-- (Runs Monte Carlo simulations)
-- Saves and compares results
-## High Level flow
-[Random Search]
-      ↓
-[Genetic Optimization]
-      ↓
-[Walk-Forward] (Placeholder for future)
-      ↓
-[Monte Carlo] (Placeholder for future)
-      ↓
-[Final Report]
-**Usage:** `src/backtesting/orchestrator_fixed.py src/config/WBWS/wbws_backtest.yaml`
-## Strategy stand-alone: **`scripts/run_wbws_strategy.py` => for WBWS strategy**
-- **Purpose:** End-to-end workflow runner assembling signal triggering indicator, filters, time manager, risk manager & initial metrics
-- **Workflow:**
-  1. Load YAML configuration
-  2. Run WBWS Trigger indicator
-  3. Run Filetrs (currently only RSI) agains triggered signals
-  3. Generate report for pipeline script
-- **Usage:** `python scripts/run_wbws_strategy.py src\config\WBWS\wbws_rsi_strategy.yaml`
----
-*End of README*
+├── pine_scripts/
+├── docs/
+├── notebooks/
+├── tests/
+└── venv/
+
+🔗 Dependency Diagram
+                          +----------------------+
+                          |      scripts/        |
+                          |  CLI entrypoints     |
+                          |  - runners           |
+                          |  - data scripts      |
+                          |  - validation CLI    |
+                          +----------+-----------+
+                                     |
+                                     v
++-----------------------------------------------------------------------+
+|                               src/                                   |
+|                                                                       |
+|  +------------------+      +------------------+      +--------------+ |
+|  |  strategies/     | ---> | backtesting/     | ---> | outputs/     | |
+|  |  Signal logic    |      | Orchestrator, GA |      | (results)    | |
+|  |  Filters, TM     |      | WFO, MC, Eval    |      +--------------+ |
+|  +------------------+      +------------------+                       |
+|           ^                        ^                                  |
+|           |                        |                                  |
+|  +------------------+      +------------------+                       |
+|  | indicators/      |      | validation/      |                       |
+|  | WBWS trigger     |      | Data/Strategy QC |                       |
+|  +------------------+      +------------------+                       |
+|                                                                       |
+|  +------------------+      +------------------+                       |
+|  | dashboard/       | ---> | visualization/   |                       |
+|  | Metrics, charts  |      | Plot utilities   |                       |
+|  +------------------+      +------------------+                       |
+|                                                                       |
+|  +------------------+                                                |
+|  | utils/           |                                                |
+|  | Shared helpers   |                                                |
+|  | paths.py         |                                                |
+|  +------------------+                                                |
++-----------------------------------------------------------------------+
+                                     ^
+                                     |
+                          +----------------------+
+                          |      configs/        |
+                          | YAML configs         |
+                          +----------------------+
+
+                          +----------------------+
+                          |       data/          |
+                          | raw/ processed/ etc. |
+                          +----------------------+
+🧭 BT Path Resolution Model 
+All scripts and modules use a centralized path resolver: src/utils/paths.py
+This module defines:
+      - PROJECT_ROOT
+      - DATA_DIR
+      - OUTPUTS_DIR
+      - CONFIGS_DIR
+      - LOGS_DIR
+      - helper functions like data_path(), output_path(), config_path()
+Example: 
+python from src.utils.paths import PROJECT_ROOT, LOGS_DIR, data_path
+file = data_path("processed", "ohlcv", "xauusd_m1.csv")
+log_file = LOGS_DIR / "wbws_strategy.log"
+
+▶️ Usage of BT tools
+1. Activate virtual environment: .\venv\Scripts\Activate.ps1
+2. Download raw tick data (.bi5, hourly, UTC): python scripts/data/download_raw_ticks.py (donwload config inside script)
+3. Update raw tick data (delta): python scripts/data/update_raw_ticks.py (update config inside script)
+4. Generate OHLCV from tick data: python scripts/data/generate_ohlcv.py configs/data/data_aggregator.yaml
+      Example of ohlcv data file structure (Important all prices are BID prices and timestamp in CET/CEST):
+      timestamp,open,high,low,close,volume
+      2025-12-22 14:49:00,24252.788000,24254.777000,24249.777000,24251.799000,80305408680.000000
+      2025-12-22 14:50:00,24250.755000,24252.299000,24249.255000,24249.755000,43976771420.000000
+5. Run WBWS strategy (in stand‑alone): python scripts/runners/run_wbws_strategy.py configs/strategies/wbws/wbws_rsi_strategy.yaml
+6. Run the Backtesting Orchestrator: src\backtesting\orchestrator_fixed.py configs/backtesting/wbws_backtest.yaml

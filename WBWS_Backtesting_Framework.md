@@ -133,8 +133,8 @@ The orchestrator is the **central control unit** of the system.
 - Session windows  
 ### Example Constraints
 - min_winrate: 0.55
-- max_drawdown: 0.25 # (disabled for instant)
-- max_losing_streak: 12 # (disabled for instant)
+- max_drawdown: 0.25  
+- max_losing_streak: 12 
 - min_trades_per_day: 4
 - min_expectancy: 0.2
 ---

@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from src.strategies.trade_management.risk_manager import RiskManager
 from src.strategies.trade_management.spread_manager import SpreadManager
-from strategy_modules.null_progressive_tracker import NullProgressiveTracker
+from src.strategies.core.null_progressive_tracker import NullProgressiveTracker
 
 class TradeSimulatorProfiler:
     """Simple profiler for performance monitoring in debug mode"""
