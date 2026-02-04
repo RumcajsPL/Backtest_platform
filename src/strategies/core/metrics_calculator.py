@@ -2,7 +2,6 @@
 Performance Metrics Calculator Module
 """
 import pandas as pd
-import numpy as np
 from typing import Dict, Optional
 
 def calculate_drawdown(trades_df: pd.DataFrame) -> Dict:

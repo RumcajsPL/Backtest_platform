@@ -1,43 +1,41 @@
-"""RSI filter using Wilder's smoothing (matches TradingView)"""
+"""RSI Filter using pandas-ta-classic"""
 import pandas as pd
-import numpy as np
+import pandas_ta_classic as pta
 import logging
 
 logger = logging.getLogger(__name__)
 
 class RSIFilter:
     """RSI filter - rejects overbought BUY signals and oversold SELL signals"""
-
-    def __init__(self, length=14, overbought=70, oversold=30, enabled=True):
+    
+    def __init__(self, length: int = 14, overbought: float = 70.0, oversold: float = 30.0, enabled: bool = True):
         self.length = int(length)
         self.overbought = float(overbought)
         self.oversold = float(oversold)
         self.enabled = enabled
-
-    def _calculate_rsi_wilder(self, series: pd.Series) -> pd.Series:
-        """Calculate RSI using Wilder's Smoothing (RMA) - matches TradingView ta.rsi()"""
-        delta = series.diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-
-        avg_gain = gain.ewm(alpha=1/self.length, min_periods=self.length, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/self.length, min_periods=self.length, adjust=False).mean()
-
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
         
-        # Fill NaN with neutral RSI value
-        rsi = rsi.fillna(50.0)
+        if self.length < 2:
+            raise ValueError(f"RSI length must be >= 2, got {self.length}")
+    
+    def _calculate_rsi(self, series: pd.Series) -> pd.Series:
+        """Calculate RSI using pandas_ta (Wilder's smoothing, matches TradingView)"""
+        if len(series) < self.length:
+            return pd.Series(50.0, index=series.index)  # Neutral fill
         
-        # Convert to float32 for memory efficiency
-        return rsi.astype('float32')
-
-    #def apply_filter_with_rsi(self, df: pd.DataFrame, rsi: pd.Series, is_long: bool = True) -> pd.Series:
-        """Apply filter using pre-calculated RSI (avoids recalculation)"""
+        rsi = pta.rsi(series, length=self.length)
+        return rsi.astype('float32').fillna(50.0)
+    
+    def apply_filter(self, df: pd.DataFrame, is_long: bool = True) -> pd.Series:
         if not self.enabled:
             return pd.Series(True, index=df.index)
         
+        if 'close' not in df.columns:
+            logger.warning("RSI filter requires 'close' column")
+            return pd.Series(False, index=df.index)
+        
+        rsi = self._calculate_rsi(df['close'])
+        
         if is_long:
-            return rsi < self.overbought
+            return rsi < self.overbought  # Not overbought for longs
         else:
-            return rsi > self.oversold
+            return rsi > self.oversold   # Not oversold for shorts

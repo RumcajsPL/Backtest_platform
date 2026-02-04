@@ -226,7 +226,7 @@ project_root/
 - vectorbt==0.28.1
 # Data handling and finance-specific packages
 - pyarrow==22.0.0
--  yfinance==0.2.66
+- yfinance==0.2.66
 # Development and documentation tools
 - jupyterlab_widgets==3.0.16
 - pyyaml==6.0.3

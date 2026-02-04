@@ -80,9 +80,9 @@ class FilterPipeline:
         
         return time_filtered_signals
     
-    def apply_rsi_filter(self, df: pd.DataFrame, time_filtered_signals: pd.Series, 
+    def apply_filter(self, df: pd.DataFrame, time_filtered_signals: pd.Series, 
                      signal_id_map: Dict = None) -> pd.Series:
-        rsi = self.filters['rsi']._calculate_rsi_wilder(df['close'])
+        rsi = self.filters['rsi']._calculate_rsi(df['close'])
         
         not_overbought = rsi < self.filters['rsi'].overbought
         not_oversold = rsi > self.filters['rsi'].oversold
