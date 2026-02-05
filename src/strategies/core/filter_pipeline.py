@@ -1,15 +1,15 @@
 import logging
 import importlib
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
 import numpy as np
 import pandas_ta_classic as pta
 
+from src.backtesting.tools.filter_pipeline_cache import FilterPipelineCache
+
 logger = logging.getLogger(__name__)
 
-# Acronym-aware mapping: rsi_filter -> RSIFilter, macd_filter -> MACDFilter, etc.
 ACRONYMS = {"rsi", "macd", "cci", "adx", "dpo", "ma"}
 
 
@@ -17,19 +17,22 @@ def key_to_classname(key: str) -> str:
     parts = key.split("_")
     class_name = ""
     for part in parts:
-        if part in ACRONYMS:
-            class_name += part.upper()
-        else:
-            class_name += part.capitalize()
+        class_name += part.upper() if part in ACRONYMS else part.capitalize()
     return class_name
 
 
 class FilterPipeline:
-    """Orchestrates filter application with pre-computation and configurable order."""
+    """
+    FilterPipeline v3:
+    - Pure technical filtering
+    - Numpy-optimized core
+    - Indicator caching
+    - Progressive tracker hook kept as no-op for compatibility
+    """
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, cache: FilterPipelineCache = None):
         self.config = config
-        self.filters_cfg: Dict = self.config.get("filters", {})
+        self.filters_cfg: Dict = config.get("filters", {})
         self.filter_sequence: List[str] = config.get(
             "filter_sequence",
             [
@@ -48,29 +51,32 @@ class FilterPipeline:
 
         self.filters: Dict = {}
         self.indicators: Dict = {}
-        self.progressive_tracker = None
+        self.ind_np: Dict = {}
+
+        self.cache = cache or FilterPipelineCache()
+        self.progressive_tracker = None  # kept for API compatibility
 
         self._load_time_filter()
         self._load_technical_filters()
-        self.filters["risk"] = None  # RiskManager initialized later
 
     # ------------------------------------------------------------------ #
-    # Time filter (always first level)
+    # Progressive tracker (no-op hook)
+    # ------------------------------------------------------------------ #
+    def set_progressive_tracker(self, tracker):
+        """
+        Kept for backward compatibility.
+        FilterPipeline no longer uses progressive tracking internally.
+        """
+        self.progressive_tracker = tracker
+
+    # ------------------------------------------------------------------ #
+    # Load filters
     # ------------------------------------------------------------------ #
     def _load_time_filter(self):
         from src.strategies.filters.time_filter import TimeManager
+        self.filters["time"] = TimeManager(self.config.get("trade_management", {}))
 
-        time_cfg = self.config.get("trade_management", {})
-        self.filters["time"] = TimeManager(time_cfg)
-
-    # ------------------------------------------------------------------ #
-    # Dynamic technical filter loading
-    # ------------------------------------------------------------------ #
     def _load_technical_filters(self):
-        """
-        Dynamically load all technical filter classes based on YAML keys.
-        Example: rsi_filter -> src.strategies.filters.rsi_filter.RSIFilter
-        """
         for key, cfg in self.filters_cfg.items():
             if not cfg.get("enabled", False):
                 continue
@@ -81,44 +87,30 @@ class FilterPipeline:
             try:
                 module = importlib.import_module(module_name)
                 cls = getattr(module, class_name)
-            except Exception as e:
-                logger.error(f"Failed to load filter {key}: {e}")
-                continue
-
-            try:
                 self.filters[key] = cls(**cfg)
             except Exception as e:
-                logger.error(f"Failed to instantiate {class_name}: {e}")
+                logger.error(f"Failed to load filter {key}: {e}")
 
     # ------------------------------------------------------------------ #
-    # Risk manager
-    # ------------------------------------------------------------------ #
-    def initialize_risk_manager(self, df_full: pd.DataFrame):
-        from src.strategies.trade_management.risk_manager import RiskManager
-
-        self.filters["risk"] = RiskManager(self.config, df_full)
-
-    # ------------------------------------------------------------------ #
-    # Progressive tracker
-    # ------------------------------------------------------------------ #
-    def set_progressive_tracker(self, tracker):
-        self.progressive_tracker = tracker
-
-    # ------------------------------------------------------------------ #
-    # Indicator precomputation (speed critical)
+    # Indicator computation with caching
     # ------------------------------------------------------------------ #
     def compute_indicators(self, df: pd.DataFrame):
-        """Pre-compute all indicators once based on enabled filters."""
-        if df.empty or "close" not in df.columns:
-            raise ValueError("Cannot compute indicators: empty DF or missing 'close'")
+        """
+        Compute indicators OR load them from cache.
+        """
+        cache_id = self.cache.compute_cache_id(df)
 
-        required_cols = ["open", "high", "low", "close", "volume"]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"Missing columns for indicators: {missing}")
+        if self.cache.has(cache_id):
+            cached = self.cache.get(cache_id)
+            self.indicators = cached["indicators"]
+            self.ind_np = cached["indicators_np"]
+            logger.info("Loaded indicators from cache")
+            return
 
-        df = df[required_cols].copy().astype("float32")
         self.indicators = {}
+        self.ind_np = {}
+
+        df = df.astype("float32")
 
         for f_name in self.filter_sequence:
             cfg = self.filters_cfg.get(f_name, {})
@@ -128,144 +120,113 @@ class FilterPipeline:
             try:
                 if f_name == "rsi_filter":
                     length = cfg.get("length", 14)
-                    self.indicators["rsi"] = (
-                        pta.rsi(df["close"], length=length)
-                        .astype("float32")
-                        .fillna(50.0)
-                    )
+                    rsi = pta.rsi(df["close"], length=length).astype("float32").fillna(50)
+                    self.indicators["rsi"] = rsi
+                    self.ind_np["rsi"] = rsi.to_numpy()
 
                 elif f_name == "choppiness_filter":
                     length = cfg.get("length", 14)
-                    self.indicators["choppiness"] = (
-                        pta.chop(df["high"], df["low"], df["close"], length=length)
-                        .astype("float32")
-                        .fillna(50.0)
-                    )
+                    ci = pta.chop(df["high"], df["low"], df["close"], length=length)
+                    ci = ci.astype("float32").fillna(50)
+                    self.indicators["choppiness"] = ci
+                    self.ind_np["choppiness"] = ci.to_numpy()
 
                 elif f_name == "bollinger_filter":
                     length = cfg.get("length", 14)
                     std = cfg.get("std_dev", 2.0)
                     bb = pta.bbands(df["close"], length=length, std=std)
                     if not bb.empty:
-                        basis_col = f"BBM_{length}_{std}"
-                        upper_col = f"BBU_{length}_{std}"
-                        lower_col = f"BBL_{length}_{std}"
-                        if (
-                            basis_col in bb.columns
-                            and upper_col in bb.columns
-                            and lower_col in bb.columns
-                        ):
-                            bw = ((bb[upper_col] - bb[lower_col]) / bb[basis_col]) * 100
-                            self.indicators["bbw"] = bw.astype("float32")
-                            ma_len = cfg.get("width_ma_length", 30)
-                            if ma_len > 0:
-                                self.indicators["bbw_ma"] = (
-                                    bw.rolling(ma_len, min_periods=ma_len)
-                                    .mean()
-                                    .astype("float32")
-                                )
+                        basis = bb[f"BBM_{length}_{std}"]
+                        upper = bb[f"BBU_{length}_{std}"]
+                        lower = bb[f"BBL_{length}_{std}"]
+                        bw = ((upper - lower) / basis * 100).astype("float32")
+                        self.indicators["bbw"] = bw
+                        self.ind_np["bbw"] = bw.to_numpy()
+
+                        ma_len = cfg.get("width_ma_length", 30)
+                        bbw_ma = bw.rolling(ma_len).mean().astype("float32")
+                        self.indicators["bbw_ma"] = bbw_ma
+                        self.ind_np["bbw_ma"] = bbw_ma.to_numpy()
 
                 elif f_name == "adx_filter":
                     length = cfg.get("adx_length", 14)
                     adx_df = pta.adx(df["high"], df["low"], df["close"], length=length)
-                    if not adx_df.empty:
-                        self.indicators["adx"] = (
-                            adx_df[f"ADX_{length}"].astype("float32").fillna(0)
-                        )
+                    adx = adx_df[f"ADX_{length}"].astype("float32").fillna(0)
+                    self.indicators["adx"] = adx
+                    self.ind_np["adx"] = adx.to_numpy()
 
                 elif f_name == "supertrend_filter":
                     length = cfg.get("atr_length", 10)
                     mult = cfg.get("factor", 3.0)
-                    st = pta.supertrend(
-                        df["high"], df["low"], df["close"], length=length, multiplier=mult
-                    )
-                    if not st.empty:
-                        st_col = f"SUPERT_{length}_{mult}"
-                        dir_col = f"SUPERTd_{length}_{mult}"
-                        if st_col in st.columns and dir_col in st.columns:
-                            self.indicators["supertrend"] = st[
-                                [st_col, dir_col]
-                            ].astype("float32")
+                    st = pta.supertrend(df["high"], df["low"], df["close"], length, mult)
+                    st_price = st[f"SUPERT_{length}_{mult}"].astype("float32")
+                    st_dir = st[f"SUPERTd_{length}_{mult}"].astype("float32")
+                    self.indicators["supertrend"] = st
+                    self.ind_np["supertrend_price"] = st_price.to_numpy()
+                    self.ind_np["supertrend_dir"] = st_dir.to_numpy()
 
                 elif f_name == "ma_filter":
                     ma_filter = self.filters.get(f_name)
-                    if ma_filter is not None:
-                        ma = ma_filter._calculate_ma(df["close"])
-                        self.indicators["ma"] = ma
+                    ma = ma_filter._calculate_ma(df["close"]).astype("float32")
+                    self.indicators["ma"] = ma
+                    self.ind_np["ma"] = ma.to_numpy()
 
                 elif f_name == "cci_filter":
                     length = cfg.get("length", 20)
-                    self.indicators["cci"] = (
-                        pta.cci(df["high"], df["low"], df["close"], length=length)
-                        .astype("float32")
-                        .fillna(0)
-                    )
+                    cci = pta.cci(df["high"], df["low"], df["close"], length).astype("float32")
+                    self.indicators["cci"] = cci
+                    self.ind_np["cci"] = cci.to_numpy()
 
                 elif f_name == "macd_filter":
                     fast = cfg.get("fast_length", 12)
                     slow = cfg.get("slow_length", 26)
                     sig = cfg.get("signal_length", 9)
-                    macd_df = pta.macd(df["close"], fast=fast, slow=slow, signal=sig)
-                    if not macd_df.empty:
-                        hist_col = f"MACDh_{fast}_{slow}_{sig}"
-                        if hist_col in macd_df.columns:
-                            self.indicators["macd_hist"] = (
-                                macd_df[hist_col].astype("float32").fillna(0)
-                            )
+                    macd_df = pta.macd(df["close"], fast, slow, sig)
+                    hist = macd_df[f"MACDh_{fast}_{slow}_{sig}"].astype("float32")
+                    self.indicators["macd_hist"] = hist
+                    self.ind_np["macd_hist"] = hist.to_numpy()
 
                 elif f_name == "dpo_filter":
                     length = cfg.get("length", 20)
-                    dpo_raw = pta.dpo(df["close"], length=length)
-                    self.indicators["dpo"] = (
-                        (dpo_raw / df["close"] * 100).astype("float32").fillna(0)
-                    )
+                    dpo = pta.dpo(df["close"], length)
+                    dpo = (dpo / df["close"] * 100).astype("float32")
+                    self.indicators["dpo"] = dpo
+                    self.ind_np["dpo"] = dpo.to_numpy()
 
                 elif f_name == "pivot_filter":
                     pivot = self.filters.get(f_name)
-                    if pivot is not None:
-                        self.indicators["pivot_bias"] = pivot._calculate_pivot_structure(
-                            df
-                        ).astype("int8")
+                    bias = pivot._calculate_pivot_structure(df).astype("int8")
+                    self.indicators["pivot_bias"] = bias
+                    self.ind_np["pivot_bias"] = bias.to_numpy()
 
             except Exception as e:
                 logger.warning(f"Failed to compute {f_name}: {e}")
 
-        logger.info(f"Pre-computed {len(self.indicators)} indicators")
+        self.cache.store(cache_id, self.indicators, self.ind_np)
+        logger.info("Indicators computed and cached")
 
     # ------------------------------------------------------------------ #
     # Time filter
     # ------------------------------------------------------------------ #
-    def apply_time_filter(
-        self, raw_signals: pd.Series, signal_id_map: Dict = None
-    ) -> pd.Series:
-        """Apply time filter to signals (first level)."""
+    def apply_time_filter(self, raw_signals: pd.Series) -> pd.Series:
         time_manager = self.filters.get("time")
         if time_manager is None or not getattr(time_manager, "enabled", True):
             return raw_signals.copy()
 
-        raw_signals_df = pd.DataFrame(
-            {"timestamp": raw_signals.index, "signal": raw_signals.values}
-        ).dropna(subset=["signal"])
+        df = pd.DataFrame({"timestamp": raw_signals.index, "signal": raw_signals.values})
+        df = df.dropna(subset=["signal"])
 
-        time_filtered_df = time_manager.filter_signals_by_time(
-            raw_signals_df, timestamp_col="timestamp"
-        )
+        filtered = time_manager.filter_signals_by_time(df, "timestamp")
 
-        time_filtered_signals = pd.Series(index=raw_signals.index, dtype=object)
-        if not time_filtered_df.empty:
-            time_filtered_signals.loc[
-                time_filtered_df["timestamp"].values
-            ] = time_filtered_df["signal"].values
-
-        return time_filtered_signals
+        out = pd.Series(index=raw_signals.index, dtype=object)
+        if not filtered.empty:
+            out.loc[filtered["timestamp"].values] = filtered["signal"].values
+        return out
 
     # ------------------------------------------------------------------ #
-    # Full filter chain: time + technical
+    # Full filter chain (numpy optimized)
     # ------------------------------------------------------------------ #
-    def apply_filters(
-        self, df: pd.DataFrame, raw_signals: pd.Series, signal_id_map: Dict = None
-    ) -> Tuple[pd.Series, Dict]:
-
+    def apply_filters(self, df: pd.DataFrame, raw_signals: pd.Series) -> Tuple[pd.Series, Dict]:
         stats = {
             "raw": {
                 "buy": int((raw_signals == "BUY").sum()),
@@ -277,14 +238,9 @@ class FilterPipeline:
             "final": {"buy": 0, "sell": 0, "total": 0},
         }
 
-        if raw_signals.dropna().empty:
-            return raw_signals, stats
-
-        # ---------------------------------------------------------
-        # 1) TIME FILTER
-        # ---------------------------------------------------------
-        time_filtered = self.apply_time_filter(raw_signals, signal_id_map)
-        current = (time_filtered.notna()).astype("int8")
+        # Time filter
+        time_filtered = self.apply_time_filter(raw_signals)
+        current = time_filtered.notna().to_numpy(np.int8)
 
         stats["time_filtered"]["buy"] = int((time_filtered == "BUY").sum())
         stats["time_filtered"]["sell"] = int((time_filtered == "SELL").sum())
@@ -294,151 +250,143 @@ class FilterPipeline:
         )
 
         if current.sum() == 0:
-            stats["final"] = stats["time_filtered"].copy()
-            return pd.Series(pd.NA, index=raw_signals.index), stats
+            return pd.Series(pd.NA, index=df.index), stats
 
-        is_long = (raw_signals == "BUY")
-        is_short = (raw_signals == "SELL")
+        n = len(df)
+        ind = self.ind_np
+        is_long = (raw_signals == "BUY").to_numpy(bool)
+        is_short = (raw_signals == "SELL").to_numpy(bool)
+        long_idx = np.where(is_long)[0]
+        short_idx = np.where(is_short)[0]
 
-        # ---------------------------------------------------------
-        # 2) TECHNICAL FILTERS (signal-based)
-        # ---------------------------------------------------------
         for f_name in self.filter_sequence:
             cfg = self.filters_cfg.get(f_name, {})
             if not cfg.get("enabled", False):
                 continue
 
-            mask = pd.Series(1, index=df.index, dtype="int8")
+            mask = np.ones(n, np.int8)
 
             try:
-                # -------------------------------------------------
-                # RSI FILTER
-                # -------------------------------------------------
                 if f_name == "rsi_filter":
-                    rsi = self.indicators.get("rsi")
+                    rsi = ind.get("rsi")
                     if rsi is not None:
-                        mask.loc[is_long] = (rsi[is_long] < cfg["overbought"]).astype("int8")
-                        mask.loc[is_short] = (rsi[is_short] > cfg["oversold"]).astype("int8")
+                        ob = np.float32(cfg["overbought"])
+                        os = np.float32(cfg["oversold"])
+                        if long_idx.size:
+                            mask[long_idx] = (rsi[long_idx] < ob).astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = (rsi[short_idx] > os).astype(np.int8)
 
-                # -------------------------------------------------
-                # CHOPPINESS FILTER
-                # -------------------------------------------------
                 elif f_name == "choppiness_filter":
-                    ci = self.indicators.get("choppiness")
+                    ci = ind.get("choppiness")
                     if ci is not None:
-                        mask.loc[is_long] = (ci[is_long] < cfg["threshold"]).astype("int8")
-                        mask.loc[is_short] = (ci[is_short] < cfg["threshold"]).astype("int8")
+                        thr = np.float32(cfg["threshold"])
+                        cond = ci < thr
+                        if long_idx.size:
+                            mask[long_idx] = cond[long_idx].astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = cond[short_idx].astype(np.int8)
 
-                # -------------------------------------------------
-                # BOLLINGER FILTER
-                # -------------------------------------------------
                 elif f_name == "bollinger_filter":
-                    bw = self.indicators.get("bbw")
-                    bw_ma = self.indicators.get("bbw_ma")
+                    bw = ind.get("bbw")
+                    bw_ma = ind.get("bbw_ma")
                     if bw is not None and bw_ma is not None:
-                        cond = bw > (bw_ma * cfg["filter_multiplier"])
-                        mask.loc[is_long] = cond[is_long].astype("int8")
-                        mask.loc[is_short] = cond[is_short].astype("int8")
+                        mult = np.float32(cfg["filter_multiplier"])
+                        cond = bw > (bw_ma * mult)
+                        if long_idx.size:
+                            mask[long_idx] = cond[long_idx].astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = cond[short_idx].astype(np.int8)
 
-                # -------------------------------------------------
-                # ADX FILTER
-                # -------------------------------------------------
                 elif f_name == "adx_filter":
-                    adx = self.indicators.get("adx")
+                    adx = ind.get("adx")
                     if adx is not None:
-                        cond = adx > cfg["threshold"]
-                        mask.loc[is_long] = cond[is_long].astype("int8")
-                        mask.loc[is_short] = cond[is_short].astype("int8")
+                        thr = np.float32(cfg["threshold"])
+                        cond = adx > thr
+                        if long_idx.size:
+                            mask[long_idx] = cond[long_idx].astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = cond[short_idx].astype(np.int8)
 
-                # -------------------------------------------------
-                # SUPERTREND FILTER
-                # -------------------------------------------------
                 elif f_name == "supertrend_filter":
-                    st = self.indicators.get("supertrend")
-                    if st is not None:
-                        length = cfg["atr_length"]
-                        mult = cfg["factor"]
-                        st_col = f"SUPERT_{length}_{mult}"
-                        dir_col = f"SUPERTd_{length}_{mult}"
+                    st_price = ind.get("supertrend_price")
+                    st_dir = ind.get("supertrend_dir")
+                    if st_price is not None:
+                        close_np = df["close"].to_numpy(np.float32)
+                        if long_idx.size:
+                            cond = (st_dir[long_idx] == 1) & (close_np[long_idx] > st_price[long_idx])
+                            mask[long_idx] = cond.astype(np.int8)
+                        if short_idx.size:
+                            cond = (st_dir[short_idx] == -1) & (close_np[short_idx] < st_price[short_idx])
+                            mask[short_idx] = cond.astype(np.int8)
 
-                        long_cond = (st[dir_col] == 1) & (df["close"] > st[st_col])
-                        short_cond = (st[dir_col] == -1) & (df["close"] < st[st_col])
-
-                        mask.loc[is_long] = long_cond[is_long].astype("int8")
-                        mask.loc[is_short] = short_cond[is_short].astype("int8")
-
-                # -------------------------------------------------
-                # MA FILTER
-                # -------------------------------------------------
                 elif f_name == "ma_filter":
-                    ma = self.indicators.get("ma")
+                    ma = ind.get("ma")
                     if ma is not None:
-                        ma_ago = ma.shift(cfg["slope_length"])
-                        long_cond = ma > ma_ago
-                        short_cond = ma < ma_ago
+                        sl = int(cfg.get("slope_length", 10))
+                        ma_ago = np.empty_like(ma)
+                        ma_ago[:] = np.nan
+                        if sl < len(ma):
+                            ma_ago[sl:] = ma[:-sl]
+                        if long_idx.size:
+                            mask[long_idx] = (ma[long_idx] > ma_ago[long_idx]).astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = (ma[short_idx] < ma_ago[short_idx]).astype(np.int8)
 
-                        mask.loc[is_long] = long_cond[is_long].astype("int8")
-                        mask.loc[is_short] = short_cond[is_short].astype("int8")
-
-                # -------------------------------------------------
-                # PIVOT FILTER
-                # -------------------------------------------------
                 elif f_name == "pivot_filter":
-                    bias = self.indicators.get("pivot_bias")
+                    bias = ind.get("pivot_bias")
                     if bias is not None:
-                        mask.loc[is_long] = (bias[is_long] == 1).astype("int8")
-                        mask.loc[is_short] = (bias[is_short] == -1).astype("int8")
+                        if long_idx.size:
+                            mask[long_idx] = (bias[long_idx] == 1).astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = (bias[short_idx] == -1).astype(np.int8)
 
-                # -------------------------------------------------
-                # CCI FILTER
-                # -------------------------------------------------
                 elif f_name == "cci_filter":
-                    cci = self.indicators.get("cci")
+                    cci = ind.get("cci")
                     if cci is not None:
-                        mask.loc[is_long] = (cci[is_long] < cfg["overbought"]).astype("int8")
-                        mask.loc[is_short] = (cci[is_short] > cfg["oversold"]).astype("int8")
+                        ob = np.float32(cfg["overbought"])
+                        os = np.float32(cfg["oversold"])
+                        if long_idx.size:
+                            mask[long_idx] = (cci[long_idx] < ob).astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = (cci[short_idx] > os).astype(np.int8)
 
-                # -------------------------------------------------
-                # MACD FILTER
-                # -------------------------------------------------
                 elif f_name == "macd_filter":
-                    hist = self.indicators.get("macd_hist")
+                    hist = ind.get("macd_hist")
                     if hist is not None:
-                        mask.loc[is_long] = (hist[is_long] > 0).astype("int8")
-                        mask.loc[is_short] = (hist[is_short] < 0).astype("int8")
+                        if long_idx.size:
+                            mask[long_idx] = (hist[long_idx] > 0).astype(np.int8)
+                        if short_idx.size:
+                            mask[short_idx] = (hist[short_idx] < 0).astype(np.int8)
 
-                # -------------------------------------------------
-                # DPO FILTER
-                # -------------------------------------------------
                 elif f_name == "dpo_filter":
-                    dpo = self.indicators.get("dpo")
+                    dpo = ind.get("dpo")
                     if dpo is not None:
-                        t = cfg["threshold"]
-                        mask.loc[is_long] = ((dpo[is_long] < 0) & (dpo[is_long] > -t)).astype("int8")
-                        mask.loc[is_short] = ((dpo[is_short] > 0) & (dpo[is_short] < t)).astype("int8")
+                        t = np.float32(cfg["threshold"])
+                        if long_idx.size:
+                            cond = (dpo[long_idx] < 0) & (dpo[long_idx] > -t)
+                            mask[long_idx] = cond.astype(np.int8)
+                        if short_idx.size:
+                            cond = (dpo[short_idx] > 0) & (dpo[short_idx] < t)
+                            mask[short_idx] = cond.astype(np.int8)
 
             except Exception as e:
                 logger.warning(f"Filter {f_name} failed: {e}")
                 continue
 
-            # Combine masks (fast int8 bitwise AND)
-            current &= mask
+            np.bitwise_and(current, mask, out=current)
 
             if current.sum() == 0:
                 break
 
-        # ---------------------------------------------------------
-        # Final signals
-        # ---------------------------------------------------------
-        final_signals = raw_signals.where(current.astype(bool), pd.NA)
+        final = raw_signals.where(pd.Series(current.astype(bool), index=df.index), pd.NA)
 
-        stats["technical"]["buy"] = int((final_signals == "BUY").sum())
-        stats["technical"]["sell"] = int((final_signals == "SELL").sum())
-        stats["technical"]["total"] = int(final_signals.notna().sum())
+        stats["technical"]["buy"] = int((final == "BUY").sum())
+        stats["technical"]["sell"] = int((final == "SELL").sum())
+        stats["technical"]["total"] = int(final.notna().sum())
         stats["technical"]["rejected"] = (
             stats["time_filtered"]["total"] - stats["technical"]["total"]
         )
-
         stats["final"] = stats["technical"].copy()
 
-        return final_signals, stats
+        return final, stats

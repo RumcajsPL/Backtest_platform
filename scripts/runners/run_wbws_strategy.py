@@ -155,16 +155,13 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
         logger.info("STEP 3: APPLYING FILTERS")
 
         filter_pipeline = FilterPipeline(config)
-        filter_pipeline.initialize_risk_manager(df_full)
         filter_pipeline.set_progressive_tracker(progressive_tracker)
 
         logger.info("  Pre-computing indicators...")
         filter_pipeline.compute_indicators(df_strategy)
 
         logger.info("  Applying time + technical filters...")
-        filtered_signals, filter_stats = filter_pipeline.apply_filters(
-            df_strategy, raw_signals, signal_id_map=signal_id_map
-        )
+        filtered_signals, filter_stats = filter_pipeline.apply_filters( df_strategy, raw_signals )
 
         raw_total = filter_stats["raw"]["total"]
         time_total = filter_stats["time_filtered"]["total"]
@@ -187,26 +184,32 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
 
         # STEP 4: SIMULATING TRADES
         logger.info("STEP 4: SIMULATING TRADES")
-        trade_simulator = TradeSimulator(config)
+        trade_simulator = TradeSimulator(config, df_full=df_full)
         simulation_results = trade_simulator.simulate_trades(
             df_strategy,
             final_signals,
             verbose=verbose and not is_core_mode,
             progressive_tracker=progressive_tracker,
-            risk_manager=filter_pipeline.filters["risk"],
             signal_id_map=signal_id_map,
             df_ltf=df_ltf,
         )
+        risk_stats = simulation_results.get("risk_stats", {})
+        approved = risk_stats.get("total_approved", 0)
+        rejected = risk_stats.get("total_rejected", 0)
+        initial_candidates = approved + rejected
+        position_control_ignored = tech_total - initial_candidates
+
+        logger.info(f" Position control ignored: {position_control_ignored:,}")
+        logger.info(f" Initial trade candidates: {initial_candidates:,}") 
+        logger.info(f" Risk rejected: {rejected:,}") 
+        logger.info(f" Risk approved: {approved:,}")
 
         logger.info(
             f"  Simulated: {len(simulation_results['closed_trades']):,} closed, "
             f"{len(simulation_results['open_trades']):,} open, "
             f"{len(simulation_results['rejected_trades']):,} rejected"
         )
-        logger.info(
-            f"  Execution: LTF ({data_info.get('ltf_tf', 'N/A')}) for SL/TP"
-        )
-
+        
         filter_stats["risk_filtered"] = simulation_results.get("risk_stats", {})
 
         # STEP 5: CALCULATING METRICS

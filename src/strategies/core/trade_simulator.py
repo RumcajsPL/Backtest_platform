@@ -43,8 +43,9 @@ class TradeSimulator:
     Direct trade tracking - no intermediate TradeTracker layer.
     """
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, df_full: pd.DataFrame):
         self.config = config
+        self.df_full = df_full
         self.profile_enabled = config.get('debug', {}).get('profile_simulator', False)
         
         # Direct trade tracking (replaces TradeTracker)
@@ -57,6 +58,7 @@ class TradeSimulator:
         self._tracking_enabled = False
         self.df_ltf = None
         self._ltf_windows: Dict = {}
+        self.risk_manager = RiskManager(self.config, df_full)
         
         self.initialize_managers()
         
@@ -241,7 +243,7 @@ class TradeSimulator:
                         self._execute_trade_exit(trade, bar, price, reason, exit_stats, verbose)
     
     def simulate_trades(self, df_strategy: pd.DataFrame, filtered_signals: pd.Series, 
-                        verbose: bool = False, progressive_tracker=None, risk_manager: RiskManager = None,
+                        verbose: bool = False, progressive_tracker=None,
                         signal_id_map: Dict = None, df_ltf: Optional[pd.DataFrame] = None) -> Dict:
         """Simulate trades with realistic LTF execution"""
         
@@ -331,7 +333,7 @@ class TradeSimulator:
             needs_open = result['action'] in ['OPEN', 'CLOSE_AND_REVERSE']
             params = None
             if needs_open:
-                params = risk_manager.compute_trade_parameters(timestamp, bid_price, is_long)
+                params = self.risk_manager.compute_trade_parameters(timestamp, bid_price, is_long)
                 if params is None:
                     # Risk rejected
                     self._handle_risk_rejection(

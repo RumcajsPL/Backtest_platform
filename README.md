@@ -104,10 +104,10 @@ project_root/
 │   │   |   └── # strategy core modules: data_loader.py|signal_generator.py|filter_pipeline.py|trade_simulator.py
 |   |   |               progressive_tracker.py|null_progressive_tracker.py|metrics_calculator.py|report_generator.py  
 │   │   ├── filters/
-│   │   |   └── # technical analysis filters: adx_filter.py|bollinger_filter.py|cci_filter.py|choppiness_filter.py|dpo_filter.py
+│   │   |   └── # technical analysis filters: time_manager.py|adx_filter.py|bollinger_filter.py|cci_filter.py|choppiness_filter.py|dpo_filter.py
 |   |   |            ma_filter.py|macd_filter.py|pivot_filter.py|rsi_filter.py|supertrend_filter.py  
 │   │   └── trade_management/ #:
-|   |       └── # tarde management modules: risk_manager.py|spread_manager.py|time_manager.py|trade_manager.py   
+|   |       └── # tarde management modules: risk_manager.py|spread_manager.py|trade_manager.py   
 │   ├── validation/
 │   ├── dashboard/
 │   └── utils/
@@ -186,7 +186,7 @@ psutil==7.2.1
                           | raw/ processed/ etc. |
                           +----------------------+
 
-🔗 Strategy python classes dependencies diagram (might contain slight differencies)
+🔗 Strategy python classes dependencies diagram
                                           +----------------------+
                                           |    config .yaml      |
                                           +----------+-----------+
@@ -198,7 +198,7 @@ psutil==7.2.1
                                                      ^ 
                                                      |
 +--------------------------------------------------------------------------------------------------------------------+
-|                                                 src/core                                                                             |
+|                                                 src/core                                                           |
 |  +----------+   +----------------+   +----------------+   +--------------+   +--------------------------+          |
 |  |DataLoader|-->| SignalGenerator|-->|FilterPipeline  |-->|TradeSimulator|-->|EnhancedProgressiveTracker|          |
 |  +----------+   +----------------+   +----------------+   +--------------+   |NullProgressiveTracker    |          |
@@ -206,7 +206,7 @@ psutil==7.2.1
 |  data/processed    scr/indicator        scr/filter      src/trade_management |ReportGenerator           |          |
 |       |                 |                    |                     |         +--------------------------+          |
 |  +----------+   +----------------+   +----------------+   +-------------+                 |                        |
-|  | ohlcv csv|   | WBWSTrigger    |   |(TimeManager)   |   |RiskManager  |                 v                        |
+|  | ohlcv csv|   | WBWSTrigger    |   |TimeManager     |   |RiskManager  |                 v                        |
 |  +----------+   +----------------+   |ADXFilter       |   |SpreadManager|    +----------------------------------+  |   
 |                                      |BollingerFilter |   |TradeManager |    |outputs\reports\WBWS\...json      |  |               
 |                                      |CCIFilter       |   +-------------+    |outputs\signals\progressive\...csv|  |
@@ -253,6 +253,5 @@ log_file = LOGS_DIR / "wbws_strategy.log"
 6. Run the Backtesting Orchestrator: src\backtesting\orchestrator_fixed.py configs/backtesting/wbws_backtest.yaml
 
 🔄 Development/Evolution Roadmap 
-* Integrate all technical analysis filters into pipeline filter strategy 
 * Finalize last strategy optimization
 * Go with automated, parameter‑driven backtesting pipelines and algoritms (no file‑based but in‑memory execution IPC with classes)
