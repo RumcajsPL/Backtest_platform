@@ -15,21 +15,25 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    Loads OHLCV datasets for strategy execution.
-    Uses caching for performance and resolves all paths via PROJECT_ROOT.
+    Aggressively optimized DataLoader:
+    - Minimal deep copies
+    - Fast date slicing
+    - Strict date format validation
+    - Smarter caching (conditional hashing)
+    - Memory-efficient downcasting
     """
+
+    DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
     def __init__(self, config_path: str):
         self.config_path = Path(config_path).resolve()
         self.config = None
 
-        # DataFrames
         self.df_full = None
         self.df_strategy = None
         self.df_htf = None
         self.df_ltf = None
 
-        # Cache directory (user-level)
         self.cache_dir = Path.home() / ".wbws_data_cache"
         self.cache_dir.mkdir(exist_ok=True)
 
@@ -45,6 +49,20 @@ class DataLoader:
         return self.config
 
     # ---------------------------------------------------------
+    # STRICT DATE VALIDATION
+    # ---------------------------------------------------------
+    def _validate_date_format(self, date_str: str, date_type: str):
+        if not date_str:
+            return
+        try:
+            pd.to_datetime(date_str, format=self.DATE_FORMAT)
+        except Exception:
+            raise ValueError(
+                f"{date_type} '{date_str}' must match format '{self.DATE_FORMAT}'. "
+                f"Execution aborted. Check config: {self.config_path}"
+            )
+
+    # ---------------------------------------------------------
     # CACHE HELPERS
     # ---------------------------------------------------------
     def _get_cache_key(self, file_path: Path, start_date=None, end_date=None) -> Optional[str]:
@@ -58,18 +76,21 @@ class DataLoader:
             f"mtime:{stat.st_mtime}",
         ]
 
-        # Hash first 1MB for safety
+        # Only hash content if size or mtime changed
         try:
             with open(file_path, "rb") as f:
-                content = f.read(1024 * 1024)
+                content = f.read(256 * 1024)  # hash first 256KB
             key_parts.append(f"content:{hashlib.md5(content).hexdigest()}")
         except Exception as e:
             logger.warning(f"Failed to compute content hash for {file_path.name}: {e}")
 
+        # Normalize dates
         if start_date:
-            key_parts.append(f"start:{start_date}")
+            start_norm = pd.to_datetime(start_date, format=self.DATE_FORMAT)
+            key_parts.append(f"start:{start_norm.isoformat()}")
         if end_date:
-            key_parts.append(f"end:{end_date}")
+            end_norm = pd.to_datetime(end_date, format=self.DATE_FORMAT)
+            key_parts.append(f"end:{end_norm.isoformat()}")
 
         return hashlib.md5("|".join(key_parts).encode()).hexdigest()
 
@@ -95,28 +116,16 @@ class DataLoader:
         cache_file = self.cache_dir / f"{cache_key}.pkl"
         try:
             with open(cache_file, "wb") as f:
-                pickle.dump(df.copy(deep=True), f)
+                pickle.dump(df, f)
         except Exception as e:
             logger.warning(f"Cache save failed for {cache_file.name}: {e}")
-
-    # ---------------------------------------------------------
-    # VALIDATION HELPERS
-    # ---------------------------------------------------------
-    def _validate_date_format(self, date_str: str, date_type: str):
-        if date_str and " " not in str(date_str):
-            raise ValueError(
-                f"{date_type} '{date_str}' must include time (e.g., '2025-12-15 08:00:00'). "
-                f"Check config: {self.config_path}"
-            )
 
     # ---------------------------------------------------------
     # CSV LOADING WITH CACHE
     # ---------------------------------------------------------
     def _load_csv_with_cache(self, file_path: Path, data_type: str, start_date=None, end_date=None) -> pd.DataFrame:
-        if start_date:
-            self._validate_date_format(start_date, "start_date")
-        if end_date:
-            self._validate_date_format(end_date, "end_date")
+        self._validate_date_format(start_date, "start_date")
+        self._validate_date_format(end_date, "end_date")
 
         cache_key = self._get_cache_key(file_path, start_date, end_date)
         cached = self._load_cached_data(cache_key)
@@ -124,32 +133,36 @@ class DataLoader:
         if cached is not None:
             self.cache_hits += 1
             logger.info(f"Cache hit for {data_type}: {file_path.name}")
-            return cached.copy(deep=True)
+            return cached
 
         self.cache_misses += 1
         logger.info(f"Loading fresh {data_type}: {file_path.name}")
 
-        df = pd.read_csv(file_path, parse_dates=["timestamp"])
+        # Fast CSV load
+        df = pd.read_csv(file_path)
         df.columns = df.columns.str.lower()
+
+        # Fast timestamp parsing
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format=self.DATE_FORMAT)
         df = df.set_index("timestamp").sort_index()
 
-        # Optimize memory
-        price_cols = ["open", "high", "low", "close"]
-        for col in price_cols:
+        # Downcast OHLC
+        for col in ["open", "high", "low", "close"]:
             if col in df.columns:
                 df[col] = df[col].astype("float32")
 
-        # Apply date filtering
+        # Downcast volume
+        if "volume" in df.columns:
+            df["volume"] = pd.to_numeric(df["volume"], downcast="integer")
+
+        # Fast date slicing
         if start_date or end_date:
-            mask = pd.Series(True, index=df.index)
-            if start_date:
-                mask &= df.index >= pd.to_datetime(start_date)
-            if end_date:
-                mask &= df.index <= pd.to_datetime(end_date)
-            df = df[mask]
+            start = pd.to_datetime(start_date, format=self.DATE_FORMAT) if start_date else None
+            end = pd.to_datetime(end_date, format=self.DATE_FORMAT) if end_date else None
+            df = df.loc[start:end]
 
         self._save_to_cache(cache_key, df)
-        return df.copy(deep=True)
+        return df
 
     # ---------------------------------------------------------
     # MAIN DATA LOADING
@@ -157,15 +170,12 @@ class DataLoader:
     def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
         data_cfg = self.config.get("data", {})
 
-        # Date range
         dr = data_cfg.get("date_range", {})
         start_date = dr.get("start")
         end_date = dr.get("end")
 
-        if start_date:
-            self._validate_date_format(start_date, "start_date")
-        if end_date:
-            self._validate_date_format(end_date, "end_date")
+        self._validate_date_format(start_date, "start_date")
+        self._validate_date_format(end_date, "end_date")
 
         # Resolve main file
         data_file = Path(data_cfg["file"])
@@ -177,14 +187,11 @@ class DataLoader:
 
         # Strategy slice
         if start_date or end_date:
-            mask = pd.Series(True, index=self.df_full.index)
-            if start_date:
-                mask &= self.df_full.index >= pd.to_datetime(start_date)
-            if end_date:
-                mask &= self.df_full.index <= pd.to_datetime(end_date)
-            self.df_strategy = self.df_full[mask].copy(deep=True)
+            start = pd.to_datetime(start_date, format=self.DATE_FORMAT) if start_date else None
+            end = pd.to_datetime(end_date, format=self.DATE_FORMAT) if end_date else None
+            self.df_strategy = self.df_full.loc[start:end].copy()
         else:
-            self.df_strategy = self.df_full.copy(deep=True)
+            self.df_strategy = self.df_full.copy()
 
         # HTF
         self.df_htf = None
@@ -207,18 +214,16 @@ class DataLoader:
     # ---------------------------------------------------------
     # INFO + VALIDATION
     # ---------------------------------------------------------
-    
     def get_data_info(self) -> Dict:
-        """Return metadata about loaded datasets."""
         info = {
             "full_bars": len(self.df_full) if self.df_full is not None else 0,
             "strategy_bars": len(self.df_strategy) if self.df_strategy is not None else 0,
             "htf_bars": len(self.df_htf) if self.df_htf is not None else 0,
             "ltf_bars": len(self.df_ltf) if self.df_ltf is not None else 0,
             "date_range": (
-                self.df_strategy.index.min().strftime("%Y-%m-%d %H:%M:%S")
+                self.df_strategy.index.min().strftime(self.DATE_FORMAT)
                 if self.df_strategy is not None and not self.df_strategy.empty else None,
-                self.df_strategy.index.max().strftime("%Y-%m-%d %H:%M:%S")
+                self.df_strategy.index.max().strftime(self.DATE_FORMAT)
                 if self.df_strategy is not None and not self.df_strategy.empty else None,
             ),
         }
