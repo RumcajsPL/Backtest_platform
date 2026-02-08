@@ -7,15 +7,15 @@
   # start_date: Start date (YYYY-MM-DD)
   # end_date: End date (YYYY-MM-DD) 
 # output settings:
-  # format: Output file format: 'csv' (requested) or 'parquet'
+  # format: Output file format: 'csv' or 'parquet'
   # directory: Final destination for aggregated bars
 
 data_source:
   instrument: DEUIDXEUR
   timeframe: 1s
   start_date: 2024-01-01
-  end_date: 2026-01-04
+  end_date: 2026-02-07 #2024-02-01 2026-02-07
 
 output:
-  format: csv
+  format: csv # Options: 'csv' or 'parquet'
   directory: data/processed/ohlcv

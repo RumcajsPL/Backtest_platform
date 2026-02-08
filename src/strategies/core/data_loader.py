@@ -1,26 +1,25 @@
-# src/strategies/core/data_loader.py
-
 import pandas as pd
 import yaml
+import numpy as np
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 import hashlib
 import pickle
 import logging
 
-from src.utils.paths import PROJECT_ROOT, DATA_DIR
+from src.utils.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
 
 class DataLoader:
     """
-    Aggressively optimized DataLoader:
-    - Minimal deep copies
-    - Fast date slicing
-    - Strict date format validation
-    - Smarter caching (conditional hashing)
-    - Memory-efficient downcasting
+    Modernized DataLoader v2.3:
+    - Supports CSV + Parquet
+    - Unified loader with caching
+    - Sanitization (inf → nan → ffill/bfill)
+    - Fast timestamp parsing
+    - Downcasting for memory efficiency
     """
 
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -76,18 +75,17 @@ class DataLoader:
             f"mtime:{stat.st_mtime}",
         ]
 
-        # Only hash content if size or mtime changed
         try:
             with open(file_path, "rb") as f:
-                content = f.read(256 * 1024)  # hash first 256KB
+                content = f.read(256 * 1024)
             key_parts.append(f"content:{hashlib.md5(content).hexdigest()}")
         except Exception as e:
             logger.warning(f"Failed to compute content hash for {file_path.name}: {e}")
 
-        # Normalize dates
         if start_date:
             start_norm = pd.to_datetime(start_date, format=self.DATE_FORMAT)
             key_parts.append(f"start:{start_norm.isoformat()}")
+
         if end_date:
             end_norm = pd.to_datetime(end_date, format=self.DATE_FORMAT)
             key_parts.append(f"end:{end_norm.isoformat()}")
@@ -121,9 +119,9 @@ class DataLoader:
             logger.warning(f"Cache save failed for {cache_file.name}: {e}")
 
     # ---------------------------------------------------------
-    # CSV LOADING WITH CACHE
+    # UNIFIED CSV/PARQUET LOADER WITH CACHE
     # ---------------------------------------------------------
-    def _load_csv_with_cache(self, file_path: Path, data_type: str, start_date=None, end_date=None) -> pd.DataFrame:
+    def _load_file_with_cache(self, file_path: Path, data_type: str, start_date=None, end_date=None) -> pd.DataFrame:
         self._validate_date_format(start_date, "start_date")
         self._validate_date_format(end_date, "end_date")
 
@@ -138,30 +136,68 @@ class DataLoader:
         self.cache_misses += 1
         logger.info(f"Loading fresh {data_type}: {file_path.name}")
 
-        # Fast CSV load
-        df = pd.read_csv(file_path)
-        df.columns = df.columns.str.lower()
+        suffix = file_path.suffix.lower()
 
-        # Fast timestamp parsing
-        df["timestamp"] = pd.to_datetime(df["timestamp"], format=self.DATE_FORMAT)
-        df = df.set_index("timestamp").sort_index()
+        # -----------------------------
+        # CSV
+        # -----------------------------
+        if suffix == ".csv":
+            df = pd.read_csv(file_path)
+            df.columns = df.columns.str.lower()
+            df["timestamp"] = pd.to_datetime(df["timestamp"], format=self.DATE_FORMAT)
+            df = df.set_index("timestamp").sort_index()
 
-        # Downcast OHLC
-        for col in ["open", "high", "low", "close"]:
-            if col in df.columns:
-                df[col] = df[col].astype("float32")
+        # -----------------------------
+        # PARQUET
+        # -----------------------------
+        elif suffix == ".parquet":
+            df = pd.read_parquet(file_path)
+            df.columns = df.columns.str.lower()
 
-        # Downcast volume
-        if "volume" in df.columns:
-            df["volume"] = pd.to_numeric(df["volume"], downcast="integer")
+            # Case 1: timestamp is stored as index (correct Parquet behavior)
+            if df.index.name == "timestamp":
+                df = df.sort_index()
 
-        # Fast date slicing
+                # Remove timezone if present
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+
+                # Remove microseconds
+                df.index = df.index.floor("s")
+
+                # Drop duplicates
+                df = df[~df.index.duplicated(keep="last")]
+
+            # Case 2: timestamp is stored as a column (rare)
+            elif "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                df = df.dropna(subset=["timestamp"])
+                df["timestamp"] = df["timestamp"].dt.floor("S")
+                df = df.set_index("timestamp").sort_index()
+                df = df[~df.index.duplicated(keep="last")]
+
+            else:
+                raise ValueError(
+                    f"Parquet file {file_path} has neither a timestamp column nor a timestamp index"
+                )
+
+        df = df.copy()
+
+        # Date slicing
         if start_date or end_date:
             start = pd.to_datetime(start_date, format=self.DATE_FORMAT) if start_date else None
             end = pd.to_datetime(end_date, format=self.DATE_FORMAT) if end_date else None
             df = df.loc[start:end]
 
         self._save_to_cache(cache_key, df)
+        return df
+
+    # ---------------------------------------------------------
+    # SANITIZATION
+    # ---------------------------------------------------------
+    def _sanitize_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.ffill().bfill()
         return df
 
     # ---------------------------------------------------------
@@ -182,10 +218,11 @@ class DataLoader:
         if not data_file.is_absolute():
             data_file = PROJECT_ROOT / data_file
 
-        # Load full dataset
-        self.df_full = self._load_csv_with_cache(data_file, "full")
+        # FULL DATA
+        self.df_full = self._load_file_with_cache(data_file, "full")
+        self.df_full = self._sanitize_df(self.df_full)
 
-        # Strategy slice
+        # STRATEGY SLICE
         if start_date or end_date:
             start = pd.to_datetime(start_date, format=self.DATE_FORMAT) if start_date else None
             end = pd.to_datetime(end_date, format=self.DATE_FORMAT) if end_date else None
@@ -193,13 +230,17 @@ class DataLoader:
         else:
             self.df_strategy = self.df_full.copy()
 
+        self.df_strategy = self._sanitize_df(self.df_strategy)
+
         # HTF
         self.df_htf = None
         if "file_htf" in data_cfg:
             htf_file = Path(data_cfg["file_htf"])
             if not htf_file.is_absolute():
                 htf_file = PROJECT_ROOT / htf_file
-            self.df_htf = self._load_csv_with_cache(htf_file, "htf", start_date, end_date)
+
+            self.df_htf = self._load_file_with_cache(htf_file, "htf", start_date, end_date)
+            self.df_htf = self._sanitize_df(self.df_htf)
 
         # LTF
         self.df_ltf = None
@@ -207,7 +248,9 @@ class DataLoader:
             ltf_file = Path(data_cfg["file_ltf"])
             if not ltf_file.is_absolute():
                 ltf_file = PROJECT_ROOT / ltf_file
-            self.df_ltf = self._load_csv_with_cache(ltf_file, "ltf", start_date, end_date)
+
+            self.df_ltf = self._load_file_with_cache(ltf_file, "ltf", start_date, end_date)
+            self.df_ltf = self._sanitize_df(self.df_ltf)
 
         return self.df_full, self.df_strategy, self.df_htf, self.df_ltf
 
