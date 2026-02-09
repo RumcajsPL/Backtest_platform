@@ -1,6 +1,5 @@
 """
-Test Script: WBWSStrategy v1.3 + RiskManager Integration
-Location: src/validation/test_wbws_strategy_integration.py
+Test Script
 """
 
 import sys
@@ -14,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Imports from your architecture
-from src.strategies.specific.wbws_strategy import WBWSStrategy
+from src.strategies.specific.wbws_strategy import WBWSStrategy #new WBWSStrategy
 from src.strategies.core.signal_generator import SignalGenerator
 from src.strategies.core.filter_pipeline import FilterPipeline
 from src.strategies.trade_management.signal_frame import SignalFrame
