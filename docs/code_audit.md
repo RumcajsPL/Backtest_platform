@@ -1,4 +1,4 @@
-# Backtesting Platform Architecture & Code Quality Guidelines
+# Backtesting Platform Architecture Audit & Code Quality Guidelines / Recommendations
 **Current Scope:** WBWS Strategy update and modification before backtesting development start
 *Applies to all modules under `src/` and `scripts/`*  
 **Version:** 1.0  
@@ -6,6 +6,7 @@
 ---
 ## 📌 Objectives
 ### **Primary Goals**
+- Audit existing code of wbs_run_strategy and underpinning modules
 - Optimize current code of run_wns_strategy and underpining modules.
 - Establish a clean, modular, testable, scalable system.
 - Replace dict‑based communication with typed domain contracts. (to discuss if better)
