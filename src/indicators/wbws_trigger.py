@@ -40,8 +40,26 @@ class WBWSTrigger:
         df_htf["htf_bear"] = (df_htf["close"] < df_htf["open"]).shift(1, fill_value=False)
 
         # Align HTF to LTF index (fast, minimal copies)
-        htf_bull = df_htf["htf_bull"].reindex(df.index, method="ffill").fillna(False).to_numpy(bool)
-        htf_bear = df_htf["htf_bear"].reindex(df.index, method="ffill").fillna(False).to_numpy(bool)
+        #htf_bull = df_htf["htf_bull"].reindex(df.index, method="ffill").fillna(False).to_numpy(bool)
+        #htf_bear = df_htf["htf_bear"].reindex(df.index, method="ffill").fillna(False).to_numpy(bool)
+
+        htf_bull = (
+            df_htf["htf_bull"]
+            .astype("boolean")      # <-- convert BEFORE fillna
+            .reindex(df.index, method="ffill")
+            .fillna(False)          # <-- now safe, no warning
+            .astype(bool)           # <-- convert to numpy-friendly bool
+            .to_numpy()
+        )
+
+        htf_bear = (
+            df_htf["htf_bear"]
+            .astype("boolean")      # <-- convert BEFORE fillna
+            .reindex(df.index, method="ffill")
+            .fillna(False)
+            .astype(bool)
+            .to_numpy()
+        )
 
         df_out = df.copy()
         df_out["htf_bull"] = htf_bull

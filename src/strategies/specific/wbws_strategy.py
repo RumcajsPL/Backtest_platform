@@ -1,143 +1,136 @@
 """
-WBWS Strategy — Phase 1 Refactor
-This class is the template for all future strategies.
+WBWS Strategy — v1.4
+Step 4: TradeManager integration
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 
-from strategies.trade_management import (
-    SignalFrame,
-    TradeDecision,
-    TradeParameters,
-    TradeDirection,
-    DecisionType,
-)
+import pandas as pd
+
+from src.strategies.trade_management.trade_manager import TradeManager
+from src.strategies.trade_management.trade_decision import TradeDecision
+from src.strategies.trade_management.trade_parameters import TradeParameters
+from src.strategies.trade_management.trade_direction import TradeDirection
+from src.strategies.trade_management.decision_type import DecisionType
+from src.strategies.trade_management.signal_frame import SignalFrame
+from src.strategies.trade_management.risk_manager import RiskManager
+
 
 @dataclass
 class WBWSStrategy:
-    """
-    WBWS Strategy using the new architecture.
-    This class is the canonical template for all future strategies.
-
-    Responsibilities:
-    - Maintain internal state
-    - Read indicators from SignalFrame
-    - Produce TradeDecision objects
-    """
-
-    # Persistent strategy state (rolling buffers, last signals, etc.)
+    risk_manager: RiskManager
+    trade_manager: TradeManager
     state: Dict[str, Any] = field(default_factory=dict)
-
-    # Strategy parameters (example — adjust to your real parameters)
     risk_pct: float = 0.01
     tag: str = "wbws"
 
-    # ------------------------------------------------------------------
-    # Main strategy entry point
-    # ------------------------------------------------------------------
     def on_bar(self, sf: SignalFrame) -> TradeDecision:
-        """
-        Called once per bar by the runner.
-        Must return a TradeDecision object.
-        """
-
-        # 1. Read indicators
-        # Example — replace with your real indicator names
-        ema_fast = sf.get_indicator("ema_fast")
-        ema_slow = sf.get_indicator("ema_slow")
-        rsi = sf.get_indicator("rsi")
-
-        # 2. Update internal state if needed
-        # Example: store last close
         self.state["last_close"] = sf.close
 
-        # 3. Generate signals (placeholder logic)
-        # Replace with your real WBWS logic
-        if ema_fast is None or ema_slow is None:
-            return TradeDecision(decision_type=DecisionType.NONE)
+        raw_signal = sf.get_state("raw_signal")
+        filtered_signal = sf.get_state("filtered_signal")
 
-        # Example: simple crossover logic (placeholder)
-        if ema_fast > ema_slow:
-            return self._open_long(sf)
+        if filtered_signal is None or filtered_signal is pd.NA:
+            return TradeDecision(decision_type=DecisionType.NONE, reason="no_filtered_signal")
 
-        if ema_fast < ema_slow:
-            return self._open_short(sf)
+        # Convert filtered signal → intent
+        if filtered_signal == "BUY":
+            intent = self._intent_open_long(sf, raw_signal, filtered_signal)
+        elif filtered_signal == "SELL":
+            intent = self._intent_open_short(sf, raw_signal, filtered_signal)
+        else:
+            intent = TradeDecision(decision_type=DecisionType.NONE, reason="filtered_none")
 
-        # Default: do nothing
-        return TradeDecision(decision_type=DecisionType.NONE)
+        # Pass intent to TradeManager
+        final_decision = self.trade_manager.process(intent, sf)
+        return final_decision
 
-    # ------------------------------------------------------------------
-    # Trade construction helpers
-    # ------------------------------------------------------------------
-    def _open_long(self, sf: SignalFrame) -> TradeDecision:
-        """
-        Example long entry — replace with your real WBWS logic.
-        """
+    # ------------------------------------------------------------------ #
+    # Intent builders (Strategy-level)
+    # ------------------------------------------------------------------ #
+    def _intent_open_long(self, sf, raw_signal, filtered_signal):
+        params_dict = self.risk_manager.compute_trade_parameters(
+            timestamp=sf.timestamp,
+            bid_price=sf.close,
+            is_long=True,
+        )
 
-        entry = sf.close
-        stop_loss = entry * 0.99
-        take_profit = entry * 1.02
-        size = self._compute_size(entry, stop_loss)
+        if params_dict is None:
+            return TradeDecision(decision_type=DecisionType.NONE, reason="risk_rejected_long")
 
-        params = TradeParameters(
-            direction=TradeDirection.LONG,
-            entry=entry,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            size=size,
-            risk_pct=self.risk_pct,
-            tag=self.tag,
-            meta={"reason_open": "long_signal"},
+        trade_params = self._build_trade_parameters(
+            sf=sf,
+            is_long=True,
+            params_dict=params_dict,
+            raw_signal=raw_signal,
+            filtered_signal=filtered_signal,
         )
 
         return TradeDecision(
             decision_type=DecisionType.OPEN,
-            trade_params=params,
-            reason="long_signal",
+            trade_params=trade_params,
+            reason=params_dict.get("comment", "long_signal"),
         )
 
-    def _open_short(self, sf: SignalFrame) -> TradeDecision:
-        """
-        Example short entry — replace with your real WBWS logic.
-        """
+    def _intent_open_short(self, sf, raw_signal, filtered_signal):
+        params_dict = self.risk_manager.compute_trade_parameters(
+            timestamp=sf.timestamp,
+            bid_price=sf.close,
+            is_long=False,
+        )
 
-        entry = sf.close
-        stop_loss = entry * 1.01
-        take_profit = entry * 0.98
-        size = self._compute_size(entry, stop_loss)
+        if params_dict is None:
+            return TradeDecision(decision_type=DecisionType.NONE, reason="risk_rejected_short")
 
-        params = TradeParameters(
-            direction=TradeDirection.SHORT,
-            entry=entry,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            size=size,
-            risk_pct=self.risk_pct,
-            tag=self.tag,
-            meta={"reason_open": "short_signal"},
+        trade_params = self._build_trade_parameters(
+            sf=sf,
+            is_long=False,
+            params_dict=params_dict,
+            raw_signal=raw_signal,
+            filtered_signal=filtered_signal,
         )
 
         return TradeDecision(
             decision_type=DecisionType.OPEN,
-            trade_params=params,
-            reason="short_signal",
+            trade_params=trade_params,
+            reason=params_dict.get("comment", "short_signal"),
         )
 
-    # ------------------------------------------------------------------
-    # Risk / position sizing
-    # ------------------------------------------------------------------
-    def _compute_size(self, entry: float, stop_loss: float) -> float:
-        """
-        Example position sizing — replace with your real risk model.
-        """
+    # ------------------------------------------------------------------ #
+    # Adapter: RiskManager dict → TradeParameters
+    # ------------------------------------------------------------------ #
+    def _build_trade_parameters(self, sf, is_long, params_dict, raw_signal, filtered_signal):
+        direction = TradeDirection.LONG if is_long else TradeDirection.SHORT
+
+        entry = params_dict["executed_entry"]
+        stop_loss = params_dict["trigger_sl"]
+        take_profit = params_dict["tp"]
+
         risk_per_unit = abs(entry - stop_loss)
         if risk_per_unit == 0:
-            return 0.0
+            size = 0.0
+        else:
+            equity = self.state.get("equity", 100_000.0)
+            risk_amount = equity * self.risk_pct
+            size = risk_amount / risk_per_unit
 
-        # Example: fixed risk percentage of equity (placeholder)
-        equity = self.state.get("equity", 100_000.0)
-        risk_amount = equity * self.risk_pct
-        size = risk_amount / risk_per_unit
+        meta = {
+            "raw_signal": raw_signal,
+            "filtered_signal": filtered_signal,
+            "risk_comment": params_dict.get("comment"),
+            "sl_adjusted": params_dict.get("sl_adjusted", False),
+            "spread_applied": params_dict.get("spread_applied", False),
+            "spread_value": params_dict.get("spread_value", 0.0),
+        }
 
-        return size
+        return TradeParameters(
+            direction=direction,
+            entry=entry,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            size=size,
+            risk_pct=self.risk_pct,
+            tag=self.tag,
+            meta=meta,
+        )
