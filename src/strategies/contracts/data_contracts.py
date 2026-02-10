@@ -1,12 +1,14 @@
 """
-Data Layer Contracts for WBWSStrategy Migration
+Data Layer Contracts for WBWSStrategy Migration v2.1
 
-This module defines typed contracts for data loading, configuration, and validation.
-These contracts replace dict-based communication between DataLoader and downstream modules.
+Updates:
+- Added artf_data (Annual Range Timeframe / Monthly bars) support
+- Added execution mode awareness
+- Enhanced for dual-mode operation
 
 Author: Migration Project
-Version: 1.0.0
-Date: 2025-02-09
+Version: 2.1.0
+Date: 2025-02-10
 """
 
 from dataclasses import dataclass, field
@@ -90,12 +92,14 @@ class DataConfig:
         strategy_data: Main strategy timeframe data config
         htf_data: Higher timeframe data config (optional)
         ltf_data: Lower timeframe data config (optional)
+        artf_data: Annual Range Timeframe / Monthly data (optional)
         date_range: Global date range (overrides individual configs)
         validation_rules: Data validation parameters
     """
     strategy_data: DataFileConfig
     htf_data: Optional[DataFileConfig] = None
     ltf_data: Optional[DataFileConfig] = None
+    artf_data: Optional[DataFileConfig] = None
     date_range: Optional[DateRange] = None
     validation_rules: Dict[str, Any] = field(default_factory=dict)
     
@@ -165,6 +169,23 @@ class DataConfig:
                 description="Lower timeframe data (1s)"
             )
         
+        # Parse ARTF data (Annual Range Timeframe / Monthly bars) - NEW in v2.1
+        artf_data = None
+        if "file_artf" in config:
+            artf_file = config["file_artf"]
+            artf_path = Path(artf_file)
+            if not artf_path.is_absolute():
+                artf_path = project_root / artf_path
+            
+            # Note: Monthly data typically doesn't need date range slicing
+            # It's used for annual range calculation across full history
+            artf_data = DataFileConfig(
+                path=artf_path,
+                format=config.get("format", "parquet"),
+                date_range=None,  # Load full monthly history
+                description="Annual Range Timeframe (Monthly bars)"
+            )
+        
         # Parse validation rules
         validation_rules = config.get("validation", {})
         
@@ -172,6 +193,7 @@ class DataConfig:
             strategy_data=strategy_data,
             htf_data=htf_data,
             ltf_data=ltf_data,
+            artf_data=artf_data,
             date_range=global_date_range,
             validation_rules=validation_rules
         )
@@ -219,16 +241,20 @@ class DataInfo:
         strategy_bars: Number of bars in strategy period
         htf_bars: Number of bars in HTF data (0 if not loaded)
         ltf_bars: Number of bars in LTF data (0 if not loaded)
+        artf_bars: Number of bars in ARTF data (0 if not loaded)
         date_range: Actual date range of strategy data
         ltf_timeframe: LTF timeframe (e.g., "1s")
+        artf_timeframe: ARTF timeframe (e.g., "1ME" for month-end)
         cache_hit: Whether data was loaded from cache
     """
     total_bars: int
     strategy_bars: int
     htf_bars: int = 0
     ltf_bars: int = 0
+    artf_bars: int = 0
     date_range: Optional[Tuple[datetime, datetime]] = None
     ltf_timeframe: str = "1s"
+    artf_timeframe: str = "1ME"
     cache_hit: bool = False
     
     def __str__(self) -> str:
@@ -240,6 +266,8 @@ class DataInfo:
             lines.append(f"HTF data: {self.htf_bars:,} bars")
         if self.ltf_bars > 0:
             lines.append(f"LTF data: {self.ltf_bars:,} bars ({self.ltf_timeframe})")
+        if self.artf_bars > 0:
+            lines.append(f"ARTF data: {self.artf_bars:,} bars ({self.artf_timeframe})")
         if self.date_range:
             start, end = self.date_range
             lines.append(f"Date range: {start} → {end}")
@@ -261,6 +289,7 @@ class DataBundle:
         strategy: Data for strategy period (date-sliced)
         htf: Higher timeframe data (optional)
         ltf: Lower timeframe data (optional, typically 1s)
+        artf: Annual Range Timeframe / Monthly data (optional)
         info: Metadata about the loaded data
         validation: Validation results
         config: Configuration used to load this data
@@ -269,6 +298,7 @@ class DataBundle:
     strategy: pd.DataFrame
     htf: Optional[pd.DataFrame] = None
     ltf: Optional[pd.DataFrame] = None
+    artf: Optional[pd.DataFrame] = None
     info: DataInfo = field(default_factory=lambda: DataInfo(0, 0))
     validation: DataValidationResult = field(default_factory=lambda: DataValidationResult(True))
     config: Optional[DataConfig] = None
@@ -283,6 +313,8 @@ class DataBundle:
             self._validate_dataframe(self.htf, "htf")
         if self.ltf is not None:
             self._validate_dataframe(self.ltf, "ltf")
+        if self.artf is not None:
+            self._validate_dataframe(self.artf, "artf")
     
     def _validate_dataframe(self, df: pd.DataFrame, name: str):
         """Validate a single DataFrame."""
@@ -305,6 +337,11 @@ class DataBundle:
     def has_ltf(self) -> bool:
         """Returns True if LTF data is available."""
         return self.ltf is not None and not self.ltf.empty
+    
+    @property
+    def has_artf(self) -> bool:
+        """Returns True if ARTF data is available."""
+        return self.artf is not None and not self.artf.empty
     
     def __str__(self) -> str:
         return f"DataBundle({self.info})"
