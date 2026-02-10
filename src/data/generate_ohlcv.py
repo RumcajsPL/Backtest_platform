@@ -2,13 +2,10 @@ import os
 import lzma
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta, timezone
-import pytz
+from datetime import datetime, timedelta
 import yaml
 import argparse
-import gc
 from concurrent.futures import ProcessPoolExecutor
-
 from numba import njit
 
 # --- CONSTANTS ---
@@ -26,14 +23,13 @@ DEFAULT_CONFIG_PATH = "configs/data_aggregator.yaml"
 OUTPUT_TIMEZONE = "Europe/Berlin"
 
 # ------------------------------------------------------------
-# Optimized Numba Decoder (Returns Arrays, not Lists)
+# Optimized Numba Decoder (Unchanged)
 # ------------------------------------------------------------
 @njit(cache=True)
 def decode_bi5_numba(raw_data, base_ts, divisor):
     n_bytes = len(raw_data)
     n_ticks = n_bytes // 20
     
-    # Pre-allocate arrays
     out_ts = np.empty(n_ticks, dtype=np.float64)
     out_price = np.empty(n_ticks, dtype=np.float64)
     out_vol = np.empty(n_ticks, dtype=np.float64)
@@ -43,14 +39,12 @@ def decode_bi5_numba(raw_data, base_ts, divisor):
     div = float(divisor)
     
     while i + 20 <= n_bytes:
-        # Decode big-endian integers manually
         b0, b1, b2, b3 = raw_data[i], raw_data[i+1], raw_data[i+2], raw_data[i+3]
         ms = (np.uint32(b0) << 24) | (np.uint32(b1) << 16) | (np.uint32(b2) << 8) | np.uint32(b3)
 
         b8, b9, b10, b11 = raw_data[i+8], raw_data[i+9], raw_data[i+10], raw_data[i+11]
         bid_int = np.int32((np.uint32(b8) << 24) | (np.uint32(b9) << 16) | (np.uint32(b10) << 8) | np.uint32(b11))
 
-        # Ask/Bid Volumes
         v0, v1, v2, v3 = raw_data[i+12], raw_data[i+13], raw_data[i+14], raw_data[i+15]
         ask_vol = np.int32((np.uint32(v0) << 24) | (np.uint32(v1) << 16) | (np.uint32(v2) << 8) | np.uint32(v3))
 
@@ -68,23 +62,23 @@ def decode_bi5_numba(raw_data, base_ts, divisor):
     return out_ts[:count], out_price[:count], out_vol[:count]
 
 # ------------------------------------------------------------
-# Worker Function (Runs in parallel process)
+# Worker Function
 # ------------------------------------------------------------
 def process_single_day(args):
     """
     Processes all 24 hourly files for a single day.
-    Returns a resampled DataFrame for that day (or None).
+    ALWAYS resamples to 1-Minute base bars to allow flexible re-sampling later.
     """
-    instrument, day_dt, raw_root, divisor, target_tz_str, timeframe_pd = args
+    instrument, day_dt, raw_root, divisor, target_tz_str = args # Removed timeframe arg
     
-    # Storage for the whole day (list of arrays is faster than appending to DF)
+    # Use 1min as the "Atomic" unit. It's granular enough for 3min/45min/1ME
+    # but small enough to handle quickly.
+    BASE_TIMEFRAME = "1min" 
+    
     day_ts, day_prices, day_vols = [], [], []
     
-    # Iterate 0-23 hours
     for hour in range(24):
         hour_dt = day_dt + timedelta(hours=hour)
-        
-        # Path construction
         file_path = os.path.join(
             raw_root, instrument, str(hour_dt.year),
             f"{hour_dt.month:02d}", f"{hour_dt.day:02d}",
@@ -97,44 +91,31 @@ def process_single_day(args):
                     compressed = f.read()
                 raw = lzma.decompress(compressed)
                 raw_arr = np.frombuffer(raw, dtype=np.uint8)
-                
-                # Numba decode
                 ts, p, v = decode_bi5_numba(raw_arr, hour_dt.timestamp(), divisor)
-                
                 if len(ts) > 0:
                     day_ts.append(ts)
                     day_prices.append(p)
                     day_vols.append(v)
             except Exception:
-                pass # Skip corrupt files silently or log if needed
+                pass 
 
-    # If no data for the whole day, return None
     if not day_ts:
         return None
 
-    # Fast Concatenation
     full_ts = np.concatenate(day_ts)
     full_price = np.concatenate(day_prices)
     full_vol = np.concatenate(day_vols)
 
-    # Vectorized Timezone Conversion
-    # 1. Convert unix float to UTC Timestamp
     dt_index = pd.to_datetime(full_ts, unit="s", utc=True)
-    # 2. Convert to Target TZ
     dt_index = dt_index.tz_convert(target_tz_str).tz_localize(None)
 
-    # Create DataFrame ONCE per day
-    df = pd.DataFrame({
-        "price": full_price,
-        "volume": full_vol
-    }, index=dt_index)
-    
+    df = pd.DataFrame({"price": full_price, "volume": full_vol}, index=dt_index)
     df.index.name = INDEX_NAME
     df.sort_index(inplace=True)
 
-    # Resample ONCE per day
-    ohlc = df["price"].resample(timeframe_pd).ohlc()
-    vol = df["volume"].resample(timeframe_pd).sum()
+    # ALWAYS Resample to 1min base
+    ohlc = df["price"].resample(BASE_TIMEFRAME).ohlc()
+    vol = df["volume"].resample(BASE_TIMEFRAME).sum()
     ohlc["volume"] = vol
     ohlc.dropna(inplace=True)
 
@@ -151,20 +132,18 @@ def generate_ohlcv_multicore(config_path: str):
     out_cfg = config["output"]
 
     instrument = data_cfg["instrument"].upper()
-    timeframe = data_cfg["timeframe"]
+    target_timeframe = data_cfg["timeframe"] # The actual user request (e.g., 1ME, 45min)
     target_tz_str = OUTPUT_TIMEZONE
     
     divisor = INSTRUMENT_DIVISOR_MAP.get(instrument, DEFAULT_PRICE_DIVISOR)
-    
     start_date = datetime.strptime(str(data_cfg["start_date"]), "%Y-%m-%d")
     end_date = datetime.strptime(str(data_cfg["end_date"]), "%Y-%m-%d")
 
-    # Resolve pandas timeframe
-    tf_pd = timeframe.lower() if timeframe.lower().endswith("h") else timeframe
+    # Resolve pandas timeframe for the FINAL aggregation
+    tf_pd = target_timeframe.lower() if target_timeframe.lower().endswith("h") else target_timeframe
 
-    print(f"--- Parallel OHLCV Gen: {instrument} ({timeframe}) ---")
+    print(f"--- Parallel OHLCV Gen: {instrument} ({target_timeframe}) ---")
     
-    # Generate list of Days
     days_to_process = []
     curr = start_date
     while curr <= end_date:
@@ -174,33 +153,49 @@ def generate_ohlcv_multicore(config_path: str):
     total_days = len(days_to_process)
     print(f"Processing {total_days} days on {os.cpu_count()} cores...")
 
-    # Prepare arguments for workers
-    # (instrument, day_dt, raw_root, divisor, target_tz_str, timeframe_pd)
+    # Worker args: Note we removed the timeframe argument
     worker_args = [
-        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str, tf_pd) 
+        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str) 
         for d in days_to_process
     ]
 
     results = []
     
-    # Execute in Parallel
     with ProcessPoolExecutor() as executor:
-        # Use simple counter for progress
         for i, res in enumerate(executor.map(process_single_day, worker_args)):
             if res is not None and not res.empty:
                 results.append(res)
-            
-            # Progress print
-            if i % 5 == 0 or i == total_days - 1:
+            if i % 10 == 0 or i == total_days - 1:
                 print(f"Progress: {100*(i+1)/total_days:.1f}%", end="\r")
 
-    print("\nMerging data...")
+    print("\nMerging and Final Resampling...")
     if not results:
         print(f"❌ No data found for {instrument}.")
         return
 
-    final_ohlc = pd.concat(results)
-    final_ohlc.sort_index(inplace=True)
+    # 1. Concatenate the 1-minute chunks
+    full_1min_df = pd.concat(results)
+    full_1min_df.sort_index(inplace=True)
+
+    # 2. Perform FINAL aggregation to user requested timeframe
+    # This logic handles 1ME, 3min, 45min, 2H perfectly.
+    
+    # Define aggregation rules
+    agg_rules = {
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }
+
+    if tf_pd == "1min" or tf_pd == "1t":
+        # If user asked for 1min, we are done
+        final_ohlc = full_1min_df
+    else:
+        # Resample 1min -> Target
+        final_ohlc = full_1min_df.resample(tf_pd).agg(agg_rules)
+        final_ohlc.dropna(inplace=True)
 
     # Save
     out_dir = out_cfg["directory"]
@@ -210,7 +205,7 @@ def generate_ohlcv_multicore(config_path: str):
     end_str = end_date.strftime("%Y%m%d")
     fmt = out_cfg["format"].lower()
     
-    filename = f"{instrument}_{timeframe}_{start_str}_{end_str}.{fmt}"
+    filename = f"{instrument}_{target_timeframe}_{start_str}_{end_str}.{fmt}"
     path = os.path.join(out_dir, filename)
 
     if fmt == "csv":
@@ -227,8 +222,9 @@ if __name__ == "__main__":
     parser.add_argument("config_file", nargs="?", default=DEFAULT_CONFIG_PATH)
     args = parser.parse_args()
     
-    # Windows/MacOS safety for multiprocessing
     try:
         generate_ohlcv_multicore(args.config_file)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Error: {e}")

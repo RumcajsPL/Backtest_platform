@@ -3,7 +3,7 @@
 # Used by scripts/data_preprocessing/generate_ohlcv.py
 # Data_source settings:
   # instrument: The instrument name used in the raw data folder structure
-  # timeframe: Target bar size (Pandas aliases: 1min, 5min, H, 4H, D, W) + customs like 45min, 90min
+  # timeframe: Target bar size (Pandas aliases: 1min, 5min, H, 4H, D, 1ME, 1MS, W) + customs like 45min, 90min
   # start_date: Start date (YYYY-MM-DD)
   # end_date: End date (YYYY-MM-DD) 
 # output settings:
@@ -12,10 +12,10 @@
 
 data_source:
   instrument: DEUIDXEUR
-  timeframe: 1s
-  start_date: 2024-01-01
+  timeframe: 1ME
+  start_date: 2021-01-01
   end_date: 2026-02-07 #2024-02-01 2026-02-07
 
 output:
-  format: csv # Options: 'csv' or 'parquet'
+  format: parquet # Options: 'csv' or 'parquet'
   directory: data/processed/ohlcv

@@ -178,7 +178,7 @@ def test_dataloader_parity():
     print("=" * 70)
     
     # Use the test config
-    config_path = PROJECT_ROOT / "configs/strategies/wbws/wbws_strategy.yaml"
+    config_path = PROJECT_ROOT / "configs/strategies/wbws/wbws_strategy_debug.yaml"
     
     if not config_path.exists():
         print(f"\n❌ Config file not found: {config_path}")

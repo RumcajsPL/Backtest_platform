@@ -11,13 +11,14 @@ asset:
   exchange: EUREX
   currency: EUR
 data:
-  file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet #data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.csv #data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260104.csv
-  file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet #data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.csv #data/processed/ohlcv/DEUIDXEUR_1H_20230101_20260104.csv
-  file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet #data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.csv #data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv
+  file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet 
+  file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet
+  file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet
+  file_artf: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet
   format: parquet #csv
   date_range:
-    start: '2025-12-15 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
-    end: '2025-12-17 21:00:00' #'2025-12-3 8:35:39'
+    start: '2025-09-14 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
+    end: '2025-12-17 21:00:00' 
   validation:
     check_ohlc: true
     check_gaps: false

@@ -11,13 +11,14 @@ asset:
   exchange: EUREX
   currency: EUR
 data:
-  file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260104.csv
-  file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20230101_20260104.csv
-  file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260104.csv
-  format: csv
+  file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet
+  file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet
+  file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet
+  file_artf: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet
+  format: parquet #csv
   date_range:
-    start: '2025-12-15 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:00:00' '2025-11-16 08:00:00'
-    end: '2025-12-17 21:00:00'
+    start: '2025-09-14 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
+    end: '2025-12-17 21:00:00' 
   validation:
     check_ohlc: true
     check_gaps: false
@@ -82,7 +83,7 @@ trade_management:
     risk_to_reward_ratio: 5.7
   risk_management:
     enabled: true
-    max_risk_percentile: 0.0016
+    max_risk_percentile: 0.1 # 0.0016
     allow_exceed_limit: false
   spread:
     enabled: true
@@ -94,7 +95,7 @@ trade_management:
 # EXECUTION MODE CONFIGURATION (NEW)
 # =============================================================================
 execution:
-  mode: "debug"  # Options: "core" | "debug"
+  mode: "core"  # Options: "core" | "debug"
   # 
   # "core"  - Optimized for pipeline orchestrator (45-65% faster)
   #           - Skips progressive tracking
@@ -115,15 +116,15 @@ execution:
 # You can override them manually if needed
 output:
   # Progressive tracking (signal-by-signal detailed analysis)
-  enable_progressive_tracking: true  # true in debug, false in core
+  enable_progressive_tracking: false  # true in debug, false in core
   # Detailed metrics (spread analysis, monthly performance, etc.)
-  enable_detailed_metrics: true      # true in debug, false in core
+  enable_detailed_metrics: false      # true in debug, false in core
   # CSV file generation
-  save_signals_csv: true             # true in debug, false in core
+  save_signals_csv: false             # true in debug, false in core
   # Cache statistics collection and display
-  enable_cache_stats:  true          # true in debug, false in core
+  enable_cache_stats:  false          # true in debug, false in core
   # Output directories (same in both modes)
   outputs_dir: "outputs"
   reports_dir: "reports/WBWS"
   signals_dir: "signals/strategy"
-  verbose: true
+  verbose: false

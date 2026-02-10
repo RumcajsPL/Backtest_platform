@@ -125,8 +125,8 @@ def download_and_save_bi5_files(instrument: str, start_date: datetime, end_date:
 if __name__ == "__main__":
     # --- Set up PARAMETERS: instrument (ducascopy names), date range, output directory ---
     INSTRUMENT = "deuidxeur"
-    START_DATE = datetime(2023, 1, 1, 0, 0, tzinfo=timezone.utc)
-    END_DATE = datetime(2023, 11, 30, 23, 0, tzinfo=timezone.utc) 
+    START_DATE = datetime(2021, 1, 1, 0, 0, tzinfo=timezone.utc)
+    END_DATE = datetime(2023, 12, 31, 23, 0, tzinfo=timezone.utc) 
     OUTPUT_DIRECTORY = "data/raw/dukascopy_bi5" 
     MAX_CONCURRENT_WORKERS = 15
     
