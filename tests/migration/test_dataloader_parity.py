@@ -123,20 +123,17 @@ def compare_dataframes(df1: pd.DataFrame, df2: pd.DataFrame, name: str) -> bool:
                 print(f"       New: {df2.index[first_diff_idx]}")
         return False
     print(f"    ✅ Index: {len(df1.index)} timestamps")
-    
+     
     # Check values (with floating point tolerance)
     for col in df1.columns:
-        if df1[col].dtype in [np.float32, np.float64]:
-            # Use floating point comparison with tolerance
-            if not np.allclose(df1[col], df2[col], rtol=1e-5, atol=1e-8, equal_nan=True):
+        if pd.api.types.is_numeric_dtype(df1[col]) and pd.api.types.is_numeric_dtype(df2[col]):
+            # Convert both to float64 for fair comparison
+            col1_vals = df1[col].astype(np.float64).values
+            col2_vals = df2[col].astype(np.float64).values
+            
+            # Use floating point comparison
+            if not np.allclose(col1_vals, col2_vals, rtol=1e-5, atol=1e-8, equal_nan=True):
                 print(f"    ❌ Values mismatch in column '{col}'")
-                # Find first difference
-                diff_mask = ~np.isclose(df1[col], df2[col], rtol=1e-5, atol=1e-8, equal_nan=True)
-                if diff_mask.any():
-                    first_diff_idx = diff_mask.argmax()
-                    print(f"       First diff at row {first_diff_idx}")
-                    print(f"       Old: {df1[col].iloc[first_diff_idx]}")
-                    print(f"       New: {df2[col].iloc[first_diff_idx]}")
                 return False
         else:
             # Exact comparison for non-float columns
@@ -250,7 +247,7 @@ def test_dataloader_parity():
     
     # Compare LTF data
     all_match &= compare_dataframes(df_ltf_old, bundle.ltf, "LTF Data")
-    
+       
     # ==========================================================================
     # TEST 4: Compare Metadata
     # ==========================================================================

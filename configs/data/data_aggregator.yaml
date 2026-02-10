@@ -14,8 +14,8 @@ data_source:
   instrument: DEUIDXEUR
   timeframe: 1ME
   start_date: 2021-01-01
-  end_date: 2026-02-07 #2024-02-01 2026-02-07
+  end_date: 2026-02-07
 
 output:
-  format: parquet # Options: 'csv' or 'parquet'
+  format: csv # csv | parquet
   directory: data/processed/ohlcv

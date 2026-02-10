@@ -196,6 +196,13 @@ def generate_ohlcv_multicore(config_path: str):
         # Resample 1min -> Target
         final_ohlc = full_1min_df.resample(tf_pd).agg(agg_rules)
         final_ohlc.dropna(inplace=True)
+        if target_timeframe.endswith("ME") or target_timeframe.endswith("MS") or target_timeframe.endswith("W"):
+            # Convert index to datetime if it's PeriodIndex
+            if isinstance(final_ohlc.index, pd.PeriodIndex):
+                final_ohlc.index = final_ohlc.index.to_timestamp()
+            
+            # Set time to end of day (adjust)
+            final_ohlc.index = final_ohlc.index + pd.Timedelta(hours=23, minutes=59)
 
     # Save
     out_dir = out_cfg["directory"]
