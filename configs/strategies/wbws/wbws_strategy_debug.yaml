@@ -95,7 +95,7 @@ trade_management:
 # EXECUTION MODE CONFIGURATION (NEW)
 # =============================================================================
 execution:
-  mode: "core"  # Options: "core" | "debug"
+  mode: "debug"  # Options: "core" | "debug"
   # 
   # "core"  - Optimized for pipeline orchestrator (45-65% faster)
   #           - Skips progressive tracking
@@ -116,15 +116,15 @@ execution:
 # You can override them manually if needed
 output:
   # Progressive tracking (signal-by-signal detailed analysis)
-  enable_progressive_tracking: false  # true in debug, false in core
+  enable_progressive_tracking: true   # true in debug, false in core
   # Detailed metrics (spread analysis, monthly performance, etc.)
-  enable_detailed_metrics: false      # true in debug, false in core
+  enable_detailed_metrics: true       # true in debug, false in core
   # CSV file generation
-  save_signals_csv: false             # true in debug, false in core
+  save_signals_csv: true              # true in debug, false in core
   # Cache statistics collection and display
-  enable_cache_stats:  false          # true in debug, false in core
+  enable_cache_stats:  true          # true in debug, false in core
   # Output directories (same in both modes)
   outputs_dir: "outputs"
   reports_dir: "reports/WBWS"
   signals_dir: "signals/strategy"
-  verbose: false
+  verbose: true

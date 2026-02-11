@@ -28,7 +28,7 @@
 - Single Responsibility (one module = one concern)
 - Explicit contracts (no hidden assumptions)
 - Type safety (dataclasses over dicts)
-- Performance-aware (vectorization, caching)
+- Performance-aware (vectorization, caching, etc.)
 - Test-driven (validate each step)
 
 ---

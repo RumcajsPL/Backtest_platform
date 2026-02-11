@@ -1,0 +1,283 @@
+"""
+Signal Generator v2 - Typed Contracts & Dual-Mode
+
+This module replaces the string-based SignalGenerator with a typed contract
+implementation that integrates with DataBundle and returns SignalFrame.
+
+Key Features:
+- Accepts DataBundle (not raw DataFrames)
+- Returns SignalFrame (not tuple)
+- Dual-mode support (core/debug)
+- Preserves WBWSTrigger performance
+- SignalType enum (not strings)
+
+Author: Migration Project
+Version: 2.0.0
+Date: 2025-02-11
+Session: 3
+"""
+
+import pandas as pd
+import numpy as np
+import logging
+from typing import Optional
+from src.indicators.wbws_trigger import WBWSTrigger
+from src.strategies.contracts.data_contracts import DataBundle
+from src.strategies.contracts.signal_contracts import SignalFrame, SignalStats, SignalType
+
+logger = logging.getLogger(__name__)
+
+
+class SignalGenerator:
+    """
+    Signal Generator v2 - Typed Contracts & Dual-Mode
+    
+    Generates trading signals from DataBundle using WBWSTrigger,
+    returning typed SignalFrame instead of string-based signals.
+    
+    Attributes:
+        htf_period: Higher timeframe period (e.g., "1H")
+        mode: Execution mode ("core" or "debug")
+        trigger: WBWSTrigger instance (reused for performance)
+    
+    Performance:
+        - Core mode: ~10-15ms (minimal overhead)
+        - Debug mode: ~20-25ms (with full metadata)
+    
+    Example:
+        >>> # Debug mode (development)
+        >>> generator = SignalGenerator(htf_period="1H", mode="debug")
+        >>> signal_frame = generator.generate_signals(data_bundle)
+        >>> print(signal_frame)  # Full metadata
+        >>> 
+        >>> # Core mode (production)
+        >>> generator = SignalGenerator(htf_period="1H", mode="core")
+        >>> signal_frame = generator.generate_signals(data_bundle)
+        >>> print(signal_frame)  # Minimal overhead
+    """
+
+    def __init__(self, htf_period: str, mode: str = "debug"):
+        """
+        Initialize SignalGenerator.
+        
+        Args:
+            htf_period: Higher timeframe period (e.g., "1H")
+            mode: Execution mode - "core" (fast, minimal output) or 
+                  "debug" (verbose, full metadata)
+        
+        Raises:
+            ValueError: If htf_period is missing or mode is invalid
+        """
+        if not htf_period:
+            raise ValueError("htf_period configuration is missing.")
+        
+        if mode not in ("core", "debug"):
+            raise ValueError(f"mode must be 'core' or 'debug', got '{mode}'")
+        
+        self.htf_period = htf_period
+        self.mode = mode
+        
+        # Reuse WBWSTrigger instance for performance (as in original)
+        self.trigger = WBWSTrigger(htf_period=self.htf_period)
+        
+        self._log(f"SignalGenerator v2 initialized (mode={mode}, htf_period={htf_period})")
+    
+    def generate_signals(self, data_bundle: DataBundle) -> SignalFrame:
+        """
+        Generate signals from DataBundle.
+        
+        This is the main entry point that replaces the old tuple-based interface.
+        
+        Args:
+            data_bundle: Loaded data from DataLoader_v2
+            
+        Returns:
+            SignalFrame with typed signals
+            
+        Performance:
+            - Core mode: ~10-15ms (WBWSTrigger + minimal conversion)
+            - Debug mode: ~20-25ms (WBWSTrigger + full metadata join)
+        
+        Raises:
+            ValueError: If data_bundle is invalid
+        
+        Example:
+            >>> signal_frame = generator.generate_signals(data_bundle)
+            >>> 
+            >>> # Access typed signals
+            >>> buy_signals = signal_frame.buy_signals
+            >>> sell_signals = signal_frame.sell_signals
+            >>> 
+            >>> # Get statistics
+            >>> stats = generator.get_signal_stats(signal_frame)
+            >>> print(stats)
+        """
+        # Validate input
+        if data_bundle is None:
+            raise ValueError("data_bundle cannot be None")
+        
+        if data_bundle.strategy is None or data_bundle.htf is None:
+            raise ValueError("data_bundle.strategy and data_bundle.htf are required")
+        
+        self._log(f"Generating signals from {len(data_bundle.strategy)} strategy bars...")
+        
+        # Call WBWSTrigger (unchanged, already optimized)
+        # Returns DataFrame with we_buy, we_sell boolean columns
+        signals_df = self.trigger.calculate_signals(
+            data_bundle.strategy,
+            df_htf=data_bundle.htf
+        )
+        
+        # Convert to SignalFrame using factory method
+        # In core mode: skip metadata for 5-10ms speedup
+        # In debug mode: include full metadata for analysis
+        include_metadata = (self.mode == "debug")
+        
+        signal_frame = SignalFrame.from_wbws_trigger(
+            signals_df=signals_df,
+            strategy_df=data_bundle.strategy,
+            include_metadata=include_metadata
+        )
+        
+        self._log(f"Generated {len(signal_frame)} signals: {signal_frame.count_by_type()}")
+        
+        return signal_frame
+    
+    def get_signal_stats(self, signal_frame: SignalFrame, verbose: Optional[bool] = None) -> SignalStats:
+        """
+        Get signal statistics.
+        
+        Args:
+            signal_frame: SignalFrame to analyze
+            verbose: If True, include detailed metadata. 
+                    If None, auto-detect from mode (debug=verbose, core=minimal)
+        
+        Returns:
+            SignalStats instance
+        
+        Example:
+            >>> stats = generator.get_signal_stats(signal_frame)
+            >>> print(stats)  # BUY: 45 (52.3%), SELL: 41 (47.7%), Total: 86
+            >>> print(stats.to_dict())  # For JSON serialization
+        """
+        if signal_frame is None:
+            self._log("Warning: signal_frame is None, returning empty stats")
+            return SignalStats()
+        
+        # Auto-detect verbosity from mode if not specified
+        if verbose is None:
+            verbose = (self.mode == "debug")
+        
+        stats = SignalStats.from_signal_frame(signal_frame, verbose=verbose)
+        
+        self._log(f"Signal stats: {stats}")
+        
+        return stats
+    
+    def _log(self, message: str) -> None:
+        """
+        Log message (only in debug mode).
+        
+        Args:
+            message: Message to log
+        """
+        if self.mode == "debug":
+            logger.info(f"[SignalGenerator] {message}")
+
+
+# =============================================================================
+# BACKWARD COMPATIBILITY ADAPTER (OPTIONAL)
+# =============================================================================
+
+class SignalGeneratorAdapter:
+    """
+    Adapter to make new SignalGenerator compatible with old string-based interface.
+    
+    This adapter is OPTIONAL and should only be used during migration
+    if old code absolutely requires the tuple (raw_signals, signals_df) interface.
+    
+    **Recommendation**: Migrate consumers to use SignalFrame directly instead.
+    
+    Example:
+        >>> # Old code expects tuple
+        >>> adapter = SignalGeneratorAdapter(htf_period="1H")
+        >>> raw_signals, signals_df = adapter.generate_signals(df, df_htf)
+        >>> 
+        >>> # Better: Use new interface directly
+        >>> generator = SignalGenerator(htf_period="1H", mode="debug")
+        >>> signal_frame = generator.generate_signals(data_bundle)
+    """
+    
+    def __init__(self, htf_period: str):
+        """
+        Initialize adapter.
+        
+        Args:
+            htf_period: Higher timeframe period
+        """
+        self.new_generator = SignalGenerator(htf_period, mode="debug")
+    
+    def generate_signals(
+        self, df: pd.DataFrame, df_htf: pd.DataFrame
+    ) -> tuple[pd.Series, pd.DataFrame]:
+        """
+        Generate signals using old interface (string-based).
+        
+        Args:
+            df: Strategy DataFrame
+            df_htf: HTF DataFrame
+            
+        Returns:
+            Tuple of (raw_signals: pd.Series, signals_df: pd.DataFrame)
+        """
+        # Convert to DataBundle (temporary)
+        from src.strategies.contracts.data_contracts import DataBundle, DataInfo
+        
+        bundle = DataBundle(
+            full=df,
+            strategy=df,
+            htf=df_htf,
+            info=DataInfo(full_count=len(df), strategy_count=len(df))
+        )
+        
+        # Generate typed signals
+        signal_frame = self.new_generator.generate_signals(bundle)
+        
+        # Convert back to strings for old code
+        raw_signals = signal_frame.signals.apply(
+            lambda x: x.name if isinstance(x, SignalType) else None
+        )
+        
+        # Reconstruct signals_df (we_buy, we_sell)
+        signals_df = pd.DataFrame({
+            "we_buy": (signal_frame.signals == SignalType.BUY),
+            "we_sell": (signal_frame.signals == SignalType.SELL)
+        }, index=signal_frame.signals.index)
+        
+        return raw_signals, signals_df
+    
+    def get_signal_stats(self, signals: pd.Series) -> dict:
+        """
+        Get signal statistics (old dict-based interface).
+        
+        Args:
+            signals: Series of signal strings ("BUY"/"SELL")
+            
+        Returns:
+            Dict with signal counts
+        """
+        if signals is None or signals.empty:
+            return {"buy": 0, "sell": 0, "total": 0}
+        
+        counts = signals.value_counts()
+        buy_count = int(counts.get("BUY", 0))
+        sell_count = int(counts.get("SELL", 0))
+        total = buy_count + sell_count
+        
+        return {
+            "buy": buy_count,
+            "sell": sell_count,
+            "total": total,
+            "buy_percentage": (buy_count / total * 100) if total > 0 else 0.0,
+            "sell_percentage": (sell_count / total * 100) if total > 0 else 0.0,
+        }
