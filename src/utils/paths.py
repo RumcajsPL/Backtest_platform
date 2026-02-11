@@ -44,6 +44,21 @@ DATA_SCRIPTS_DIR = SCRIPTS_DIR / "data"
 VALIDATION_SCRIPTS_DIR = SCRIPTS_DIR / "validation"
 
 # ---------------------------------------------------------
+# STRATEGY SUBDIRECTORIES (NEW MIGRATION STRUCTURE)
+# ---------------------------------------------------------
+STRATEGIES_DIR = SRC_DIR / "strategies"
+CONTRACTS_DIR = STRATEGIES_DIR / "contracts"
+SPECIFIC_STRATEGIES_DIR = STRATEGIES_DIR / "specific"
+MODULES_DIR = SPECIFIC_STRATEGIES_DIR / "modules"
+FILTERS_DIR = SPECIFIC_STRATEGIES_DIR / "filters"
+
+# ---------------------------------------------------------
+# TEST SUBDIRECTORIES (NEW MIGRATION STRUCTURE)
+# ---------------------------------------------------------
+TESTS_DIR = PROJECT_ROOT / "tests"
+MIGRATION_TESTS_DIR = TESTS_DIR / "migration"
+
+# ---------------------------------------------------------
 # CONFIG HELPERS
 # ---------------------------------------------------------
 def config_path(*parts) -> Path:
@@ -65,9 +80,51 @@ def output_path(*parts) -> Path:
     return OUTPUTS_DIR.joinpath(*parts)
 
 # ---------------------------------------------------------
+# STRATEGY HELPERS (NEW)
+# ---------------------------------------------------------
+def strategy_path(*parts) -> Path:
+    """Return a path inside src/strategies/."""
+    return STRATEGIES_DIR.joinpath(*parts)
+
+def contract_path(*parts) -> Path:
+    """Return a path inside src/strategies/contracts/."""
+    return CONTRACTS_DIR.joinpath(*parts)
+
+def specific_strategy_path(*parts) -> Path:
+    """Return a path inside src/strategies/specific/."""
+    return SPECIFIC_STRATEGIES_DIR.joinpath(*parts)
+
+def module_path(*parts) -> Path:
+    """Return a path inside src/strategies/specific/modules/."""
+    return MODULES_DIR.joinpath(*parts)
+
+def filter_path(*parts) -> Path:
+    """Return a path inside src/strategies/specific/filters/."""
+    return FILTERS_DIR.joinpath(*parts)
+
+# ---------------------------------------------------------
+# TEST HELPERS (NEW)
+# ---------------------------------------------------------
+def test_path(*parts) -> Path:
+    """Return a path inside tests/."""
+    return TESTS_DIR.joinpath(*parts)
+
+def migration_test_path(*parts) -> Path:
+    """Return a path inside tests/migration/."""
+    return MIGRATION_TESTS_DIR.joinpath(*parts)
+
+# ---------------------------------------------------------
 # SAFE FILE CREATION
 # ---------------------------------------------------------
 def ensure_dir(path: Path):
     """Create directory if it does not exist."""
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+# ---------------------------------------------------------
+# OPTIONAL: AUTO-CREATE MIGRATION DIRECTORIES (COMMENT IF NOT DESIRED)
+# ---------------------------------------------------------
+ensure_dir(CONTRACTS_DIR)
+ensure_dir(MODULES_DIR)
+ensure_dir(FILTERS_DIR)
+ensure_dir(MIGRATION_TESTS_DIR)

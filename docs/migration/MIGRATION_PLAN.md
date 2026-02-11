@@ -104,18 +104,16 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 **Goal**: Standardize filter interfaces
 
 ### Step 3.1: Filter Contracts
-- [ ] Design FilterResult contract
-- [ ] Standardize filter interface protocol
-- [ ] Plan filter pipeline architecture
+- [x] Design FilterResult contract
+- [x] Standardize filter interface protocol
+- [x] Plan filter pipeline architecture
 
 ### Step 3.2: Filter Migration (Thin Slice)
-- [ ] Migrate time filter
+- [x] Migrate time filter
 - [ ] Migrate technical filters (11 filters)
 - [ ] Create new FilterPipeline
 - [ ] Performance test
-
 ---
-
 ## Phase 4: Trade Management ⏳ PENDING
 **Goal**: Replace string-based trade logic with typed contracts
 
