@@ -1,6 +1,6 @@
 # WBWSStrategy Migration Project Charter
 ## Project Overview
-**Objective**: Migrate existing WBWSStrategy from dict-based architecture to typed domain contracts while maintaining 100% functional parity and performance.
+**Objective**: Migrate existing WBWSStrategy from dict-based architecture to typed domain contracts while maintaining 100% functional parity and performance. Parity is same important as Perf. If no parity and no technical bug then analysis and decision to be made if accepted (exemple bug in legacy discovered) but globaly we expext parity matches.   
 **Strategic Goal**: Create reusable platform foundation for future strategies and automated backtesting orchestrator.
 **Timeline**: Multi-session project (estimated 18-28 sessions)
 **Success Criteria**:

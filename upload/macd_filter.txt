@@ -1,6 +1,6 @@
 """
-MA Filter - Migration v3.0 - CORRECTED
-Filters signals based on moving average slope for trend confirmation.
+MACD Filter - Migration v3.0 - CORRECTED
+Filters signals based on MACD histogram direction.
 EXACT legacy computation logic restored with new architecture.
 
 Author: Migration Project
@@ -27,77 +27,70 @@ from src.strategies.contracts.filter_contracts import (
 logger = logging.getLogger(__name__)
 
 
-class MAFilter:
+class MACDFilter:
     """
-    MA filter - checks moving average slope for trend confirmation.
+    MACD filter - momentum directional filter using histogram.
     
     EXACT legacy logic restored:
-    - All MA types exactly as legacy
-    - Slope comparison: MA > MA_shift for BUY, MA < MA_shift for SELL
-    - NaN handling: fillna(False) on condition (ANY NaN makes condition False)
-    - Same mask applied to all signals (non-directional filter)
+    - Original parameter names: fast_length, slow_length, signal_length
+    - Only histogram used for filtering
+    - BUY: histogram > 0 (STRICT)
+    - SELL: histogram < 0 (STRICT)
+    - NaN handling: fillna(False) on condition
+    - Error handling: return False on error
     """
     
     def __init__(self, 
-                 ma_type: str = "TEMA", 
-                 length: int = 25, 
-                 slope_length: int = 10,
+                 fast_length: int = 12, 
+                 slow_length: int = 26, 
+                 signal_length: int = 9,
                  enabled: bool = True, 
-                 name: str = "ma_filter"):
+                 name: str = "macd_filter"):
         """
-        Initialize MA filter with EXACT legacy parameters.
+        Initialize MACD filter with EXACT legacy parameters.
         
         Args:
-            ma_type: MA type (SMA, EMA, WMA, HMA, DEMA, TEMA, KAMA, TRIMA, LSMA)
-            length: MA calculation period
-            slope_length: Lookback period for slope comparison
+            fast_length: Fast EMA period
+            slow_length: Slow EMA period
+            signal_length: Signal line EMA period
             enabled: Whether filter is active
             name: Filter name for logging
         """
         self.name = name
-        self.ma_type = str(ma_type).upper()
-        self.length = int(length)
-        self.slope_length = int(slope_length)
+        self.fast_length = int(fast_length)
+        self.slow_length = int(slow_length)
+        self.signal_length = int(signal_length)
         self.enabled = enabled
         
-        valid_types = ["SMA", "EMA", "WMA", "HMA", "DEMA", "TEMA", "KAMA", "TRIMA", "LSMA"]
-        if self.ma_type not in valid_types:
-            raise ValueError(f"MA type must be one of {valid_types}, got {self.ma_type}")
-        if self.length < 2:
-            raise ValueError(f"MA length must be >= 2")
-        if self.slope_length < 1:
-            raise ValueError(f"Slope length must be >= 1")
+        # Map to internal names for pandas_ta
+        self.fast = self.fast_length
+        self.slow = self.slow_length
+        self.signal = self.signal_length
+        
+        if self.fast >= self.slow:
+            raise ValueError(f"Fast period ({self.fast}) must be < slow period ({self.slow})")
     
-    def _calculate_ma(self, series: pd.Series) -> pd.Series:
+    def _calculate_macd(self, series: pd.Series) -> pd.DataFrame:
         """
-        Calculate moving average - EXACT legacy implementation.
-        Uses same function calls in same order as legacy.
+        Calculate MACD - EXACT legacy implementation.
+        Returns DataFrame with ONLY histogram column.
         """
-        if len(series) < self.length:
-            return pd.Series(np.nan, index=series.index)
+        if len(series) < self.slow_length:
+            empty = pd.Series(np.nan, index=series.index)
+            return pd.DataFrame({'histogram': empty})
         
-        if self.ma_type == "SMA":
-            ma = pta.sma(series, length=self.length)
-        elif self.ma_type == "EMA":
-            ma = pta.ema(series, length=self.length)
-        elif self.ma_type == "WMA":
-            ma = pta.wma(series, length=self.length)
-        elif self.ma_type == "HMA":
-            ma = pta.hma(series, length=self.length)
-        elif self.ma_type == "DEMA":
-            ma = pta.dema(series, length=self.length)
-        elif self.ma_type == "TEMA":
-            ma = pta.tema(series, length=self.length)
-        elif self.ma_type == "KAMA":
-            ma = pta.kama(series, length=self.length)
-        elif self.ma_type == "TRIMA":
-            ma = pta.trima(series, length=self.length)
-        elif self.ma_type == "LSMA":
-            ma = pta.linreg(series, length=self.length)
-        else:
-            raise ValueError(f"Unsupported MA type: {self.ma_type}")
+        macd_df = pta.macd(series, fast=self.fast, slow=self.slow, signal=self.signal)
         
-        return ma.astype('float32')
+        if macd_df.empty:
+            return pd.DataFrame({'histogram': pd.Series(np.nan, index=series.index)})
+        
+        histogram_col = f"MACDh_{self.fast}_{self.slow}_{self.signal}"
+        
+        if histogram_col not in macd_df.columns:
+            raise KeyError(f"MACD histogram column '{histogram_col}' not found")
+        
+        # Return ONLY histogram - matches legacy
+        return pd.DataFrame({'histogram': macd_df[histogram_col]})
     
     def compute_indicators(
         self,
@@ -106,16 +99,22 @@ class MAFilter:
         ind_np: Dict[str, np.ndarray]
     ) -> None:
         """
-        Compute MA and shifted MA.
+        Compute MACD histogram only.
         EXACT legacy computation.
         """
-        ma = self._calculate_ma(df['close'])
-        ma_ago = ma.shift(self.slope_length)
+        min_length = max(self.slow, self.fast) + self.signal
         
-        indicators['ma'] = ma
-        indicators['ma_ago'] = ma_ago
-        ind_np['ma'] = ma.to_numpy()
-        ind_np['ma_ago'] = ma_ago.to_numpy()
+        if len(df) < min_length:
+            # Insufficient data - fill with NaN (handled in apply_filter)
+            indicators['macd_histogram'] = pd.Series(np.nan, index=df.index)
+            ind_np['macd_histogram'] = np.full(len(df), np.nan, dtype=np.float32)
+        else:
+            macd_df = self._calculate_macd(df['close'])
+            macd_hist = macd_df['histogram'].astype('float32')
+            
+            # Keep NaN values intact
+            indicators['macd_histogram'] = macd_hist
+            ind_np['macd_histogram'] = macd_hist.to_numpy()
     
     def apply_filter(
         self,
@@ -126,13 +125,13 @@ class MAFilter:
         mode: str = "core"
     ) -> FilterResult:
         """
-        Filter signals based on MA slope.
+        Filter signals based on MACD histogram.
         
         EXACT legacy logic:
-        - BUY: MA > MA_shift (strict)
-        - SELL: MA < MA_shift (strict)
-        - NaN: fillna(False) - ANY NaN in either series makes condition False
-        - Non-directional: same mask applied to all signals
+        - BUY: histogram > 0 (STRICT, not >=)
+        - SELL: histogram < 0 (STRICT, not <=)
+        - NaN: fillna(False) - NaN values become False
+        - Error: return False for all signals
         """
         start_time = perf_counter()
         
@@ -160,18 +159,17 @@ class MAFilter:
             )
             return FilterResult(passed=False, signal_frame=signal_frame, metadata=metadata)
         
-        # Get MA indicators
-        ma = ind_np.get('ma')
-        ma_ago = ind_np.get('ma_ago')
+        # Get MACD histogram
+        macd_histogram = ind_np.get('macd_histogram')
         
-        if ma is None or ma_ago is None:
+        if macd_histogram is None:
             execution_time = (perf_counter() - start_time) * 1000
             metadata = FilterMetadata(
                 filter_name=self.name,
                 status=FilterStatus.ERROR,
                 signals_in=signals_in,
                 signals_out=0,
-                reason="MA indicator not computed",
+                reason="MACD histogram not computed",
                 execution_time_ms=execution_time if mode == "debug" else None
             )
             return FilterResult(
@@ -185,30 +183,22 @@ class MAFilter:
             )
         
         signal_values = signal_frame.signals.values
-        ma_values = ma.astype(np.float32)
-        ma_ago_values = ma_ago.astype(np.float32)
-        
-        # Calculate conditions
-        buy_condition = ma_values > ma_ago_values
-        sell_condition = ma_values < ma_ago_values
-        
-        # CRITICAL: Legacy fillna(False) - ANY NaN makes condition False
-        valid_mask = ~(np.isnan(ma_values) | np.isnan(ma_ago_values))
+        histogram_values = macd_histogram.astype(np.float32)
         
         # Initialize mask - all False by default (matches fillna(False))
         mask = np.zeros(len(signal_values), dtype=bool)
         
-        # BUY signals: apply condition only where valid
+        # BUY: histogram > 0 (STRICT)
         buy_mask = (signal_values == 1)
-        valid_buy = buy_mask & valid_mask
-        mask[valid_buy] = buy_condition[valid_buy]
+        mask[buy_mask] = histogram_values[buy_mask] > 0
         
-        # SELL signals: apply condition only where valid
+        # SELL: histogram < 0 (STRICT)
         sell_mask = (signal_values == 2)
-        valid_sell = sell_mask & valid_mask
-        mask[valid_sell] = sell_condition[valid_sell]
+        mask[sell_mask] = histogram_values[sell_mask] < 0
         
-        # Apply mask to signals
+        # NaN handling: fillna(False) - NaN values are already False in mask
+        # No need for explicit NaN handling as comparisons with NaN return False
+        
         filtered_signals = signal_values.copy()
         filtered_signals[~mask] = 0
         
@@ -216,12 +206,12 @@ class MAFilter:
             signals=pd.Series(filtered_signals, index=signal_frame.signals.index, dtype='int8'),
             indicator_data=signal_frame.indicator_data if mode == "debug" else None,
             signal_metadata={
-                "source": "ma_filter",
+                "source": "macd_filter",
                 "mode": mode,
-                "ma_params": {
-                    "type": self.ma_type,
-                    "length": self.length,
-                    "slope_length": self.slope_length
+                "macd_params": {
+                    "fast_length": self.fast_length,
+                    "slow_length": self.slow_length,
+                    "signal_length": self.signal_length
                 }
             }
         )

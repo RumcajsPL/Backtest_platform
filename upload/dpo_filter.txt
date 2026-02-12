@@ -1,6 +1,6 @@
 """
-MA Filter - Migration v3.0 - CORRECTED
-Filters signals based on moving average slope for trend confirmation.
+DPO Filter - Migration v3.0 - CORRECTED
+Filters signals based on Detrended Price Oscillator with smoothing and threshold.
 EXACT legacy computation logic restored with new architecture.
 
 Author: Migration Project
@@ -27,77 +27,75 @@ from src.strategies.contracts.filter_contracts import (
 logger = logging.getLogger(__name__)
 
 
-class MAFilter:
+class DPOFilter:
     """
-    MA filter - checks moving average slope for trend confirmation.
+    Detrended Price Oscillator (DPO) filter - cycle-based directional filter.
     
     EXACT legacy logic restored:
-    - All MA types exactly as legacy
-    - Slope comparison: MA > MA_shift for BUY, MA < MA_shift for SELL
-    - NaN handling: fillna(False) on condition (ANY NaN makes condition False)
-    - Same mask applied to all signals (non-directional filter)
+    - DPO normalized as percentage: (DPO / close) * 100
+    - Optional smoothing of raw DPO
+    - BUY: -threshold < DPO_norm < 0 (negative, near zero)
+    - SELL: 0 < DPO_norm < threshold (positive, near zero)
+    - STRICT inequalities (< and >, not <= or >=)
+    - NaN handling: fillna(False) on conditions
     """
     
     def __init__(self, 
-                 ma_type: str = "TEMA", 
-                 length: int = 25, 
-                 slope_length: int = 10,
+                 length: int = 20, 
+                 smooth: int = 3,
+                 threshold: float = 0.2,
+                 centered: bool = False,
                  enabled: bool = True, 
-                 name: str = "ma_filter"):
+                 name: str = "dpo_filter"):
         """
-        Initialize MA filter with EXACT legacy parameters.
+        Initialize DPO filter with EXACT legacy parameters.
         
         Args:
-            ma_type: MA type (SMA, EMA, WMA, HMA, DEMA, TEMA, KAMA, TRIMA, LSMA)
-            length: MA calculation period
-            slope_length: Lookback period for slope comparison
+            length: Lookback period for DPO calculation
+            smooth: Rolling window for smoothing (1 = no smoothing)
+            threshold: Percentage threshold for DPO normalization
+            centered: Whether to center the oscillator (False for shifted SMA)
             enabled: Whether filter is active
             name: Filter name for logging
         """
         self.name = name
-        self.ma_type = str(ma_type).upper()
         self.length = int(length)
-        self.slope_length = int(slope_length)
+        self.smooth = int(smooth) if smooth > 0 else 1
+        self.threshold = float(threshold)
+        self.centered = centered  # False to match legacy shifted SMA
         self.enabled = enabled
         
-        valid_types = ["SMA", "EMA", "WMA", "HMA", "DEMA", "TEMA", "KAMA", "TRIMA", "LSMA"]
-        if self.ma_type not in valid_types:
-            raise ValueError(f"MA type must be one of {valid_types}, got {self.ma_type}")
-        if self.length < 2:
-            raise ValueError(f"MA length must be >= 2")
-        if self.slope_length < 1:
-            raise ValueError(f"Slope length must be >= 1")
+        if self.length < 3:
+            raise ValueError(f"DPO length must be >= 3, got {self.length}")
     
-    def _calculate_ma(self, series: pd.Series) -> pd.Series:
+    def _calculate_dpo(self, series: pd.Series) -> pd.Series:
         """
-        Calculate moving average - EXACT legacy implementation.
-        Uses same function calls in same order as legacy.
+        Calculate DPO with smoothing and normalize as percentage.
+        EXACT legacy computation logic.
         """
         if len(series) < self.length:
             return pd.Series(np.nan, index=series.index)
         
-        if self.ma_type == "SMA":
-            ma = pta.sma(series, length=self.length)
-        elif self.ma_type == "EMA":
-            ma = pta.ema(series, length=self.length)
-        elif self.ma_type == "WMA":
-            ma = pta.wma(series, length=self.length)
-        elif self.ma_type == "HMA":
-            ma = pta.hma(series, length=self.length)
-        elif self.ma_type == "DEMA":
-            ma = pta.dema(series, length=self.length)
-        elif self.ma_type == "TEMA":
-            ma = pta.tema(series, length=self.length)
-        elif self.ma_type == "KAMA":
-            ma = pta.kama(series, length=self.length)
-        elif self.ma_type == "TRIMA":
-            ma = pta.trima(series, length=self.length)
-        elif self.ma_type == "LSMA":
-            ma = pta.linreg(series, length=self.length)
-        else:
-            raise ValueError(f"Unsupported MA type: {self.ma_type}")
+        # Calculate raw DPO
+        dpo_raw = pta.dpo(series, length=self.length, centered=self.centered)
         
-        return ma.astype('float32')
+        if dpo_raw is None or dpo_raw.empty:
+            return pd.Series(np.nan, index=series.index)
+        
+        # Optional smoothing (legacy: smooth > 1)
+        if self.smooth > 1:
+            dpo_smoothed = dpo_raw.rolling(
+                window=self.smooth,
+                min_periods=self.smooth
+            ).mean()
+        else:
+            dpo_smoothed = dpo_raw
+        
+        # Normalize as percentage: (DPO / close) * 100
+        dpo_norm = (dpo_smoothed / series) * 100
+        dpo_norm = dpo_norm.astype('float32')
+        
+        return dpo_norm
     
     def compute_indicators(
         self,
@@ -106,16 +104,14 @@ class MAFilter:
         ind_np: Dict[str, np.ndarray]
     ) -> None:
         """
-        Compute MA and shifted MA.
+        Compute DPO normalized values.
         EXACT legacy computation.
         """
-        ma = self._calculate_ma(df['close'])
-        ma_ago = ma.shift(self.slope_length)
+        dpo_norm = self._calculate_dpo(df['close'])
         
-        indicators['ma'] = ma
-        indicators['ma_ago'] = ma_ago
-        ind_np['ma'] = ma.to_numpy()
-        ind_np['ma_ago'] = ma_ago.to_numpy()
+        # Store with NaN intact (handled in apply_filter)
+        indicators['dpo_norm'] = dpo_norm
+        ind_np['dpo_norm'] = dpo_norm.to_numpy(dtype=np.float32)
     
     def apply_filter(
         self,
@@ -126,13 +122,12 @@ class MAFilter:
         mode: str = "core"
     ) -> FilterResult:
         """
-        Filter signals based on MA slope.
+        Filter signals based on normalized DPO with threshold.
         
         EXACT legacy logic:
-        - BUY: MA > MA_shift (strict)
-        - SELL: MA < MA_shift (strict)
-        - NaN: fillna(False) - ANY NaN in either series makes condition False
-        - Non-directional: same mask applied to all signals
+        - BUY:  -threshold < DPO_norm < 0  (STRICT inequalities)
+        - SELL: 0 < DPO_norm < threshold    (STRICT inequalities)
+        - NaN:  fillna(False) on conditions
         """
         start_time = perf_counter()
         
@@ -160,18 +155,18 @@ class MAFilter:
             )
             return FilterResult(passed=False, signal_frame=signal_frame, metadata=metadata)
         
-        # Get MA indicators
-        ma = ind_np.get('ma')
-        ma_ago = ind_np.get('ma_ago')
+        # Get DPO indicator
+        dpo_norm = ind_np.get('dpo_norm')
         
-        if ma is None or ma_ago is None:
+        if dpo_norm is None:
+            logger.error(f"{self.name}: DPO indicator not found in cache")
             execution_time = (perf_counter() - start_time) * 1000
             metadata = FilterMetadata(
                 filter_name=self.name,
                 status=FilterStatus.ERROR,
                 signals_in=signals_in,
                 signals_out=0,
-                reason="MA indicator not computed",
+                reason="DPO indicator not computed",
                 execution_time_ms=execution_time if mode == "debug" else None
             )
             return FilterResult(
@@ -184,44 +179,40 @@ class MAFilter:
                 metadata=metadata
             )
         
+        # Vectorized filtering
         signal_values = signal_frame.signals.values
-        ma_values = ma.astype(np.float32)
-        ma_ago_values = ma_ago.astype(np.float32)
+        dpo_values = dpo_norm.astype(np.float32)
         
-        # Calculate conditions
-        buy_condition = ma_values > ma_ago_values
-        sell_condition = ma_values < ma_ago_values
-        
-        # CRITICAL: Legacy fillna(False) - ANY NaN makes condition False
-        valid_mask = ~(np.isnan(ma_values) | np.isnan(ma_ago_values))
-        
-        # Initialize mask - all False by default (matches fillna(False))
+        # Initialize mask - all False by default (matches legacy fillna(False))
         mask = np.zeros(len(signal_values), dtype=bool)
         
-        # BUY signals: apply condition only where valid
+        # BUY signals (code 1): -threshold < DPO < 0 (STRICT)
         buy_mask = (signal_values == 1)
-        valid_buy = buy_mask & valid_mask
-        mask[valid_buy] = buy_condition[valid_buy]
+        buy_condition = (dpo_values[buy_mask] < 0) & (dpo_values[buy_mask] > -self.threshold)
+        # Handle NaN: conditions with NaN become False automatically
+        mask[buy_mask] = buy_condition
         
-        # SELL signals: apply condition only where valid
+        # SELL signals (code 2): 0 < DPO < threshold (STRICT)
         sell_mask = (signal_values == 2)
-        valid_sell = sell_mask & valid_mask
-        mask[valid_sell] = sell_condition[valid_sell]
+        sell_condition = (dpo_values[sell_mask] > 0) & (dpo_values[sell_mask] < self.threshold)
+        mask[sell_mask] = sell_condition
         
         # Apply mask to signals
         filtered_signals = signal_values.copy()
         filtered_signals[~mask] = 0
         
+        # Create new SignalFrame
         filtered_frame = SignalFrame(
             signals=pd.Series(filtered_signals, index=signal_frame.signals.index, dtype='int8'),
             indicator_data=signal_frame.indicator_data if mode == "debug" else None,
             signal_metadata={
-                "source": "ma_filter",
+                "source": "dpo_filter",
                 "mode": mode,
-                "ma_params": {
-                    "type": self.ma_type,
+                "dpo_params": {
                     "length": self.length,
-                    "slope_length": self.slope_length
+                    "smooth": self.smooth,
+                    "threshold": self.threshold,
+                    "centered": self.centered
                 }
             }
         )

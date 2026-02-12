@@ -1,0 +1,894 @@
+"""
+Filters Migration Parity Test Suite - FINAL VERSION
+
+Comprehensive migration testing for all filters with EXACT legacy logic:
+- DPO, MA, MACD, Pivot: Full legacy computation restored
+- RSI, CCI, Supertrend, ADX, Bollinger, Choppiness: Working perfectly
+- Time Filter: Special case
+
+All filters now maintain 100% parity with legacy implementations.
+
+Author: Migration Project
+Date: 2025-02-12
+Session: 5 - Final
+"""
+
+import sys
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import time
+from typing import Dict, List, Tuple, Any, Optional, Union, Callable
+from dataclasses import dataclass, field
+import yaml
+import inspect
+
+# ------------------------------------------------------------
+# CRITICAL: Add project root to path BEFORE importing from src
+# ------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# ------------------------------------------------------------
+# UNIFIED PATH RESOLUTION
+# ------------------------------------------------------------
+from src.utils.paths import PROJECT_ROOT as PATHS_PROJECT_ROOT
+
+# ------------------------------------------------------------
+# IMPORTS: Data Loading & Signal Generation
+# ------------------------------------------------------------
+from src.strategies.specific.modules.signal_generator import SignalGenerator as NewSignalGenerator
+from src.strategies.specific.modules.data_loader import DataLoader as NewDataLoader
+from src.strategies.contracts.signal_contracts import SignalFrame
+
+# ------------------------------------------------------------
+# IMPORTS: OLD IMPLEMENTATIONS (Legacy)
+# ------------------------------------------------------------
+from src.strategies.filters.time_filter import TimeManager as OldTimeManager
+from src.strategies.filters.rsi_filter import RSIFilter as OldRSIFilter
+from src.strategies.filters.cci_filter import CCIFilter as OldCCIFilter
+from src.strategies.filters.adx_filter import ADXFilter as OldADXFilter
+from src.strategies.filters.bollinger_filter import BollingerFilter as OldBollingerFilter
+from src.strategies.filters.choppiness_filter import ChoppinessFilter as OldChoppinessFilter
+from src.strategies.filters.dpo_filter import DPOFilter as OldDPOFilter
+from src.strategies.filters.ma_filter import MAFilter as OldMAFilter
+from src.strategies.filters.macd_filter import MACDFilter as OldMACDFilter
+from src.strategies.filters.pivot_filter import PivotFilter as OldPivotFilter
+from src.strategies.filters.supertrend_filter import SupertrendFilter as OldSupertrendFilter
+
+# ------------------------------------------------------------
+# IMPORTS: NEW IMPLEMENTATIONS (Restored legacy logic)
+# ------------------------------------------------------------
+from src.strategies.specific.filters.time_filter import TimeFilter as NewTimeFilter
+from src.strategies.specific.filters.rsi_filter import RSIFilter as NewRSIFilter
+from src.strategies.specific.filters.cci_filter import CCIFilter as NewCCIFilter
+from src.strategies.specific.filters.adx_filter import ADXFilter as NewADXFilter
+from src.strategies.specific.filters.bollinger_filter import BollingerFilter as NewBollingerFilter
+from src.strategies.specific.filters.choppiness_filter import ChoppinessFilter as NewChoppinessFilter
+from src.strategies.specific.filters.dpo_filter import DPOFilter as NewDPOFilter
+from src.strategies.specific.filters.ma_filter import MAFilter as NewMAFilter
+from src.strategies.specific.filters.macd_filter import MACDFilter as NewMACDFilter
+from src.strategies.specific.filters.pivot_filter import PivotFilter as NewPivotFilter
+from src.strategies.specific.filters.supertrend_filter import SupertrendFilter as NewSupertrendFilter
+
+
+# ------------------------------------------------------------
+# LOCAL CONTRACTS
+# ------------------------------------------------------------
+@dataclass(frozen=True)
+class FilterMetadata:
+    filter_name: str
+    status: str
+    reason: Optional[str] = None
+    indicator_values: Optional[Dict[str, float]] = None
+    execution_time_ms: Optional[float] = None
+    signals_rejected: int = 0
+    signals_input: int = 0
+    signals_output: int = 0
+
+
+@dataclass(frozen=True)
+class FilterResult:
+    passed: bool
+    signal_frame: SignalFrame
+    metadata: FilterMetadata
+    
+    @property
+    def signals_count(self) -> int:
+        return self.signal_frame.count_by_type()["total"]
+
+
+# ------------------------------------------------------------
+# TEST RESULTS DATA CLASS
+# ------------------------------------------------------------
+@dataclass
+class FilterTestResult:
+    filter_name: str
+    parity_passed: bool
+    disabled_passed: bool
+    mode_parity_passed: bool
+    old_execution_time: float
+    new_execution_time: float
+    performance_passed: bool
+    old_count: int
+    new_count: int
+    old_buy: int
+    old_sell: int
+    new_buy: int
+    new_sell: int
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+# ------------------------------------------------------------
+# FILTER CATEGORIES AND PARAMETER MAPPING
+# ------------------------------------------------------------
+class FilterCategory:
+    DIRECTIONAL = "directional"      # Uses is_long parameter
+    NON_DIRECTIONAL = "non_directional"  # Single mask for all signals
+    TIME_FILTER = "time_filter"      # Special case
+
+
+# CORRECTED PARAMETER MAPPING - All filters now use legacy parameter names
+PARAMETER_MAPPING = {
+    'adx_filter': {
+        'adx_length': 'adx_length',
+        'threshold': 'threshold'
+    },
+    'bollinger_filter': {
+        'length': 'length',
+        'width_ma_length': 'width_ma_length',
+        'filter_multiplier': 'filter_multiplier',
+        'std_dev': 'std_dev'
+    },
+    'dpo_filter': {
+        'length': 'length',
+        'smooth': 'smooth',
+        'threshold': 'threshold',
+        'centered': 'centered'
+    },
+    'macd_filter': {
+        'fast_length': 'fast_length',
+        'slow_length': 'slow_length',
+        'signal_length': 'signal_length'
+    },
+    'ma_filter': {
+        'ma_type': 'ma_type',
+        'length': 'length',
+        'slope_length': 'slope_length'
+    },
+    'pivot_filter': {
+        'reversal_percent': 'reversal_percent',
+        'order': 'order'
+    },
+    'choppiness_filter': {
+        'length': 'length',
+        'threshold': 'threshold'
+    },
+    'rsi_filter': {
+        'length': 'length',
+        'overbought': 'overbought',
+        'oversold': 'oversold'
+    },
+    'cci_filter': {
+        'length': 'length',
+        'overbought': 'overbought',
+        'oversold': 'oversold'
+    },
+    'supertrend_filter': {
+        'atr_length': 'atr_length',
+        'factor': 'factor'
+    }
+}
+
+
+def map_parameters(filter_name: str, old_params: Dict) -> Dict:
+    """Map old parameter names to new filter parameter names."""
+    if filter_name not in PARAMETER_MAPPING:
+        return old_params.copy()
+    
+    mapping = PARAMETER_MAPPING[filter_name]
+    new_params = {}
+    
+    for old_key, value in old_params.items():
+        if old_key in mapping:
+            new_key = mapping[old_key]
+            if new_key is not None:
+                new_params[new_key] = value
+        else:
+            new_params[old_key] = value
+    
+    return new_params
+
+
+# ------------------------------------------------------------
+# CONFIGURATION LOADING
+# ------------------------------------------------------------
+def load_config(config_name: str = "wbws_strategy.yaml") -> Dict:
+    """Load strategy configuration."""
+    config_path = PROJECT_ROOT / f"configs/strategies/wbws/{config_name}"
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        return config
+    except FileNotFoundError:
+        return {}
+
+
+def get_execution_modes() -> List[Dict[str, Any]]:
+    """Get both core and debug execution configurations."""
+    core_config = load_config("wbws_strategy.yaml")
+    debug_config = load_config("wbws_strategy_debug.yaml")
+    
+    core_mode = core_config.get('execution', {}).get('mode', 'core') if core_config else 'core'
+    debug_mode = debug_config.get('execution', {}).get('mode', 'debug') if debug_config else 'debug'
+    
+    return [
+        {"name": core_mode, "config": core_config, "expected_outputs": False},
+        {"name": debug_mode, "config": debug_config, "expected_outputs": True}
+    ]
+
+
+# ------------------------------------------------------------
+# TEST DATA GENERATION
+# ------------------------------------------------------------
+def create_test_data(n_bars: int = 200) -> pd.DataFrame:
+    """Create realistic OHLCV test data."""
+    np.random.seed(42)
+    timestamps = pd.date_range('2024-01-01', periods=n_bars, freq='5min')
+    
+    close = 100 + np.cumsum(np.random.randn(n_bars) * 0.5)
+    high = close + np.abs(np.random.randn(n_bars) * 0.3)
+    low = close - np.abs(np.random.randn(n_bars) * 0.3)
+    open_ = close + np.random.randn(n_bars) * 0.2
+    volume = np.random.randint(1000, 10000, n_bars)
+    
+    return pd.DataFrame({
+        'open': open_, 'high': high, 'low': low, 'close': close, 'volume': volume
+    }, index=timestamps).astype('float32')
+
+
+def create_test_signals(df: pd.DataFrame, signal_frequency: int = 8) -> SignalFrame:
+    """Create test SignalFrame with BUY/SELL signals."""
+    n = len(df)
+    signal_values = np.zeros(n, dtype=np.int8)
+    
+    for i in range(0, n, signal_frequency):
+        if i < n:
+            signal_values[i] = 1 if i % (signal_frequency * 2) == 0 else 2
+    
+    return SignalFrame(
+        signals=pd.Series(signal_values, index=df.index, dtype='int8'),
+        indicator_data=None,
+        signal_metadata={"source": "test"}
+    )
+
+
+def create_time_test_signals(freq: str = '15min') -> SignalFrame:
+    """Create test signals for time filter testing."""
+    timestamps = pd.date_range('2024-01-01 00:00:00', '2024-01-01 23:59:00', freq=freq)
+    n = len(timestamps)
+    signal_values = np.zeros(n, dtype=np.int8)
+    
+    for i in range(0, n, 4):
+        signal_values[i] = 1 if i % 8 == 0 else 2
+    
+    return SignalFrame(
+        signals=pd.Series(signal_values, index=timestamps, dtype='int8'),
+        indicator_data=None,
+        signal_metadata={"source": "test_time"}
+    )
+
+
+# ------------------------------------------------------------
+# BASELINE DATA LOADING
+# ------------------------------------------------------------
+def load_real_data() -> Tuple[pd.DataFrame, SignalFrame]:
+    """Load real data and generate baseline signals."""
+    config_path = PROJECT_ROOT / "configs/strategies/wbws/wbws_strategy_debug.yaml"
+    
+    print("\n" + "="*60)
+    print("BASELINE: DATA LOADER & SIGNAL GENERATOR")
+    print("="*60)
+    
+    try:
+        loader = NewDataLoader(str(config_path))
+        loader.load_config()
+        data_bundle = loader.load_data()
+        
+        new_gen = NewSignalGenerator(htf_period="1H", mode="core")
+        signal_frame = new_gen.generate_signals(data_bundle)
+        
+        counts = signal_frame.count_by_type()
+        print(f"✅ DataLoader v2 Active")
+        print(f"Strategy bars: {len(data_bundle.strategy):,}")
+        print(f"BUY Signals: {counts['buy']:,} | SELL Signals: {counts['sell']:,} | Total: {counts['total']:,}")
+        
+        return data_bundle.strategy, signal_frame
+    except Exception as e:
+        print(f"⚠️  Using synthetic data: {e}")
+        df = create_test_data(n_bars=500)
+        signal_frame = create_test_signals(df, signal_frequency=10)
+        return df, signal_frame
+
+
+# ------------------------------------------------------------
+# FILTER TESTER BASE CLASS
+# ------------------------------------------------------------
+class FilterTester:
+    """Base class for filter testing."""
+    
+    @staticmethod
+    def measure_execution_time(func: Callable, *args, **kwargs) -> Tuple[Any, float]:
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        end = time.perf_counter()
+        return result, (end - start) * 1000
+    
+    @staticmethod
+    def safe_series_sum(series: pd.Series) -> int:
+        return int(series.sum()) if len(series) > 0 else 0
+    
+    @staticmethod
+    def safe_format_time(time_ms: Optional[float]) -> str:
+        return f"{time_ms:.2f}ms" if time_ms is not None else "N/A"
+
+
+# ------------------------------------------------------------
+# OSCILLATOR FILTER TESTER - COMPLETE
+# ------------------------------------------------------------
+class OscillatorFilterTester(FilterTester):
+    
+    FILTER_CONFIGS = {
+        # DIRECTIONAL FILTERS
+        'rsi_filter': {
+            'class': (OldRSIFilter, NewRSIFilter),
+            'params': {'length': 14, 'overbought': 70.0, 'oversold': 30.0},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        'cci_filter': {
+            'class': (OldCCIFilter, NewCCIFilter),
+            'params': {'length': 20, 'overbought': 100, 'oversold': -100},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        'supertrend_filter': {
+            'class': (OldSupertrendFilter, NewSupertrendFilter),
+            'params': {'atr_length': 10, 'factor': 3.0},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        # ✅ These four are also DIRECTIONAL in legacy (is_long=True/False)
+        'dpo_filter': {
+            'class': (OldDPOFilter, NewDPOFilter),
+            'params': {'length': 20, 'smooth': 3, 'threshold': 0.2, 'centered': False},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        'ma_filter': {
+            'class': (OldMAFilter, NewMAFilter),
+            'params': {'ma_type': "TEMA", 'length': 25, 'slope_length': 10},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        'macd_filter': {
+            'class': (OldMACDFilter, NewMACDFilter),
+            'params': {'fast_length': 12, 'slow_length': 26, 'signal_length': 9},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        'pivot_filter': {
+            'class': (OldPivotFilter, NewPivotFilter),
+            'params': {'reversal_percent': 0.2, 'order': 5},
+            'category': FilterCategory.DIRECTIONAL
+        },
+        
+        # NON-DIRECTIONAL FILTERS
+        'adx_filter': {
+            'class': (OldADXFilter, NewADXFilter),
+            'params': {'adx_length': 14, 'threshold': 18.0},
+            'category': FilterCategory.NON_DIRECTIONAL
+        },
+        'bollinger_filter': {
+            'class': (OldBollingerFilter, NewBollingerFilter),
+            'params': {'length': 14, 'width_ma_length': 30, 'filter_multiplier': 0.5, 'std_dev': 2.0},
+            'category': FilterCategory.NON_DIRECTIONAL
+        },
+        'choppiness_filter': {
+            'class': (OldChoppinessFilter, NewChoppinessFilter),
+            'params': {'length': 14, 'threshold': 61.8},
+            'category': FilterCategory.NON_DIRECTIONAL
+        }
+    }
+
+    
+    def __init__(self, df: pd.DataFrame, signal_frame: SignalFrame):
+        self.df = df
+        self.signal_frame = signal_frame
+        self.results = []
+    
+    def test_all(self) -> List[FilterTestResult]:
+        print("\n" + "="*60)
+        print("OSCILLATOR FILTERS TEST SUITE")
+        print("="*60)
+        
+        for filter_name, config in self.FILTER_CONFIGS.items():
+            try:
+                result = self.test_single_filter(filter_name, config)
+                self.results.append(result)
+                self._print_filter_result(result)
+            except Exception as e:
+                print(f"\n❌ Error testing {filter_name}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        return self.results
+    
+    def test_directional_filter(self, filter_name: str, old_class: Any, new_class: Any, params: Dict) -> FilterTestResult:
+        """Test directional filter with is_long parameter."""
+        old_params = params.copy()
+        old_params['enabled'] = True
+        new_params = map_parameters(filter_name, params)
+        new_params['enabled'] = True
+        
+        # OLD: Get both directional masks
+        old_filter = old_class(**old_params)
+        old_buy_mask, old_buy_time = self.measure_execution_time(
+            old_filter.apply_filter, self.df, is_long=True
+        )
+        old_sell_mask, old_sell_time = self.measure_execution_time(
+            old_filter.apply_filter, self.df, is_long=False
+        )
+        old_time = old_buy_time + old_sell_time
+        
+        # NEW
+        new_filter = new_class(**new_params)
+        indicators, ind_np = {}, {}
+        new_filter.compute_indicators(self.df, indicators, ind_np)
+        new_result, new_time = self.measure_execution_time(
+            new_filter.apply_filter,
+            signal_frame=self.signal_frame,
+            df=self.df,
+            indicators=indicators,
+            ind_np=ind_np,
+            mode="debug"
+        )
+        
+        # CORRECT COMPARISON: Use appropriate mask for each signal type
+        signal_indices = np.where(self.signal_frame.signals.values != 0)[0]
+        signal_types = self.signal_frame.signals.values[signal_indices]
+        
+        buy_indices = signal_indices[signal_types == 1]
+        sell_indices = signal_indices[signal_types == 2]
+        
+        old_buy_passed = self.safe_series_sum(old_buy_mask.iloc[buy_indices]) if len(buy_indices) > 0 else 0
+        old_sell_passed = self.safe_series_sum(old_sell_mask.iloc[sell_indices]) if len(sell_indices) > 0 else 0
+        old_total = old_buy_passed + old_sell_passed
+        
+        new_counts = new_result.signal_frame.count_by_type()
+        new_total = new_counts['total']
+        
+        # Test disabled filter
+        disabled_params = new_params.copy()
+        disabled_params['enabled'] = False
+        disabled_filter = new_class(**disabled_params)
+        disabled_filter.compute_indicators(self.df, {}, {})
+        disabled_result, _ = self.measure_execution_time(
+            disabled_filter.apply_filter,
+            signal_frame=self.signal_frame,
+            df=self.df,
+            indicators={},
+            ind_np={},
+            mode="core"
+        )
+        disabled_passed = disabled_result.signals_count == self.signal_frame.count_by_type()['total']
+        
+        # Test mode parity
+        core_result = new_filter.apply_filter(
+            signal_frame=self.signal_frame,
+            df=self.df,
+            indicators=indicators,
+            ind_np=ind_np,
+            mode="core"
+        )
+        mode_parity_passed = core_result.signals_count == new_result.signals_count
+        
+        performance_passed = new_time <= old_time * 1.1
+        parity_passed = (old_total == new_total and 
+                        old_buy_passed == new_counts['buy'] and 
+                        old_sell_passed == new_counts['sell'])
+        
+        return FilterTestResult(
+            filter_name=filter_name,
+            parity_passed=parity_passed,
+            disabled_passed=disabled_passed,
+            mode_parity_passed=mode_parity_passed,
+            old_execution_time=old_time,
+            new_execution_time=new_time,
+            performance_passed=performance_passed,
+            old_count=old_total,
+            new_count=new_total,
+            old_buy=old_buy_passed,
+            old_sell=old_sell_passed,
+            new_buy=new_counts['buy'],
+            new_sell=new_counts['sell'],
+            details={'params': new_params, 'category': FilterCategory.DIRECTIONAL}
+        )
+    
+    def test_non_directional_filter(self, filter_name: str, old_class: Any, new_class: Any, params: Dict) -> FilterTestResult:
+        """Test non-directional filter with EXACT signal matching."""
+        old_params = params.copy()
+        old_params['enabled'] = True
+        new_params = map_parameters(filter_name, params)
+        new_params['enabled'] = True
+        
+        # OLD: Single mask
+        old_filter = old_class(**old_params)
+        old_mask, old_time = self.measure_execution_time(
+            old_filter.apply_filter, self.df
+        )
+        
+        # NEW
+        new_filter = new_class(**new_params)
+        indicators, ind_np = {}, {}
+        new_filter.compute_indicators(self.df, indicators, ind_np)
+        new_result, new_time = self.measure_execution_time(
+            new_filter.apply_filter,
+            signal_frame=self.signal_frame,
+            df=self.df,
+            indicators=indicators,
+            ind_np=ind_np,
+            mode="debug"
+        )
+        
+        # EXACT SIGNAL MATCHING - Compare sets of indices
+        signal_indices = np.where(self.signal_frame.signals.values != 0)[0]
+        
+        if len(signal_indices) > 0:
+            old_passed_mask = old_mask.iloc[signal_indices].values
+            old_passed_indices = signal_indices[old_passed_mask]
+            old_passed_set = set(old_passed_indices)
+            
+            new_signals = new_result.signal_frame.signals
+            new_passed_indices = np.where(new_signals.values != 0)[0]
+            new_passed_set = set(new_passed_indices)
+            
+            parity_passed = old_passed_set == new_passed_set
+            
+            # Calculate counts for display
+            signal_types = self.signal_frame.signals.values[signal_indices]
+            buy_indices = signal_indices[signal_types == 1]
+            sell_indices = signal_indices[signal_types == 2]
+            
+            old_buy_passed = self.safe_series_sum(old_mask.iloc[buy_indices]) if len(buy_indices) > 0 else 0
+            old_sell_passed = self.safe_series_sum(old_mask.iloc[sell_indices]) if len(sell_indices) > 0 else 0
+            old_total = old_buy_passed + old_sell_passed
+            
+            new_counts = new_result.signal_frame.count_by_type()
+        else:
+            parity_passed = True
+            old_buy_passed = old_sell_passed = old_total = 0
+            new_counts = {'buy': 0, 'sell': 0, 'total': 0}
+            old_passed_set = set()
+            new_passed_set = set()
+        
+        # Test disabled filter
+        disabled_params = new_params.copy()
+        disabled_params['enabled'] = False
+        disabled_filter = new_class(**disabled_params)
+        disabled_filter.compute_indicators(self.df, {}, {})
+        disabled_result, _ = self.measure_execution_time(
+            disabled_filter.apply_filter,
+            signal_frame=self.signal_frame,
+            df=self.df,
+            indicators={},
+            ind_np={},
+            mode="core"
+        )
+        disabled_passed = disabled_result.signals_count == self.signal_frame.count_by_type()['total']
+        
+        # Test mode parity
+        core_result = new_filter.apply_filter(
+            signal_frame=self.signal_frame,
+            df=self.df,
+            indicators=indicators,
+            ind_np=ind_np,
+            mode="core"
+        )
+        mode_parity_passed = core_result.signals_count == new_result.signals_count
+        
+        performance_passed = new_time <= old_time * 1.1
+        
+        return FilterTestResult(
+            filter_name=filter_name,
+            parity_passed=parity_passed,
+            disabled_passed=disabled_passed,
+            mode_parity_passed=mode_parity_passed,
+            old_execution_time=old_time,
+            new_execution_time=new_time,
+            performance_passed=performance_passed,
+            old_count=len(old_passed_set) if len(signal_indices) > 0 else 0,
+            new_count=len(new_passed_set) if len(signal_indices) > 0 else 0,
+            old_buy=old_buy_passed,
+            old_sell=old_sell_passed,
+            new_buy=new_counts.get('buy', 0),
+            new_sell=new_counts.get('sell', 0),
+            details={
+                'params': new_params,
+                'category': FilterCategory.NON_DIRECTIONAL,
+                'exact_match': parity_passed,
+                'old_passed_set_size': len(old_passed_set) if len(signal_indices) > 0 else 0,
+                'new_passed_set_size': len(new_passed_set) if len(signal_indices) > 0 else 0,
+                'only_in_old': len(old_passed_set - new_passed_set) if len(signal_indices) > 0 else 0,
+                'only_in_new': len(new_passed_set - old_passed_set) if len(signal_indices) > 0 else 0,
+                'signal_count': len(signal_indices) if len(signal_indices) > 0 else 0
+            }
+        )
+    
+    def test_single_filter(self, filter_name: str, config: Dict) -> FilterTestResult:
+        old_class, new_class = config['class']
+        params = config['params']
+        category = config['category']
+        
+        if category == FilterCategory.DIRECTIONAL:
+            return self.test_directional_filter(filter_name, old_class, new_class, params)
+        else:
+            return self.test_non_directional_filter(filter_name, old_class, new_class, params)
+    
+    def _print_filter_result(self, result: FilterTestResult):
+        category = result.details.get('category', 'unknown')
+        
+        print(f"\n{'-'*60}")
+        print(f"FILTER: {result.filter_name.upper()} [{category}]")
+        print(f"{'-'*60}")
+        
+        parity_icon = '✅' if result.parity_passed else '❌'
+        print(f"  Parity:      {parity_icon} (Old: {result.old_count} | New: {result.new_count})")
+        
+        if not result.parity_passed:
+            if category == FilterCategory.DIRECTIONAL:
+                print(f"    BUY:  {result.old_buy} vs {result.new_buy} (Δ{result.old_buy - result.new_buy})")
+                print(f"    SELL: {result.old_sell} vs {result.new_sell} (Δ{result.old_sell - result.new_sell})")
+            else:
+                only_in_old = result.details.get('only_in_old', 0)
+                only_in_new = result.details.get('only_in_new', 0)
+                print(f"    Only in old: {only_in_old} signals")
+                print(f"    Only in new: {only_in_new} signals")
+                print(f"    Total mismatch: {only_in_old + only_in_new} signals")
+        
+        print(f"  Disabled:    {'✅' if result.disabled_passed else '❌'}")
+        print(f"  Mode Parity: {'✅' if result.mode_parity_passed else '❌'}")
+        
+        perf_icon = '✅' if result.performance_passed else '❌'
+        speed_ratio = result.old_execution_time / result.new_execution_time if result.new_execution_time > 0 else 0
+        speed_indicator = '🚀' if speed_ratio > 1.1 else '🐢' if speed_ratio < 0.9 else '✓'
+        
+        print(f"  Performance: {perf_icon} "
+              f"(Old: {self.safe_format_time(result.old_execution_time)} | "
+              f"New: {self.safe_format_time(result.new_execution_time)}) "
+              f"[{speed_ratio:.2f}x {speed_indicator}]")
+
+
+# ------------------------------------------------------------
+# TIME FILTER TESTER
+# ------------------------------------------------------------
+class TimeFilterTester(FilterTester):
+    
+    def __init__(self):
+        self.time_config = {
+            'time_filter': {
+                'enabled': True,
+                'session_start': {'hour': 8, 'minute': 30},
+                'session_end': {'hour': 20, 'minute': 30}
+            }
+        }
+    
+    def test(self) -> FilterTestResult:
+        print("\n" + "="*60)
+        print("TIME FILTER TEST")
+        print("="*60)
+        
+        signal_frame = create_time_test_signals()
+        total_signals = signal_frame.count_by_type()["total"]
+        
+        # OLD
+        old_filter = OldTimeManager(self.time_config)
+        old_input = pd.DataFrame({
+            'timestamp': signal_frame.signals.index,
+            'signal': signal_frame.signals.map({1: "BUY", 2: "SELL"}).values
+        })
+        old_input = old_input[old_input['signal'].notna()]
+        old_output, old_time = self.measure_execution_time(
+            old_filter.filter_signals_by_time, old_input, 'timestamp'
+        )
+        old_count = len(old_output)
+        
+        # NEW
+        new_filter = NewTimeFilter(self.time_config, name="time_filter")
+        dummy_df = pd.DataFrame(index=signal_frame.signals.index)
+        new_result, new_time = self.measure_execution_time(
+            new_filter.apply_filter,
+            signal_frame=signal_frame,
+            df=dummy_df,
+            indicators={},
+            ind_np={},
+            mode="debug"
+        )
+        new_count = new_result.signals_count
+        
+        # Test disabled
+        disabled_config = {'time_filter': {'enabled': False}}
+        disabled_filter = NewTimeFilter(disabled_config, name="time_filter")
+        disabled_result, _ = self.measure_execution_time(
+            disabled_filter.apply_filter,
+            signal_frame=signal_frame,
+            df=dummy_df,
+            indicators={},
+            ind_np={},
+            mode="core"
+        )
+        disabled_passed = disabled_result.signals_count == total_signals
+        
+        # Mode parity
+        core_result = new_filter.apply_filter(
+            signal_frame=signal_frame,
+            df=dummy_df,
+            indicators={},
+            ind_np={},
+            mode="core"
+        )
+        mode_parity_passed = core_result.signals_count == new_result.signals_count
+        
+        performance_passed = new_time <= old_time * 1.1
+        
+        # Timestamp comparison
+        old_timestamps = set(old_output['timestamp'].values)
+        new_timestamps = set(new_result.signal_frame.signals[new_result.signal_frame.signals != 0].index)
+        timestamp_match = old_timestamps == new_timestamps
+        
+        old_buy_count = int((old_output['signal'] == 'BUY').sum())
+        old_sell_count = int((old_output['signal'] == 'SELL').sum())
+        new_counts = new_result.signal_frame.count_by_type()
+        signal_type_match = (old_buy_count == new_counts['buy'] and old_sell_count == new_counts['sell'])
+        
+        parity_passed = (old_count == new_count and timestamp_match and signal_type_match)
+        
+        return FilterTestResult(
+            filter_name="time_filter",
+            parity_passed=parity_passed,
+            disabled_passed=disabled_passed,
+            mode_parity_passed=mode_parity_passed,
+            old_execution_time=old_time,
+            new_execution_time=new_time,
+            performance_passed=performance_passed,
+            old_count=old_count,
+            new_count=new_count,
+            old_buy=old_buy_count,
+            old_sell=old_sell_count,
+            new_buy=new_counts['buy'],
+            new_sell=new_counts['sell'],
+            details={'category': FilterCategory.TIME_FILTER}
+        )
+
+
+# ------------------------------------------------------------
+# EXECUTION MODE TESTER
+# ------------------------------------------------------------
+class ExecutionModeTester(FilterTester):
+    
+    def __init__(self, df: pd.DataFrame, signal_frame: SignalFrame):
+        self.df = df
+        self.signal_frame = signal_frame
+        self.modes = get_execution_modes()
+    
+    def test_all_filters_with_modes(self) -> Dict:
+        print("\n" + "="*60)
+        print("EXECUTION MODE TEST SUITE")
+        print("="*60)
+        
+        mode_results = {}
+        
+        for mode_config in self.modes:
+            mode_name = mode_config['name']
+            print(f"\n{'-'*60}")
+            print(f"MODE: {mode_name.upper()}")
+            print(f"{'-'*60}")
+            
+            rsi_filter = NewRSIFilter(length=14, overbought=70, oversold=30)
+            indicators, ind_np = {}, {}
+            rsi_filter.compute_indicators(self.df, indicators, ind_np)
+            
+            result = rsi_filter.apply_filter(
+                signal_frame=self.signal_frame,
+                df=self.df,
+                indicators=indicators,
+                ind_np=ind_np,
+                mode=mode_name
+            )
+            
+            mode_results[mode_name] = {
+                'signals_count': result.signals_count,
+                'execution_time_ms': result.metadata.execution_time_ms or 0.0,
+                'status': result.metadata.status,
+                'expected_outputs': mode_config['expected_outputs']
+            }
+            
+            print(f"  Filter:      RSI")
+            print(f"  Signals:     {result.signals_count}")
+            print(f"  Time:        {self.safe_format_time(result.metadata.execution_time_ms)}")
+            print(f"  Status:      {result.metadata.status}")
+            print(f"  Outputs:     {'Enabled' if mode_config['expected_outputs'] else 'Disabled'}")
+        
+        return mode_results
+
+
+# ------------------------------------------------------------
+# MAIN TEST SUITE
+# ------------------------------------------------------------
+def run_full_test_suite() -> bool:
+    """Run complete filter migration test suite."""
+    
+    print("\n" + "="*60)
+    print("FILTERS MIGRATION PARITY TEST SUITE - FINAL")
+    print("="*60)
+    print("Session 5 - All Filters Restored with EXACT Legacy Logic")
+    print("="*60)
+    
+    # Load data
+    df, signal_frame = load_real_data()
+    
+    # Initialize testers
+    oscillator_tester = OscillatorFilterTester(df, signal_frame)
+    time_tester = TimeFilterTester()
+    mode_tester = ExecutionModeTester(df, signal_frame)
+    
+    # Run tests
+    oscillator_results = oscillator_tester.test_all()
+    time_result = time_tester.test()
+    mode_results = mode_tester.test_all_filters_with_modes()
+    
+    # Compile results
+    all_results = oscillator_results + [time_result]
+    
+    print("\n" + "="*60)
+    print("FINAL RESULTS - FILTER MIGRATION TEST SUITE")
+    print("="*60)
+    
+    total_tests = len(all_results)
+    passed_parity = sum(1 for r in all_results if r.parity_passed)
+    passed_disabled = sum(1 for r in all_results if r.disabled_passed)
+    passed_mode = sum(1 for r in all_results if r.mode_parity_passed)
+    passed_performance = sum(1 for r in all_results if r.performance_passed)
+    
+    print(f"\n📊 SUMMARY STATISTICS:")
+    print(f"  Total Filters Tested:    {total_tests}")
+    print(f"  ✅ Parity Passed:        {passed_parity}/{total_tests} ({(passed_parity/total_tests)*100:.1f}%)")
+    print(f"  ✅ Disabled Passed:      {passed_disabled}/{total_tests} ({(passed_disabled/total_tests)*100:.1f}%)")
+    print(f"  ✅ Mode Parity Passed:   {passed_mode}/{total_tests} ({(passed_mode/total_tests)*100:.1f}%)")
+    print(f"  ✅ Performance Passed:   {passed_performance}/{total_tests} ({(passed_performance/total_tests)*100:.1f}%)")
+    
+    print(f"\n⚡ PERFORMANCE SUMMARY:")
+    print(f"  {'Filter':<20} {'Old (ms)':<12} {'New (ms)':<12} {'Speedup':<12} {'Result':<8}")
+    print(f"  {'-'*64}")
+    
+    for result in sorted(all_results, key=lambda x: x.filter_name):
+        speedup = result.old_execution_time / result.new_execution_time if result.new_execution_time > 0 else 0
+        print(f"  {result.filter_name:<20} "
+              f"{result.old_execution_time:<12.2f} "
+              f"{result.new_execution_time:<12.2f} "
+              f"{speedup:.2f}x{' ':<8} "
+              f"{'✅' if result.performance_passed else '❌'}")
+    
+    overall_pass = (passed_parity == total_tests and 
+                   passed_disabled == total_tests and 
+                   passed_mode == total_tests)
+    
+    print(f"\n{'='*60}")
+    if overall_pass:
+        print("✅✅✅ ALL FILTER TESTS PASSED - MIGRATION VERIFIED! ✅✅✅")
+        if passed_performance == total_tests:
+            print("   🚀 Performance: All filters meet or exceed legacy speed")
+        return True
+    else:
+        print("❌❌❌ SOME FILTER TESTS FAILED")
+        return False
+
+
+if __name__ == "__main__":
+    success = run_full_test_suite()
+    sys.exit(0 if success else 1)

@@ -5,19 +5,11 @@
    - FilterResult, FilterMetadata, FilterPipelineResult
    - FilterProtocol interface
    - Backward compatibility helpers
-2. **Filters Migrated** ✅
-   - TimeFilter (time-based session filtering)
-   - RSIFilter (overbought/oversold oscillator)
-   - CCIFilter (momentum oscillator)
-   - ADXFilter (simple trend strength)
-   - MAFilter  (moving average slope)
-   - SupertrendFilter (ATR-based directional)
-
+2. **All Filters Migrated** ✅   
 3. **Testing** ✅
-   - `test_time_filter.py` - Time filter parity validated
-   - `test_oscillator_filters.py` - RSI + CCI parity validated
-   - All tests: Parity ✅, Disabled ✅, Core/Debug ✅
-   - Next test script not ealier than for end of the Phase 3
+   - `test_filters.py`:
+   - All tests: Parity ✅, Disabled ✅, Core/Debug ✅ Perf ✅
+   - Next test script for FilterPipeline
 4. **Documentation** ✅
    - `CONTRACTS_REFERENCE.md` - Compact contract summary (upload this to next session)
 ---
@@ -30,76 +22,53 @@ src/strategies/specific/filters/
 ├── adx_filter.py           ✅ Done (Batch 2)
 ├── ma_filter.py            ✅ Done (Batch 2)
 ├── supertrend_filter.py    ✅ Done (Batch 2)
-├── bollinger_filter.py     ⏳ Batch 3
-├── choppiness_filter.py    ⏳ Batch 3
-├── macd_filter.py          ⏳ Batch 4
-├── dpo_filter.py           ⏳ Batch 4
-└── pivot_filter.py         ⏳ Batch 5 (most complex)
+├── bollinger_filter.py     ✅ Done Batch 3
+├── choppiness_filter.py    ✅ Done 3
+├── macd_filter.py          ✅ Done 4
+├── dpo_filter.py           ✅ Done 4
+└── pivot_filter.py         ✅ Done 5
 
 src/strategies/contracts/
 └── filter_contracts.py     ✅ Done
 
 tests/migration/
-├── test_time_filter.py           ✅ Done
-└── test_oscillator_filters.py    ✅ Done
+├── test_filter.py           ✅ Done
 ```
 ---
-## Next Session Tasks (Batch 2 - Trend Filters)
+## Next Session Plan
+### Step 3.2: Filter Migration (Thin Slice)
+- [x] Migrate time filter
+- [x] Migrate technical filters (11 filters)
+- [ ] Create new FilterPipeline
+- [ ] Parity/Performance test
+---
+## Phase 4: Trade Management ⏳ PENDING
+**Goal**: Replace string-based trade logic with typed contracts
+
+If possible prepare Phase 4 plan for next session
+### Step 4.1: Trade Contracts
+- [ ] Review existing trade_*.py files
+## Next Session Tasks 
 ### Immediate Actions
 1. **Upload these files to continue:**
    - `CONTRACTS_REFERENCE.md` (compact contracts)
    - This handoff file
-
-2. **Provide for Batch 3,4,5:**
-   - `src/strategies/filters/adx_filter.py` (reference)
-   - `src/strategies/filters/supertrend_filter.py` (reference)
-   - `src/strategies/filters/ma_filter.py` (reference - has external dependency)
-3. **Migrate Batch 3,4,5 (20+20+30 min):**
----
-**Final** - FilterPipeline (1 hour)
+2. **Provide Legacy FilterPipline**
+   - `src\strategies\core\filter_pipeline.py` (reference)
+3. FilterPipeline (1 hour)
 - Integrate all filters
 - Chain execution with early exit
 - Indicator caching
 - Return FilterPipelineResult
 ---
 ## Key Patterns Established
-### Filter Template (Copy This for New Filters)
-```python
-class NewFilter:
-    def __init__(self, ..., enabled: bool = True, name: str = "new_filter"):
-        self.name = name
-        self.enabled = enabled
-        # ... filter-specific params
-    
-    def compute_indicators(self, df, indicators, ind_np) -> None:
-        # Calculate and cache indicators
-        indicators['indicator_name'] = series
-        ind_np['indicator_name'] = series.to_numpy()
-    
-    def apply_filter(self, signal_frame, df, indicators, ind_np, mode="core") -> FilterResult:
-        # 1. Handle disabled/empty cases
-        # 2. Get indicator from ind_np
-        # 3. Vectorized numpy filtering
-        # 4. Create filtered SignalFrame
-        # 5. Build FilterMetadata
-        # 6. Return FilterResult
-```
-### Test Template
-```python
-def test_filter_parity():
-    # 1. Create test data (OHLCV)
-    # 2. Create test SignalFrame
-    # 3. Run OLD filter (is_long=True/False separately)
-    # 4. Run NEW filter (unified SignalFrame)
-    # 5. Compare counts at signal locations
-    # 6. Assert exact match
-```
 ---
 ## Performance Notes
 - Time filter: ~1ms for 200 signals (vectorized)
 - RSI/CCI filters: ~2-3ms with indicator computation
 - Core mode: No metadata overhead
 - Debug mode: +0.5-1ms for metadata collection
+- New filters: perfect parity, perf from 2x to 2000x better
 ---
 ## Critical Reminders for Next Session
 1. **Path Resolution**: repertoried by `src\utils\paths.py` - here our folders for migration content:
@@ -117,6 +86,5 @@ def test_filter_parity():
 3. **Import Pattern**: Import old from `src.strategies.filters`, new from local
 4. **Test Pattern**: Compare at signal locations (not full DataFrame)
 ---
-**Session 4 Complete: 6/11 filters + contracts + tests ✅**  
-**Next: Batch 3+4+5**  
-**Overall Progress: Phase 3 = 55% complete (6/11 filters)**
+**Session 4 Complete: 11/11 filters + contracts + tests ✅**  
+**Overall Progress: Phase 3 = 75% complete (11/11 filters)**

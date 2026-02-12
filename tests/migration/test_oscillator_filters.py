@@ -40,9 +40,30 @@ from src.utils.paths import (
 from src.strategies.filters.rsi_filter import RSIFilter as OldRSIFilter
 from src.strategies.filters.cci_filter import CCIFilter as OldCCIFilter
 
+#Filters not yet integrated in test
+from src.strategies.filters.adx_filter import ADXFilter as OldADXFilter
+from src.strategies.filters.bollinger_filter import BollingerFilter as OldBollingerFilter
+from src.strategies.filters.choppiness_filter import ChoppinessFilter as OldChopinessFilter
+from src.strategies.filters.dpo_filter import DPOFilter as OldDPOFilter
+from src.strategies.filters.ma_filter import MAFilter as OldMAFilter
+from src.strategies.filters.macd_filter import MACDFilter as OldMACDFilter
+from src.strategies.filters.pivot_filter import PivotFilter as OldPivotFilter
+from src.strategies.filters.supertrend_filter import SupertrendFilter as OldSupertrendFilter
+
 # Import new implementations using path resolution
 from src.strategies.specific.filters.rsi_filter import RSIFilter as NewRSIFilter
 from src.strategies.specific.filters.cci_filter import CCIFilter as NewCCIFilter
+
+#Filters not yet integrated in test
+from src.strategies.specific.filters.adx_filter import ADXFilter as NewADXFilter
+from src.strategies.specific.filters.bollinger_filter import BollingerFilter as NewBollingerFilter
+from src.strategies.specific.filters.choppiness_filter import ChoppinessFilter as NewChopinessFilter
+from src.strategies.specific.filters.dpo_filter import DPOFilter as NewDPOFilter
+from src.strategies.specific.filters.ma_filter import MAFilter as NewMAFilter
+from src.strategies.specific.filters.macd_filter import MACDFilter as NewMACDFilter
+from src.strategies.specific.filters.pivot_filter import PivotFilter as NewPivotFilter
+from src.strategies.specific.filters.supertrend_filter import SupertrendFilter as NewSupertrendFilter
+
 
 # Import contracts using path resolution
 from src.strategies.contracts.signal_contracts import SignalFrame
