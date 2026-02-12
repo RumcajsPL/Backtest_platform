@@ -112,17 +112,11 @@ def test_filter_parity():
       MODULES_DIR = SPECIFIC_STRATEGIES_DIR / "modules"
       FILTERS_DIR = SPECIFIC_STRATEGIES_DIR / "filters"
       TESTS_DIR = PROJECT_ROOT / "tests"
-      MIGRATION_TESTS_DIR = TESTS_DIR / "migration"
-   - Auto create directories (ensure_dir creates parent dir if missing, returns the path for chaining operations)
-      ensure_dir(CONTRACTS_DIR)
-      ensure_dir(MODULES_DIR)
-      ensure_dir(FILTERS_DIR)
-      ensure_dir(MIGRATION_TESTS_DIR)
-   
-3. **Filter Directory**: All new filters in `src/strategies/specific/filters/`
-4. **Import Pattern**: Import old from `src.strategies.filters`, new from local
-5. **Test Pattern**: Compare at signal locations (not full DataFrame)
+      MIGRATION_TESTS_DIR = TESTS_DIR / "migration"   
+2. **Filter Directory**: All new filters in `src/strategies/specific/filters/`
+3. **Import Pattern**: Import old from `src.strategies.filters`, new from local
+4. **Test Pattern**: Compare at signal locations (not full DataFrame)
 ---
-**Session 4 Complete: 3/11 filters + contracts + tests ✅**  
+**Session 4 Complete: 6/11 filters + contracts + tests ✅**  
 **Next: Batch 3+4+5**  
 **Overall Progress: Phase 3 = 55% complete (6/11 filters)**
