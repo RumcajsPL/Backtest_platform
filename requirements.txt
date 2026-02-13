@@ -23,3 +23,6 @@ pytz==2025.2
 
 # Additional packages for for resource monitoring
 psutil==7.2.1
+
+#Testing and migration verification tools
+pytest==26.0.1
