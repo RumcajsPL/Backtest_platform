@@ -1,6 +1,4 @@
 # Phase 4 Analysis Summary - Session 5 Completion
-## Overview
-Based on analysis of provided trade management files and existing contracts, I've enhanced the SESSION_6_HANDOFF.md with a comprehensive Phase 4 roadmap.
 ---
 ## Key Findings
 ### 1. **Critical Name Collision Discovered** ⚠️
@@ -9,7 +7,7 @@ Based on analysis of provided trade management files and existing contracts, I'v
 - **Trade Mgmt** (trade_management/signal_frame.py): Contains OHLCV price data ❌
 **Impact**: Ambiguous imports, confusing API, potential bugs
 **Solution**: 
-1. Decide if useful and required if not just skip it
+1. Decide if signal_contracts.py useful and required if not just skip it it is not used in legacy
 2. If yes - Rename trade management's `SignalFrame` → `MarketFrame`
 - More accurate (it's market price data, not signals)
 - Eliminates confusion
