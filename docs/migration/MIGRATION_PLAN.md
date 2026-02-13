@@ -111,8 +111,8 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 ### Step 3.2: Filter Migration (Thin Slice)
 - [x] Migrate time filter
 - [x] Migrate technical filters (11 filters)
-- [ ] Create new FilterPipeline
-- [ ] Performance test
+- [x] Create new FilterPipeline
+- [x] Performance test
 ---
 ## Phase 4: Trade Management ⏳ PENDING
 **Goal**: Replace string-based trade logic with typed contracts

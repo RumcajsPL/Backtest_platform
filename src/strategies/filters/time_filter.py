@@ -4,7 +4,6 @@ import logging
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
-
 class TimeManager:
     """Manages time-based trading restrictions using pre-converted timezone timestamps"""
     

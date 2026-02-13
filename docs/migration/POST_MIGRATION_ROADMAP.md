@@ -308,3 +308,706 @@ Recommendation: Merge the restored filters, then create a separate task for eval
 text
 
 This audit doc captures all the critical lessons learned and provides a clear path forward for both the completed migration and future considerations.
+
+# POST-MIGRATION ROADMAP
+
+## Purpose
+Documents observations, technical debt, and improvement opportunities discovered during migration. These items are **not critical for migration completion** but represent future optimization opportunities.
+
+---
+
+## Technical Debt Accepted for Migration
+
+### TD-1: Mutable Indicator Dictionaries
+**Location**: `FilterPipeline.compute_indicators()`  
+**Current State**: Filters share mutable `Dict[str, pd.Series]` and `Dict[str, np.ndarray]`
+
+**Why Accepted**:
+- ✅ Proven performance (no regression risk)
+- ✅ Simple and fast (direct dict access)
+- ✅ Filters already use this pattern (consistency)
+- ✅ Parity guaranteed (same memory layout)
+
+**Future Improvement Opportunity**:
+```python
+# Current (Session 5):
+self.indicators: Dict[str, pd.Series] = {}
+self.ind_np: Dict[str, np.ndarray] = {}
+
+filter.compute_indicators(df, self.indicators, self.ind_np)
+
+# Better (Post-migration):
+class IndicatorStore:
+    def __init__(self):
+        self._series: Dict[str, pd.Series] = {}
+        self._numpy: Dict[str, np.ndarray] = {}
+    
+    def add(self, name: str, series: pd.Series) -> None:
+        self._series[name] = series
+        self._numpy[name] = series.to_numpy()
+    
+    def get_series(self, name: str) -> pd.Series: ...
+    def get_numpy(self, name: str) -> np.ndarray: ...
+    def has(self, name: str) -> bool: ...
+    
+    @property
+    def computed_indicators(self) -> List[str]: ...
+
+# Usage:
+store = IndicatorStore()
+filter.compute_indicators(df, store)
+```
+
+**Benefits of Refactoring**:
+- Better encapsulation (hide dict implementation)
+- Type safety (no accidental key overwrites)
+- API clarity (explicit get/add methods)
+- Easier testing (mock IndicatorStore)
+- Extensibility (add caching, validation, etc.)
+
+**Estimated Effort**: 2-3 hours  
+**Risk**: Low (replace dict with class, keep same logic)  
+**Priority**: Medium (nice-to-have, not critical)
+
+---
+
+### TD-2: Filter Error Handling Strategy
+**Location**: `FilterPipeline.apply_filters()`  
+**Current State**: Failed filters pass signals through unchanged
+
+```python
+try:
+    result = filter.apply_filter(...)
+except Exception as e:
+    logger.error(f"Filter {filter.name} failed: {e}")
+    result = FilterResult(
+        passed=True,  # Pass through
+        signal_frame=current_signals,  # Unchanged
+        metadata=FilterMetadata(..., status=FilterStatus.ERROR)
+    )
+```
+
+**Why Accepted**:
+- ✅ Pipeline resilience (one bad filter doesn't break everything)
+- ✅ Debugging friendly (see which filter failed, rest continue)
+- ✅ Matches legacy behavior (filters were independent)
+
+**Concerns**:
+- ❌ Could pass bad signals (if filter should have rejected them)
+- ❌ Silent failures (if user doesn't check logs)
+- ❌ Inconsistent with "fail-fast" philosophy
+
+**Future Improvement Opportunity**:
+```python
+# Add configurable error strategy:
+class ErrorStrategy(Enum):
+    PASS_THROUGH = auto()   # Current behavior (optimistic)
+    REJECT_ALL = auto()     # Conservative (safer)
+    FAIL_FAST = auto()      # Raise exception (strict)
+    SKIP_FILTER = auto()    # Treat as disabled (neutral)
+
+class FilterPipeline:
+    def __init__(self, config, cache, error_strategy=ErrorStrategy.PASS_THROUGH):
+        self.error_strategy = error_strategy
+    
+    def _handle_filter_error(self, filter_name, error, current_signals):
+        if self.error_strategy == ErrorStrategy.PASS_THROUGH:
+            return current_signals
+        elif self.error_strategy == ErrorStrategy.REJECT_ALL:
+            return SignalFrame.empty()
+        elif self.error_strategy == ErrorStrategy.FAIL_FAST:
+            raise FilterExecutionError(filter_name, error)
+        elif self.error_strategy == ErrorStrategy.SKIP_FILTER:
+            logger.warning(f"Skipping {filter_name} due to error")
+            return current_signals
+```
+
+**Benefits of Refactoring**:
+- Flexibility (user chooses error handling)
+- Safety (conservative mode for production)
+- Development support (fail-fast for debugging)
+- Clear behavior (no surprises)
+
+**Estimated Effort**: 1-2 hours  
+**Risk**: Low (add config option, keep default behavior)  
+**Priority**: Medium (useful for production deployments)
+
+---
+
+### TD-3: Single Responsibility Violation
+**Location**: `FilterPipeline` class  
+**Current State**: Pipeline handles both filter orchestration AND indicator computation
+
+**Responsibilities Mixed**:
+1. Filter management (loading, instantiation)
+2. Filter orchestration (sequential execution, early exit)
+3. Indicator computation (compute, cache, share)
+4. Result aggregation (stats, metadata)
+
+**Why Accepted**:
+- ✅ Simpler initial implementation
+- ✅ Fewer classes to manage
+- ✅ Indicators tightly coupled to filters anyway
+- ✅ Performance not impacted (all in-memory)
+
+**Future Improvement Opportunity**:
+```python
+# Current (Session 5):
+class FilterPipeline:
+    def compute_indicators(self, df): ...      # Responsibility 3
+    def apply_filters(self, sf, df): ...       # Responsibilities 1, 2, 4
+
+# Better (Post-migration):
+class IndicatorComputer:
+    """Computes and caches indicators for filters."""
+    def __init__(self, cache: FilterPipelineCache):
+        self.cache = cache
+        self.indicators: Dict[str, pd.Series] = {}
+        self.ind_np: Dict[str, np.ndarray] = {}
+    
+    def compute_for_filters(
+        self, 
+        df: pd.DataFrame, 
+        filters: List[FilterProtocol]
+    ) -> None:
+        cache_id = self.cache.compute_cache_id(df)
+        if self.cache.has(cache_id):
+            cached = self.cache.get(cache_id)
+            self.indicators = cached["indicators"]
+            self.ind_np = cached["indicators_np"]
+            return
+        
+        for filter in filters:
+            filter.compute_indicators(df, self.indicators, self.ind_np)
+        
+        self.cache.store(cache_id, self.indicators, self.ind_np)
+
+class FilterOrchestrator:
+    """Executes filters sequentially with early exit."""
+    def __init__(self, filters: List[FilterProtocol]):
+        self.filters = filters
+    
+    def execute(
+        self,
+        signal_frame: SignalFrame,
+        df: pd.DataFrame,
+        indicators: Dict[str, pd.Series],
+        ind_np: Dict[str, np.ndarray],
+        mode: str = "core"
+    ) -> FilterPipelineResult:
+        # Sequential execution
+        # Early exit logic
+        # Result aggregation
+
+class FilterPipeline:
+    """High-level pipeline coordinator."""
+    def __init__(self, config: Dict, cache: FilterPipelineCache):
+        self.time_filter = TimeFilter(...)
+        self.technical_filters = self._load_technical_filters(...)
+        self.indicator_computer = IndicatorComputer(cache)
+        self.orchestrator = FilterOrchestrator(self.technical_filters)
+    
+    def apply_filters(
+        self,
+        signal_frame: SignalFrame,
+        df: pd.DataFrame,
+        mode: str = "core"
+    ) -> FilterPipelineResult:
+        # 1. Time filter
+        time_result = self.time_filter.apply_filter(...)
+        
+        # 2. Compute indicators
+        self.indicator_computer.compute_for_filters(df, self.technical_filters)
+        
+        # 3. Execute technical filters
+        return self.orchestrator.execute(
+            signal_frame=time_result.signal_frame,
+            df=df,
+            indicators=self.indicator_computer.indicators,
+            ind_np=self.indicator_computer.ind_np,
+            mode=mode
+        )
+```
+
+**Benefits of Refactoring**:
+- Clear separation of concerns (each class does one thing)
+- Easier testing (mock individual components)
+- Reusability (IndicatorComputer used elsewhere)
+- Extensibility (add parallel filter execution to Orchestrator)
+- Maintainability (smaller classes, focused logic)
+
+**Estimated Effort**: 3-4 hours  
+**Risk**: Medium (major refactoring, needs thorough testing)  
+**Priority**: Low (nice-to-have, current design works well)
+
+---
+
+## Performance Optimization Opportunities
+
+### PERF-1: Parallel Filter Execution
+**Location**: `FilterPipeline.apply_filters()`  
+**Current State**: Filters execute sequentially
+
+**Observation**:
+- Most technical filters are independent (don't depend on each other)
+- Could execute in parallel after indicators computed
+- Python GIL limits true parallelism, but can use multiprocessing
+
+**Opportunity**:
+```python
+from concurrent.futures import ProcessPoolExecutor
+
+class FilterOrchestrator:
+    def execute_parallel(
+        self,
+        signal_frame: SignalFrame,
+        df: pd.DataFrame,
+        indicators: Dict,
+        ind_np: Dict,
+        mode: str = "core"
+    ) -> FilterPipelineResult:
+        # Execute independent filters in parallel
+        with ProcessPoolExecutor() as executor:
+            futures = []
+            for filter in self.filters:
+                future = executor.submit(
+                    filter.apply_filter,
+                    signal_frame, df, indicators, ind_np, mode
+                )
+                futures.append((filter, future))
+            
+            # Collect results
+            results = []
+            for filter, future in futures:
+                result = future.result()
+                results.append(result)
+        
+        # Combine results (AND logic)
+        final_signals = self._combine_filter_results(results)
+        return FilterPipelineResult(...)
+```
+
+**Challenges**:
+- Filters must be truly independent (no shared state)
+- Serialization overhead (pickling DataFrames)
+- May not be faster for small datasets
+- Complexity increases significantly
+
+**Estimated Speedup**: 1.5-2x (for 10+ filters)  
+**Estimated Effort**: 8-12 hours (complex)  
+**Risk**: High (concurrency bugs, state management)  
+**Priority**: Low (current performance already excellent)
+
+---
+
+### PERF-2: Numba JIT Compilation
+**Location**: Hot loops in filters (e.g., MA slope calculation, pivot detection)  
+**Current State**: Pure Python/NumPy
+
+**Observation**:
+- Some filter logic could benefit from JIT compilation
+- Examples:
+  - MA slope calculation (rolling window comparison)
+  - Pivot detection (peak/valley finding)
+  - Custom indicator calculations
+
+**Opportunity**:
+```python
+import numba as nb
+
+@nb.jit(nopython=True, cache=True)
+def calculate_ma_slope_numba(ma: np.ndarray, slope_length: int) -> np.ndarray:
+    """Numba-optimized MA slope calculation."""
+    n = len(ma)
+    result = np.zeros(n, dtype=np.float32)
+    result[:] = np.nan
+    
+    for i in range(slope_length, n):
+        result[i] = ma[i] - ma[i - slope_length]
+    
+    return result
+
+# In MAFilter.apply_filter():
+ma_slope = calculate_ma_slope_numba(ma, self.slope_length)
+```
+
+**Benefits**:
+- 5-10x speedup for hot loops
+- No change to API (drop-in replacement)
+- Minimal code changes
+
+**Challenges**:
+- Numba learning curve
+- Type inference issues
+- Not all NumPy functions supported
+- Debugging harder (compiled code)
+
+**Estimated Speedup**: 1.1-1.3x pipeline-wide (5-10x for specific loops)  
+**Estimated Effort**: 4-6 hours per filter  
+**Risk**: Medium (needs testing, potential bugs)  
+**Priority**: Low (current performance sufficient)
+
+---
+
+### PERF-3: Indicator Precomputation
+**Location**: `IndicatorComputer` (future class)  
+**Current State**: Indicators computed on-demand when filters run
+
+**Observation**:
+- Indicators could be computed upfront (before signals generated)
+- Could be stored with OHLCV data (columnar format)
+- Avoids recomputation across backtests
+
+**Opportunity**:
+```python
+class PrecomputedIndicatorStore:
+    """Store indicators alongside OHLCV data."""
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.copy()
+    
+    def add_rsi(self, length: int = 14) -> None:
+        self.df[f'rsi_{length}'] = pta.rsi(self.df['close'], length)
+    
+    def add_cci(self, length: int = 20) -> None:
+        self.df[f'cci_{length}'] = pta.cci(
+            self.df['high'], self.df['low'], self.df['close'], length
+        )
+    
+    def get_indicator(self, name: str) -> pd.Series:
+        return self.df[name]
+    
+    def save(self, path: str) -> None:
+        """Save OHLCV + indicators to Parquet."""
+        self.df.to_parquet(path)
+    
+    @classmethod
+    def load(cls, path: str) -> 'PrecomputedIndicatorStore':
+        """Load OHLCV + indicators from Parquet."""
+        df = pd.read_parquet(path)
+        return cls(df)
+
+# Usage:
+# 1. Precompute once (setup phase)
+store = PrecomputedIndicatorStore(df)
+store.add_rsi(14)
+store.add_cci(20)
+# ... add all indicators
+store.save('data/indicators/DEUIDXEUR_1min_indicators.parquet')
+
+# 2. Load in backtest (fast)
+store = PrecomputedIndicatorStore.load('data/indicators/...')
+rsi = store.get_indicator('rsi_14')
+```
+
+**Benefits**:
+- Zero indicator computation during backtest
+- Faster multi-strategy optimization (shared indicators)
+- Indicators persisted to disk (reusable)
+- Columnar storage (Parquet) very fast
+
+**Challenges**:
+- Disk space (indicators = 2-3x OHLCV size)
+- Cache invalidation (if indicator params change)
+- Complexity (manage precomputed files)
+
+**Estimated Speedup**: 2-3x for multi-strategy optimization  
+**Estimated Effort**: 6-8 hours  
+**Risk**: Medium (new data pipeline)  
+**Priority**: Medium (useful for optimization workflows)
+
+---
+
+## Code Quality Improvements
+
+### CQ-1: Type Hints Throughout
+**Current State**: Most code has type hints, but some missing  
+**Examples**:
+- Old filter classes (legacy code)
+- Some helper functions
+- Dict[str, Any] used frequently (too generic)
+
+**Improvement**:
+```python
+# Before:
+def process_data(df, config):
+    ...
+
+# After:
+def process_data(
+    df: pd.DataFrame, 
+    config: Dict[str, Any]
+) -> pd.DataFrame:
+    ...
+
+# Even better:
+@dataclass
+class ProcessingConfig:
+    window_size: int
+    threshold: float
+    enabled: bool
+
+def process_data(
+    df: pd.DataFrame,
+    config: ProcessingConfig
+) -> pd.DataFrame:
+    ...
+```
+
+**Estimated Effort**: 4-6 hours  
+**Priority**: Medium (helps with IDE support, refactoring)
+
+---
+
+### CQ-2: Comprehensive Docstrings
+**Current State**: Some modules well-documented, others minimal  
+**Improvement**: Add Google-style docstrings everywhere
+
+**Example**:
+```python
+def apply_filters(
+    self,
+    signal_frame: SignalFrame,
+    df: pd.DataFrame,
+    mode: str = "core"
+) -> FilterPipelineResult:
+    """
+    Apply all filters to signals (time filter + technical filters).
+    
+    Execution flow:
+    1. Apply time filter (if enabled)
+    2. Compute/load indicators (with caching)
+    3. Apply technical filters sequentially
+    4. Build FilterPipelineResult with stats
+    
+    Args:
+        signal_frame: Raw signals from signal generator
+        df: OHLCV DataFrame (strategy timeframe)
+        mode: Execution mode ("core" or "debug")
+    
+    Returns:
+        FilterPipelineResult with:
+        - final_signals: Signals that passed all filters
+        - Counts at each stage (raw, time, technical, final)
+        - filter_results: Metadata from each filter
+        - rejection_reasons: Rejection counts by filter
+        - execution_time_ms: Pipeline execution time (debug only)
+    
+    Examples:
+        >>> pipeline = FilterPipeline(config, cache)
+        >>> result = pipeline.apply_filters(signals, df, mode="core")
+        >>> print(f"Pass rate: {result.pass_rate:.1f}%")
+        Pass rate: 53.6%
+    
+    Note:
+        Time filter always executes first regardless of filter_sequence.
+        Pipeline stops early if signal count reaches zero.
+    """
+```
+
+**Estimated Effort**: 8-12 hours  
+**Priority**: Medium (improves maintainability)
+
+---
+
+### CQ-3: Unit Tests for Individual Components
+**Current State**: Integration tests (parity tests) exist, unit tests minimal
+
+**Improvement**: Add unit tests for:
+- Individual filter logic (RSI, CCI, etc.)
+- IndicatorStore methods
+- FilterResult/FilterMetadata operations
+- Cache operations
+- Signal conversions
+
+**Example**:
+```python
+# tests/unit/test_rsi_filter.py
+def test_rsi_filter_rejects_overbought():
+    """RSI filter should reject BUY signals when RSI > threshold."""
+    # Setup
+    filter = RSIFilter(name="rsi", overbought=70, oversold=30)
+    
+    # Create test data
+    df = pd.DataFrame({
+        'close': [100, 105, 110, 115, 120]
+    }, index=pd.date_range('2025-01-01', periods=5, freq='1H'))
+    
+    # Mock RSI values (overbought)
+    indicators = {'rsi': pd.Series([50, 60, 75, 80, 85], index=df.index)}
+    ind_np = {'rsi': indicators['rsi'].to_numpy()}
+    
+    # Create BUY signal at overbought
+    signals = pd.Series([0, 0, 1, 0, 0], index=df.index, dtype=np.int8)
+    signal_frame = SignalFrame(signals=signals)
+    
+    # Execute
+    result = filter.apply_filter(signal_frame, df, indicators, ind_np)
+    
+    # Assert
+    assert result.metadata.signals_out == 0  # Signal rejected
+    assert result.metadata.signals_rejected == 1
+```
+
+**Estimated Effort**: 12-16 hours (comprehensive suite)  
+**Priority**: High (improves confidence in changes)
+
+---
+
+## Future Feature Ideas
+
+### FEAT-1: Filter Composition
+**Idea**: Allow combining filters with logic operators
+
+**Example**:
+```python
+# Current: Sequential AND (all must pass)
+filters = [RSIFilter(...), CCIFilter(...), ADXFilter(...)]
+
+# Future: Flexible composition
+composite_filter = (
+    RSIFilter(...) & CCIFilter(...)  # Both must pass
+) | ADXFilter(...)                    # OR strong trend
+
+# Or more complex:
+momentum_filter = RSIFilter(...) & CCIFilter(...)
+trend_filter = ADXFilter(...) & MAFilter(...)
+composite = momentum_filter | trend_filter  # Either momentum OR trend
+```
+
+**Estimated Effort**: 16-20 hours  
+**Priority**: Low (nice-to-have for advanced users)
+
+---
+
+### FEAT-2: Dynamic Filter Configuration
+**Idea**: Enable/disable filters at runtime (not just at init)
+
+**Example**:
+```python
+pipeline = FilterPipeline(config, cache)
+
+# Disable RSI filter for one backtest
+pipeline.disable_filter('rsi_filter')
+result = pipeline.apply_filters(signals, df)
+
+# Re-enable
+pipeline.enable_filter('rsi_filter')
+result = pipeline.apply_filters(signals, df)
+
+# Temporarily modify parameters
+with pipeline.temp_config('rsi_filter', overbought=80):
+    result = pipeline.apply_filters(signals, df)
+# Reverts to original after context
+```
+
+**Use Case**: Walk-forward optimization (test different filter combos)
+
+**Estimated Effort**: 8-10 hours  
+**Priority**: Medium (useful for optimization)
+
+---
+
+### FEAT-3: Filter Performance Profiling
+**Idea**: Track which filters reject most signals
+
+**Example**:
+```python
+result = pipeline.apply_filters(signals, df, mode="debug")
+
+print(result.get_filter_profiling())
+# Output:
+# Filter Performance Report:
+# ┌────────────────────┬────────┬──────────┬─────────────┬──────────┐
+# │ Filter             │ In     │ Out      │ Rejected    │ Time (ms)│
+# ├────────────────────┼────────┼──────────┼─────────────┼──────────┤
+# │ time_filter        │ 9667   │ 5437     │ 4230 (43.7%)│ 5.2      │
+# │ rsi_filter         │ 5437   │ 5182     │ 255 (4.7%)  │ 2.1      │
+# │ cci_filter         │ 5182   │ 5182     │ 0 (0.0%)    │ 1.8      │
+# │ adx_filter         │ 5182   │ 5182     │ 0 (0.0%)    │ 2.3      │
+# └────────────────────┴────────┴──────────┴─────────────┴──────────┘
+# 
+# Top Rejectors:
+# 1. time_filter: 4230 signals (43.7%)
+# 2. rsi_filter: 255 signals (4.7%)
+# 
+# Bottlenecks:
+# 1. time_filter: 5.2ms
+# 2. adx_filter: 2.3ms
+```
+
+**Use Case**: Optimization (identify unnecessary filters)
+
+**Estimated Effort**: 4-6 hours  
+**Priority**: Medium (useful for tuning)
+
+---
+
+## Summary
+
+### Technical Debt (Accepted for Migration)
+| ID | Item | Effort | Risk | Priority |
+|----|------|--------|------|----------|
+| TD-1 | Mutable indicator dicts | 2-3h | Low | Medium |
+| TD-2 | Filter error handling | 1-2h | Low | Medium |
+| TD-3 | Single responsibility violation | 3-4h | Medium | Low |
+
+### Performance Opportunities
+| ID | Item | Speedup | Effort | Risk | Priority |
+|----|------|---------|--------|------|----------|
+| PERF-1 | Parallel filter execution | 1.5-2x | 8-12h | High | Low |
+| PERF-2 | Numba JIT compilation | 1.1-1.3x | 4-6h/filter | Medium | Low |
+| PERF-3 | Indicator precomputation | 2-3x (optimization) | 6-8h | Medium | Medium |
+
+### Code Quality
+| ID | Item | Effort | Priority |
+|----|------|--------|----------|
+| CQ-1 | Comprehensive type hints | 4-6h | Medium |
+| CQ-2 | Complete docstrings | 8-12h | Medium |
+| CQ-3 | Unit test suite | 12-16h | High |
+
+### Future Features
+| ID | Item | Effort | Priority |
+|----|------|--------|----------|
+| FEAT-1 | Filter composition | 16-20h | Low |
+| FEAT-2 | Dynamic filter config | 8-10h | Medium |
+| FEAT-3 | Filter profiling | 4-6h | Medium |
+
+---
+
+## Recommendation for Post-Migration Phase
+
+### Phase 5a: Quick Wins (4-6 hours)
+1. ✅ TD-2: Configurable error handling
+2. ✅ FEAT-3: Filter performance profiling
+3. ✅ CQ-1: Add missing type hints
+
+### Phase 5b: Quality (20-30 hours)
+1. ✅ CQ-3: Comprehensive unit tests
+2. ✅ CQ-2: Complete docstrings
+3. ✅ TD-1: IndicatorStore refactoring
+
+### Phase 5c: Performance (Optional, 10-20 hours)
+1. ⏳ PERF-3: Indicator precomputation (if optimization needed)
+2. ⏳ PERF-2: Numba JIT for hot loops (if bottlenecks found)
+3. ⏳ FEAT-2: Dynamic filter config (for walk-forward)
+
+### Phase 5d: Advanced (Optional, 20+ hours)
+1. ⏳ FEAT-1: Filter composition
+2. ⏳ PERF-1: Parallel execution
+3. ⏳ TD-3: Single responsibility refactoring
+
+---
+
+**Note**: All items in this roadmap are **post-migration** improvements. The current implementation (Session 5) meets all project requirements:
+- ✅ Parity (perfect match)
+- ✅ Performance (4.36x faster)
+- ✅ Type safety (contracts throughout)
+- ✅ Dual-mode (core/debug)
+- ✅ Maintainable (clean architecture)
+
+These improvements are for **future iterations** after Phase 4 (Trade Management) is complete.
+
+---
+
+**Last Updated**: 2025-02-13 (Session 5)  
+**Status**: Migration ongoing (Phase 3 complete)

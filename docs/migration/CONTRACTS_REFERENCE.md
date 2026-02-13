@@ -1,5 +1,5 @@
 # CONTRACTS QUICK REFERENCE
-**Session 4+ | Version 2.2 | 2025-02-11**
+**Session 5 | Version 3.0 | 2025-02-13**
 ## DATA LAYER (Phase 1 ✅)
 ### DataBundle
 ```python
@@ -123,6 +123,62 @@ class FilterProtocol(Protocol):
     ) -> FilterResult: ...
 ```
 ---
+## PIPELINE LAYER (Phase 3 ✅)
+### FilterPipeline
+```python
+class FilterPipeline:
+    FILTER_CLASSES = {
+        'rsi_filter': RSIFilter,
+        'cci_filter': CCIFilter,
+        'adx_filter': ADXFilter,
+        'bollinger_filter': BollingerFilter,
+        'choppiness_filter': ChoppinessFilter,
+        'dpo_filter': DPOFilter,
+        'ma_filter': MAFilter,
+        'macd_filter': MACDFilter,
+        'pivot_filter': PivotFilter,
+        'supertrend_filter': SupertrendFilter,
+    }
+    
+    def __init__(self, config: Dict, cache: FilterPipelineCache):
+        # Auto-instantiate filters from config
+        # Time filter always loaded first
+        
+    def compute_indicators(self, df: pd.DataFrame) -> None:
+        # Check cache (SHA1 hash of OHLCV)
+        # Compute indicators if cache miss
+        # Store in self.indicators and self.ind_np
+        
+    def apply_filters(
+        self,
+        signal_frame: SignalFrame,
+        df: pd.DataFrame,
+        mode: str = "core"
+    ) -> FilterPipelineResult:
+        # Stage 1: Time filter (always first)
+        # Stage 2: Compute/load indicators
+        # Stage 3: Sequential technical filters
+        # Early exit on empty signals
+        # Return FilterPipelineResult
+```
+**Key Features**:
+- **Auto-instantiation**: Filters created from config via `FILTER_CLASSES` mapping
+- **Time filter priority**: Always runs first, regardless of `filter_sequence`
+- **Indicator caching**: Compute once, reuse via SHA1 hash
+- **Early exit**: Stop processing when signals reach zero
+- **Dual-mode**: Core (fast) vs Debug (full metadata)
+- **Error handling**: Failed filters pass signals through (don't block pipeline)
+**Performance**:
+- Core mode: ~37ms for 9667 signals (4.36x faster than legacy)
+- Debug mode: ~69ms (1.58x faster than legacy)
+- First run: +50-100ms for indicator computation
+- Cached runs: ~1ms indicator load overhead
+**Filter Sequence**:
+- Read from config's `filter_sequence` key
+- Time filter always prepended (not in sequence)
+- Filters executed in order with early exit
+- Unknown filter names logged and skipped
+---
 ## CACHING
 ### FilterPipelineCache
 ```python
@@ -131,8 +187,12 @@ class FilterPipelineCache:
     def has(cache_id: str) -> bool
     def get(cache_id: str) -> Dict  # {"indicators": ..., "indicators_np": ...}
     def store(cache_id, indicators, indicators_np)
+    def clear() -> None
+    def size() -> int
+    def get_stats() -> Dict[str, Any]
 ```
 **Note**: Cache uses SHA1 hash of first/last timestamps + close prices (head/tail 50)
+**Location**: `src/strategies/contracts/cache.py` (moved from `src/backtesting/tools/`)
 ---
 ## KEY PATTERNS
 ### Dual-Mode Execution
@@ -147,12 +207,36 @@ SignalType.from_code(1) → SignalType.BUY
 # SignalFrame → Old format (for compatibility)
 signals_series = signal_frame.signals  # int8 Series
 ```
+### FilterPipeline Auto-Instantiation
+```python
+# Config-driven filter loading
+FILTER_CLASSES = {
+    'rsi_filter': RSIFilter,
+    'cci_filter': CCIFilter,
+    # ...
+}
+
+for name in filter_sequence:
+    cls = FILTER_CLASSES[name]
+    filter = cls(name=name, **config[name])
+```
+### Early Exit Pattern
+```python
+# Stop pipeline when no signals remain
+if signal_count == 0:
+    return FilterPipelineResult(
+        final_signals=empty_frame,
+        # ... stats with early exit marker
+    )
+```
 ### Performance Optimizations
 1. **int8 storage** for signals (not Enum objects)
 2. **Lazy metadata** loading (skip in core mode)
 3. **Numpy-optimized** boolean masks
 4. **Vectorized** operations (no row iteration)
 5. **Indicator caching** (compute once per dataset)
+6. **Early exit** (stop on empty signals)
+7. **Auto-instantiation** (no dynamic imports per filter)
 ---
-**Last Updated**: 2025-02-12 Session 4  
+**Last Updated**: 2025-02-13 Session 5  
 **File Location**: `docs/migration/CONTRACTS_REFERENCE.md`
