@@ -93,7 +93,8 @@ def run_wbws_strategy(config_path: str, verbose: bool = False):
             config["output"].setdefault("save_signals_csv", True)
             config["output"].setdefault("enable_cache_stats", True)
 
-        df_full, df_strategy, df_htf, df_ltf = data_loader.load_data()
+        df_full, df_strategy, df_htf, df_ltf, df_artf = data_loader.load_data()
+        config["data"]["df_artf"] = df_artf  # Pass ARTF to config for RiskManager
 
         if df_ltf is None or df_ltf.empty:
             raise ValueError("LTF data missing or empty. Check config paths.")

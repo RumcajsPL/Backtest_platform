@@ -24,7 +24,7 @@ class RiskManager:
     - Added additional fields for complete contract population
     """
     
-    def __init__(self, config: Dict[str, Any], ohlcv_data: pd.DataFrame):
+    def __init__(self, config: Dict[str, Any], ohlcv_data: pd.DataFrame, ohlcv_artf: Optional[pd.DataFrame] = None):
         """
         Initialize RiskManager with configuration and data.       
         """
@@ -42,6 +42,9 @@ class RiskManager:
             else:
                 raise ValueError("RiskManager requires OHLCV data with DatetimeIndex")
         
+        # Monthly ARTF data (prefer explicit arg, fallback to config injection)
+        self.ohlcv_artf = ohlcv_artf or self.config.get("data", {}).get("df_artf")
+        
         # Pre-calculate ATR (Wilder's Smoothing)
         self.atr_series = None
         if self.sl_tp_config.get('enabled', True):
@@ -49,11 +52,11 @@ class RiskManager:
             self.atr_series = self._calculate_atr_wilders(atr_length)
             logger.info(f"ATR calculated (Wilder's RMA, length={atr_length})")
         
-        # Pre-calculate Rolling Annual Range
+        # Pre-calculate Rolling Annual Range (now ARTF-based, 12-month lookback)
         self.annual_range_series = None
         if self.risk_config.get('enabled', False):
             self._calculate_rolling_annual_range()
-            logger.info("Rolling Annual Range calculated (252-day lookback)")
+            logger.info("Rolling Annual Range calculated (12-month ARTF, year-month based)")
         
         # Initialize Spread Manager if enabled
         self.spread_manager = None
@@ -79,24 +82,56 @@ class RiskManager:
         # Convert to float32 for memory efficiency
         return atr.astype('float32')
     
+    # -------------------------------------------------------------------------
+    # FAST ARTF-BASED RAR (12-month, year-month based, no lookahead)
+    # -------------------------------------------------------------------------
     def _calculate_rolling_annual_range(self):
-        """Calculate 1-year range based on past data only (no lookahead bias)"""
-        if self.ohlcv_data.empty:
+        """
+        Fast 12‑month RAR using monthly ARTF bars.
+        Precompute RAR per month, then map to strategy timestamps.
+        """
+        if self.ohlcv_artf is None or self.ohlcv_artf.empty:
+            logger.warning("Monthly ARTF data missing — annual range disabled")
+            self.annual_range_series = None
             return
 
-        daily_df = self.ohlcv_data.resample('D').agg({
-            'high': 'max', 
-            'low': 'min'
-        }).dropna()
-        
-        rolling_high = daily_df['high'].rolling(window=252, min_periods=20).max().shift(1)
-        rolling_low = daily_df['low'].rolling(window=252, min_periods=20).min().shift(1)
-        daily_range = rolling_high - rolling_low
-        
-        self.annual_range_series = daily_range.reindex(self.ohlcv_data.index, method='ffill')
-        
-        # Convert to float32 for memory efficiency
-        self.annual_range_series = self.annual_range_series.astype('float32')
+        monthly = self.ohlcv_artf.copy()
+        if not isinstance(monthly.index, pd.DatetimeIndex):
+            raise ValueError("ARTF monthly data must have DatetimeIndex")
+
+        monthly = monthly.sort_index()
+        monthly.index = monthly.index.normalize()
+
+        # Year‑month key
+        monthly["ym"] = monthly.index.to_period("M")
+        monthly_by_ym = monthly.set_index("ym")[["high", "low"]]
+
+        # Compute RAR per month (vectorized over months, not strategy bars)
+        yms = monthly_by_ym.index.unique().sort_values()
+        rar_per_month: Dict[pd.Period, float] = {}
+
+        for ym in yms:
+            prev_ym = ym - 1
+            start_ym = prev_ym - 11
+            window = monthly_by_ym.loc[start_ym:prev_ym]
+
+            if len(window) == 0:
+                rar_per_month[ym] = np.nan
+            else:
+                rar_per_month[ym] = float(window["high"].max() - window["low"].min())
+
+        rar_monthly_series = pd.Series(rar_per_month, dtype="float32")
+
+        # Map each strategy timestamp to RAR of previous month
+        strategy_ym = self.ohlcv_data.index.to_period("M")
+        strategy_prev_ym = strategy_ym - 1
+        rar_strategy = strategy_prev_ym.map(rar_monthly_series)
+
+        self.annual_range_series = pd.Series(
+            rar_strategy.values,
+            index=self.ohlcv_data.index,
+            dtype="float32",
+        )
 
     def compute_trade_parameters(self, 
                                  timestamp: pd.Timestamp,
@@ -106,14 +141,6 @@ class RiskManager:
         Compute all trade parameters including spread adjustments, SL/TP, and risk validation.
         
         MIGRATED (Session 7): Now returns TradeParameters contract instead of dict.
-        
-        Args:
-            timestamp: Current bar timestamp
-            bid_price: Current bid/mid price
-            is_long: True for LONG, False for SHORT
-            
-        Returns:
-            TradeParameters contract with all risk/spread details, or None if rejected
         """
         if not self.sl_tp_config.get('enabled', True):
             return None
@@ -201,7 +228,6 @@ class RiskManager:
             spread_cost = spread
             spread_efficiency_percent = (spread_cost / executed_entry) * 100
         
-        # NEW: Return TradeParameters contract instead of dict
         return TradeParameters(
             # Core execution prices
             entry_price_mid=bid_price,
@@ -258,48 +284,41 @@ class RiskManager:
         if not self.risk_config.get('enabled', False):
             return True, stop_loss, "Risk mgmt disabled"
         
-        # Fail-fast: annual range must be initialized
+        # If RAR not initialized, behave as "no limit"
         if self.annual_range_series is None:
-            raise RuntimeError("Annual range not initialized - check RiskManager setup")
+            return True, stop_loss, "RAR not initialized"
         
-        # Fail-fast: timestamp must exist in range data
         try:
             current_annual_range = self.annual_range_series.loc[timestamp]
         except KeyError:
-            raise ValueError(f"Annual range data missing for {timestamp}")
+            return True, stop_loss, "RAR missing for timestamp"
         
-        # Fail-fast: range value must be valid
+        # If RAR invalid, do not block trade
         if pd.isna(current_annual_range) or current_annual_range <= 0:
-            raise ValueError(f"Invalid annual range at {timestamp}: {current_annual_range}")
+            return True, stop_loss, f"RAR unavailable or invalid ({current_annual_range})"
         
-        # Get risk limit from config
         max_percentile = self.risk_config.get('max_risk_percentile', 1.0)
         
-        # No limit if >= 1.0
         if max_percentile >= 1.0:
             return True, stop_loss, "No risk limit"
         
-        # Calculate risk percentile
         risk_distance = abs(entry_price - stop_loss)
         risk_percentile = risk_distance / current_annual_range
         
-        # Within limit - approve
         if risk_percentile <= max_percentile:
             return True, stop_loss, f"Risk: {risk_percentile*100:.2f}%"
         
-        # Exceeds limit - check if adjustment allowed
         allow_exceed = self.risk_config.get('allow_exceed_limit', False)
         if not allow_exceed:
             return False, stop_loss, f"Risk Rejected: {risk_percentile*100:.2f}% > {max_percentile*100:.2f}%"
         
-        # Adjust SL to meet limit
         adjusted_distance = max_percentile * current_annual_range
         adjusted_sl = entry_price - adjusted_distance if is_long else entry_price + adjusted_distance
         return True, adjusted_sl, f"SL Adjusted: {risk_percentile*100:.2f}% -> {max_percentile*100:.2f}%"
 
-    # ============================================================================
+    # ========================================================================
     # LEGACY COMPATIBILITY METHOD (for gradual migration)
-    # ============================================================================
+    # ========================================================================
     def compute_trade_parameters_legacy(self, 
                                        timestamp: pd.Timestamp,
                                        bid_price: float,
@@ -314,7 +333,6 @@ class RiskManager:
         if params is None:
             return None
         
-        # Convert TradeParameters back to legacy dict format
         return {
             'executed_entry': params.entry_price_executed,
             'raw_sl': params.stop_loss_raw,

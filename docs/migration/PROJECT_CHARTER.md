@@ -60,9 +60,88 @@ src/strategies/
 ## Risk Management
 | Risk | Mitigation |
 |------|------------|
-| Chat window limit | Progressive checkpoints every 3-5 exchanges |
+| Chat window limit | Progressive checkpoints/logs every 3-5 exchanges |
 | Performance regression | Benchmark at each step |
 | Breaking old system | Parallel architecture, no modifications to `core/` |
 | Incomplete migration | Phase-based approach with rollback points |
 ---
-## Current Status = > sessions handoffs and migration plan
+## Path resolution orgenized by src\utils\paths.py
+**Important sript parts**:
+```python
+# ---------------------------------------------------------
+# PROJECT ROOT RESOLUTION
+# ---------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# ---------------------------------------------------------
+# TOP-LEVEL DIRECTORIES
+# ---------------------------------------------------------
+CONFIGS_DIR = PROJECT_ROOT / "configs"
+DATA_DIR = PROJECT_ROOT / "data"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+SRC_DIR = PROJECT_ROOT / "src"
+# ---------------------------------------------------------
+# DATA SUBDIRECTORIES
+# ---------------------------------------------------------
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+FEATURES_DATA_DIR = DATA_DIR / "features"
+EXPORTS_DATA_DIR = DATA_DIR / "exports"
+# ---------------------------------------------------------
+# OUTPUT SUBDIRECTORIES
+# ---------------------------------------------------------
+BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests"
+LOGS_DIR = OUTPUTS_DIR / "logs"
+REPORTS_DIR = OUTPUTS_DIR / "reports"
+SIGNALS_DIR = OUTPUTS_DIR / "signals"
+# ---------------------------------------------------------
+# SCRIPT RUNNERS
+# ---------------------------------------------------------
+RUNNERS_DIR = SCRIPTS_DIR / "runners"
+DATA_SCRIPTS_DIR = SCRIPTS_DIR / "data"
+VALIDATION_SCRIPTS_DIR = SCRIPTS_DIR / "validation"
+# ---------------------------------------------------------
+# STRATEGY SUBDIRECTORIES (NEW MIGRATION STRUCTURE)
+# ---------------------------------------------------------
+STRATEGIES_DIR = SRC_DIR / "strategies"
+CONTRACTS_DIR = STRATEGIES_DIR / "contracts"
+SPECIFIC_STRATEGIES_DIR = STRATEGIES_DIR / "specific"
+MODULES_DIR = SPECIFIC_STRATEGIES_DIR / "modules"
+FILTERS_DIR = SPECIFIC_STRATEGIES_DIR / "filters"
+# ---------------------------------------------------------
+# TEST SUBDIRECTORIES (NEW MIGRATION STRUCTURE)
+# ---------------------------------------------------------
+TESTS_DIR = PROJECT_ROOT / "tests"
+MIGRATION_TESTS_DIR = TESTS_DIR / "migration"
+# ---------------------------------------------------------
+# STRATEGY HELPERS (NEW)
+# ---------------------------------------------------------
+def strategy_path(*parts) -> Path:
+    """Return a path inside src/strategies/."""
+    return STRATEGIES_DIR.joinpath(*parts)
+
+def contract_path(*parts) -> Path:
+    """Return a path inside src/strategies/contracts/."""
+    return CONTRACTS_DIR.joinpath(*parts)
+
+def specific_strategy_path(*parts) -> Path:
+    """Return a path inside src/strategies/specific/."""
+    return SPECIFIC_STRATEGIES_DIR.joinpath(*parts)
+
+def module_path(*parts) -> Path:
+    """Return a path inside src/strategies/specific/modules/."""
+    return MODULES_DIR.joinpath(*parts)
+
+def filter_path(*parts) -> Path:
+    """Return a path inside src/strategies/specific/filters/."""
+    return FILTERS_DIR.joinpath(*parts)
+# ---------------------------------------------------------
+# TEST HELPERS (NEW)
+# ---------------------------------------------------------
+def test_path(*parts) -> Path:
+    """Return a path inside tests/."""
+    return TESTS_DIR.joinpath(*parts)
+
+def migration_test_path(*parts) -> Path:
+    """Return a path inside tests/migration/."""
+    return MIGRATION_TESTS_DIR.joinpath(*parts)

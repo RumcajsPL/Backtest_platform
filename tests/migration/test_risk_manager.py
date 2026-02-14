@@ -122,6 +122,22 @@ class TestRiskManagerMigration(unittest.TestCase):
         
         cls.config = create_test_config()
         cls.test_data = load_test_data()
+
+        # Load ARTF monthly data
+        artf_path = PROJECT_ROOT / "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
+        if artf_path.exists():
+            cls.artf_data = pd.read_parquet(artf_path)
+        else:
+            warnings.warn(f"ARTF data not found at {artf_path}, using synthetic monthly data")
+            cls.artf_data = cls.test_data.resample("M").agg({"high": "max", "low": "min"})
+
+        # Inject ARTF into config for RiskManager
+        cls.config.setdefault("data", {})
+        cls.config["data"]["df_artf"] = cls.artf_data
+
+        # Create RiskManager with ARTF support
+        cls.risk_mgr = RiskManager(cls.config, cls.test_data)
+
         
         # Create RiskManager instance
         cls.risk_mgr = RiskManager(cls.config, cls.test_data)

@@ -32,6 +32,7 @@ class DataLoader:
         self.df_strategy = None
         self.df_htf = None
         self.df_ltf = None
+        self.df_artf = None
 
         self.cache_dir = Path.home() / ".wbws_data_cache"
         self.cache_dir.mkdir(exist_ok=True)
@@ -251,8 +252,19 @@ class DataLoader:
 
             self.df_ltf = self._load_file_with_cache(ltf_file, "ltf", start_date, end_date)
             self.df_ltf = self._sanitize_df(self.df_ltf)
+        
+        # ARTF (monthly bars)
+        self.df_artf = None
+        if "file_artf" in data_cfg:
+            artf_file = Path(data_cfg["file_artf"])
+            if not artf_file.is_absolute():
+                artf_file = PROJECT_ROOT / artf_file
 
-        return self.df_full, self.df_strategy, self.df_htf, self.df_ltf
+            self.df_artf = self._load_file_with_cache(artf_file, "artf", start_date, end_date)
+            self.df_artf = self._sanitize_df(self.df_artf)
+
+
+        return self.df_full, self.df_strategy, self.df_htf, self.df_ltf, self.df_artf
 
     # ---------------------------------------------------------
     # INFO + VALIDATION
