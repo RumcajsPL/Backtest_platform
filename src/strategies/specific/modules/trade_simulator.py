@@ -1,36 +1,47 @@
-"""Trade simulation with LTF OHLC execution - Optimized v4.4 (Session 9)
-v4.4: v4.3 + TradeManager contract integration
+"""Trade simulation with LTF OHLC execution - Optimized v4.5 (Session 10)
+
+v4.5: Internal Trade contract usage + dict output compatibility
+      - Creates TradeEntry contracts in _handle_open()
+      - Creates TradeExit contracts in _execute_trade_exit()
+      - Stores Trade contracts in self.all_trades
+      - Converts to dict on output (backward compatible)
+      - Ready for TradeResult migration in Session 11
+
+v4.4: TradeManager contract integration
       - Uses TradeDecision contract from TradeManager
       - Uses Position contract with full price data
       - RiskManager called before TradeManager (price parameters)
       - Type-safe decision handling with DecisionType enum
 
-Migration Notes (Session 9):
-- TradeManager now returns TradeDecision contract (not dict)
-- RiskManager called FIRST to get prices for TradeManager
-- Position contracts created with full SL/TP/price data
-- Maintains backward compatibility for trade dict structure
+Migration Notes (Session 10):
+- Trade objects now use contracts internally
+- Output still returns dicts for test compatibility
+- All trade creation/exit uses contract constructors
+- to_dict() called only at output boundary
 """
 import time
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import numpy as np
 import pandas as pd
 
-#from src.strategies.trade_management.risk_manager import RiskManager
-#from src.strategies.trade_management.spread_manager import SpreadManager
 from src.strategies.specific.modules.risk_manager import RiskManager
 from src.strategies.specific.modules.spread_manager import SpreadManager
 from src.strategies.specific.modules.trade_manager import TradeManager
 from src.strategies.core.null_progressive_tracker import NullProgressiveTracker
 
-# Session 9: Contract imports
+# Session 10: Expanded contract imports for Trade objects
 from src.strategies.contracts.trade_contracts import (
+    Trade,
+    TradeEntry,
+    TradeExit,
     TradeDecision,
     DecisionType,
-    TradeDirection
+    TradeDirection,
+    ExitReason,
+    TradeParameters,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,14 +115,17 @@ class TradeSimulator:
     """
     Trade simulator with LTF OHLC execution for realistic SL/TP triggers.
     
+    v4.5 (Session 10): Internal Trade contract usage
+    - Creates TradeEntry/TradeExit contracts
+    - Stores Trade contracts internally
+    - Converts to dict on output (backward compatible)
+    - Ready for TradeResult migration in Session 11
+    
     v4.4 (Session 9): TradeManager contract integration
     - Uses TradeDecision contract (not dict)
     - RiskManager called before TradeManager (provides prices)
     - Position contracts with full price data
     - Type-safe with DecisionType enum
-    
-    Previous (v4.3): ProgressiveTracker v2 alignment (keyword-based risk updates),
-                     Numba-accelerated exit detection, datetime-safe.
     """
 
     def __init__(self, config: Dict, df_full: pd.DataFrame):
@@ -119,7 +133,8 @@ class TradeSimulator:
         self.df_full = df_full
         self.profile_enabled = config.get("debug", {}).get("profile_simulator", False)
 
-        self.all_trades: List[Dict] = []
+        # SESSION 10: Store Trade contracts (not dicts)
+        self.all_trades: List[Trade] = []
         self.trade_counter = 0
 
         self.trade_manager = None
@@ -144,8 +159,6 @@ class TradeSimulator:
     # Initialization
     # ------------------------------------------------------------------ #
     def initialize_managers(self):
-        #from src.strategies.trade_management.trade_manager import TradeManager
-
         self.trade_manager = TradeManager(self.config)
 
         tm_config = self.config.get("trade_management", {})
@@ -207,41 +220,48 @@ class TradeSimulator:
     # ------------------------------------------------------------------ #
     def _find_exact_exit_bar_numba(
         self,
-        trade: Dict,
+        trade: Trade,
         low_np: np.ndarray,
         high_np: np.ndarray,
         index_np: np.ndarray,
         exit_reason: str,
         is_long: bool,
     ) -> tuple[Optional[pd.Timestamp], Optional[float], Optional[float], Optional[float]]:
-        """Numba-accelerated first-hit search (returns pandas Timestamp)"""
+        """Numba-accelerated first-hit search (returns pandas Timestamp)
+        
+        SESSION 10: Now accepts Trade contract instead of dict
+        """
         if low_np.size == 0:
             return None, None, None, None
+
+        # Extract from Trade contract
+        sl_price = trade.entry.stop_loss
+        tp_price = trade.entry.take_profit
 
         if NUMBA_AVAILABLE:
             is_sl = exit_reason == "STOP_LOSS"
             if is_long:
                 idx = _numba_find_first_hit_long(
-                    low_np, high_np, trade["sl_price"], trade["tp_price"], is_sl
+                    low_np, high_np, sl_price, tp_price, is_sl
                 )
             else:
                 idx = _numba_find_first_hit_short(
-                    low_np, high_np, trade["sl_price"], trade["tp_price"], is_sl
+                    low_np, high_np, sl_price, tp_price, is_sl
                 )
             if idx < 0:
                 return None, None, None, None
         else:
-            # Fallback: simple numpy scan (same logic as v3.1)
+            # Fallback: simple numpy scan
             if is_long:
                 if exit_reason == "STOP_LOSS":
-                    hit_mask = low_np <= trade["sl_price"]
+                    hit_mask = low_np <= sl_price
                 else:
-                    hit_mask = high_np >= trade["tp_price"]
+                    hit_mask = high_np >= tp_price
             else:
                 if exit_reason == "STOP_LOSS":
-                    hit_mask = high_np >= trade["sl_price"]
+                    hit_mask = high_np >= sl_price
                 else:
-                    hit_mask = low_np <= trade["tp_price"]
+                    hit_mask = low_np <= tp_price
             if not hit_mask.any():
                 return None, None, None, None
             idx = int(np.argmax(hit_mask))
@@ -252,14 +272,14 @@ class TradeSimulator:
 
         if is_long:
             if exit_reason == "STOP_LOSS":
-                exit_price = min(low_val, trade["sl_price"])
+                exit_price = min(low_val, sl_price)
             else:
-                exit_price = min(high_val, trade["tp_price"])
+                exit_price = min(high_val, tp_price)
         else:
             if exit_reason == "STOP_LOSS":
-                exit_price = max(high_val, trade["sl_price"])
+                exit_price = max(high_val, sl_price)
             else:
-                exit_price = max(low_val, trade["tp_price"])
+                exit_price = max(low_val, tp_price)
 
         return ts, exit_price, high_val, low_val
 
@@ -268,7 +288,7 @@ class TradeSimulator:
     # ------------------------------------------------------------------ #
     def _execute_trade_exit(
         self,
-        trade: Dict,
+        trade: Trade,
         exit_time: pd.Timestamp,
         exit_price: float,
         exit_reason: str,
@@ -277,48 +297,53 @@ class TradeSimulator:
         exit_high: float,
         exit_low: float,
     ):
-        """Execute trade exit and update tracking"""
-        if trade["direction"] == "BUY":
-            pnl_points = exit_price - trade["entry_price"]
-        else:
-            pnl_points = trade["entry_price"] - exit_price
+        """Execute trade exit and update tracking
+        
+        SESSION 10: Creates TradeExit contract and updates Trade object
+        """
+        # Convert exit_reason string to ExitReason enum
+        try:
+            exit_reason_enum = ExitReason[exit_reason]
+        except KeyError:
+            logger.warning(f"Unknown exit reason: {exit_reason}, defaulting to END_OF_DATA")
+            exit_reason_enum = ExitReason.END_OF_DATA
 
-        pnl_percent = (
-            (pnl_points / trade["entry_price"]) * 100 if trade["entry_price"] else 0
+        # Create TradeExit contract
+        trade_exit = TradeExit.create(
+            entry=trade.entry,
+            exit_time=exit_time,
+            exit_price=exit_price,
+            exit_reason=exit_reason_enum,
         )
 
-        entry_time = trade.get("entry_time") or trade.get("timestamp")
-        duration_minutes = (
-            (exit_time - entry_time).total_seconds() / 60 if entry_time else None
-        )
+        # Create updated Trade with exit
+        updated_trade = Trade(entry=trade.entry, exit=trade_exit)
+        
+        # Replace in all_trades list
+        for i, t in enumerate(self.all_trades):
+            if t.entry.entry_id == trade.entry.entry_id:
+                self.all_trades[i] = updated_trade
+                break
 
-        trade["status"] = "CLOSED"
-        trade["exit_time"] = exit_time
-        trade["exit_price"] = exit_price
-        trade["exit_reason"] = exit_reason
-        trade["pnl_points"] = pnl_points
-        trade["pnl_percent"] = pnl_percent
-        trade["duration_minutes"] = duration_minutes
-        trade["is_win"] = pnl_points > 0
-        trade["is_loss"] = pnl_points < 0
-
-        if trade.get("trade_manager_trade_id"):
-            self.trade_manager.close_positions([trade["trade_manager_trade_id"]])
+        # Close position in TradeManager
+        if trade.entry.trade_manager_id:
+            self.trade_manager.close_positions([trade.entry.trade_manager_id])
 
         exit_stats[exit_reason] = exit_stats.get(exit_reason, 0) + 1
 
-        if self._tracking_enabled and trade.get("signal_id"):
+        # Progressive tracking
+        if self._tracking_enabled and trade.entry.signal_id:
             self.progressive_tracker.update_trade_execution_details(
-                signal_id=trade["signal_id"],
-                trade_id=trade["trade_id"],
+                signal_id=trade.entry.signal_id,
+                trade_id=int(trade.entry.entry_id.replace("E", "")),  # Extract numeric ID
                 exit_time=exit_time,
                 exit_price=exit_price,
                 exit_reason=exit_reason,
-                pnl_points=pnl_points,
-                pnl_percent=pnl_percent,
-                duration_minutes=duration_minutes,
-                is_win=pnl_points > 0,
-                is_loss=pnl_points < 0,
+                pnl_points=trade_exit.pnl_points,
+                pnl_percent=trade_exit.pnl_percent,
+                duration_minutes=trade_exit.duration_minutes,
+                is_win=trade_exit.is_win,
+                is_loss=trade_exit.is_loss,
                 exit_check_high=exit_high,
                 exit_check_low=exit_low,
                 reason=f"CLOSED: {exit_reason}",
@@ -326,13 +351,14 @@ class TradeSimulator:
 
         if verbose:
             theoretical = (
-                trade["sl_price"] if exit_reason == "STOP_LOSS" else trade["tp_price"]
+                trade.entry.stop_loss if exit_reason == "STOP_LOSS" 
+                else trade.entry.take_profit
             )
             diff = exit_price - theoretical
             sign = "+" if diff > 0 else ""
             logger.debug(
-                f"[EXIT-LTF] {exit_time} {trade['direction']} {exit_reason} | "
-                f"Actual: {exit_price:.5f} ({sign}{diff:.5f}) | P&L: {pnl_points:+.2f} pts"
+                f"[EXIT-LTF] {exit_time} {trade.direction} {exit_reason} | "
+                f"Actual: {exit_price:.5f} ({sign}{diff:.5f}) | P&L: {trade_exit.pnl_points:+.2f} pts"
             )
 
     # ------------------------------------------------------------------ #
@@ -344,7 +370,10 @@ class TradeSimulator:
         exit_stats: Dict,
         verbose: bool,
     ):
-        """Check for SL/TP exits using vectorized LTF OHLC (Numba-accelerated when available)"""
+        """Check for SL/TP exits using vectorized LTF OHLC
+        
+        SESSION 10: Works with Trade contracts
+        """
         window = self._ltf_windows.get(strategy_timestamp)
         if window is None:
             return
@@ -355,21 +384,22 @@ class TradeSimulator:
         if low_np.size == 0:
             return
 
+        # Get open trades (Trade contracts with no exit)
         open_trades = [
-            t
-            for t in self.all_trades
-            if t["status"] == "OPEN"
-            and (t.get("entry_time") or t.get("timestamp")) < strategy_timestamp
+            t for t in self.all_trades
+            if t.is_open and t.entry.entry_time < strategy_timestamp
         ]
         if not open_trades:
             return
 
-        long_trades = [t for t in open_trades if t["direction"] == "BUY"]
-        short_trades = [t for t in open_trades if t["direction"] == "SELL"]
+        # Separate by direction
+        long_trades = [t for t in open_trades if t.entry.is_long]
+        short_trades = [t for t in open_trades if t.entry.is_short]
 
+        # Process LONG trades
         if long_trades:
-            sl_prices = np.array([t["sl_price"] for t in long_trades], dtype=np.float32)
-            tp_prices = np.array([t["tp_price"] for t in long_trades], dtype=np.float32)
+            sl_prices = np.array([t.entry.stop_loss for t in long_trades], dtype=np.float32)
+            tp_prices = np.array([t.entry.take_profit for t in long_trades], dtype=np.float32)
             sl_hit = window["min_low"] <= sl_prices
             tp_hit = window["max_high"] >= tp_prices
             exit_mask = sl_hit | tp_hit
@@ -388,13 +418,10 @@ class TradeSimulator:
                         trade, ts, price, reason, exit_stats, verbose, h, l
                     )
 
+        # Process SHORT trades
         if short_trades:
-            sl_prices = np.array(
-                [t["sl_price"] for t in short_trades], dtype=np.float32
-            )
-            tp_prices = np.array(
-                [t["tp_price"] for t in short_trades], dtype=np.float32
-            )
+            sl_prices = np.array([t.entry.stop_loss for t in short_trades], dtype=np.float32)
+            tp_prices = np.array([t.entry.take_profit for t in short_trades], dtype=np.float32)
             sl_hit = window["max_high"] >= sl_prices
             tp_hit = window["min_low"] <= tp_prices
             exit_mask = sl_hit | tp_hit
@@ -427,6 +454,11 @@ class TradeSimulator:
     ) -> Dict:
         """
         Simulate trades with realistic LTF execution.
+        
+        Session 10 Changes:
+        - Creates Trade contracts internally
+        - Returns dict for backward compatibility
+        - Ready for TradeResult migration in Session 11
         
         Session 9 Changes:
         - RiskManager called FIRST to get prices
@@ -466,7 +498,7 @@ class TradeSimulator:
                 logger.info("Numba acceleration: ENABLED for exit engine")
             else:
                 logger.info("Numba acceleration: NOT AVAILABLE (using pure numpy fallback)")
-            logger.info("Session 9: TradeManager contract integration ACTIVE")
+            logger.info("Session 10: Internal Trade contract usage ACTIVE")
 
         self._precompute_ltf_windows(df_strategy)
         if verbose:
@@ -511,10 +543,6 @@ class TradeSimulator:
             bid_price = close_np[i]
             signal_id = signal_id_map.get(timestamp) if signal_id_map else None
 
-            # ================================================================
-            # SESSION 9 CHANGE: Call RiskManager FIRST (TradeManager needs prices)
-            # ================================================================
-            
             # 3) Risk management - get trade parameters
             params = risk_mgr.compute_trade_parameters(timestamp, bid_price, is_long)
             
@@ -573,9 +601,7 @@ class TradeSimulator:
                     spread_efficiency_percent=getattr(params, 'spread_efficiency_percent', None),
                 )
 
-            # ================================================================
-            # 4) Trade manager decision (with real prices from RiskManager)
-            # ================================================================
+            # 4) Trade manager decision
             result = tm.handle_signal(
                 timestamp=timestamp,
                 signal_type=signal_type,
@@ -588,12 +614,11 @@ class TradeSimulator:
 
             # 5) Progressive tracking: position management stage
             if tracking_enabled and signal_id:
-                # Convert TradeDirection enum to string for tracker
                 current_dir_str = tm.current_direction.to_string() if tm.current_direction else None
                 
                 tracker.update_position_management_details(
                     signal_id=signal_id,
-                    action=result.to_dict()['action'],  # Convert TradeDecision to string
+                    action=result.to_dict()['action'],
                     reason=result.reason,
                     current_direction=current_dir_str,
                     open_positions_count=len(tm.current_positions),
@@ -625,7 +650,6 @@ class TradeSimulator:
                 )
                 tm.close_positions(result.close_trade_ids)
                 
-                # Open reversed position
                 self._handle_open(
                     timestamp,
                     direction,
@@ -653,23 +677,42 @@ class TradeSimulator:
         if verbose and self.profiler:
             self.profiler.print_report()
 
-        closed_trades = [t for t in self.all_trades if t["status"] == "CLOSED"]
-        open_trades = [t for t in self.all_trades if t["status"] == "OPEN"]
-        rejected_trades = [t for t in self.all_trades if t["status"] == "REJECTED"]
+        # ================================================================
+        # SESSION 10: Convert Trade contracts to dicts for output
+        # ================================================================
+        def trade_to_legacy_dict(trade: Trade) -> Dict[str, Any]:
+            """Convert Trade to legacy dict with numeric trade_id"""
+            d = trade.to_dict()
+            # Extract numeric ID from entry_id (e.g., "E123" -> 123)
+            d["trade_id"] = int(trade.entry.entry_id.replace("E", ""))
+            return d
+        
+        all_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades]
+        closed_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades if t.is_closed]
+        open_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades if t.is_open]
+        
+        # For rejected trades, check entry_price == 0.0 (our rejection indicator)
+        rejected_trades_dict = []
+        for t in self.all_trades:
+            if t.entry.entry_price == 0.0:  # Rejected trade
+                d = trade_to_legacy_dict(t)
+                d["status"] = "REJECTED"
+                d["reject_reason"] = t.entry.comment.replace("Rejected: ", "") if t.entry.comment else "Unknown"
+                rejected_trades_dict.append(d)
 
         return {
-            "all_trades": self.all_trades,
-            "closed_trades": closed_trades,
-            "open_trades": open_trades,
-            "rejected_trades": rejected_trades,
+            "all_trades": all_trades_dict,
+            "closed_trades": closed_trades_dict,
+            "open_trades": open_trades_dict,
+            "rejected_trades": rejected_trades_dict,
             "exit_stats": exit_stats,
             "position_rejected_count": position_rejected_count,
             "risk_stats": risk_stats,
             "trade_manager_metrics": self.trade_manager.get_metrics(),
             "execution_mode": (
-                "LTF_OHLC_VECTORIZED_V4_4_SESSION9_NUMBA"
+                "LTF_OHLC_VECTORIZED_V4_5_SESSION10_NUMBA"
                 if NUMBA_AVAILABLE
-                else "LTF_OHLC_VECTORIZED_V4_4_SESSION9"
+                else "LTF_OHLC_VECTORIZED_V4_5_SESSION10"
             ),
         }
 
@@ -684,34 +727,36 @@ class TradeSimulator:
         reason: str,
         verbose: bool,
     ):
-        """Record rejected signal"""
+        """Record rejected signal
+        
+        SESSION 10: Creates minimal Trade contract for rejected signals
+        """
         self.trade_counter += 1
-        trade = {
-            "trade_id": self.trade_counter,
-            "trade_manager_trade_id": None,
-            "position_id": None,
-            "status": "REJECTED",
-            "entry_time": timestamp,
-            "exit_time": None,
-            "direction": direction,
-            "entry_price": None,
-            "exit_price": None,
-            "sl_price": None,
-            "tp_price": None,
-            "exit_reason": None,
-            "pnl_points": 0,
-            "pnl_percent": 0,
-            "duration_bars": 0,
-            "duration_minutes": 0,
-            "sl_distance": 0,
-            "tp_distance": 0,
-            "risk_reward_ratio": 0,
-            "is_win": False,
-            "is_loss": False,
-            "comment": f"Rejected: {reason}",
-            "reject_reason": reason,
-            "signal_id": signal_id,
-        }
+        
+        # Create minimal TradeEntry for rejected signal
+        # Note: Rejected trades don't have valid prices/SL/TP
+        entry = TradeEntry(
+            entry_id=f"E{self.trade_counter}",
+            trade_manager_id=None,
+            signal_id=signal_id,
+            entry_time=timestamp,
+            direction=TradeDirection.from_string(direction),
+            entry_price=0.0,  # Placeholder
+            stop_loss=0.0,
+            take_profit=0.0,
+            position_size=0.0,
+            sl_distance=0.0,
+            tp_distance=0.0,
+            risk_reward_ratio=0.0,
+            atr_value=None,
+            spread_enabled=False,
+            spread_points=None,
+            sl_adjusted=False,
+            comment=f"Rejected: {reason}",
+        )
+        
+        # Create Trade with no exit (represents rejected state)
+        trade = Trade(entry=entry, exit=None)
         self.all_trades.append(trade)
 
         if verbose:
@@ -773,7 +818,10 @@ class TradeSimulator:
         exit_stats: Dict,
         verbose: bool,
     ):
-        """Close positions due to opposite signal"""
+        """Close positions due to opposite signal
+        
+        SESSION 10: Works with Trade contracts
+        """
         spread = (
             self.spread_manager.get_spread_in_points(current_bid)
             if self.spread_manager
@@ -781,43 +829,42 @@ class TradeSimulator:
         )
 
         for tid in close_trade_ids:
+            # Find Trade contract by trade_manager_id
             trade = next(
                 (
-                    t
-                    for t in self.all_trades
-                    if t["status"] == "OPEN"
-                    and t.get("trade_manager_trade_id") == tid
+                    t for t in self.all_trades
+                    if t.is_open and t.entry.trade_manager_id == tid
                 ),
                 None,
             )
             if trade:
                 exit_price = (
-                    current_bid if trade["direction"] == "BUY" else current_bid + spread
+                    current_bid if trade.entry.is_long 
+                    else current_bid + spread
                 )
 
-                if trade["direction"] == "BUY":
-                    pnl_points = exit_price - trade["entry_price"]
-                else:
-                    pnl_points = trade["entry_price"] - exit_price
-
-                trade["status"] = "CLOSED"
-                trade["exit_time"] = timestamp
-                trade["exit_price"] = exit_price
-                trade["exit_reason"] = "OPPOSITE_SIGNAL"
-                trade["pnl_points"] = pnl_points
-                trade["pnl_percent"] = (
-                    (pnl_points / trade["entry_price"]) * 100
-                    if trade["entry_price"]
-                    else 0
+                # Create TradeExit for opposite signal
+                trade_exit = TradeExit.create(
+                    entry=trade.entry,
+                    exit_time=timestamp,
+                    exit_price=exit_price,
+                    exit_reason=ExitReason.OPPOSITE_SIGNAL,
                 )
-                trade["is_win"] = pnl_points > 0
-                trade["is_loss"] = pnl_points < 0
+
+                # Update Trade
+                updated_trade = Trade(entry=trade.entry, exit=trade_exit)
+                
+                # Replace in list
+                for i, t in enumerate(self.all_trades):
+                    if t.entry.entry_id == trade.entry.entry_id:
+                        self.all_trades[i] = updated_trade
+                        break
 
                 exit_stats["OPPOSITE_SIGNAL"] = exit_stats.get("OPPOSITE_SIGNAL", 0) + 1
 
                 if verbose:
                     logger.debug(
-                        f"[CLOSE] {timestamp} {trade['direction']} OPPOSITE at {exit_price:.2f}"
+                        f"[CLOSE] {timestamp} {trade.direction} OPPOSITE at {exit_price:.2f}"
                     )
 
     # ------------------------------------------------------------------ #
@@ -827,7 +874,7 @@ class TradeSimulator:
         self,
         timestamp: pd.Timestamp,
         direction: str,
-        params: Dict,
+        params: TradeParameters,
         new_trade_id: int,
         verbose: bool,
         comment_suffix: str = "",
@@ -836,57 +883,52 @@ class TradeSimulator:
         """
         Open new position.
         
-        Session 9: Now creates Position contracts with full price data
+        SESSION 10: Creates TradeEntry contract and Trade object
         """
         self.trade_counter += 1
 
-        # Extract from TradeParameters contract
-        entry = params.entry_price_executed
-        sl = params.stop_loss_trigger
-        tp = params.take_profit
-        sl_dist = abs(entry - sl)
-        tp_dist = abs(tp - entry)
-        rr = tp_dist / sl_dist if sl_dist > 0 else 0
+        # Create TradeEntry contract from TradeParameters
+        entry = TradeEntry.from_trade_parameters(
+            entry_id=f"E{self.trade_counter}",
+            timestamp=timestamp,
+            direction=TradeDirection.from_string(direction),
+            params=params,
+        )
+        
+        # Update with additional metadata
+        # Note: We need to create a new contract with updated comment
+        entry_with_metadata = TradeEntry(
+            entry_id=entry.entry_id,
+            trade_manager_id=new_trade_id,
+            signal_id=signal_id,
+            entry_time=entry.entry_time,
+            direction=entry.direction,
+            entry_price=entry.entry_price,
+            stop_loss=entry.stop_loss,
+            take_profit=entry.take_profit,
+            position_size=entry.position_size,
+            sl_distance=entry.sl_distance,
+            tp_distance=entry.tp_distance,
+            risk_reward_ratio=entry.risk_reward_ratio,
+            atr_value=entry.atr_value,
+            spread_enabled=entry.spread_enabled,
+            spread_points=entry.spread_points,
+            sl_adjusted=entry.sl_adjusted,
+            comment=params.comment + comment_suffix,
+        )
 
-        trade = {
-            "trade_id": self.trade_counter,
-            "trade_manager_trade_id": new_trade_id,
-            "position_id": new_trade_id,
-            "status": "OPEN",
-            "entry_time": timestamp,
-            "exit_time": None,
-            "direction": direction,
-            "entry_price": entry,
-            "exit_price": None,
-            "sl_price": sl,
-            "tp_price": tp,
-            "exit_reason": None,
-            "pnl_points": 0,
-            "pnl_percent": 0,
-            "duration_bars": 0,
-            "duration_minutes": 0,
-            "sl_distance": sl_dist,
-            "tp_distance": tp_dist,
-            "risk_reward_ratio": rr,
-            "is_win": False,
-            "is_loss": False,
-            "comment": params.comment + comment_suffix,
-            "reject_reason": None,
-            "signal_id": signal_id,
-        }
-
+        # Create Trade contract (open, no exit yet)
+        trade = Trade(entry=entry_with_metadata, exit=None)
         self.all_trades.append(trade)
         
-        # ================================================================
-        # SESSION 9 CHANGE: Create Position contract with full price data
-        # ================================================================
+        # Register position in TradeManager
         self.trade_manager.open_position(
             trade_id=new_trade_id,
             timestamp=timestamp,
             direction=TradeDirection.from_string(direction),
-            entry_price=entry,
-            stop_loss=sl,
-            take_profit=tp,
+            entry_price=params.entry_price_executed,
+            stop_loss=params.stop_loss_trigger,
+            take_profit=params.take_profit,
             position_size=params.position_size,
             meta={'signal_id': signal_id} if signal_id else None
         )
@@ -896,15 +938,15 @@ class TradeSimulator:
                 signal_id=signal_id,
                 trade_id=self.trade_counter,
                 entry_time=timestamp,
-                entry_price_executed=entry,
-                sl_price_executed=sl,
-                tp_price_executed=tp,
+                entry_price_executed=params.entry_price_executed,
+                sl_price_executed=params.stop_loss_trigger,
+                tp_price_executed=params.take_profit,
                 reason="OPENED" + comment_suffix,
             )
 
         if verbose:
             logger.debug(
-                f"[OPEN] {timestamp} {direction} at {entry:.2f}{comment_suffix}"
+                f"[OPEN] {timestamp} {direction} at {params.entry_price_executed:.2f}{comment_suffix}"
             )
 
     # ------------------------------------------------------------------ #
@@ -916,7 +958,10 @@ class TradeSimulator:
         exit_stats: Dict,
         verbose: bool,
     ):
-        """Close all remaining open positions at end of backtest"""
+        """Close all remaining open positions at end of backtest
+        
+        SESSION 10: Works with Trade contracts
+        """
         if df_strategy.empty:
             return
 
@@ -928,30 +973,32 @@ class TradeSimulator:
             else 0.0
         )
 
-        for trade in [t for t in self.all_trades if t["status"] == "OPEN"]:
-            exit_price = last_bid if trade["direction"] == "BUY" else last_bid + spread
-
-            if trade["direction"] == "BUY":
-                pnl_points = exit_price - trade["entry_price"]
-            else:
-                pnl_points = trade["entry_price"] - exit_price
-
-            trade["status"] = "CLOSED"
-            trade["exit_time"] = last_timestamp
-            trade["exit_price"] = exit_price
-            trade["exit_reason"] = "END_OF_DATA"
-            trade["pnl_points"] = pnl_points
-            trade["pnl_percent"] = (
-                (pnl_points / trade["entry_price"]) * 100
-                if trade["entry_price"]
-                else 0
+        for trade in [t for t in self.all_trades if t.is_open]:
+            exit_price = (
+                last_bid if trade.entry.is_long 
+                else last_bid + spread
             )
-            trade["is_win"] = pnl_points > 0
-            trade["is_loss"] = pnl_points < 0
+
+            # Create TradeExit for end of data
+            trade_exit = TradeExit.create(
+                entry=trade.entry,
+                exit_time=last_timestamp,
+                exit_price=exit_price,
+                exit_reason=ExitReason.END_OF_DATA,
+            )
+
+            # Update Trade
+            updated_trade = Trade(entry=trade.entry, exit=trade_exit)
+            
+            # Replace in list
+            for i, t in enumerate(self.all_trades):
+                if t.entry.entry_id == trade.entry.entry_id:
+                    self.all_trades[i] = updated_trade
+                    break
 
             exit_stats["END_OF_DATA"] = exit_stats.get("END_OF_DATA", 0) + 1
 
             if verbose:
                 logger.debug(
-                    f"[FORCE CLOSE] {last_timestamp} {trade['direction']} END_OF_DATA at {exit_price:.2f}"
+                    f"[FORCE CLOSE] {last_timestamp} {trade.direction} END_OF_DATA at {exit_price:.2f}"
                 )
