@@ -118,16 +118,16 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 **Goal**: Replace string-based trade logic with typed contracts
 
 ### Step 4.1: Trade Contracts
-- [ ] Review existing trade_*.py files
-- [ ] Finalize TradeDirection enum
-- [ ] Finalize TradeParameters contract
-- [ ] Design DecisionType
+- [x] Review existing trade_*.py files
+- [x] Finalize TradeDirection enum
+- [x] Finalize TradeParameters contract
+- [x] Design DecisionType
 
 ### Step 4.2: Trade Management Migration
-- [ ] Refactor RiskManager
-- [ ] Refactor SpreadManager
-- [ ] Refactor TradeManager
-- [ ] Integration test
+- [x] Refactor RiskManager
+- [x] Refactor SpreadManager
+- [x] Refactor TradeManager
+- [x] Integration test
 
 ---
 
