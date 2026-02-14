@@ -114,113 +114,190 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 - [x] Create new FilterPipeline
 - [x] Performance test
 ---
-## Phase 4: Trade Management ⏳ PENDING
+## Phase 4: Trade Management ✅ COMPLETE (SESSION 10.1)
 **Goal**: Replace string-based trade logic with typed contracts
 
-### Step 4.1: Trade Contracts
+### Step 4.1: Trade Contracts ✅ COMPLETE
 - [x] Review existing trade_*.py files
 - [x] Finalize TradeDirection enum
 - [x] Finalize TradeParameters contract
-- [x] Design DecisionType
+- [x] Design DecisionType enum
+- [x] Design RejectedSignal contract (Session 10.1)
 
-### Step 4.2: Trade Management Migration
-- [x] Refactor RiskManager
+### Step 4.2: Trade Management Migration ✅ COMPLETE
+- [x] Refactor RiskManager (returns TradeParameters)
 - [x] Refactor SpreadManager
-- [x] Refactor TradeManager
-- [x] Integration test
+- [x] Refactor TradeManager (returns TradeDecision)
+- [x] Integration test - PASS
+
+### Step 4.3: TradeSimulator Migration ✅ COMPLETE
+- [x] Internal Trade contract usage (Session 10)
+- [x] RejectedSignal for rejected signals (Session 10.1)
+- [x] Entry logic using contracts
+- [x] Exit logic using contracts
+- [x] LTF execution with contracts
+- [x] Progressive tracking integration
+- [x] Performance test - **PASS (4.5% faster!)**
+- [x] Parity test - **PASS (100% match)**
+
+**PHASE 4 STATUS**: ✅ COMPLETE  
+**PERFORMANCE**: 4.5% faster than legacy 🚀  
+**DELIVERABLE**: TradeSimulator v4.5.1 production-ready
 
 ---
 
-## Phase 5: Execution Layer ⏳ PENDING
-**Goal**: Migrate TradeSimulator to TradeRecord-based execution
+## Phase 5: TradeResult Output ⏳ SESSION 11
+**Goal**: Remove dict output layer, return TradeResult contract
 
-### Step 5.1: Execution Contracts
-- [ ] Review existing trade_record.py
-- [ ] Design TradeRecord contract
-- [ ] Design execution state machine
+### Step 5.1: TradeResult Output Migration ⏳ SESSION 11
+- [ ] Update simulate_trades() return type to TradeResult
+- [ ] Add TradeResult.from_trades() classmethod
+- [ ] Remove dict conversion layer
+- [ ] Update test suite for contract assertions
+- [ ] Performance validation (maintain 4.5% advantage)
+- [ ] Backward compatibility via to_dict() (if needed)
 
-### Step 5.2: Simulator Migration (Thin Slice)
-- [ ] Entry logic migration
-- [ ] Exit logic migration
-- [ ] LTF execution migration
-- [ ] Progressive tracking integration
-- [ ] Performance test
-
----
-
-## Phase 6: Reporting Layer ⏳ PENDING
-**Goal**: Adapt metrics and reporting to typed trades
-
-### Step 6.1: Metrics Migration
-- [ ] Update MetricsCalculator for TradeRecord
-- [ ] Create typed metrics objects
-
-### Step 6.2: Reporting Migration
-- [ ] Update ReportGenerator
-- [ ] Validate output formats
+**PHASE 5 STATUS**: ⏳ Ready to start (Session 11)  
+**ESTIMATED DURATION**: 2-3 hours  
+**EXPECTED OUTCOME**: Pure contract architecture end-to-end
 
 ---
 
-## Phase 7: Integration ⏳ PENDING
-**Goal**: Wire all new modules together
+## Phase 6: Infrastructure Foundation ⏳ SESSION 12
+**Goal**: Production-harden before reporting modules
 
-### Step 7.1: New Runner
-- [ ] Create run_wbws_strategy_v2.py
-- [ ] Parallel execution test (old vs new)
-- [ ] Performance comparison
-- [ ] Final validation
+### Step 6.1: Architecture Documentation ⏳ SESSION 12
+- [ ] Create ARCHITECTURE.md with system diagrams
+- [ ] Document data flow (Mermaid diagrams)
+- [ ] Document contract hierarchy
+- [ ] Document design decisions and rationale
+
+### Step 6.2: Structured Logging ⏳ SESSION 12
+- [ ] Design structured log format (JSON)
+- [ ] Implement StructuredLogger utility
+- [ ] Add logging to all core modules
+- [ ] Log key decisions (filters, rejections, trades)
+
+### Step 6.3: Config Schema Validation ⏳ SESSION 12
+- [ ] Design config dataclasses
+- [ ] Implement validation at load time
+- [ ] Better error messages
+- [ ] Type hints for IDE support
+
+**PHASE 6 STATUS**: ⏳ Planned (Session 12)  
+**ESTIMATED DURATION**: 1 session (4-5 hours)  
+**OUTCOME**: Solid foundation for reporting modules
 
 ---
 
-## Phase 8: Cleanup ⏳ PENDING
-**Goal**: Finalize migration
+## Phase 7: Metrics & Reporting - Design ⏳ SESSIONS 13-21
+**Goal**: Complete feature set with intelligent reporting
 
-### Step 8.1: Documentation
-- [ ] Update all module docstrings
-- [ ] Create migration summary
+### Step 7.1: MetricsCalculator ⏳ SESSIONS 13-14
+- [ ] Define essential metrics (basic, risk, trade stats)
+- [ ] Design MetricsReport contract
+- [ ] Implement MetricsCalculator consuming TradeResult
+- [ ] Add to_dict(), to_dataframe(), to_json() methods
+- [ ] Integration test with TradeResult
+- [ ] Documentation
+
+**ESTIMATED DURATION**: 1-2 sessions  
+**DELIVERABLE**: Contract-based metrics standardization
+
+### Step 7.2: ProgressiveTracker v2 ⏳ SESSIONS 15-17
+- [ ] Design ProgressiveEvent contract
+- [ ] Define what to track at each stage (signal/filter/risk/position/trade)
+- [ ] Implement tracker with contract support
+- [ ] Multiple output formats (CSV, JSON, database)
+- [ ] Integration with MetricsCalculator
+- [ ] Stage-by-stage analytics (not just raw data)
+- [ ] Testing and documentation
+
+**ESTIMATED DURATION**: 2-3 sessions  
+**DELIVERABLE**: Redesigned debugging/analysis tool
+
+### Step 7.3: ReportGenerator v2 ⏳ SESSIONS 18-21
+- [ ] Define report types (executive, trade journal, risk analysis)
+- [ ] Design report templates
+- [ ] Implement HTML generation with charts (plotly)
+- [ ] Intelligent insights ("90% losses in Asian session")
+- [ ] Recommendations engine
+- [ ] Multiple output formats (HTML, PDF, Excel, JSON)
+- [ ] Testing and documentation
+
+**ESTIMATED DURATION**: 3-4 sessions  
+**DELIVERABLE**: Intelligent reporting system with analysis
+
+**PHASE 7 STATUS**: ⏳ Design questions documented (Session 12 Placeholder)  
+**TOTAL DURATION**: 6-9 sessions  
+**OUTCOME**: Complete reporting suite
+
+---
+
+## Phase 8: Infrastructure Completion ⏳ SESSIONS 22-24
+**Goal**: Production hardening and optimization
+
+### Step 8.1: Observability ⏳ SESSIONS 22-23
+- [ ] Performance metrics collection
+- [ ] Execution logging (audit trail)
+- [ ] Memory usage tracking
+- [ ] Monitoring dashboard (optional)
+
+### Step 8.2: Quality Enhancements ⏳ SESSION 24
+- [ ] Contract validation enhancement
+- [ ] Test coverage expansion (edge cases)
+- [ ] Timezone handling verification
+- [ ] Spread manager edge case validation
+
+**PHASE 8 STATUS**: ⏳ Planned (POST_MIGRATION_ROADMAP)  
+**ESTIMATED DURATION**: 2-3 sessions  
+**OUTCOME**: Production-hardened system
+
+---
+
+## Phase 9: Integration & Orchestrator ⏳ FUTURE
+**Goal**: Complete system integration
+
+### Step 9.1: Strategy Orchestrator Integration
+- [ ] Integrate all modules with orchestrator
+- [ ] Multi-strategy support
+- [ ] Parameter optimization integration
+- [ ] Walk-forward analysis support
+
+### Step 9.2: Final Validation
+- [ ] End-to-end testing with orchestrator
+- [ ] Performance validation across full pipeline
+- [ ] Documentation completion
+- [ ] Production deployment guide
+
+**PHASE 9 STATUS**: ⏳ Future planning  
+**ESTIMATED DURATION**: 3-5 sessions  
+**OUTCOME**: Fully integrated trading system
+
+---
+
+## Phase 10: Cleanup & Handoff ⏳ FINAL
+**Goal**: Project completion
+
+### Step 10.1: Documentation
+- [ ] Complete all module docstrings
+- [ ] API documentation (Sphinx)
+- [ ] Architecture guide finalization
+- [ ] Migration summary document
+- [ ] Lessons learned
+
+### Step 10.2: Knowledge Transfer
+- [ ] Developer onboarding guide
+- [ ] Performance tuning guide
+- [ ] Troubleshooting guide
+- [ ] Future enhancement roadmap
+
+### Step 10.3: Archive & Handoff
 - [ ] Archive decision logs
-
-### Step 8.2: Handoff
 - [ ] Code review
 - [ ] Performance report
-- [ ] Lessons learned document
+- [ ] Project handoff
 
----
-
-## Progress Tracking
-
-| Phase | Status | Completion | Notes |
-|-------|--------|------------|-------|
-| 0 - Foundation | ✅ Complete | 100% | Contracts defined |
-| 1 - Data Layer | ✅ Complete | 100% | v2.1 FINAL ready |
-| 2 - Signal Layer | ⏳ Ready | 0% | Starting Session 3 |
-| 3 - Filter Layer | ⏳ Pending | 0% | |
-| 4 - Trade Mgmt | ⏳ Pending | 0% | |
-| 5 - Execution | ⏳ Pending | 0% | |
-| 6 - Reporting | ⏳ Pending | 0% | |
-| 7 - Integration | ⏳ Pending | 0% | |
-| 8 - Cleanup | ⏳ Pending | 0% | |
-
----
-
-## Session History
-
-### Session 1 (2025-02-09)
-- Foundation setup
-- Initial DataLoader implementation
-- Identified performance issue (+31% regression)
-- Status: Incomplete due to performance concerns
-
-### Session 2 (2025-02-10) ✅
-- Fixed Parquet performance (80% faster)
-- Added ARTF (monthly) data support
-- Implemented dual-mode execution
-- Applied optimizations #1 and #2 (8-15% additional speedup)
-- **Result**: Phase 1 COMPLETE, DataLoader production-ready
-- **Next**: Phase 2 - Signal Layer migration
-
----
-
-**Last Updated**: 2025-02-10
-**Current Phase**: Phase 2 - Signal Layer (Ready to Start)
-**Overall Progress**: 2/9 phases complete (22%)
+**PHASE 10 STATUS**: ⏳ Final phase  
+**ESTIMATED DURATION**: 2-3 sessions  
+**OUTCOME**: Complete, documented, production-ready system

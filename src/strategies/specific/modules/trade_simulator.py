@@ -1,4 +1,10 @@
-"""Trade simulation with LTF OHLC execution - Optimized v4.5 (Session 10)
+"""Trade simulation with LTF OHLC execution - Optimized v4.5.1 (Session 10.1)
+
+v4.5.1: Rejected signals use RejectedSignal contract (not TradeEntry)
+        - Fixes validation issue with entry_price=0.0
+        - RejectedSignal is separate from Trade (cleaner design)
+        - Rejected signals stored in self.rejected_signals list
+        - Trade contracts only for actual trades
 
 v4.5: Internal Trade contract usage + dict output compatibility
       - Creates TradeEntry contracts in _handle_open()
@@ -13,9 +19,10 @@ v4.4: TradeManager contract integration
       - RiskManager called before TradeManager (price parameters)
       - Type-safe decision handling with DecisionType enum
 
-Migration Notes (Session 10):
-- Trade objects now use contracts internally
-- Output still returns dicts for test compatibility
+Migration Notes (Session 10.1):
+- RejectedSignal contract for rejected signals (not Trade)
+- Cleaner separation: trades vs rejected signals
+- Fixed validation issue with entry_price=0.0
 - All trade creation/exit uses contract constructors
 - to_dict() called only at output boundary
 """
@@ -42,6 +49,7 @@ from src.strategies.contracts.trade_contracts import (
     TradeDirection,
     ExitReason,
     TradeParameters,
+    RejectedSignal,  # Session 10.1: For rejected signals
 )
 
 logger = logging.getLogger(__name__)
@@ -135,7 +143,10 @@ class TradeSimulator:
 
         # SESSION 10: Store Trade contracts (not dicts)
         self.all_trades: List[Trade] = []
+        # SESSION 10.1: Store rejected signals separately
+        self.rejected_signals: List[RejectedSignal] = []
         self.trade_counter = 0
+        self.rejection_counter = 0
 
         self.trade_manager = None
         self.spread_manager = None
@@ -679,6 +690,7 @@ class TradeSimulator:
 
         # ================================================================
         # SESSION 10: Convert Trade contracts to dicts for output
+        # SESSION 10.1: Handle rejected signals separately
         # ================================================================
         def trade_to_legacy_dict(trade: Trade) -> Dict[str, Any]:
             """Convert Trade to legacy dict with numeric trade_id"""
@@ -691,14 +703,8 @@ class TradeSimulator:
         closed_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades if t.is_closed]
         open_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades if t.is_open]
         
-        # For rejected trades, check entry_price == 0.0 (our rejection indicator)
-        rejected_trades_dict = []
-        for t in self.all_trades:
-            if t.entry.entry_price == 0.0:  # Rejected trade
-                d = trade_to_legacy_dict(t)
-                d["status"] = "REJECTED"
-                d["reject_reason"] = t.entry.comment.replace("Rejected: ", "") if t.entry.comment else "Unknown"
-                rejected_trades_dict.append(d)
+        # Convert rejected signals to legacy format
+        rejected_trades_dict = [r.to_legacy_trade_dict() for r in self.rejected_signals]
 
         return {
             "all_trades": all_trades_dict,
@@ -710,9 +716,9 @@ class TradeSimulator:
             "risk_stats": risk_stats,
             "trade_manager_metrics": self.trade_manager.get_metrics(),
             "execution_mode": (
-                "LTF_OHLC_VECTORIZED_V4_5_SESSION10_NUMBA"
+                "LTF_OHLC_VECTORIZED_V4_5_1_SESSION10_NUMBA"
                 if NUMBA_AVAILABLE
-                else "LTF_OHLC_VECTORIZED_V4_5_SESSION10"
+                else "LTF_OHLC_VECTORIZED_V4_5_1_SESSION10"
             ),
         }
 
@@ -726,38 +732,27 @@ class TradeSimulator:
         signal_id: Optional[int],
         reason: str,
         verbose: bool,
+        rejection_stage: str = "POSITION",  # "RISK" or "POSITION"
     ):
         """Record rejected signal
         
-        SESSION 10: Creates minimal Trade contract for rejected signals
+        SESSION 10.1: Uses RejectedSignal contract (not TradeEntry)
+        Rejected signals are NOT trades - they never reached execution
         """
-        self.trade_counter += 1
+        self.rejection_counter += 1
         
-        # Create minimal TradeEntry for rejected signal
-        # Note: Rejected trades don't have valid prices/SL/TP
-        entry = TradeEntry(
-            entry_id=f"E{self.trade_counter}",
-            trade_manager_id=None,
+        # Create RejectedSignal contract
+        rejected = RejectedSignal(
+            rejection_id=f"R{self.rejection_counter}",
             signal_id=signal_id,
-            entry_time=timestamp,
-            direction=TradeDirection.from_string(direction),
-            entry_price=0.0,  # Placeholder
-            stop_loss=0.0,
-            take_profit=0.0,
-            position_size=0.0,
-            sl_distance=0.0,
-            tp_distance=0.0,
-            risk_reward_ratio=0.0,
-            atr_value=None,
-            spread_enabled=False,
-            spread_points=None,
-            sl_adjusted=False,
-            comment=f"Rejected: {reason}",
+            rejection_time=timestamp,
+            direction=direction,
+            rejection_stage=rejection_stage,
+            rejection_reason=reason,
+            current_price=None,  # Could pass bid_price if available
         )
         
-        # Create Trade with no exit (represents rejected state)
-        trade = Trade(entry=entry, exit=None)
-        self.all_trades.append(trade)
+        self.rejected_signals.append(rejected)
 
         if verbose:
             logger.debug(f"[REJECT] {timestamp} {direction} - {reason}")
@@ -791,7 +786,14 @@ class TradeSimulator:
             )
 
         if action == "OPEN" or action == "REJECT":
-            self._reject_signal(timestamp, direction, signal_id, "Risk rejected", verbose)
+            self._reject_signal(
+                timestamp, 
+                direction, 
+                signal_id, 
+                "Risk rejected", 
+                verbose,
+                rejection_stage="RISK"
+            )
             position_rejected_count[key] += 1
         elif action == "CLOSE_AND_REVERSE":
             self._handle_close(

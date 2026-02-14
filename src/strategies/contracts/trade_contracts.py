@@ -24,6 +24,7 @@ __all__ = [
     'TradeEntry',
     'TradeExit',
     'Trade',
+    'RejectedSignal',  # <-- ADD THIS
     'TradeResult',
     'DecisionType',
     'TradeDecision',
@@ -104,7 +105,6 @@ class DecisionType(Enum):
             return cls[decision_upper]
         except KeyError:
             raise ValueError(f"Invalid decision type: {decision}")
-
 
 # ============================================================================
 # TRADE PARAMETERS
@@ -594,7 +594,107 @@ class Trade:
             f"{status}, P&L: {pnl_str})"
         )
 
+# ============================================================================
+# REJECTED SIGNAL (NOT A TRADE)
+# ============================================================================
 
+@dataclass(frozen=True)
+class RejectedSignal:
+    """
+    Represents a signal that was rejected before becoming a trade.
+    
+    Separate from Trade because rejected signals never had:
+    - Valid entry prices
+    - Stop loss / take profit levels
+    - Position sizing
+    - Risk calculations
+    
+    This is NOT a trade - it's a signal that failed filters.
+    """
+    # Identity
+    rejection_id: str                           # Unique ID (e.g., "R1", "R2")
+    signal_id: Optional[int] = None             # Link to source signal
+    
+    # Timing
+    rejection_time: pd.Timestamp = field(default_factory=pd.Timestamp.now)
+    
+    # Signal details
+    direction: str = "BUY"                      # "BUY" or "SELL" (not enum - it never became a trade)
+    
+    # Rejection details
+    rejection_stage: str = "UNKNOWN"            # "RISK", "POSITION", "FILTER", etc.
+    rejection_reason: str = ""                  # Detailed reason
+    
+    # Context (optional)
+    current_price: Optional[float] = None       # Price when rejected
+    meta: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert to dict.
+        
+        Note: This does NOT try to match Trade dict format.
+        Rejected signals are fundamentally different from trades.
+        """
+        return {
+            "rejection_id": self.rejection_id,
+            "signal_id": self.signal_id,
+            "rejection_time": self.rejection_time,
+            "direction": self.direction,
+            "rejection_stage": self.rejection_stage,
+            "rejection_reason": self.rejection_reason,
+            "current_price": self.current_price,
+            "status": "REJECTED",  # For compatibility with legacy output
+        }
+    
+    def to_legacy_trade_dict(self) -> Dict[str, Any]:
+        """
+        Convert to legacy trade dict format for backward compatibility.
+        
+        Only use this during migration period for test comparisons.
+        Once TradeResult is used, this method can be removed.
+        """
+        return {
+            # Identity (use rejection_id as trade_id for legacy tests)
+            "trade_id": int(self.rejection_id.replace("R", "")),
+            "trade_manager_trade_id": None,
+            "position_id": None,
+            "signal_id": self.signal_id,
+            
+            # Status
+            "status": "REJECTED",
+            
+            # Timing
+            "entry_time": self.rejection_time,
+            
+            # Direction
+            "direction": self.direction,
+            
+            # Rejection details
+            "reject_reason": self.rejection_reason,
+            "comment": f"Rejected: {self.rejection_reason}",
+            
+            # Placeholder values (required by legacy format)
+            "entry_price": None,
+            "sl_price": None,
+            "tp_price": None,
+            "exit_time": None,
+            "exit_price": None,
+            "exit_reason": None,
+            "pnl_points": 0,
+            "pnl_percent": 0,
+            "duration_bars": 0,
+            "duration_minutes": 0,
+            "sl_distance": 0,
+            "tp_distance": 0,
+            "risk_reward_ratio": 0,
+            "is_win": False,
+            "is_loss": False,
+        }
+    
+    def __str__(self) -> str:
+        return f"RejectedSignal({self.rejection_id}, {self.direction}, {self.rejection_reason})"
+    
 # ============================================================================
 # TRADE RESULT (PIPELINE OUTPUT)
 # ============================================================================
