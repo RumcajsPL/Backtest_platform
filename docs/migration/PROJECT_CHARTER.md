@@ -1,10 +1,15 @@
 # WBWSStrategy Migration Project Charter
 ## Project Overview
-**Objective**: Migrate existing WBWSStrategy from dict-based architecture to typed domain contracts while maintaining 100% functional parity and performance. Parity is same important as Perf. If no parity and no technical bug then analysis and decision to be made if accepted (exemple bug in legacy discovered) but globaly we expext parity matches.   
-**Strategic Goal**: Create reusable platform foundation for future strategies and automated backtesting orchestrator.
+**Objective**: Migrate existing WBWSStrategy from dict-based architecture to typed domain contracts while maintaining 100% result parity and performance. Parity is same important as Perf. If no parity and no technical bug discovered, then analysis and decision required how to go, but globaly we expext parity matches.
+### Critical Design Informantion**
+**No Legacy Compatibility is Required**  
+We migrate based on legacy but create a completely new parallel tool. Parity is for logic validation but not for runtime compatibility. Perf is compared only to ensure => new is better than legacy. Non of the new architecture componanents is used, dependendent of any legacy tools. New is fully autonomus and exits in paralel to legacy for result comparison(parity + perf) as legacy is curently the only one xorking, tested result baseline for comparison.
+Backward compatibility is allowed for step-by-step approach and transision work however when new archives its final versions then any backward compatibilities, transitional, debug, assumptions, hardocoddings must be cleanly removed to leave, clean, clear and performant code?  
+Above principle means design decisions for new are liberated from legacy choices, however must be discussed, approved and put in project: DECISION_LOG.md   
+**Strategic Goal**: Create reusable platform foundation for future strategies and automated backtesting orchestrator. 
 **Timeline**: Multi-session project (estimated 18-28 sessions)
 **Success Criteria**:
-- ✅ Where relevant modules use typed contracts (no dict-based trade/signal communication)
+- ✅ Where relevant modules use typed contracts (no leagacy dict-based trade/signal, communication)
 - ✅ Performance maintained or improved (≤110% of baseline)
 - ✅ Old system continues working in parallel
 - ✅ Stage-by-stage validation against old outputs
