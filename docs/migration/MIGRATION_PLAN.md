@@ -185,10 +185,10 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 ## Phase 7: Metrics & Reporting - Design ⏳ SESSIONS 13-21
 **Goal**: Complete feature set with intelligent reporting
 ### Step 7.1: MetricsCalculator ⏳ SESSIONS 13-14
-- [ ] Define essential metrics (basic, risk, trade stats)
-- [ ] Design MetricsReport contract
-- [ ] Implement MetricsCalculator consuming TradeResult
-- [ ] Add to_dict(), to_dataframe(), to_json() methods
+- [x] Define essential metrics (basic, risk, trade stats)
+- [x] Design MetricsReport contract
+- [x] Implement MetricsCalculator consuming TradeResult
+- [x] Add to_dict(), to_dataframe(), to_json() methods
 - [ ] Integration test with TradeResult
 - [ ] Documentation
 **ESTIMATED DURATION**: 1-2 sessions  
