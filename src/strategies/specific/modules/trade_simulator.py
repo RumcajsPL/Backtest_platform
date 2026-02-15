@@ -1,30 +1,15 @@
-"""Trade simulation with LTF OHLC execution - Optimized v4.5.1 (Session 10.1)
+"""Trade simulation with LTF OHLC execution - v4.6 (Session 11)
+
+v4.6: TradeResult contract output
+      - Returns TradeResult directly (no dict conversion)
+      - Complete contract-based architecture
+      - Use result.to_dict() for legacy compatibility
 
 v4.5.1: Rejected signals use RejectedSignal contract (not TradeEntry)
         - Fixes validation issue with entry_price=0.0
         - RejectedSignal is separate from Trade (cleaner design)
         - Rejected signals stored in self.rejected_signals list
         - Trade contracts only for actual trades
-
-v4.5: Internal Trade contract usage + dict output compatibility
-      - Creates TradeEntry contracts in _handle_open()
-      - Creates TradeExit contracts in _execute_trade_exit()
-      - Stores Trade contracts in self.all_trades
-      - Converts to dict on output (backward compatible)
-      - Ready for TradeResult migration in Session 11
-
-v4.4: TradeManager contract integration
-      - Uses TradeDecision contract from TradeManager
-      - Uses Position contract with full price data
-      - RiskManager called before TradeManager (price parameters)
-      - Type-safe decision handling with DecisionType enum
-
-Migration Notes (Session 10.1):
-- RejectedSignal contract for rejected signals (not Trade)
-- Cleaner separation: trades vs rejected signals
-- Fixed validation issue with entry_price=0.0
-- All trade creation/exit uses contract constructors
-- to_dict() called only at output boundary
 """
 import time
 import logging
@@ -50,6 +35,7 @@ from src.strategies.contracts.trade_contracts import (
     ExitReason,
     TradeParameters,
     RejectedSignal,  # Session 10.1: For rejected signals
+    TradeResult,  # Session 11: For contract output
 )
 
 logger = logging.getLogger(__name__)
@@ -131,9 +117,9 @@ class TradeSimulator:
     
     v4.4 (Session 9): TradeManager contract integration
     - Uses TradeDecision contract (not dict)
-    - RiskManager called before TradeManager (provides prices)
-    - Position contracts with full price data
-    - Type-safe with DecisionType enum
+    - Uses Position contract with full price data
+    - RiskManager called before TradeManager (price parameters)
+    - Type-safe decision handling with DecisionType enum
     """
 
     def __init__(self, config: Dict, df_full: pd.DataFrame):
@@ -462,14 +448,14 @@ class TradeSimulator:
         progressive_tracker=None,
         signal_id_map: Dict = None,
         df_ltf: Optional[pd.DataFrame] = None,
-    ) -> Dict:
+    ) -> TradeResult:
         """
         Simulate trades with realistic LTF execution.
         
-        Session 10 Changes:
-        - Creates Trade contracts internally
-        - Returns dict for backward compatibility
-        - Ready for TradeResult migration in Session 11
+        Session 11 Changes:
+        - Returns TradeResult contract (not dict)
+        - Complete contract-based architecture
+        - Use result.to_dict() for legacy compatibility
         
         Session 9 Changes:
         - RiskManager called FIRST to get prices
@@ -689,38 +675,23 @@ class TradeSimulator:
             self.profiler.print_report()
 
         # ================================================================
-        # SESSION 10: Convert Trade contracts to dicts for output
-        # SESSION 10.1: Handle rejected signals separately
+        # SESSION 11: Return TradeResult contract (no dict conversion)
         # ================================================================
-        def trade_to_legacy_dict(trade: Trade) -> Dict[str, Any]:
-            """Convert Trade to legacy dict with numeric trade_id"""
-            d = trade.to_dict()
-            # Extract numeric ID from entry_id (e.g., "E123" -> 123)
-            d["trade_id"] = int(trade.entry.entry_id.replace("E", ""))
-            return d
+        execution_mode = (
+            "LTF_OHLC_VECTORIZED_V4_6_SESSION11_NUMBA"
+            if NUMBA_AVAILABLE
+            else "LTF_OHLC_VECTORIZED_V4_6_SESSION11"
+        )
         
-        all_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades]
-        closed_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades if t.is_closed]
-        open_trades_dict = [trade_to_legacy_dict(t) for t in self.all_trades if t.is_open]
-        
-        # Convert rejected signals to legacy format
-        rejected_trades_dict = [r.to_legacy_trade_dict() for r in self.rejected_signals]
-
-        return {
-            "all_trades": all_trades_dict,
-            "closed_trades": closed_trades_dict,
-            "open_trades": open_trades_dict,
-            "rejected_trades": rejected_trades_dict,
-            "exit_stats": exit_stats,
-            "position_rejected_count": position_rejected_count,
-            "risk_stats": risk_stats,
-            "trade_manager_metrics": self.trade_manager.get_metrics(),
-            "execution_mode": (
-                "LTF_OHLC_VECTORIZED_V4_5_1_SESSION10_NUMBA"
-                if NUMBA_AVAILABLE
-                else "LTF_OHLC_VECTORIZED_V4_5_1_SESSION10"
-            ),
-        }
+        return TradeResult.from_trades(
+            trades=self.all_trades,
+            rejected_signals=self.rejected_signals,
+            exit_stats=exit_stats,
+            risk_stats=risk_stats,
+            position_rejected=position_rejected_count,
+            trade_manager_metrics=self.trade_manager.get_metrics(),
+            execution_mode=execution_mode,
+        )
 
     # ------------------------------------------------------------------ #
     # Rejected signals

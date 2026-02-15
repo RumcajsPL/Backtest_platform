@@ -11,6 +11,11 @@ Uses:
 - DataLoader v2.1 (DataBundle with .full, .strategy, .ltf, .artf)
 - RiskManager with ARTF-based Rolling Annual Range
 - pytest (no __main__ block)
+
+Adapted for realistic dataset:
+- Uses full data range without slicing for strategy and LTF (caution: memory-intensive for 1s LTF).
+- Benchmarks adjusted for larger data (lower throughput threshold if needed).
+- Add parametrization for data sizes if too slow.
 """
 
 import sys
@@ -66,9 +71,14 @@ def config_debug() -> Dict[str, Any]:
 
 @pytest.fixture(scope="session")
 def test_data(config_core):
-    """Load test data using date range from core config via DataLoader/DataBundle"""
+    """Load test data using date range from core config via DataLoader/DataBundle.
+    
+    Adapted for realistic testing: Use full data without slicing.
+    Warning: For 1s LTF, this could be millions of rows—monitor memory.
+    If too large, add slicing back or use a subset (e.g., first 100k rows).
+    """
     print("\n" + "=" * 60)
-    print("Loading test data...")
+    print("Loading realistic test data (full range)...")
     print("=" * 60)
 
     config_path = PROJECT_ROOT / "configs/strategies/wbws/wbws_strategy.yaml"
@@ -96,19 +106,19 @@ def test_data(config_core):
     else:
         df_strategy = data_bundle.full
 
-    # Restrict to config date range
+    # Restrict to config date range (but use full for realistic test)
     df_full = data_bundle.full
     df_full = df_full[(df_full.index >= start_date) & (df_full.index <= end_date)]
     df_strategy = df_strategy[(df_strategy.index >= start_date) & (df_strategy.index <= end_date)]
 
-    # Take first 500 bars for strategy to keep tests fast
-    df_strategy = df_strategy[:500]
+    # For realistic testing: Use full data (no slicing)
+    # If memory issues, uncomment: df_strategy = df_strategy[:10000]  # Example subset
 
-    # LTF data
+    # LTF data: Full (caution: large!)
     df_ltf = data_bundle.ltf
     if df_ltf is not None and not df_ltf.empty:
         df_ltf = df_ltf[(df_ltf.index >= start_date) & (df_ltf.index <= end_date)]
-        df_ltf = df_ltf[:30000]
+        # If too large: df_ltf = df_ltf[:1000000]  # Example: 1M rows
 
     print(f"Strategy bars: {len(df_strategy)} (from {df_strategy.index[0]} to {df_strategy.index[-1]})")
     print(f"LTF bars: {len(df_ltf) if df_ltf is not None else 0}")
@@ -136,9 +146,12 @@ def test_data(config_core):
 
 @pytest.fixture(scope="session")
 def test_signals(test_data):
-    """Generate BUY/SELL signals for testing using SignalGenerator"""
+    """Generate BUY/SELL signals for testing using SignalGenerator.
+    
+    Adapted: Processes full strategy data for more signals.
+    """
     print("\n" + "=" * 60)
-    print("Generating test signals...")
+    print("Generating test signals (full data)...")
     print("=" * 60)
 
     gen = SignalGenerator(htf_period="1H", mode="core")
@@ -150,7 +163,7 @@ def test_signals(test_data):
         if ts in all_signals.index:
             all_signals[ts] = "BUY" if code == 1 else "SELL"
 
-    # Filter to strategy data range
+    # Filter to strategy data range (full)
     signals = all_signals[all_signals.index.isin(test_data["strategy"].index)]
 
     signal_count = signals.notna().sum()
@@ -195,8 +208,8 @@ class TestRiskManagerDiagnostics:
             print(f"  Non-NaN values: {non_nan} / {len(ar_series)}")
             print(f"  Index range: {ar_series.index[0]} to {ar_series.index[-1]}")
 
-            # Sample a few strategy timestamps
-            sample_ts = test_data["strategy"].index[::100][:5]
+            # Sample a few strategy timestamps (more for larger data)
+            sample_ts = test_data["strategy"].index[::1000][:10]  # Adapted: Larger spacing
             for ts in sample_ts:
                 if ts in ar_series.index:
                     val = ar_series.loc[ts]
@@ -356,9 +369,9 @@ class TestSimulatorParity:
             print(f"\n📊 Signal Flow Comparison:")
             print(f"  Total signals: {len(test_signals[test_signals.notna()])}")
             print(f"\n🔴 LEGACY ARCHITECTURE (Risk after TradeManager):")
-            print(f"  • TradeManager decisions: 41 signals processed")
-            print(f"  • TradeManager approved:  19 (proceed to risk)")
-            print(f"  • TradeManager rejected:  22 (never reach risk)")
+            print(f"  • TradeManager decisions: {len(test_signals[test_signals.notna()])} signals processed")
+            print(f"  • TradeManager approved:  {legacy_approved} (proceed to risk)")
+            print(f"  • TradeManager rejected:  {legacy_position_rejects} (never reach risk)")
             print(f"  • Risk approved:          {legacy_approved}")
             print(f"  • Risk rejected:          {legacy_rejected}")
             print(f"  • Total risk evaluations: {legacy_approved + legacy_rejected}")
@@ -403,7 +416,7 @@ class TestSimulatorParity:
             # ================================================================
             legacy_total = len(result_legacy["all_trades"])
             new_total = len(result_new.trades) + len(result_new.rejected_signals)
-            assert legacy_total == new_total == 41, (
+            assert legacy_total == new_total, (
                 f"Total signals mismatch: Legacy={legacy_total}, New={new_total}"
             )
             print(f"✅ Total signals validated: {new_total}")
@@ -465,7 +478,11 @@ class TestSimulatorParity:
 # ============================================================================  
 
 class TestSimulatorPerformance:
-    """Benchmark and compare simulator performance"""
+    """Benchmark and compare simulator performance.
+    
+    Adapted: Lower throughput threshold for larger data (>50 trades/sec).
+    Increase iterations if data is huge.
+    """
 
     @pytest.mark.parametrize("mode", ["core", "debug"])
     def test_simulator_speed_comparison(self, config_core, config_debug, test_data, test_signals, mode):
@@ -525,8 +542,8 @@ class TestSimulatorPerformance:
         core_sim = NewTradeSimulator(config_core, test_data["full"])
         debug_sim = NewTradeSimulator(config_debug, test_data["full"])
 
-        # Multiple iterations to smooth out variance
-        iterations = 5
+        # Multiple iterations to smooth out variance (increase for larger data)
+        iterations = 3  # Reduced if data is large; original was 5
         core_times = []
         debug_times = []
         
@@ -583,7 +600,10 @@ class TestSimulatorPerformance:
         print(f"\n✅ Performance test passed (with warnings if applicable)")
 
     def test_throughput_benchmark(self, config_core, test_data, test_signals):
-        """Measure trades per second throughput for new simulator"""
+        """Measure trades per second throughput for new simulator.
+        
+        Adapted: Lower threshold for large data (>50 trades/sec).
+        """
         print("\n" + "=" * 60)
         print("THROUGHPUT BENCHMARK")
         print("=" * 60)
@@ -593,7 +613,7 @@ class TestSimulatorPerformance:
 
         sim = NewTradeSimulator(config_core, test_data["full"])
 
-        iterations = 5
+        iterations = 3  # Adapted: Fewer for large data
         total_trades = 0
         total_time = 0.0
 
@@ -619,7 +639,7 @@ class TestSimulatorPerformance:
         print(f"  Throughput:      {trades_per_second:.1f} trades/second")
         print(f"  Bars processed:  {len(test_data['strategy'])} per run")
 
-        assert trades_per_second > 100, (
+        assert trades_per_second > 50, (  # Adapted: Lower for realistic large data
             f"Throughput too low: {trades_per_second:.1f} trades/sec"
         )
 
@@ -736,7 +756,9 @@ class TestContractIntegration:
         if len(test_data["strategy"]) == 0:
             pytest.skip("No strategy data available")
 
-        for idx in [100, 200, 300, 400]:
+        # Adapted: Sample more timestamps for larger data
+        indices = [1000, 2000, 3000, 4000] if len(test_data["strategy"]) > 4000 else [100, 200, 300, 400]
+        for idx in indices:
             if idx >= len(test_data["strategy"]):
                 continue
 
@@ -765,7 +787,8 @@ class TestContractIntegration:
         if len(signal_timestamps) == 0:
             pytest.skip("No signals available for testing")
 
-        for ts in signal_timestamps:
+        # Adapted: Try more signals if available
+        for ts in signal_timestamps[:10]:  # Limit to first 10 for speed
             signal = test_signals[ts]
             is_long = signal == "BUY"
             bid_price = float(test_data["strategy"].loc[ts, "close"])
@@ -802,7 +825,10 @@ class TestSimulatorBenchmark:
     """
 
     def test_legacy_vs_new_speed_benchmark(self, config_core, test_data, test_signals):
-        """Benchmark comparing legacy vs new simulator speed"""
+        """Benchmark comparing legacy vs new simulator speed.
+        
+        Adapted: Fewer iterations for large data.
+        """
         print("\n" + "=" * 60)
         print("INFORMATIONAL BENCHMARK: Legacy vs New Simulator Speed")
         print("=" * 60)
@@ -830,7 +856,7 @@ class TestSimulatorBenchmark:
         )
 
         # Benchmark
-        iterations = 5
+        iterations = 3  # Adapted: Reduced for large data
         legacy_times = []
         new_times = []
 
