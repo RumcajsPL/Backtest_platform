@@ -864,6 +864,67 @@ class TradeResult:
             'execution_mode': self.execution_mode,
         }
     
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """
+        Serialize TradeResult to JSON string.
+        
+        Args:
+            indent: JSON indentation level (None for compact, 2 for readable)
+        
+        Returns:
+            JSON string representation
+        
+        Example:
+            result = simulator.simulate_trades(...)
+            json_str = result.to_json(indent=2)
+            with open('results.json', 'w') as f:
+                f.write(json_str)
+        """
+        import json
+        result_dict = self.to_dict()
+        
+        # Convert pandas Timestamps to ISO format strings
+        def default_handler(obj):
+            if isinstance(obj, pd.Timestamp):
+                return obj.isoformat()
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+        
+        return json.dumps(result_dict, indent=indent, default=default_handler)
+    
+    @classmethod
+    def from_json(cls, json_str: str) -> 'TradeResult':
+        """
+        Deserialize TradeResult from JSON string.
+        
+        Args:
+            json_str: JSON string representation
+        
+        Returns:
+            TradeResult instance
+        
+        Example:
+            with open('results.json', 'r') as f:
+                json_str = f.read()
+            result = TradeResult.from_json(json_str)
+        """
+        import json
+        result_dict = json.loads(json_str)
+        
+        # Convert ISO format strings back to pandas Timestamps
+        for trade_dict in result_dict.get('all_trades', []):
+            if 'entry_time' in trade_dict and isinstance(trade_dict['entry_time'], str):
+                trade_dict['entry_time'] = pd.Timestamp(trade_dict['entry_time'])
+            if 'exit_time' in trade_dict and isinstance(trade_dict['exit_time'], str):
+                trade_dict['exit_time'] = pd.Timestamp(trade_dict['exit_time'])
+        
+        for reject_dict in result_dict.get('rejected_trades', []):
+            if 'entry_time' in reject_dict and isinstance(reject_dict['entry_time'], str):
+                reject_dict['entry_time'] = pd.Timestamp(reject_dict['entry_time'])
+            if 'rejection_time' in reject_dict and isinstance(reject_dict['rejection_time'], str):
+                reject_dict['rejection_time'] = pd.Timestamp(reject_dict['rejection_time'])
+        
+        return cls.from_simulator_output(result_dict)
+    
     def get_summary(self) -> str:
         """Get human-readable summary"""
         return (

@@ -3125,3 +3125,424 @@ To verify the update:
    - result = simulator.simulate_trades(...)
    - result_dict = result.to_dict()  # If needed for legacy
 """
+# WBWSStrategy Migration Plan - Updated After Session 11
+
+**Last Updated**: 2025-02-15 (After Session 11)  
+**Status**: Phase 4 COMPLETE ✅ | Phase 5 PLANNED  
+**Progress**: ~65% Complete (4.5/7 phases)
+
+---
+
+## 🎉 Major Milestone: Core Migration COMPLETE!
+
+All core backtest modules now use typed contracts:
+- ✅ DataLoader → DataBundle
+- ✅ SignalGenerator → SignalFrame
+- ✅ FilterPipeline → FilterResult
+- ✅ TradeSimulator → TradeResult ← **Session 11 COMPLETE!**
+
+**Performance**: **92.6% faster than legacy** on realistic data! 🚀
+
+---
+
+## Phase Status Overview
+
+| Phase | Module | Status | Performance | Sessions |
+|-------|--------|--------|-------------|----------|
+| 1 | DataLoader | ✅ COMPLETE | Baseline | 2-3 |
+| 2 | SignalGenerator | ✅ COMPLETE | 5-10% faster | 2 |
+| 3 | FilterPipeline | ✅ COMPLETE | Maintained | 3-4 |
+| 4 | TradeSimulator | ✅ COMPLETE | **92.6% faster!** | 3 |
+| 5 | Reporting | ⏳ PLANNED | TBD | 7-10 |
+| 6 | Infrastructure | ⏳ PLANNED | TBD | 3-5 |
+| 7 | Polish | ⏳ PLANNED | TBD | 2-3 |
+
+---
+
+## Phase 4: Trade Management - COMPLETE ✅
+
+### Session 9: RiskManager + TradeManager Contracts
+**Duration**: 4 hours  
+**Deliverables**:
+- TradeParameters contract
+- TradeDecision contract
+- RiskManager using contracts
+- TradeManager using contracts
+
+**Result**: ✅ Architecture validated, risk flows correctly
+
+---
+
+### Session 10: Trade + RejectedSignal Contracts
+**Duration**: 3.5 hours  
+**Deliverables**:
+- TradeEntry, TradeExit, Trade contracts
+- RejectedSignal contract (separate from Trade)
+- Internal contract usage in TradeSimulator
+- Dict output for backward compatibility
+
+**Result**: ✅ Clean separation of trades vs. rejections
+
+---
+
+### Session 11: TradeResult Output Migration
+**Duration**: 2.5 hours  
+**Deliverables**:
+- TradeResult.from_trades() classmethod
+- TradeSimulator returns TradeResult (not dict)
+- Test suite migrated to contracts
+- JSON serialization added (quick win)
+- 50+ contract validation tests (quick win)
+
+**Performance**:
+- Small data: 0.997x legacy (identical)
+- **Realistic data: 0.07x legacy (92.6% FASTER!)** 🚀
+
+**Result**: ✅ Contract-based end-to-end, massive performance gains
+
+---
+
+## Phase 5: Reporting & Metrics - PLANNED
+
+### Overview
+Complete the feature set with intelligent reporting and metrics calculation.
+
+**Approach**: Hybrid (Infrastructure first, then reporting)
+
+---
+
+### Session 12: Infrastructure Foundation (1 session)
+**Duration**: 4-5 hours  
+**Focus**: Critical infrastructure for reporting modules
+
+**Tasks**:
+1. Architecture Documentation
+   - System overview diagrams
+   - Data flow documentation
+   - Contract specifications
+   - Design decisions rationale
+
+2. Structured Logging
+   - JSON logging utility
+   - Integration in core modules
+   - Event tracking system
+
+3. Config Schema Validation
+   - Type-safe config dataclasses
+   - Validation at load time
+   - Better error messages
+
+**Why First**: Foundation for reporting modules, better debugging
+
+---
+
+### Session 13-14: MetricsCalculator (1-2 sessions)
+**Duration**: 6-10 hours  
+**Focus**: Standardized metrics calculation
+
+**Requirements**:
+1. **Input**: TradeResult contract
+2. **Output**: MetricsReport contract
+
+**Metrics to Include**:
+- **Basic**: Win rate, total P&L, avg P&L, max drawdown
+- **Risk**: Sharpe ratio, Sortino ratio, Calmar ratio
+- **Trade**: Avg duration, win/loss streaks, R-multiples
+- **Strategy**: Consistency, factor exposure
+
+**Design**:
+```python
+@dataclass(frozen=True)
+class MetricsReport:
+    # Basic metrics
+    total_trades: int
+    win_rate: float
+    total_pnl: float
+    avg_pnl: float
+    max_drawdown: float
+    
+    # Risk metrics
+    sharpe_ratio: float
+    sortino_ratio: float
+    calmar_ratio: float
+    
+    # Trade metrics
+    avg_duration: timedelta
+    longest_win_streak: int
+    longest_loss_streak: int
+    avg_win_pnl: float
+    avg_loss_pnl: float
+    
+    # Conversion methods
+    def to_dict() -> Dict
+    def to_dataframe() -> pd.DataFrame
+    def to_json() -> str
+
+# Usage
+result: TradeResult = simulator.simulate_trades(...)
+metrics: MetricsReport = MetricsCalculator.calculate(result)
+print(f"Win Rate: {metrics.win_rate:.1f}%")
+print(f"Sharpe: {metrics.sharpe_ratio:.2f}")
+```
+
+**Why First Among Reporting**:
+- Clearest requirements
+- Independent module
+- Smallest scope
+- Used by other reporting modules
+
+---
+
+### Session 15-17: ProgressiveTracker v2 (2-3 sessions)
+**Duration**: 12-18 hours  
+**Focus**: Redesigned progressive tracking system
+
+**Current Issues**:
+- Tied to legacy dicts
+- Broken metrics
+- CSV-only output
+- Manual analysis required
+
+**New Design**:
+
+1. **Event Contract**:
+```python
+@dataclass(frozen=True)
+class ProgressiveEvent:
+    event_id: str
+    timestamp: pd.Timestamp
+    stage: str  # 'signal', 'filter', 'risk', 'position', 'trade'
+    event_type: str  # 'generated', 'passed', 'rejected', 'opened', 'closed'
+    signal_id: Optional[int]
+    trade_id: Optional[str]
+    data: Dict[str, Any]
+```
+
+2. **Tracker Features**:
+- Multiple output formats (CSV, JSON, Database)
+- Real-time or batch tracking
+- Uses MetricsCalculator for stage metrics
+- Event-based architecture (not direct calls)
+- Built-in analytics (not just raw data)
+
+3. **Integration**:
+```python
+tracker = ProgressiveTracker(output_dir="outputs/tracking")
+
+# In SignalGenerator
+tracker.track_event(ProgressiveEvent(
+    stage="signal",
+    event_type="generated",
+    signal_id=123,
+    data={"direction": "BUY", "confidence": 0.85}
+))
+
+# Auto-generates:
+# - signals.csv (all signals)
+# - filters.csv (filter results)
+# - trades.csv (trade executions)
+# - summary.json (stage-by-stage metrics)
+```
+
+**Why Second**: Uses MetricsCalculator, informs ReportGenerator
+
+---
+
+### Session 18-21: ReportGenerator v2 (3-4 sessions)
+**Duration**: 18-24 hours  
+**Focus**: Intelligent reporting with insights
+
+**Current Issues**:
+- No value added (just data dump)
+- No analysis or insights
+- Limited formats
+
+**New Design**:
+
+1. **Report Types**:
+```python
+class ReportGenerator:
+    def generate_executive_summary(
+        result: TradeResult
+    ) -> HTMLReport:
+        """High-level overview with key metrics and charts"""
+        pass
+    
+    def generate_trade_journal(
+        result: TradeResult,
+        progressive_data: ProgressiveTracker
+    ) -> HTMLReport:
+        """Detailed trade-by-trade analysis"""
+        pass
+    
+    def generate_risk_analysis(
+        result: TradeResult
+    ) -> HTMLReport:
+        """Drawdown, exposure, correlation analysis"""
+        pass
+    
+    def generate_comparison(
+        results: List[TradeResult],
+        labels: List[str]
+    ) -> HTMLReport:
+        """Compare multiple strategy runs"""
+        pass
+```
+
+2. **Features**:
+- Interactive HTML with charts (plotly/altair)
+- Automated insights:
+  - "90% of losses occurred during Asian session"
+  - "Largest drawdown followed by 5-trade winning streak"
+  - "Win rate 23% higher on Mondays"
+- Recommendations:
+  - "Consider tighter SL (current avg loss exceeds avg win)"
+  - "High correlation with SPY detected"
+- Benchmarking vs. buy-and-hold
+
+3. **Output Formats**:
+- HTML (primary - interactive)
+- PDF (for archiving)
+- Excel (for editing)
+- JSON (for APIs)
+
+**Why Last**: Most complex, uses all previous modules
+
+---
+
+## Phase 6: Infrastructure Enhancement - PLANNED
+
+### Session 22-24: Remaining Infrastructure (2-3 sessions)
+**Duration**: 12-18 hours
+
+**Tasks**:
+1. Performance metrics collection
+2. Execution logging (audit trail)
+3. Contract validation enhancement
+4. Test coverage expansion
+5. Error handling improvement
+
+**Deferred from POST_MIGRATION_ROADMAP**:
+- Timezone handling verification
+- Edge case testing
+- Memory profiling
+- Parallel execution support (if needed)
+
+---
+
+## Phase 7: Polish & Documentation - PLANNED
+
+### Session 25-27: Final Polish (2-3 sessions)
+**Duration**: 12-18 hours
+
+**Tasks**:
+1. Code cleanup and refactoring
+2. Documentation completeness
+3. Example notebooks
+4. User guides
+5. API reference
+6. Deployment guides
+
+---
+
+## Timeline Summary
+
+**Completed Sessions**: 11 (44-55 hours)  
+**Remaining Sessions**: 11-15 (66-90 hours)  
+**Total Estimate**: 22-26 sessions (110-145 hours)
+
+**At Current Pace** (3-4 sessions/week):
+- Phase 5 (Reporting): 3-4 weeks
+- Phase 6 (Infrastructure): 1 week
+- Phase 7 (Polish): 1 week
+- **Total Remaining**: 5-6 weeks
+
+**Target Completion**: Mid-March 2026
+
+---
+
+## Success Metrics
+
+### Phase 4 Achievements ✅
+- **Parity**: 100% match with legacy
+- **Performance**: 92.6% faster on realistic data
+- **Tests**: 14/14 integration + 50+ unit tests passing
+- **Type Safety**: Complete contract-based architecture
+- **Maintainability**: Clean, documented code
+
+### Phase 5 Targets
+- **Metrics**: Standardized calculation across all tools
+- **Tracking**: Multiple output formats, analytics built-in
+- **Reports**: Intelligent insights, not just data dumps
+- **Usability**: HTML reports with interactive charts
+
+### Overall Project Targets
+- **Performance**: ≤1.0x legacy (faster or equal)
+- **Type Safety**: 100% contract-based
+- **Test Coverage**: >80%
+- **Documentation**: Comprehensive
+- **Maintainability**: High (easy for new developers)
+
+---
+
+## Risk Assessment
+
+### Low Risk Items ✅
+- Core migration (COMPLETE)
+- Infrastructure foundation (Session 12)
+- MetricsCalculator (clear requirements)
+
+### Medium Risk Items
+- ProgressiveTracker redesign (complex integration)
+- ReportGenerator intelligence (needs iteration)
+
+### Mitigation Strategies
+- Incremental development with testing
+- User feedback at each milestone
+- Rollback points maintained
+- Legacy system kept in parallel
+
+---
+
+## Decision Log Updates
+
+### Session 11 Decisions
+1. **TradeResult Output**: Approved ✅
+   - Return contracts, not dicts
+   - Backward compatibility via .to_dict()
+
+2. **Quick Wins**: Implemented ✅
+   - JSON serialization
+   - Contract validation tests
+   - Documentation improvements
+
+3. **Strategic Direction**: Hybrid Approach ✅
+   - Infrastructure first (Session 12)
+   - Then reporting modules (Sessions 13-21)
+   - Then remaining infrastructure
+
+---
+
+## Next Actions
+
+### Immediate (Session 12)
+1. Review and approve Session 12 handoff
+2. Execute infrastructure foundation tasks
+3. Update project documentation
+
+### Short-term (Sessions 13-14)
+1. Implement MetricsCalculator
+2. Test with TradeResult contracts
+3. Document metrics definitions
+
+### Medium-term (Sessions 15-21)
+1. Redesign ProgressiveTracker
+2. Implement ReportGenerator
+3. Integration testing
+
+---
+
+**Status**: Phase 4 COMPLETE ✅ | Phase 5 READY TO START  
+**Next Session**: Session 12 (Infrastructure Foundation)  
+**Project Health**: EXCELLENT 🎉  
+**Confidence**: VERY HIGH 💪

@@ -26,7 +26,6 @@ Above principle means design decisions for new are liberated from legacy choices
 - Performance-driven (vectorization, caching and more advanced)
 - Explicit contracts (no hidden assumptions)
 - Type safety (dataclasses over dicts)
-- Performance-aware (vectorization, caching, etc.)
 - Test-driven (validate each step)
 ---
 ## Current System Baseline
