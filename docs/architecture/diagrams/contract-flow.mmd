@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Config
+    participant DL as DataLoader
+    participant SG as SignalGenerator
+    participant FP as FilterPipeline
+    participant RM as RiskManager
+    participant TM as TradeManager
+    participant TS as TradeSimulator
+    participant Out as TradeResult
+    
+    Note over Config,Out: Contract-Based Pipeline Flow
+    
+    Config->>DL: DataConfig
+    activate DL
+    DL->>DL: Load OHLCV files
+    DL->>DL: Validate & slice
+    DL->>DL: Create DataBundle
+    DL-->>SG: DataBundle
+    deactivate DL
+    
+    activate SG
+    SG->>SG: Compute indicators
+    SG->>SG: Detect swing highs/lows
+    SG->>SG: Create SignalFrame
+    SG-->>FP: SignalFrame
+    deactivate SG
+    
+    activate FP
+    FP->>FP: Apply time filters
+    FP->>FP: Apply technical filters
+    FP->>FP: Create FilterResult
+    FP-->>TS: FilterResult
+    deactivate FP
+    
+    activate TS
+    loop For each signal
+        TS->>RM: Signal + Market Data
+        activate RM
+        RM->>RM: Calculate entry/SL/TP
+        RM->>RM: Validate risk
+        RM-->>TS: TradeParameters
+        deactivate RM
+        
+        TS->>TM: Signal + TradeParameters
+        activate TM
+        TM->>TM: Check pyramiding rules
+        TM->>TM: Check opposite signals
+        TM-->>TS: TradeDecision
+        deactivate TM
+        
+        alt Decision = OPEN
+            TS->>TS: Create TradeEntry
+            TS->>TS: Monitor LTF for exits
+            TS->>TS: Create TradeExit (if hit)
+            TS->>TS: Compose Trade
+        else Decision = REJECT
+            TS->>TS: Create RejectedSignal
+        end
+    end
+    
+    TS->>TS: Calculate statistics
+    TS->>TS: Create TradeResult
+    TS-->>Out: TradeResult
+    deactivate TS
+    
+    Note over Out: trades: List[Trade]<br/>rejected_signals: List[RejectedSignal]<br/>win_rate, pnl, etc.
