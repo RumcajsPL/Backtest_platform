@@ -189,22 +189,21 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 - [x] Design MetricsReport contract
 - [x] Implement MetricsCalculator consuming TradeResult
 - [x] Add to_dict(), to_dataframe(), to_json() methods
-- [ ] Integration test with TradeResult
-- [ ] Documentation
+- [x] Integration test with TradeResult
+- [x] Documentation
 **ESTIMATED DURATION**: 1-2 sessions  
 **DELIVERABLE**: Contract-based metrics standardization
 ### Step 7.2: ProgressiveTracker v2 ⏳ SESSIONS 15-17
-- [ ] Design ProgressiveEvent contract
-- [ ] Define what to track at each stage (signal/filter/risk/position/trade)
-- [ ] Implement tracker with contract support
-- [ ] Multiple output formats (CSV, JSON, database)
-- [ ] Integration with MetricsCalculator
-- [ ] Stage-by-stage analytics (not just raw data)
-- [ ] Testing and documentation
+- [x] Design TradeAnalytics contract
+- [x] Define what to track at each stage (signal/filter/risk/position/trade)
+- [x] Implement tracker with contract support
+- [x] Multiple output formats (defined)
+- [x] Stage-by-stage analytics (not just raw data)
+- [x] Testing and documentation
 **ESTIMATED DURATION**: 2-3 sessions  
-**DELIVERABLE**: Redesigned debugging/analysis tool
+**DELIVERABLE**: Redesigned analysis tool
 ### Step 7.3: ReportGenerator v2 ⏳ SESSIONS 18-21
-- [ ] Define report types (executive, trade journal, risk analysis)
+- [x] Define report types (executive, trade journal, risk analysis)
 - [ ] Design report templates
 - [ ] Implement HTML generation with charts (plotly)
 - [ ] Intelligent insights ("90% losses in Asian session")

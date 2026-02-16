@@ -1,5 +1,16 @@
 # CONTRACTS QUICK REFERENCE
-**Session 11 | Version 4.1 | 2025-02-14**
+**Session 14 | Version 5.0 | 2026-02-16**
+
+## 📋 TABLE OF CONTENTS
+- [Phase 1: Data Layer](#data-layer-phase-1-)
+- [Phase 2: Signal Layer](#signal-layer-phase-2-)
+- [Phase 3: Filter Layer](#filter-layer-phase-3-)
+- [Phase 4: Trade Layer](#trade-layer-phase-4-)
+- [Phase 5: Metrics & Analytics](#metrics--analytics-phase-5-)
+- [Contract Organization](#contract-organization)
+- [Migration Status](#migration-status)
+
+---
 
 ## DATA LAYER (Phase 1 ✅)
 ### DataBundle
@@ -82,7 +93,7 @@ class FilterPipelineResult:
 
 ---
 
-## TRADE LAYER (Phase 4 ✅) - UPDATED SESSION 10.1!
+## TRADE LAYER (Phase 4 ✅)
 ### TradeDirection Enum
 ```python
 class TradeDirection(Enum):
@@ -110,18 +121,18 @@ class ExitReason(Enum):
 @dataclass(frozen=True)
 class TradeParameters:
     # Core execution prices
-    entry_price_mid: float                      # Mid/bid price (before spread)
-    entry_price_executed: float                 # Actual execution (after spread)
-    stop_loss_raw: float                        # SL before spread adjustment
-    stop_loss_trigger: float                    # Chart SL (triggers exit)
-    take_profit: float                          # TP level
+    entry_price_mid: float
+    entry_price_executed: float
+    stop_loss_raw: float
+    stop_loss_trigger: float
+    take_profit: float
     position_size: float = 1.0
    
     # Risk metrics
     atr_value: Optional[float]
     atr_length: Optional[int]
-    sl_distance: Optional[float]                # SL distance in points
-    tp_distance: Optional[float]                # TP distance in points
+    sl_distance: Optional[float]
+    tp_distance: Optional[float]
     risk_reward_ratio: Optional[float]
     
     # Annual range validation
@@ -136,32 +147,29 @@ class TradeParameters:
     spread_points: Optional[float]
     
     # Adjustments
-    sl_adjusted: bool = False                   # Was SL adjusted for risk?
+    sl_adjusted: bool = False
 ```
-**Key Methods**:
-- `from_risk_manager_output(risk_dict)` → Creates from RiskManager output
-- `to_dict()` → Converts to legacy dict format
 
 ### TradeEntry
 ```python
 @dataclass(frozen=True)
 class TradeEntry:
     # Identity
-    entry_id: str                               # Unique ID
-    trade_manager_id: Optional[int]             # TradeManager position ID
-    signal_id: Optional[int]                    # Source signal link
+    entry_id: str
+    trade_manager_id: Optional[int]
+    signal_id: Optional[int]
     
     # Timing
     entry_time: pd.Timestamp
     
     # Trade details
     direction: TradeDirection
-    entry_price: float                          # Executed entry
-    stop_loss: float                            # SL trigger price
-    take_profit: float                          # TP price
+    entry_price: float
+    stop_loss: float
+    take_profit: float
     position_size: float = 1.0
     
-    # Risk metrics (at entry)
+    # Risk metrics
     sl_distance: float
     tp_distance: float
     risk_reward_ratio: float
@@ -175,45 +183,26 @@ class TradeEntry:
     # Metadata
     comment: Optional[str]
 ```
-**Key Methods**:
-- `from_trade_parameters(id, timestamp, direction, params)` → Create from TradeParameters
-- `to_dict()` → Convert to legacy dict
-- Properties: `is_long`, `is_short`
-
-**Validation**: `entry_price` must be > 0 (enforced in `__post_init__`)
 
 ### TradeExit
 ```python
 @dataclass(frozen=True)
 class TradeExit:
-    # Identity
     exit_id: str
-    entry_id: str                               # Link to TradeEntry
-    
-    # Timing
+    entry_id: str
     exit_time: pd.Timestamp
     duration_bars: int
     duration_minutes: float
-    
-    # Exit details
     exit_price: float
     exit_reason: ExitReason
-    
-    # P&L
     pnl_points: float
     pnl_percent: float
     is_win: bool
     is_loss: bool
-    
-    # LTF execution details (optional)
     exit_bar_high: Optional[float]
     exit_bar_low: Optional[float]
     ltf_execution: bool = False
-    ltf_execution_mode: Optional[str]           # "NUMBA" etc.
 ```
-**Key Methods**:
-- `create(entry, exit_time, exit_price, exit_reason)` → Auto-calculates P&L
-- `to_dict()` → Convert to legacy dict
 
 ### Trade (Entry + Exit)
 ```python
@@ -222,254 +211,335 @@ class Trade:
     entry: TradeEntry
     exit: Optional[TradeExit] = None
 ```
-**Key Properties**:
-- `is_open`, `is_closed` → Trade status
-- `trade_id`, `status` → Identity & status string
-- `direction`, `entry_time`, `exit_time` → Quick access
-- `pnl_points`, `pnl_percent` → P&L (None if open)
-- `is_win`, `is_loss` → Win/loss status
-- `exit_reason` → Why closed (None if open)
-
-**Key Methods**:
-- `to_dict()` → Full dict (matches legacy trade_simulator format)
-- `__str__()` → Human-readable summary
-
----
-
-## REJECTED SIGNALS (Phase 4 ✅) - NEW SESSION 10.1!
+**Key Properties**: `is_open`, `is_closed`, `pnl_points`, `is_win`, `is_loss`
 
 ### RejectedSignal
 ```python
 @dataclass(frozen=True)
 class RejectedSignal:
-    """
-    Signal that was rejected before becoming a trade.
-    
-    NOT a trade - it's a signal that failed filters.
-    Separate from Trade because rejected signals never had:
-    - Valid entry prices
-    - Stop loss / take profit levels
-    - Position sizing
-    - Risk calculations
-    """
-    # Identity
-    rejection_id: str                           # Unique ID (e.g., "R1", "R2")
-    signal_id: Optional[int] = None             # Link to source signal
-    
-    # Timing
-    rejection_time: pd.Timestamp = field(default_factory=pd.Timestamp.now)
-    
-    # Signal details
-    direction: str = "BUY"                      # "BUY" or "SELL" (string, not enum)
-    
-    # Rejection details
-    rejection_stage: str = "UNKNOWN"            # "RISK", "POSITION", "FILTER", etc.
-    rejection_reason: str = ""                  # Detailed reason
-    
-    # Context (optional)
-    current_price: Optional[float] = None       # Price when rejected
-    meta: Dict[str, Any] = field(default_factory=dict)
+    rejection_id: str
+    signal_id: Optional[int]
+    rejection_time: pd.Timestamp
+    direction: str                           # "BUY" or "SELL"
+    rejection_stage: str
+    rejection_reason: str
+    current_price: Optional[float]
+    meta: Dict[str, Any]
 ```
-
-**Key Methods**:
-- `to_dict()` → Clean rejection format
-- `to_legacy_trade_dict()` → For test compatibility (temporary)
-- `__str__()` → Human-readable summary
-
-**Design Philosophy**:
-```
-Trade          = A signal that was executed (has valid prices)
-RejectedSignal = A signal that was filtered out (no execution)
-```
-
-**Why Separate from Trade?**
-1. **Conceptual Clarity**: Rejected signals never became trades
-2. **Type Safety**: No need to hack around entry_price validation
-3. **Clean Code**: Clear separation of concerns
-4. **Future Flexibility**: Can track rejection details without polluting Trade
-
----
-
-## TRADE RESULT (Phase 4 ✅) - TO BE ENHANCED SESSION 11
 
 ### TradeResult (Pipeline Output)
 ```python
 @dataclass(frozen=True)
 class TradeResult:
-    # Trades
-    trades: List[Trade]                         # All trades (open + closed)
-    rejected_signals: List[RejectedSignal]      # NEW SESSION 10.1!
-    
-    # Counts
-    total_entries: int                          # Total entry signals received
-    total_opened: int                           # Positions opened
-    total_closed: int                           # Positions closed
-    total_rejected: int                         # Entries rejected
-    currently_open: int                         # Positions still open
-    
-    # Exit breakdown
-    exits_by_reason: Dict[str, int]             # Exit reason counts
-    
-    # Risk statistics
-    risk_approved: int = 0                      # Entries passing risk check
-    risk_rejected: int = 0                      # Entries failing risk check
-    risk_adjusted: int = 0                      # Entries with adjusted SL
-    
-    # Position control statistics
-    position_rejected: Dict[str, int] = field(default_factory=dict)
-    trade_manager_metrics: Dict[str, Any] = field(default_factory=dict)
-    
-    # Performance metrics (quick access)
-    win_count: int = 0
-    loss_count: int = 0
-    win_rate: float = 0.0                       # Wins / (Wins + Losses)
-    total_pnl_points: float = 0.0               # Sum of all PnL
-    average_pnl_points: float = 0.0             # Mean PnL per trade
-    
-    # Execution details
-    execution_mode: str = "UNKNOWN"
-    execution_time_ms: Optional[float] = None
-    
-    # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    trades: List[Trade]
+    rejected_signals: List[RejectedSignal]
+    total_entries: int
+    total_opened: int
+    total_closed: int
+    total_rejected: int
+    currently_open: int
+    exits_by_reason: Dict[str, int]
+    risk_approved: int
+    risk_rejected: int
+    risk_adjusted: int
+    position_rejected: Dict[str, int]
+    win_count: int
+    loss_count: int
+    win_rate: float
+    total_pnl_points: float
+    execution_mode: str
+    execution_time_ms: Optional[float]
 ```
-
-**Key Properties**:
-- `open_trades` → List of open trades
-- `closed_trades` → List of closed trades
-
-**Key Methods**:
-- `from_simulator_output(simulator_dict)` → Create from legacy simulator
-- `from_trades(trades, rejected_signals, ...)` → NEW SESSION 11 (to be added)
-- `to_dataframe()` → Convert trades to DataFrame
-- `get_summary()` → Human-readable statistics
-- `__str__()` → Quick summary
-
-**Session 11 Update**: Add `from_trades()` classmethod for direct construction
 
 ---
 
-## TRADE DECISION (Trade Manager Output)
+## METRICS & ANALYTICS (Phase 5 ✅)
 
-### DecisionType Enum
-```python
-class DecisionType(Enum):
-    NONE = auto()
-    OPEN = auto()
-    CLOSE = auto()
-    REVERSE = auto()
-    MODIFY = auto()
-    REJECT = auto()
-    CLOSE_AND_REVERSE = auto()
-```
-
-### TradeDecision
+### MetricsReport (Session 13)
 ```python
 @dataclass(frozen=True)
-class TradeDecision:
-    decision_type: DecisionType
-    reason: str
-    close_trade_ids: Optional[List[int]]
-    new_trade_id: Optional[int]
+class MetricsReport:
+    # Performance metrics (13 fields)
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float                          # Percentage (0-100)
+    total_pnl_points: float
+    expectancy_points: float                 # Average expected return
+    profit_factor: float                     # Gross profit / gross loss
+    avg_pnl_points: float
+    largest_win: float
+    largest_loss: float
+    max_drawdown: float                      # Negative value
+    losing_streak: int                       # Consecutive losses
+    winning_streak: int                      # Consecutive wins
+    
+    # Trade summary (2 fields)
+    trades_per_week: float
+    trades_per_day: float
+    
+    # Metadata (2 fields)
+    execution_duration_ms: float
+    execution_date: str
 ```
 
 **Key Methods**:
-- `from_trade_manager_result(result_dict)` → Create from TradeManager
-- `to_dict()` → Convert to legacy dict
-- Properties: `is_open`, `is_close`, `is_reject`
+- `to_dict()` → Dictionary format
+- `to_json()` → JSON string
+- `to_flat_dict()` → Flat structure (for databases)
+
+**Performance**: <2ms for 1000 trades (5.8x faster than target!)
+
+**Usage**:
+```python
+from src.strategies.specific.modules.metrics_calculator import calculate_metrics
+
+result: TradeResult = simulator.simulate_trades(...)
+metrics: MetricsReport = calculate_metrics(result)
+print(f"Win Rate: {metrics.win_rate:.1f}%")
+```
 
 ---
 
-## MARKET CONTRACTS (Phase 4 ✅)
+### AnalyticsReport (Session 14 - Design Complete)
 
-### MarketFrame
+#### Configuration Contracts
+
+**TradingSessionConfig**
+```python
+@dataclass
+class TradingSessionConfig:
+    sessions: Dict[str, Tuple[int, int]] = {
+        "Asia": (0, 8),      # 00:00 - 08:00 UTC
+        "London": (8, 16),   # 08:00 - 16:00 UTC
+        "NY": (16, 24)       # 16:00 - 24:00 UTC
+    }
+```
+
+**Insight** (Core Building Block)
 ```python
 @dataclass(frozen=True)
-class MarketFrame:
-    # Core OHLCV
-    timestamp: pd.Timestamp
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    
-    # Multi-timeframe (optional)
-    htf: Optional[pd.Series]                    # Higher timeframe
-    ltf: Optional[pd.DataFrame]                 # Lower timeframe
-    
-    # Computed indicators
-    indicators: Dict[str, Any]
-    
-    # State/metadata
-    state: Dict[str, Any]
+class Insight:
+    message: str                             # Observation
+    recommendation: str                      # Action
+    confidence: str                          # "High" | "Medium" | "Low"
+    impact_estimate: Optional[str]           # Expected benefit
+    category: str                            # "time" | "quality" | "risk" | "general"
+    severity: str                            # "critical" | "warning" | "info" | "success"
 ```
 
-**Key Properties**:
-- `price_range`, `body_size` → Bar metrics
-- `is_bullish`, `is_bearish`, `is_doji` → Candle patterns
-- `upper_wick`, `lower_wick` → Wick sizes
-- `has_htf`, `has_ltf` → Timeframe availability
+**Insight Generation Philosophy**: AI-like recommendations with confidence levels
 
-**Key Methods**:
-- `from_series(series)` → Create from pandas Series
-- `from_dataframe_row(df, timestamp)` → Extract from DataFrame
-- `to_dict()` → Convert to dict
+**Example**:
+```python
+Insight(
+    message="Asia session losing -45pts across 234 trades",
+    recommendation="Consider excluding Asia session",
+    confidence="High",
+    impact_estimate="Potential +45pts improvement",
+    category="time",
+    severity="critical"
+)
+```
 
 ---
 
-## POSITION CONTRACTS (Phase 4 ✅)
+#### Time Performance Contracts
 
-### Position
+**SessionMetrics**
 ```python
 @dataclass(frozen=True)
-class Position:
-    # Identity
-    position_id: int
-    
-    # Position details
-    direction: TradeDirection
-    entry_price: float
-    stop_loss: float
-    take_profit: float
-    size: float
-    
-    # Timing
-    open_time: pd.Timestamp
-    
-    # Metadata
-    meta: Dict[str, Any]
+class SessionMetrics:
+    session_name: str                        # "London", "Monday", "14:00"
+    trades: int
+    winning_trades: int
+    win_rate: float
+    total_pnl: float
+    avg_pnl: float
+    largest_win: float
+    largest_loss: float
 ```
 
-**Key Properties**:
-- `is_long`, `is_short` → Direction checks
-- `sl_distance`, `tp_distance` → Distance metrics
-- `risk_reward_ratio` → R:R ratio
-
-**Key Methods**:
-- `get_unrealized_pnl(current_price)` → Unrealized P&L in points
-- `get_unrealized_pnl_percent(current_price)` → Unrealized P&L %
-- `is_sl_hit(current_price)` → Check if SL hit
-- `is_tp_hit(current_price)` → Check if TP hit
-- `to_dict()` → Convert to dict
+**TimePerformanceBreakdown**
+```python
+@dataclass(frozen=True)
+class TimePerformanceBreakdown:
+    by_session: Dict[str, SessionMetrics]    # Asia/London/NY
+    by_hour: Dict[int, SessionMetrics]       # 0-23
+    by_day: Dict[str, SessionMetrics]        # Mon-Sun
+    best_session: str
+    worst_session: str
+    insights: List[Insight]                  # Time-related insights
+```
 
 ---
 
-## CACHING (Phase 3 ✅)
+#### Trade Quality Contracts
 
-### FilterPipelineCache
+**TradeDistribution**
 ```python
-class FilterPipelineCache:
-    def compute_cache_id(df) -> str  # Hash of OHLCV
-    def has(cache_id: str) -> bool
-    def get(cache_id: str) -> Dict
-    def store(cache_id, indicators, indicators_np)
-    def clear() -> None
-    def size() -> int
-    def get_stats() -> Dict[str, Any]
+@dataclass(frozen=True)
+class TradeDistribution:
+    small_count: int                         # < 3 points
+    medium_count: int                        # 3-7 points
+    large_count: int                         # > 7 points
+    small_pct: float
+    medium_pct: float
+    large_pct: float
 ```
 
-**Location**: `src/strategies/contracts/cache.py`
+**DurationAnalysis**
+```python
+@dataclass(frozen=True)
+class DurationAnalysis:
+    avg_bars: float
+    median_bars: int
+    fast_exits_count: int                    # < 3 bars
+    normal_exits_count: int                  # 3-10 bars
+    prolonged_exits_count: int               # > 10 bars
+    fast_exits_pct: float
+    insights: List[str]
+```
+
+**TradeQualityAnalysis**
+```python
+@dataclass(frozen=True)
+class TradeQualityAnalysis:
+    win_distribution: TradeDistribution
+    loss_distribution: TradeDistribution
+    duration_analysis: DurationAnalysis
+    avg_bars_to_profit: Optional[float]
+    avg_bars_to_loss: Optional[float]
+    premature_exit_estimate: str
+    insights: List[Insight]
+```
+
+---
+
+#### Risk-Adjusted Contracts
+
+**RiskAdjustedMetrics**
+```python
+@dataclass(frozen=True)
+class RiskAdjustedMetrics:
+    return_over_max_dd: float                # Total PnL / Max DD
+    avg_win_over_avg_loss: float             # Risk/reward ratio
+    expectancy_per_trade: float              # Average expected return
+    consistency_score: float                 # 0-100 (volatility-adjusted)
+    recovery_factor: float                   # Total PnL / total losses
+    insights: List[Insight]
+```
+
+---
+
+#### Executive Summary Contracts
+
+**ExecutiveSummary**
+```python
+@dataclass(frozen=True)
+class ExecutiveSummary:
+    performance_grade: str                   # "A+" to "D-"
+    grade_reasoning: str
+    critical_insights: List[Insight]         # Top 3-5 most important
+    key_strengths: List[str]
+    improvement_areas: List[str]
+    overall_assessment: str                  # 2-3 sentence summary
+```
+
+**Performance Grading Algorithm**:
+- Win rate (0-25 pts)
+- Profit factor (0-25 pts)
+- Drawdown management (0-25 pts)
+- Consistency (0-25 pts)
+- Total score → Grade (A+ to F)
+
+---
+
+#### Main Analytics Report
+
+**AnalyticsReport**
+```python
+@dataclass(frozen=True)
+class AnalyticsReport:
+    # Core analytics
+    executive_summary: ExecutiveSummary
+    time_performance: TimePerformanceBreakdown
+    trade_quality: TradeQualityAnalysis
+    risk_adjusted: RiskAdjustedMetrics
+    comparative: Optional[ComparativeContext]
+    
+    # Reference data
+    input_metrics: MetricsReport             # Base metrics
+    analysis_timestamp: str
+    analysis_duration_ms: float
+```
+
+**Key Methods**:
+- `to_dict()` → Complete structured data
+- `to_json()` → JSON export
+- `get_executive_summary_markdown()` → Human-readable report
+- `get_all_insights()` → All insights from all domains
+- `get_critical_insights_only()` → Only critical severity
+
+**Output Formats**:
+1. **Primary**: Markdown executive summary (consulting report style)
+2. **Secondary**: Structured JSON (for ReportGenerator)
+
+---
+
+#### Usage Patterns (Session 14 Decision)
+
+**Pattern 1: Auto-Calculate Metrics (Convenient)**
+```python
+from src.strategies.specific.modules.trade_analytics import analyze_trades
+
+result = simulator.simulate_trades(...)
+report = analyze_trades(result, config)  # Auto-calculates metrics
+```
+
+**Pattern 2: Use Pre-Calculated Metrics (Explicit)**
+```python
+metrics = calculate_metrics(result)
+report = analyze_trades(result, config, metrics=metrics)
+```
+
+**Pattern 3: Backtester (Efficient Reuse)**
+```python
+metrics = calculate_metrics(result)
+save_to_db(metrics)  # Store for backtester
+analytics = analyze_trades(result, config, metrics=metrics)  # Reuse
+```
+
+**Architectural Decision**: TradeAnalytics aggregates MetricsReport + adds insights
+- Metrics parameter is **OPTIONAL** (auto-calculates if None)
+- Supports all three usage patterns
+- No code duplication
+
+---
+
+#### Example Output
+
+**Markdown Format**:
+```markdown
+=== STRATEGY PERFORMANCE ANALYSIS ===
+Period: 2024-10-01 to 2024-12-31
+Total Trades: 1,151 | Win Rate: 16.85% | Total P&L: +245 points
+
+🎯 KEY INSIGHTS:
+1. ⚠️  Asia session losing -45pts - Consider excluding
+2. ✅ London session drives 73% of profits - Maintain focus
+3. ⚠️  73% trades exit within 2 bars - Review stop placement
+
+📈 STRENGTHS:
+- Excellent directional edge in London session
+- Outstanding risk management
+
+⚠️  IMPROVEMENT AREAS:
+- Asia session drag (-45pts)
+- Premature exits
+
+📊 PERFORMANCE GRADE: B+ (Good, with clear optimization paths)
+```
 
 ---
 
@@ -477,12 +547,14 @@ class FilterPipelineCache:
 
 ```
 src/strategies/contracts/
-├── data_contracts.py           # Phase 1: DataBundle, DataInfo, etc.
+├── data_contracts.py           # Phase 1: DataBundle, DataInfo
 ├── signal_contracts.py         # Phase 2: SignalFrame, SignalType
 ├── filter_contracts.py         # Phase 3: FilterResult, FilterPipelineResult
-├── trade_contracts.py          # Phase 4: Trade*, RejectedSignal, TradeDecision
+├── trade_contracts.py          # Phase 4: Trade, RejectedSignal, TradeResult
 ├── market_contracts.py         # Phase 4: MarketFrame
 ├── position_contracts.py       # Phase 4: Position
+├── metrics_contracts.py        # Phase 5: MetricsReport (Session 13) ✅
+├── analytics_contracts.py      # Phase 5: AnalyticsReport (Session 14) ✅
 └── cache.py                    # Phase 3: FilterPipelineCache
 ```
 
@@ -490,8 +562,7 @@ src/strategies/contracts/
 
 ## KEY DESIGN PATTERNS
 
-### 1. Immutability
-All Phase 4 contracts use `frozen=True`:
+### 1. Immutability (Phase 4+)
 ```python
 @dataclass(frozen=True)
 class Trade:
@@ -499,148 +570,44 @@ class Trade:
     exit: Optional[TradeExit] = None
 ```
 
-### 2. Legacy Compatibility (Temporary)
-Contracts provide `to_dict()` for migration period:
-```python
-# Convert to legacy format (temporary during migration)
-trade_dict = trade.to_dict()
-
-# Session 11+: Use contracts directly
-result: TradeResult = simulator.simulate_trades(...)
-```
-
-### 3. Type Safety
-Strong typing throughout:
+### 2. Type Safety
 ```python
 direction: TradeDirection  # Not str
 exit_reason: ExitReason    # Not str
-timestamp: pd.Timestamp    # Not str/datetime
+confidence: str            # Validated in __post_init__
 ```
 
-### 4. Validation
-Contracts validate on creation:
+### 3. Validation
 ```python
 def __post_init__(self):
-    if self.entry_price <= 0:
-        raise ValueError("Entry price must be positive")
+    if self.confidence not in {"High", "Medium", "Low"}:
+        raise ValueError(f"Invalid confidence: {self.confidence}")
 ```
 
-### 5. Property Methods
-Rich property accessors:
+### 4. Rich Properties
 ```python
 @property
 def is_long(self) -> bool:
     return self.direction == TradeDirection.LONG
-
-@property
-def pnl_points(self) -> Optional[float]:
-    return self.exit.pnl_points if self.exit else None
 ```
 
-### 6. Clear Separation of Concerns (NEW SESSION 10.1!)
+### 5. Serialization
 ```python
-# Trades vs Rejected Signals
-Trade          = Executed (has prices, P&L)
-RejectedSignal = Filtered (has reason, no prices)
-
-# Stored separately
-simulator.all_trades: List[Trade]
-simulator.rejected_signals: List[RejectedSignal]
+def to_dict(self) -> Dict:
+    """Convert to dictionary for storage/transport"""
+    
+def to_json(self) -> str:
+    """Convert to JSON string"""
 ```
 
----
-
-## ARCHITECTURE PRINCIPLES (SESSION 10)
-
-### Design for Clarity, Not Legacy Compatibility
-
-**Core Principle**:
-> "We migrate based on legacy but create a completely new parallel tool. Parity is for validation only, not runtime compatibility."
-
-**What This Means**:
-1. **Design contracts for clarity** - Not legacy artifacts
-2. **Parity = Validation tool** - Not compatibility requirement
-3. **Clean architecture** - Over backward compatibility
-4. **Legacy tools can convert** - If needed via `.to_dict()`
-
-**Example**:
+### 6. Optional Parameters for Flexibility (Session 14)
 ```python
-# GOOD: Clean design
-class RejectedSignal:
-    rejection_reason: str
-    # No need for entry_price, sl_price, etc.
-
-# BAD: Forcing into Trade
-class Trade:
-    entry_price: float = 0.0  # Hack for rejected signals
-```
-
----
-
-## CONTRACT FLOW (SESSION 10.1)
-
-### Signal to Trade Pipeline
-```
-Signal (from SignalGenerator)
-    ↓
-Filter (pass/fail)
-    ↓
-    ├─ PASS → RiskManager → TradeParameters
-    │            ↓
-    │         TradeManager → TradeDecision
-    │            ↓
-    │         ├─ OPEN → Trade (entry)
-    │         │    ↓
-    │         │  Trade (entry + exit when closed)
-    │         │
-    │         └─ REJECT → RejectedSignal
-    │
-    └─ FAIL → RejectedSignal
-```
-
-### Storage Separation
-```python
-# In TradeSimulator
-self.all_trades: List[Trade]                    # Only actual trades
-self.rejected_signals: List[RejectedSignal]     # Only rejections
-
-# In TradeResult (Session 11)
-TradeResult(
-    trades=all_trades,
-    rejected_signals=rejected_signals,
-)
-```
-
----
-
-## SESSION 11 MIGRATION NOTES
-
-### Current State (v4.5.1)
-- **Internal**: Uses Trade and RejectedSignal contracts
-- **Output**: Converts to dict for backward compatibility
-- **Performance**: 4.5% faster than legacy! ✅
-
-### Target State (v4.6)
-- **Internal**: Same (Trade and RejectedSignal)
-- **Output**: TradeResult contract
-- **Migration**: Remove dict conversion layer
-
-### TradeResult Enhancement Needed
-```python
-@classmethod
-def from_trades(
-    cls,
-    trades: List[Trade],
-    rejected_signals: List[RejectedSignal],
-    exit_stats: Dict[str, int],
-    risk_stats: Dict,
-    position_rejected: Dict[str, int],
-    trade_manager_metrics: Dict,
-    execution_mode: str,
-) -> 'TradeResult':
-    """Create TradeResult directly from simulation components"""
-    # Calculate statistics from trades
-    # Return TradeResult contract
+def analyze(
+    trade_result: TradeResult,
+    config: StrategyConfig,
+    metrics: Optional[MetricsReport] = None,  # Auto-calculate if None
+    ...
+) -> AnalyticsReport
 ```
 
 ---
@@ -650,12 +617,50 @@ def from_trades(
 **Phase 1 (Data)**: ✅ Complete - DataBundle  
 **Phase 2 (Signals)**: ✅ Complete - SignalFrame  
 **Phase 3 (Filters)**: ✅ Complete - FilterResult  
-**Phase 4 (Trades)**: ✅ 95% Complete - Trade, RejectedSignal  
-**Phase 5 (Results)**: ⏳ Session 11 - TradeResult output
+**Phase 4 (Trades)**: ✅ Complete - Trade, RejectedSignal, TradeResult  
+**Phase 5.1 (Infrastructure)**: ✅ Complete - Foundation (Session 12)  
+**Phase 5.2 (Metrics)**: ✅ Complete - MetricsCalculator (Session 13)  
+**Phase 5.3 (Analytics)**: ✅ Design Complete - TradeAnalytics (Session 14)  
+**Phase 5.3 (Analytics)**: ⏳ Implementation - TradeAnalytics (Sessions 15-16)  
+**Phase 5.4 (Reporting)**: 📋 Planned - ReportGenerator (Sessions 17-20)
 
 ---
 
-**Last Updated**: 2025-02-14 Session 10.1  
+## PERFORMANCE BENCHMARKS
+
+**MetricsCalculator** (Session 13):
+- Target: <10ms for 1000 trades
+- Actual: **1.72ms** for 1000 trades
+- Result: **5.8x faster than target!** 🚀
+
+**TradeAnalytics** (Session 14 Design):
+- Target: <200ms for 1000 trades (informational)
+- Philosophy: Accuracy over speed
+- No hard performance constraints
+
+---
+
+## TEST COVERAGE
+
+**Analytics Contracts** (Session 14):
+- **34 tests** - All passing ✅
+- **Coverage**: All 13 contracts validated
+- **Test Time**: 0.49 seconds
+- **Quality**: Production-ready
+
+**Test Categories**:
+- Configuration validation
+- Insight structure and validation
+- Performance breakdown contracts
+- Quality analysis contracts
+- Risk-adjusted metrics
+- Executive summary
+- Integration tests
+
+---
+
+**Last Updated**: 2026-02-16 Session 14  
 **File Location**: `docs/migration/CONTRACTS_REFERENCE.md`  
-**Phase**: 4 - Trade Management Contracts + RejectedSignal ✅
-**Next**: Session 11 - TradeResult Output Migration
+**Phase**: 5 - Metrics & Analytics Infrastructure  
+**Status**: Design Phase Complete ✅  
+**Next**: Session 15 - TradeAnalytics Implementation

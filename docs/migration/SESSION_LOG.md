@@ -3546,3 +3546,2197 @@ class ReportGenerator:
 **Next Session**: Session 12 (Infrastructure Foundation)  
 **Project Health**: EXCELLENT 🎉  
 **Confidence**: VERY HIGH 💪
+
+# DECISION LOG - TradeAnalytics Module
+## Session 14 Architecture Decisions
+
+**Date**: 2026-02-16  
+**Session**: 14  
+**Module**: TradeAnalytics (Analytics Infrastructure)  
+**Decision Maker**: Project Manager + User Consultation
+
+---
+
+## 🎯 STRATEGIC DECISIONS
+
+### DECISION 1: Module Scope & Purpose
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- MetricsCalculator handles core metrics (fast, essential, automated)
+- Need additional analytical layer beyond raw metrics
+- Use case unclear at project start - strategy analysis just beginning
+- Must provide added value beyond MetricsCalculator
+
+**Options Considered**:
+A. **Lightweight Analyzer** - Trade-level only, fast, minimal insights
+B. **Dual-Module System** - Separate pipeline diagnostics + trade analytics
+C. **Comprehensive Platform** - One unified analytics engine
+D. **Report Data Collector** - Just prepare data for ReportGenerator
+
+**Decision**: **Option C - Comprehensive Analytics Platform**
+
+**Rationale**:
+- Start small, build smart - open architecture for future expansion
+- Single module easier to maintain than dual-module
+- User wants executive insights first, detailed breakdowns second
+- ReportGenerator should consume data, not collect it (D eliminated)
+- Comprehensive approach allows future expansion without restructuring
+
+**Implementation**:
+- One `TradeAnalytics` module
+- Five analysis domains (time, quality, risk, comparative, executive)
+- Expandable architecture (v2.0 can add signal pipeline)
+
+**Trade-offs**:
+- ✅ Flexibility for future needs
+- ✅ Single integration point
+- ⚠️ Slightly more complex than lightweight approach
+- ✅ But: complexity managed through clear contracts
+
+---
+
+### DECISION 2: Insight Generation Philosophy
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could provide raw data for human interpretation
+- Could provide basic observations (data + notes)
+- Could generate AI-like recommendations
+- User is primary analyst/consumer
+
+**Options Considered**:
+A. **Just Data** - Structured output, no interpretation
+B. **Data + Basic Observations** - Factual notes, user interprets
+C. **Hybrid** - Key insights + detailed data
+D. **AI-like Suggestions** - Automatic recommendations with confidence
+
+**Decision**: **Option D - AI-like Automatic Suggestions**
+
+**User Input**: "Generate insights automatically (AI-like suggestions)"
+
+**Rationale**:
+- User wants actionable recommendations, not just data
+- Module should act as "intelligent advisor"
+- Confidence levels allow user to prioritize actions
+- Recommendations should be specific (not generic)
+- Example: "Remove Asia session to gain +45pts" not just "Asia session negative"
+
+**Implementation**:
+- Insight contract includes confidence + severity + impact estimate
+- Intelligence rules apply statistical thresholds
+- Recommendations are specific and actionable
+- Multiple severity levels (critical/warning/info/success)
+
+**Examples**:
+```python
+# HIGH confidence, CRITICAL severity
+"Asia session losing -45pts across 234 trades → Exclude session"
+
+# MEDIUM confidence, WARNING severity  
+"Wednesday win rate 12% below average → Investigate news events"
+
+# LOW confidence, INFO severity
+"Large wins clustered around 14:00 UTC → Consider time-based sizing"
+```
+
+---
+
+### DECISION 3: Primary Output Format
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could output markdown text (human-readable)
+- Could output JSON/dict (programmatic)
+- Could output both formats
+- Could output dashboard-ready data only
+
+**Options Considered**:
+A. **Markdown Only** - Text report for humans
+B. **JSON Only** - Structured data for programs
+C. **Both Formats** - Text + structured
+D. **Dashboard Data** - Optimized for visualization
+
+**Decision**: **Option C - Both Formats (Markdown Primary)**
+
+**User Input**: "Markdown text report (human-readable)"
+
+**Rationale**:
+- Primary deliverable: Executive summary as markdown
+- Secondary: Structured data via `.to_dict()` for ReportGenerator
+- Markdown is consulting-report style (decision-making clarity)
+- JSON available for programmatic consumption
+- Best of both worlds
+
+**Implementation**:
+- `AnalyticsReport.get_executive_summary_markdown()` → markdown string
+- `AnalyticsReport.to_dict()` → structured data
+- `AnalyticsReport.to_json()` → JSON string
+- Markdown formatting in `format_markdown_report()` method
+
+**Output Priority**:
+1. Executive insights (markdown summary)
+2. Structured breakdowns (to_dict)
+3. Deep details (available in report)
+
+---
+
+### DECISION 4: Performance Constraints
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- MetricsCalculator optimized for speed (1.72ms)
+- Could optimize TradeAnalytics similarly
+- Could prioritize accuracy over speed
+- Use case: post-simulation analysis (not real-time)
+
+**Options Considered**:
+A. **Ultra-Fast** (<10ms) - Minimal analysis
+B. **Balanced** (<50ms) - Good insights
+C. **Comprehensive** (<200ms) - Deep analysis
+D. **No Constraint** - Accuracy prioritized
+
+**Decision**: **Option D - No Constraint (Accuracy Over Speed)**
+
+**User Input**: "No constraint (accuracy over speed)"
+
+**Rationale**:
+- TradeAnalytics runs after simulation (not real-time)
+- Quality of insights more important than speed
+- Can use sophisticated algorithms (clustering, statistical tests)
+- Target: <200ms for 1000 trades (plenty of headroom)
+- Focus on intelligence, not optimization
+
+**Implementation**:
+- No speed optimizations required initially
+- Can iterate over data multiple times if needed
+- Allowed to use computationally intensive algorithms
+- Will benchmark but not optimize unless >1 second
+
+**Performance Target**: <200ms for 1000 trades (informational, not constraint)
+
+---
+
+### DECISION 5: Session Configuration
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Time-based analysis needs session definitions
+- Could hardcode Asia/London/NY
+- Could make fully configurable
+- Could auto-detect from data
+
+**Options Considered**:
+A. **Hardcoded** - Fixed Asia/London/NY sessions
+B. **Configurable Only** - Must provide config
+C. **Configurable with Defaults** - Override if needed
+D. **Auto-Detected** - Infer from data patterns
+
+**Decision**: **Option C - Configurable with Smart Defaults**
+
+**Rationale**:
+- Default sessions match current strategy (forex focus)
+- Future strategies may need different sessions
+- Configuration flexibility without complexity
+- Sensible defaults for immediate use
+
+**Implementation**:
+```python
+@dataclass
+class TradingSessionConfig:
+    sessions: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
+        "Asia": (0, 8),      # 00:00 - 08:00 UTC
+        "London": (8, 16),   # 08:00 - 16:00 UTC
+        "NY": (16, 24)       # 16:00 - 24:00 UTC
+    })
+```
+
+**User can override**:
+```python
+custom_sessions = TradingSessionConfig(
+    sessions={"Morning": (8, 12), "Afternoon": (12, 16)}
+)
+report = analyze_trades(..., session_config=custom_sessions)
+```
+
+---
+
+## 🏗️ ARCHITECTURAL DECISIONS
+
+### DECISION 6: Module Architecture (One vs Multiple)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could split into multiple specialized modules
+- Could build single comprehensive module
+- Trade-offs: maintainability vs complexity
+
+**Options Considered**:
+A. **One Module** - TradeAnalytics handles everything
+B. **Two Modules** - Pipeline diagnostics + Trade analytics
+C. **Three Modules** - Diagnostics + Analytics + Insights
+
+**Decision**: **Option A - Single Module (TradeAnalytics)**
+
+**Rationale**:
+- Current need: Trade-level analytics only
+- Signal pipeline tracking = future v2.0 feature
+- Single module easier to integrate and test
+- v1.0 scope well-defined (5 domains)
+- Future expansion via internal refactoring (doesn't break API)
+
+**v1.0 Scope**:
+1. Time-based performance
+2. Trade quality analysis
+3. Risk-adjusted metrics
+4. Comparative context (statistical flags)
+5. Executive summary generation
+
+**v2.0 Future** (if needed):
+- Add signal pipeline tracking internally
+- No API changes for consumers
+- Optional feature (opt-in)
+
+---
+
+### DECISION 7: Contract Structure
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need clear data contracts for analytics
+- Must integrate with existing contracts (TradeResult, MetricsReport)
+- Output must be consumable by ReportGenerator
+
+**Decision**: **Nested Dataclass Hierarchy**
+
+**Structure**:
+```
+AnalyticsReport (top level)
+├── ExecutiveSummary
+│   ├── performance_grade
+│   ├── critical_insights: List[Insight]
+│   └── key_strengths/improvements
+├── TimePerformanceBreakdown
+│   ├── by_session: Dict[str, SessionMetrics]
+│   ├── by_hour: Dict[int, SessionMetrics]
+│   └── insights: List[Insight]
+├── TradeQualityAnalysis
+│   ├── win_distribution: TradeDistribution
+│   ├── duration_analysis: DurationAnalysis
+│   └── insights: List[Insight]
+├── RiskAdjustedMetrics
+│   └── insights: List[Insight]
+└── ComparativeContext (optional)
+```
+
+**Rationale**:
+- Clear separation of concerns
+- Each domain has own contract
+- Nested structure preserves relationships
+- Easy to serialize (to_dict/to_json)
+- ReportGenerator can navigate structure
+
+**All contracts frozen=True** (immutable for safety)
+
+---
+
+### DECISION 8: Insight Contract Design
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Insights are core value-add
+- Need standardized format across all domains
+- Must support prioritization and filtering
+
+**Decision**: **Structured Insight with Confidence + Severity**
+
+**Contract**:
+```python
+@dataclass(frozen=True)
+class Insight:
+    message: str                    # What was observed
+    recommendation: str             # What to do
+    confidence: str                 # "High" | "Medium" | "Low"
+    impact_estimate: Optional[str]  # Expected benefit
+    category: str                   # "time" | "quality" | "risk" | "general"
+    severity: str                   # "critical" | "warning" | "info" | "success"
+```
+
+**Rationale**:
+- Message = observation (factual)
+- Recommendation = action (prescriptive)
+- Confidence = how sure we are (prioritization)
+- Impact = expected benefit (motivation)
+- Category = domain (filtering)
+- Severity = urgency (prioritization)
+
+**Prioritization Logic**:
+1. Sort by severity (critical → warning → info → success)
+2. Then by confidence (High → Medium → Low)
+3. Top 3-5 become "critical insights" in executive summary
+
+---
+
+### DECISION 9: Baseline Comparison (v1.0 vs v2.0)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could compare against historical baseline
+- No baseline data exists yet (first runs)
+- Contract should support future baseline
+
+**Decision**: **Skip for v1.0, Design for v2.0**
+
+**v1.0 Implementation**:
+- `ComparativeContext.vs_baseline = None` (always)
+- Focus on statistical flags only
+- Reserve contract field for future
+
+**v2.0 Future** (when data exists):
+- Store analytics reports from each run
+- Compare new run against historical average
+- Percentile ranking vs past performance
+- Trend analysis (improving/declining)
+
+**Rationale**:
+- Don't block v1.0 on missing data
+- Contract ready for future feature
+- Focus on delivering core value first
+
+---
+
+### DECISION 10: File Storage
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could always save to files
+- Could be memory-only (like MetricsCalculator)
+- Could be optional save
+
+**Options Considered**:
+A. **Always Save** - Every run creates files
+B. **Memory Only** - Never saves (user must handle)
+C. **Optional Save** - User chooses via parameter
+
+**Decision**: **Option C - Optional Save (Memory Default)**
+
+**Implementation**:
+```python
+def analyze(
+    ...,
+    save_to_file: bool = False,
+    output_dir: Optional[Path] = None
+) -> AnalyticsReport:
+    # Always returns report (memory)
+    # Optionally saves to files
+```
+
+**Default Behavior**: Memory-only (like MetricsCalculator)
+
+**Optional Save**:
+- `save_to_file=True` → Creates JSON + Markdown files
+- Saves to `outputs/analytics/` by default
+- Custom path via `output_dir` parameter
+
+**Rationale**:
+- Consistent with MetricsCalculator (memory-first)
+- Flexibility for users who want files
+- No I/O overhead unless requested
+- Best of both worlds
+
+---
+
+## 🧮 ALGORITHM DECISIONS
+
+### DECISION 11: Performance Grading Algorithm
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need objective way to grade strategy performance
+- Should be understandable and explainable
+- Must balance multiple dimensions
+
+**Decision**: **4-Component Scoring System**
+
+**Algorithm**:
+```python
+score = 0
+
+# Component 1: Win Rate (0-25 points)
+if win_rate >= 20%: score += 25
+elif win_rate >= 15%: score += 20
+elif win_rate >= 10%: score += 10
+
+# Component 2: Profit Factor (0-25 points)
+if profit_factor >= 2.0: score += 25
+elif profit_factor >= 1.5: score += 20
+elif profit_factor >= 1.2: score += 10
+
+# Component 3: Drawdown Management (0-25 points)
+if max_dd < total_pnl * 0.2: score += 25
+elif max_dd < total_pnl * 0.5: score += 20
+elif max_dd < total_pnl * 1.0: score += 10
+
+# Component 4: Consistency (0-25 points)
+if consistency_score >= 70: score += 25
+elif consistency_score >= 50: score += 20
+elif consistency_score >= 30: score += 10
+
+# Grade conversion
+90-100: A+/A/A-
+80-89:  B+/B/B-
+70-79:  C+/C/C-
+60-69:  D+/D/D-
+<60:    F
+```
+
+**Rationale**:
+- Balanced across 4 key dimensions
+- Each dimension equally weighted (25 points)
+- Thresholds based on trading best practices
+- Transparent and explainable
+- Can be tuned based on experience
+
+**Grade Reasoning**: Auto-generated explanation of score
+
+---
+
+### DECISION 12: Consistency Score Calculation
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to measure volatility-adjusted consistency
+- Standard deviation alone not enough
+- Should be normalized to 0-100 scale
+
+**Decision**: **Coefficient of Variation + Normalization**
+
+**Algorithm**:
+```python
+# Step 1: Calculate coefficient of variation
+pnl_values = [trade.pnl_points for trade in trades]
+mean_pnl = mean(pnl_values)
+std_dev = stdev(pnl_values)
+
+cv = std_dev / abs(mean_pnl) if mean_pnl != 0 else inf
+
+# Step 2: Normalize to 0-100 scale
+# Lower CV = higher consistency
+consistency_score = max(0, 100 - (cv * 10))
+```
+
+**Rationale**:
+- CV measures relative variability (accounts for scale)
+- Lower CV = more consistent returns
+- Normalized to 0-100 for interpretability
+- 100 = perfectly consistent (all trades identical)
+- 0 = extremely volatile
+
+**Thresholds**:
+- 70+ = High consistency
+- 50-70 = Moderate consistency
+- <50 = Low consistency
+
+---
+
+### DECISION 13: Trade Distribution Thresholds
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to categorize trades by size
+- Thresholds affect insight generation
+- Should be meaningful for point-based strategies
+
+**Decision**: **3-tier System (Small/Medium/Large)**
+
+**Thresholds**:
+- **Small**: < 3 points
+- **Medium**: 3-7 points
+- **Large**: > 7 points
+
+**Rationale**:
+- Based on typical WBWSStrategy returns
+- 3pts = typical small move
+- 7pts = typical larger move
+- Helps identify reliance on rare large winners
+
+**Application**:
+- Separate for wins and losses
+- Insight: "90% of wins are small, but large wins = 60% of profit"
+- Recommendation: "Protect large winners with trailing stops"
+
+---
+
+### DECISION 14: Duration Classification
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to categorize trade durations
+- Helps identify premature exits
+- Should reflect strategy timeframe
+
+**Decision**: **3-tier System (Fast/Normal/Prolonged)**
+
+**Thresholds**:
+- **Fast**: < 3 bars
+- **Normal**: 3-10 bars
+- **Prolonged**: > 10 bars
+
+**Rationale**:
+- Based on typical strategy holding periods
+- Fast exits may indicate premature stops
+- Prolonged may indicate indecision
+- Actionable for stop placement
+
+**Application**:
+- Insight: "73% of trades exit within 2 bars"
+- Recommendation: "Consider wider stops"
+
+---
+
+## 🔄 INTEGRATION DECISIONS
+
+### DECISION 15: Integration with MetricsCalculator
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- MetricsCalculator produces MetricsReport
+- TradeAnalytics needs those metrics
+- Should not duplicate calculations
+
+**Decision**: **TradeAnalytics Consumes MetricsReport**
+
+**Flow**:
+```python
+# Step 1: Calculate base metrics (fast)
+metrics: MetricsReport = calculate_metrics(trade_result)
+
+# Step 2: Perform analytics (uses metrics)
+analytics: AnalyticsReport = analyze_trades(trade_result, metrics, config)
+```
+
+**Rationale**:
+- Clear separation of concerns
+- MetricsCalculator = essential, fast, automated
+- TradeAnalytics = insights, slower, optional
+- No duplication of calculations
+- Analytics builds on top of metrics
+
+**References in Analytics**:
+- `AnalyticsReport.input_metrics` → MetricsReport
+- Analytics uses metrics for grading, insights
+- Preserves full traceability
+
+---
+
+### DECISION 16: Integration with ReportGenerator (Future)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- ReportGenerator will create visualizations (Phase 5.4)
+- Needs data from TradeAnalytics
+- Should not duplicate data collection
+
+**Decision**: **ReportGenerator Consumes AnalyticsReport**
+
+**Future Flow** (Sessions 17-20):
+```python
+# Step 1: Analytics
+analytics: AnalyticsReport = analyze_trades(...)
+
+# Step 2: Reporting
+report_generator = ReportGenerator()
+html_report = report_generator.generate(analytics)
+```
+
+**Rationale**:
+- ReportGenerator = visualization layer only
+- TradeAnalytics = data + insights layer
+- Clear separation: analysis vs presentation
+- ReportGenerator uses `analytics.to_dict()` for charts
+
+**Data Contract**: AnalyticsReport structure is stable API
+
+---
+
+## 📝 IMPLEMENTATION DECISIONS
+
+### DECISION 17: Method Organization
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- TradeAnalytics will be 1500+ lines
+- Need clear organization
+- Should be maintainable
+
+**Decision**: **Grouped Static Methods by Domain**
+
+**Organization**:
+```python
+class TradeAnalytics:
+    # PUBLIC API
+    @staticmethod
+    def analyze(...) -> AnalyticsReport
+    
+    # TIME PERFORMANCE
+    @staticmethod
+    def _analyze_time_performance(...)
+    @staticmethod
+    def _calculate_session_metrics(...)
+    @staticmethod
+    def _generate_time_insights(...)
+    
+    # TRADE QUALITY
+    @staticmethod
+    def _analyze_trade_quality(...)
+    @staticmethod
+    def _calculate_trade_distribution(...)
+    ...
+    
+    # RISK ADJUSTED
+    ...
+    
+    # EXECUTIVE SUMMARY
+    ...
+    
+    # MARKDOWN FORMATTING
+    ...
+    
+    # FILE I/O
+    ...
+```
+
+**Rationale**:
+- Static methods (no state needed)
+- Grouped by domain (easy navigation)
+- Private methods prefixed with `_`
+- Single public entry point (`analyze()`)
+
+---
+
+### DECISION 18: Error Handling Philosophy
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Analytics should be robust
+- Edge cases: zero trades, all wins, etc.
+- Should provide useful output even on edge cases
+
+**Decision**: **Graceful Degradation**
+
+**Principles**:
+1. Never crash on edge cases
+2. Return valid (possibly empty) contracts
+3. Log warnings for unusual situations
+4. Generate insights about edge cases
+
+**Examples**:
+```python
+# Zero trades
+if len(trades) == 0:
+    return create_empty_analytics_report()
+
+# All wins (no losses)
+if len(losses) == 0:
+    avg_loss = 0.0  # Handle gracefully
+    insight = "No losing trades - unusual pattern"
+
+# Division by zero
+expectancy = total_pnl / trades if trades > 0 else 0.0
+```
+
+**Rationale**:
+- Analytics runs after simulation (data should be valid)
+- Edge cases are informative (not errors)
+- Graceful handling better than crashes
+
+---
+
+## 📊 OUTPUT DECISIONS
+
+### DECISION 19: Markdown Format Style
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Markdown is primary human output
+- Should be professional and actionable
+- Must be easy to scan
+
+**Decision**: **Consulting Report Style**
+
+**Format**:
+```markdown
+=== STRATEGY PERFORMANCE ANALYSIS ===
+[Header with key metrics]
+
+🎯 KEY INSIGHTS:
+[Top 3-5 critical insights with icons]
+
+📈 STRENGTHS:
+[What's working well]
+
+⚠️  IMPROVEMENT AREAS:
+[What needs attention]
+
+## DETAILED ANALYSIS
+[Breakdown by domain with tables]
+
+📊 PERFORMANCE GRADE: {grade}
+[Grade reasoning]
+```
+
+**Rationale**:
+- Professional appearance
+- Icons for visual scanning
+- Clear sections
+- Actionable format
+- Decision-ready
+
+**Icons Used**:
+- 🎯 Critical insights
+- ⚠️ Warnings
+- ✅ Successes
+- 📈 Strengths
+- 📊 Data/metrics
+
+---
+
+### DECISION 20: JSON Structure Format
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- JSON for programmatic consumption
+- Should match markdown conceptually
+- Must be ReportGenerator-friendly
+
+**Decision**: **Nested Dict Matching Contract Structure**
+
+**Format**:
+```json
+{
+  "executive_summary": {
+    "performance_grade": "B+",
+    "critical_insights": [...],
+    "key_strengths": [...],
+    "improvement_areas": [...]
+  },
+  "time_performance": {
+    "by_session": {...},
+    "by_hour": {...},
+    "insights": [...]
+  },
+  "trade_quality": {...},
+  "risk_adjusted": {...},
+  "metadata": {
+    "analysis_timestamp": "...",
+    "analysis_duration_ms": 150.5
+  }
+}
+```
+
+**Rationale**:
+- Mirrors contract structure exactly
+- Easy for ReportGenerator to navigate
+- Standard JSON (no special formatting)
+- All data preserved
+
+---
+
+## 🎯 TESTING DECISIONS
+
+### DECISION 21: Test Strategy
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to validate contracts and implementation
+- Network disabled (pytest not available)
+- Must ensure quality
+
+**Decision**: **Three-Tier Testing**
+
+**Tier 1: Contract Validation** (Session 14)
+- Manual testing of dataclasses
+- Validation logic verification
+- Serialization testing
+
+**Tier 2: Integration Testing** (Sessions 15-16)
+- Test with real TradeResult data
+- Validate insights make sense
+- Check edge cases
+
+**Tier 3: Performance Benchmarking** (Session 16)
+- Measure analysis duration
+- Verify <200ms target (informational)
+- Profile if needed
+
+**No Unit Tests Required** (per user):
+- Testing infrastructure mature
+- Manual validation sufficient for v1.0
+- Focus on integration testing
+
+---
+
+## 📈 FUTURE DECISIONS (Deferred to v2.0+)
+
+### DEFERRED 1: Signal Pipeline Tracking
+**Status**: ⏳ DEFERRED TO v2.0
+
+**Reason**: Current focus on trade-level analytics only
+
+**Future Implementation**:
+- Track signals through filter pipeline
+- Funnel analysis (rejection rates)
+- Filter effectiveness metrics
+- Optional feature (debug mode)
+
+---
+
+### DEFERRED 2: Multi-Strategy Comparison
+**Status**: ⏳ DEFERRED TO BACKTESTER
+
+**Reason**: Backtester-level feature, not strategy-level
+
+**Future Implementation**:
+- Compare multiple strategies
+- Correlation matrix
+- Best performer ranking
+- Requires backtester orchestration
+
+---
+
+### DEFERRED 3: Real-Time Monitoring
+**Status**: ⏳ DEFERRED TO v3.0+
+
+**Reason**: Backtesting-only for v1.0
+
+**Future Implementation**:
+- Live trade monitoring
+- Real-time alerts
+- Performance tracking
+- Requires different architecture
+
+---
+
+## ✅ DECISION SUMMARY
+
+**Total Decisions**: 21  
+**Approved**: 18  
+**Deferred**: 3
+
+**Key Outcomes**:
+1. ✅ Comprehensive single-module architecture
+2. ✅ AI-like insight generation with confidence
+3. ✅ Markdown primary, JSON secondary
+4. ✅ No performance constraints (accuracy focus)
+5. ✅ Configurable sessions with smart defaults
+6. ✅ Optional file save (memory default)
+7. ✅ Clear integration with MetricsCalculator
+8. ✅ Foundation for ReportGenerator consumption
+9. ✅ Graceful edge case handling
+10. ✅ Professional markdown format
+
+**Ready for Implementation**: Sessions 15-16 🚀
+
+---
+
+**Created By**: Project Manager (Session 14)  
+**Date**: 2026-02-16  
+**Status**: COMPLETE  
+**Next Review**: Session 17 (post-implementation)
+
+# DECISION LOG - TradeAnalytics Module
+## Session 14 Architecture Decisions
+
+**Date**: 2026-02-16  
+**Session**: 14  
+**Module**: TradeAnalytics (Analytics Infrastructure)  
+**Decision Maker**: Project Manager + User Consultation
+
+---
+
+## 🎯 STRATEGIC DECISIONS
+
+### DECISION 1: Module Scope & Purpose
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- MetricsCalculator handles core metrics (fast, essential, automated)
+- Need additional analytical layer beyond raw metrics
+- Use case unclear at project start - strategy analysis just beginning
+- Must provide added value beyond MetricsCalculator
+
+**Options Considered**:
+A. **Lightweight Analyzer** - Trade-level only, fast, minimal insights
+B. **Dual-Module System** - Separate pipeline diagnostics + trade analytics
+C. **Comprehensive Platform** - One unified analytics engine
+D. **Report Data Collector** - Just prepare data for ReportGenerator
+
+**Decision**: **Option C - Comprehensive Analytics Platform**
+
+**Rationale**:
+- Start small, build smart - open architecture for future expansion
+- Single module easier to maintain than dual-module
+- User wants executive insights first, detailed breakdowns second
+- ReportGenerator should consume data, not collect it (D eliminated)
+- Comprehensive approach allows future expansion without restructuring
+
+**Implementation**:
+- One `TradeAnalytics` module
+- Five analysis domains (time, quality, risk, comparative, executive)
+- Expandable architecture (v2.0 can add signal pipeline)
+
+**Trade-offs**:
+- ✅ Flexibility for future needs
+- ✅ Single integration point
+- ⚠️ Slightly more complex than lightweight approach
+- ✅ But: complexity managed through clear contracts
+
+---
+
+### DECISION 2: Insight Generation Philosophy
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could provide raw data for human interpretation
+- Could provide basic observations (data + notes)
+- Could generate AI-like recommendations
+- User is primary analyst/consumer
+
+**Options Considered**:
+A. **Just Data** - Structured output, no interpretation
+B. **Data + Basic Observations** - Factual notes, user interprets
+C. **Hybrid** - Key insights + detailed data
+D. **AI-like Suggestions** - Automatic recommendations with confidence
+
+**Decision**: **Option D - AI-like Automatic Suggestions**
+
+**User Input**: "Generate insights automatically (AI-like suggestions)"
+
+**Rationale**:
+- User wants actionable recommendations, not just data
+- Module should act as "intelligent advisor"
+- Confidence levels allow user to prioritize actions
+- Recommendations should be specific (not generic)
+- Example: "Remove Asia session to gain +45pts" not just "Asia session negative"
+
+**Implementation**:
+- Insight contract includes confidence + severity + impact estimate
+- Intelligence rules apply statistical thresholds
+- Recommendations are specific and actionable
+- Multiple severity levels (critical/warning/info/success)
+
+**Examples**:
+```python
+# HIGH confidence, CRITICAL severity
+"Asia session losing -45pts across 234 trades → Exclude session"
+
+# MEDIUM confidence, WARNING severity  
+"Wednesday win rate 12% below average → Investigate news events"
+
+# LOW confidence, INFO severity
+"Large wins clustered around 14:00 UTC → Consider time-based sizing"
+```
+
+---
+
+### DECISION 3: Primary Output Format
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could output markdown text (human-readable)
+- Could output JSON/dict (programmatic)
+- Could output both formats
+- Could output dashboard-ready data only
+
+**Options Considered**:
+A. **Markdown Only** - Text report for humans
+B. **JSON Only** - Structured data for programs
+C. **Both Formats** - Text + structured
+D. **Dashboard Data** - Optimized for visualization
+
+**Decision**: **Option C - Both Formats (Markdown Primary)**
+
+**User Input**: "Markdown text report (human-readable)"
+
+**Rationale**:
+- Primary deliverable: Executive summary as markdown
+- Secondary: Structured data via `.to_dict()` for ReportGenerator
+- Markdown is consulting-report style (decision-making clarity)
+- JSON available for programmatic consumption
+- Best of both worlds
+
+**Implementation**:
+- `AnalyticsReport.get_executive_summary_markdown()` → markdown string
+- `AnalyticsReport.to_dict()` → structured data
+- `AnalyticsReport.to_json()` → JSON string
+- Markdown formatting in `format_markdown_report()` method
+
+**Output Priority**:
+1. Executive insights (markdown summary)
+2. Structured breakdowns (to_dict)
+3. Deep details (available in report)
+
+---
+
+### DECISION 4: Performance Constraints
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- MetricsCalculator optimized for speed (1.72ms)
+- Could optimize TradeAnalytics similarly
+- Could prioritize accuracy over speed
+- Use case: post-simulation analysis (not real-time)
+
+**Options Considered**:
+A. **Ultra-Fast** (<10ms) - Minimal analysis
+B. **Balanced** (<50ms) - Good insights
+C. **Comprehensive** (<200ms) - Deep analysis
+D. **No Constraint** - Accuracy prioritized
+
+**Decision**: **Option D - No Constraint (Accuracy Over Speed)**
+
+**User Input**: "No constraint (accuracy over speed)"
+
+**Rationale**:
+- TradeAnalytics runs after simulation (not real-time)
+- Quality of insights more important than speed
+- Can use sophisticated algorithms (clustering, statistical tests)
+- Target: <200ms for 1000 trades (plenty of headroom)
+- Focus on intelligence, not optimization
+
+**Implementation**:
+- No speed optimizations required initially
+- Can iterate over data multiple times if needed
+- Allowed to use computationally intensive algorithms
+- Will benchmark but not optimize unless >1 second
+
+**Performance Target**: <200ms for 1000 trades (informational, not constraint)
+
+---
+
+### DECISION 5: Session Configuration
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Time-based analysis needs session definitions
+- Could hardcode Asia/London/NY
+- Could make fully configurable
+- Could auto-detect from data
+
+**Options Considered**:
+A. **Hardcoded** - Fixed Asia/London/NY sessions
+B. **Configurable Only** - Must provide config
+C. **Configurable with Defaults** - Override if needed
+D. **Auto-Detected** - Infer from data patterns
+
+**Decision**: **Option C - Configurable with Smart Defaults**
+
+**Rationale**:
+- Default sessions match current strategy (forex focus)
+- Future strategies may need different sessions
+- Configuration flexibility without complexity
+- Sensible defaults for immediate use
+
+**Implementation**:
+```python
+@dataclass
+class TradingSessionConfig:
+    sessions: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
+        "Asia": (0, 8),      # 00:00 - 08:00 UTC
+        "London": (8, 16),   # 08:00 - 16:00 UTC
+        "NY": (16, 24)       # 16:00 - 24:00 UTC
+    })
+```
+
+**User can override**:
+```python
+custom_sessions = TradingSessionConfig(
+    sessions={"Morning": (8, 12), "Afternoon": (12, 16)}
+)
+report = analyze_trades(..., session_config=custom_sessions)
+```
+
+---
+
+## 🏗️ ARCHITECTURAL DECISIONS
+
+### DECISION 6: Module Architecture (One vs Multiple)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could split into multiple specialized modules
+- Could build single comprehensive module
+- Trade-offs: maintainability vs complexity
+
+**Options Considered**:
+A. **One Module** - TradeAnalytics handles everything
+B. **Two Modules** - Pipeline diagnostics + Trade analytics
+C. **Three Modules** - Diagnostics + Analytics + Insights
+
+**Decision**: **Option A - Single Module (TradeAnalytics)**
+
+**Rationale**:
+- Current need: Trade-level analytics only
+- Signal pipeline tracking = future v2.0 feature
+- Single module easier to integrate and test
+- v1.0 scope well-defined (5 domains)
+- Future expansion via internal refactoring (doesn't break API)
+
+**v1.0 Scope**:
+1. Time-based performance
+2. Trade quality analysis
+3. Risk-adjusted metrics
+4. Comparative context (statistical flags)
+5. Executive summary generation
+
+**v2.0 Future** (if needed):
+- Add signal pipeline tracking internally
+- No API changes for consumers
+- Optional feature (opt-in)
+
+---
+
+### DECISION 7: Contract Structure
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need clear data contracts for analytics
+- Must integrate with existing contracts (TradeResult, MetricsReport)
+- Output must be consumable by ReportGenerator
+
+**Decision**: **Nested Dataclass Hierarchy**
+
+**Structure**:
+```
+AnalyticsReport (top level)
+├── ExecutiveSummary
+│   ├── performance_grade
+│   ├── critical_insights: List[Insight]
+│   └── key_strengths/improvements
+├── TimePerformanceBreakdown
+│   ├── by_session: Dict[str, SessionMetrics]
+│   ├── by_hour: Dict[int, SessionMetrics]
+│   └── insights: List[Insight]
+├── TradeQualityAnalysis
+│   ├── win_distribution: TradeDistribution
+│   ├── duration_analysis: DurationAnalysis
+│   └── insights: List[Insight]
+├── RiskAdjustedMetrics
+│   └── insights: List[Insight]
+└── ComparativeContext (optional)
+```
+
+**Rationale**:
+- Clear separation of concerns
+- Each domain has own contract
+- Nested structure preserves relationships
+- Easy to serialize (to_dict/to_json)
+- ReportGenerator can navigate structure
+
+**All contracts frozen=True** (immutable for safety)
+
+---
+
+### DECISION 8: Insight Contract Design
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Insights are core value-add
+- Need standardized format across all domains
+- Must support prioritization and filtering
+
+**Decision**: **Structured Insight with Confidence + Severity**
+
+**Contract**:
+```python
+@dataclass(frozen=True)
+class Insight:
+    message: str                    # What was observed
+    recommendation: str             # What to do
+    confidence: str                 # "High" | "Medium" | "Low"
+    impact_estimate: Optional[str]  # Expected benefit
+    category: str                   # "time" | "quality" | "risk" | "general"
+    severity: str                   # "critical" | "warning" | "info" | "success"
+```
+
+**Rationale**:
+- Message = observation (factual)
+- Recommendation = action (prescriptive)
+- Confidence = how sure we are (prioritization)
+- Impact = expected benefit (motivation)
+- Category = domain (filtering)
+- Severity = urgency (prioritization)
+
+**Prioritization Logic**:
+1. Sort by severity (critical → warning → info → success)
+2. Then by confidence (High → Medium → Low)
+3. Top 3-5 become "critical insights" in executive summary
+
+---
+
+### DECISION 9: Baseline Comparison (v1.0 vs v2.0)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could compare against historical baseline
+- No baseline data exists yet (first runs)
+- Contract should support future baseline
+
+**Decision**: **Skip for v1.0, Design for v2.0**
+
+**v1.0 Implementation**:
+- `ComparativeContext.vs_baseline = None` (always)
+- Focus on statistical flags only
+- Reserve contract field for future
+
+**v2.0 Future** (when data exists):
+- Store analytics reports from each run
+- Compare new run against historical average
+- Percentile ranking vs past performance
+- Trend analysis (improving/declining)
+
+**Rationale**:
+- Don't block v1.0 on missing data
+- Contract ready for future feature
+- Focus on delivering core value first
+
+---
+
+### DECISION 10: File Storage
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Could always save to files
+- Could be memory-only (like MetricsCalculator)
+- Could be optional save
+
+**Options Considered**:
+A. **Always Save** - Every run creates files
+B. **Memory Only** - Never saves (user must handle)
+C. **Optional Save** - User chooses via parameter
+
+**Decision**: **Option C - Optional Save (Memory Default)**
+
+**Implementation**:
+```python
+def analyze(
+    ...,
+    save_to_file: bool = False,
+    output_dir: Optional[Path] = None
+) -> AnalyticsReport:
+    # Always returns report (memory)
+    # Optionally saves to files
+```
+
+**Default Behavior**: Memory-only (like MetricsCalculator)
+
+**Optional Save**:
+- `save_to_file=True` → Creates JSON + Markdown files
+- Saves to `outputs/analytics/` by default
+- Custom path via `output_dir` parameter
+
+**Rationale**:
+- Consistent with MetricsCalculator (memory-first)
+- Flexibility for users who want files
+- No I/O overhead unless requested
+- Best of both worlds
+
+---
+
+## 🧮 ALGORITHM DECISIONS
+
+### DECISION 11: Performance Grading Algorithm
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need objective way to grade strategy performance
+- Should be understandable and explainable
+- Must balance multiple dimensions
+
+**Decision**: **4-Component Scoring System**
+
+**Algorithm**:
+```python
+score = 0
+
+# Component 1: Win Rate (0-25 points)
+if win_rate >= 20%: score += 25
+elif win_rate >= 15%: score += 20
+elif win_rate >= 10%: score += 10
+
+# Component 2: Profit Factor (0-25 points)
+if profit_factor >= 2.0: score += 25
+elif profit_factor >= 1.5: score += 20
+elif profit_factor >= 1.2: score += 10
+
+# Component 3: Drawdown Management (0-25 points)
+if max_dd < total_pnl * 0.2: score += 25
+elif max_dd < total_pnl * 0.5: score += 20
+elif max_dd < total_pnl * 1.0: score += 10
+
+# Component 4: Consistency (0-25 points)
+if consistency_score >= 70: score += 25
+elif consistency_score >= 50: score += 20
+elif consistency_score >= 30: score += 10
+
+# Grade conversion
+90-100: A+/A/A-
+80-89:  B+/B/B-
+70-79:  C+/C/C-
+60-69:  D+/D/D-
+<60:    F
+```
+
+**Rationale**:
+- Balanced across 4 key dimensions
+- Each dimension equally weighted (25 points)
+- Thresholds based on trading best practices
+- Transparent and explainable
+- Can be tuned based on experience
+
+**Grade Reasoning**: Auto-generated explanation of score
+
+---
+
+### DECISION 12: Consistency Score Calculation
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to measure volatility-adjusted consistency
+- Standard deviation alone not enough
+- Should be normalized to 0-100 scale
+
+**Decision**: **Coefficient of Variation + Normalization**
+
+**Algorithm**:
+```python
+# Step 1: Calculate coefficient of variation
+pnl_values = [trade.pnl_points for trade in trades]
+mean_pnl = mean(pnl_values)
+std_dev = stdev(pnl_values)
+
+cv = std_dev / abs(mean_pnl) if mean_pnl != 0 else inf
+
+# Step 2: Normalize to 0-100 scale
+# Lower CV = higher consistency
+consistency_score = max(0, 100 - (cv * 10))
+```
+
+**Rationale**:
+- CV measures relative variability (accounts for scale)
+- Lower CV = more consistent returns
+- Normalized to 0-100 for interpretability
+- 100 = perfectly consistent (all trades identical)
+- 0 = extremely volatile
+
+**Thresholds**:
+- 70+ = High consistency
+- 50-70 = Moderate consistency
+- <50 = Low consistency
+
+---
+
+### DECISION 13: Trade Distribution Thresholds
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to categorize trades by size
+- Thresholds affect insight generation
+- Should be meaningful for point-based strategies
+
+**Decision**: **3-tier System (Small/Medium/Large)**
+
+**Thresholds**:
+- **Small**: < 3 points
+- **Medium**: 3-7 points
+- **Large**: > 7 points
+
+**Rationale**:
+- Based on typical WBWSStrategy returns
+- 3pts = typical small move
+- 7pts = typical larger move
+- Helps identify reliance on rare large winners
+
+**Application**:
+- Separate for wins and losses
+- Insight: "90% of wins are small, but large wins = 60% of profit"
+- Recommendation: "Protect large winners with trailing stops"
+
+---
+
+### DECISION 14: Duration Classification
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to categorize trade durations
+- Helps identify premature exits
+- Should reflect strategy timeframe
+
+**Decision**: **3-tier System (Fast/Normal/Prolonged)**
+
+**Thresholds**:
+- **Fast**: < 3 bars
+- **Normal**: 3-10 bars
+- **Prolonged**: > 10 bars
+
+**Rationale**:
+- Based on typical strategy holding periods
+- Fast exits may indicate premature stops
+- Prolonged may indicate indecision
+- Actionable for stop placement
+
+**Application**:
+- Insight: "73% of trades exit within 2 bars"
+- Recommendation: "Consider wider stops"
+
+---
+
+## 🔄 INTEGRATION DECISIONS
+
+### DECISION 15: Integration with MetricsCalculator
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- MetricsCalculator produces MetricsReport
+- TradeAnalytics needs those metrics
+- Should not duplicate calculations
+
+**Decision**: **TradeAnalytics Consumes MetricsReport**
+
+**Flow**:
+```python
+# Step 1: Calculate base metrics (fast)
+metrics: MetricsReport = calculate_metrics(trade_result)
+
+# Step 2: Perform analytics (uses metrics)
+analytics: AnalyticsReport = analyze_trades(trade_result, metrics, config)
+```
+
+**Rationale**:
+- Clear separation of concerns
+- MetricsCalculator = essential, fast, automated
+- TradeAnalytics = insights, slower, optional
+- No duplication of calculations
+- Analytics builds on top of metrics
+
+**References in Analytics**:
+- `AnalyticsReport.input_metrics` → MetricsReport
+- Analytics uses metrics for grading, insights
+- Preserves full traceability
+
+---
+
+### DECISION 16: Integration with ReportGenerator (Future)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- ReportGenerator will create visualizations (Phase 5.4)
+- Needs data from TradeAnalytics
+- Should not duplicate data collection
+
+**Decision**: **ReportGenerator Consumes AnalyticsReport**
+
+**Future Flow** (Sessions 17-20):
+```python
+# Step 1: Analytics
+analytics: AnalyticsReport = analyze_trades(...)
+
+# Step 2: Reporting
+report_generator = ReportGenerator()
+html_report = report_generator.generate(analytics)
+```
+
+**Rationale**:
+- ReportGenerator = visualization layer only
+- TradeAnalytics = data + insights layer
+- Clear separation: analysis vs presentation
+- ReportGenerator uses `analytics.to_dict()` for charts
+
+**Data Contract**: AnalyticsReport structure is stable API
+
+---
+
+## 📝 IMPLEMENTATION DECISIONS
+
+### DECISION 17: Method Organization
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- TradeAnalytics will be 1500+ lines
+- Need clear organization
+- Should be maintainable
+
+**Decision**: **Grouped Static Methods by Domain**
+
+**Organization**:
+```python
+class TradeAnalytics:
+    # PUBLIC API
+    @staticmethod
+    def analyze(...) -> AnalyticsReport
+    
+    # TIME PERFORMANCE
+    @staticmethod
+    def _analyze_time_performance(...)
+    @staticmethod
+    def _calculate_session_metrics(...)
+    @staticmethod
+    def _generate_time_insights(...)
+    
+    # TRADE QUALITY
+    @staticmethod
+    def _analyze_trade_quality(...)
+    @staticmethod
+    def _calculate_trade_distribution(...)
+    ...
+    
+    # RISK ADJUSTED
+    ...
+    
+    # EXECUTIVE SUMMARY
+    ...
+    
+    # MARKDOWN FORMATTING
+    ...
+    
+    # FILE I/O
+    ...
+```
+
+**Rationale**:
+- Static methods (no state needed)
+- Grouped by domain (easy navigation)
+- Private methods prefixed with `_`
+- Single public entry point (`analyze()`)
+
+---
+
+### DECISION 18: Error Handling Philosophy
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Analytics should be robust
+- Edge cases: zero trades, all wins, etc.
+- Should provide useful output even on edge cases
+
+**Decision**: **Graceful Degradation**
+
+**Principles**:
+1. Never crash on edge cases
+2. Return valid (possibly empty) contracts
+3. Log warnings for unusual situations
+4. Generate insights about edge cases
+
+**Examples**:
+```python
+# Zero trades
+if len(trades) == 0:
+    return create_empty_analytics_report()
+
+# All wins (no losses)
+if len(losses) == 0:
+    avg_loss = 0.0  # Handle gracefully
+    insight = "No losing trades - unusual pattern"
+
+# Division by zero
+expectancy = total_pnl / trades if trades > 0 else 0.0
+```
+
+**Rationale**:
+- Analytics runs after simulation (data should be valid)
+- Edge cases are informative (not errors)
+- Graceful handling better than crashes
+
+---
+
+## 📊 OUTPUT DECISIONS
+
+### DECISION 19: Markdown Format Style
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Markdown is primary human output
+- Should be professional and actionable
+- Must be easy to scan
+
+**Decision**: **Consulting Report Style**
+
+**Format**:
+```markdown
+=== STRATEGY PERFORMANCE ANALYSIS ===
+[Header with key metrics]
+
+🎯 KEY INSIGHTS:
+[Top 3-5 critical insights with icons]
+
+📈 STRENGTHS:
+[What's working well]
+
+⚠️  IMPROVEMENT AREAS:
+[What needs attention]
+
+## DETAILED ANALYSIS
+[Breakdown by domain with tables]
+
+📊 PERFORMANCE GRADE: {grade}
+[Grade reasoning]
+```
+
+**Rationale**:
+- Professional appearance
+- Icons for visual scanning
+- Clear sections
+- Actionable format
+- Decision-ready
+
+**Icons Used**:
+- 🎯 Critical insights
+- ⚠️ Warnings
+- ✅ Successes
+- 📈 Strengths
+- 📊 Data/metrics
+
+---
+
+### DECISION 20: JSON Structure Format
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- JSON for programmatic consumption
+- Should match markdown conceptually
+- Must be ReportGenerator-friendly
+
+**Decision**: **Nested Dict Matching Contract Structure**
+
+**Format**:
+```json
+{
+  "executive_summary": {
+    "performance_grade": "B+",
+    "critical_insights": [...],
+    "key_strengths": [...],
+    "improvement_areas": [...]
+  },
+  "time_performance": {
+    "by_session": {...},
+    "by_hour": {...},
+    "insights": [...]
+  },
+  "trade_quality": {...},
+  "risk_adjusted": {...},
+  "metadata": {
+    "analysis_timestamp": "...",
+    "analysis_duration_ms": 150.5
+  }
+}
+```
+
+**Rationale**:
+- Mirrors contract structure exactly
+- Easy for ReportGenerator to navigate
+- Standard JSON (no special formatting)
+- All data preserved
+
+---
+
+## 🎯 TESTING DECISIONS
+
+### DECISION 21: Test Strategy
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED
+
+**Context**:
+- Need to validate contracts and implementation
+- Network disabled (pytest not available)
+- Must ensure quality
+
+**Decision**: **Three-Tier Testing**
+
+**Tier 1: Contract Validation** (Session 14)
+- Manual testing of dataclasses
+- Validation logic verification
+- Serialization testing
+
+**Tier 2: Integration Testing** (Sessions 15-16)
+- Test with real TradeResult data
+- Validate insights make sense
+- Check edge cases
+
+**Tier 3: Performance Benchmarking** (Session 16)
+- Measure analysis duration
+- Verify <200ms target (informational)
+- Profile if needed
+
+**No Unit Tests Required** (per user):
+- Testing infrastructure mature
+- Manual validation sufficient for v1.0
+- Focus on integration testing
+
+---
+
+### DECISION 22: Optional Metrics Parameter (Flexibility Pattern)
+**Date**: 2026-02-16  
+**Status**: ✅ APPROVED (User Consultation)
+
+**Context**:
+- TradeAnalytics depends on MetricsReport for insights
+- Could always require metrics (explicit)
+- Could auto-calculate if not provided (convenient)
+- User workflow considerations
+
+**Options Considered**:
+A. **Always Required** - User must calculate metrics first
+B. **Always Auto-Calculate** - TradeAnalytics calculates internally
+C. **Optional Parameter** - Auto-calculate if None, use if provided
+
+**Decision**: **Option C - Optional Parameter (Flexible)**
+
+**User Input**: "Make it optional parameter (flexible)"
+
+**Implementation**:
+```python
+def analyze(
+    trade_result: TradeResult,
+    config: StrategyConfig,
+    metrics: Optional[MetricsReport] = None,  # ← Optional!
+    ...
+) -> AnalyticsReport:
+    if metrics is None:
+        # Auto-calculate for convenience
+        metrics = MetricsCalculator.calculate(trade_result)
+    # Use metrics for analysis
+```
+
+**Rationale**:
+- **Explicit users**: Can pass pre-calculated metrics (no duplication)
+- **Convenience users**: Can omit, get auto-calculation
+- **Performance**: Backtester calculates once, passes to both analytics and storage
+- **Flexibility**: Accommodates both workflows
+
+**Usage Patterns**:
+```python
+# Pattern 1: Convenient (auto-calculate)
+report = TradeAnalytics.analyze(result, config)
+
+# Pattern 2: Explicit (pre-calculated, faster if metrics already needed)
+metrics = MetricsCalculator.calculate(result)
+report = TradeAnalytics.analyze(result, config, metrics=metrics)
+
+# Pattern 3: Backtester (efficient - calculate once, use twice)
+metrics = MetricsCalculator.calculate(result)
+save_to_db(metrics)  # Store for backtester
+analytics = TradeAnalytics.analyze(result, config, metrics=metrics)  # Reuse
+```
+
+**Trade-offs**:
+- ✅ Best user experience (accommodates all workflows)
+- ✅ No performance penalty (user controls calculation)
+- ⚠️ Slightly more complex signature (but well-documented)
+- ✅ Default behavior (None) is convenient
+
+**Import Handling**:
+- Use `TYPE_CHECKING` to avoid circular imports
+- MetricsCalculator imported at runtime only when needed
+- Type hints work correctly in IDE
+
+---
+
+## 📈 FUTURE DECISIONS (Deferred to v2.0+)
+
+### DEFERRED 1: Signal Pipeline Tracking
+**Status**: ⏳ DEFERRED TO v2.0
+
+**Reason**: Current focus on trade-level analytics only
+
+**Future Implementation**:
+- Track signals through filter pipeline
+- Funnel analysis (rejection rates)
+- Filter effectiveness metrics
+- Optional feature (debug mode)
+
+---
+
+### DEFERRED 2: Multi-Strategy Comparison
+**Status**: ⏳ DEFERRED TO BACKTESTER
+
+**Reason**: Backtester-level feature, not strategy-level
+
+**Future Implementation**:
+- Compare multiple strategies
+- Correlation matrix
+- Best performer ranking
+- Requires backtester orchestration
+
+---
+
+### DEFERRED 3: Real-Time Monitoring
+**Status**: ⏳ DEFERRED TO v3.0+
+
+**Reason**: Backtesting-only for v1.0
+
+**Future Implementation**:
+- Live trade monitoring
+- Real-time alerts
+- Performance tracking
+- Requires different architecture
+
+---
+
+## ✅ DECISION SUMMARY
+
+**Total Decisions**: 22  
+**Approved**: 19  
+**Deferred**: 3
+
+**Key Outcomes**:
+1. ✅ Comprehensive single-module architecture
+2. ✅ AI-like insight generation with confidence
+3. ✅ Markdown primary, JSON secondary
+4. ✅ No performance constraints (accuracy focus)
+5. ✅ Configurable sessions with smart defaults
+6. ✅ Optional file save (memory default)
+7. ✅ Clear integration with MetricsCalculator
+8. ✅ Foundation for ReportGenerator consumption
+9. ✅ Graceful edge case handling
+10. ✅ Professional markdown format
+
+**Ready for Implementation**: Sessions 15-16 🚀
+
+---
+
+**Created By**: Project Manager (Session 14)  
+**Date**: 2026-02-16  
+**Status**: COMPLETE  
+**Next Review**: Session 17 (post-implementation)
+
+# ARCHITECTURAL DECISION - Optional Metrics Parameter ✅
+
+**Date**: 2026-02-16 (Session 14 Post-Discussion)  
+**Status**: ✅ APPROVED BY USER  
+**Decision ID**: #22
+
+---
+
+## 📋 THE QUESTION
+
+**How should TradeAnalytics receive MetricsReport?**
+
+Three fundamental architectural patterns were evaluated:
+
+### Option A: TradeAnalytics Aggregates (with metrics dependency)
+- TradeAnalytics receives MetricsReport as input
+- Adds intelligent insights on top of metrics
+- AnalyticsReport contains both metrics + insights
+
+### Option B: ReportGenerator Aggregates (independent modules)
+- TradeAnalytics and MetricsCalculator independent
+- ReportGenerator combines both outputs
+- No dependency between analytics and metrics
+
+### Option C: TradeAnalytics Self-Contained (duplicate calculations)
+- TradeAnalytics calculates metrics internally
+- Complete independence but duplicates logic
+- Two sources of truth for metrics
+
+---
+
+## ✅ DECISION: Option A + Flexible Metrics Parameter
+
+### Primary Decision
+**Keep Option A**: TradeAnalytics aggregates MetricsReport + adds insights
+
+### Secondary Decision
+**Make metrics parameter OPTIONAL**: Auto-calculate if not provided
+
+---
+
+## 🎯 FINAL SIGNATURE
+
+```python
+def analyze(
+    trade_result: TradeResult,
+    config: StrategyConfig,
+    metrics: Optional[MetricsReport] = None,  # ← OPTIONAL!
+    session_config: Optional[TradingSessionConfig] = None,
+    save_to_file: bool = False,
+    output_dir: Optional[Path] = None
+) -> AnalyticsReport:
+    """
+    If metrics=None: Auto-calculate internally (convenient)
+    If metrics provided: Use directly (explicit, faster if pre-calculated)
+    """
+    if metrics is None:
+        from src.strategies.specific.modules.metrics_calculator import MetricsCalculator
+        metrics = MetricsCalculator.calculate(trade_result)
+    
+    # Use metrics for analysis...
+```
+
+---
+
+## 💡 RATIONALE
+
+### Why Option A (Aggregation)?
+
+1. **Natural Dependency**: Analytics REQUIRES metrics to generate insights
+   ```python
+   # Insights fundamentally need metrics for comparison
+   if session_win_rate < overall_win_rate * 0.7:  # needs metrics.win_rate
+       insight = "Session underperforming"
+   
+   # Grading requires metrics
+   score += 25 if metrics.win_rate >= 20 else 0
+   ```
+
+2. **Complete Output**: AnalyticsReport is "one-stop shop"
+   ```python
+   analytics.input_metrics.win_rate  # Core metric
+   analytics.time_performance.insights  # Time insights
+   analytics.executive_summary.grade  # Overall grade
+   # Everything in one place!
+   ```
+
+3. **Single Responsibility Preserved**:
+   - MetricsCalculator: "Calculate essential metrics" ✅
+   - TradeAnalytics: "Generate insights from metrics + trades" ✅
+   - ReportGenerator: "Visualize analytics" ✅
+
+4. **Simpler ReportGenerator**: Just visualizes, doesn't aggregate logic
+   ```python
+   # Simple
+   report = ReportGenerator.generate(analytics)
+   
+   # vs Complex
+   report = ReportGenerator.generate(metrics, analytics)  # Who aggregates?
+   ```
+
+### Why Optional Parameter?
+
+1. **Flexibility**: Supports multiple workflows
+   ```python
+   # Workflow 1: Quick analysis (convenient)
+   report = TradeAnalytics.analyze(result, config)
+   
+   # Workflow 2: Pre-calculated metrics (explicit)
+   metrics = MetricsCalculator.calculate(result)
+   report = TradeAnalytics.analyze(result, config, metrics=metrics)
+   
+   # Workflow 3: Backtester (efficient)
+   metrics = MetricsCalculator.calculate(result)
+   save_to_db(metrics)  # Store
+   analytics = TradeAnalytics.analyze(result, config, metrics=metrics)  # Reuse
+   ```
+
+2. **No Duplication**: Only calculates metrics if needed
+   - If user already has metrics → use directly
+   - If user doesn't → auto-calculate
+   - Never duplicates calculation
+
+3. **Performance**: User controls calculation
+   - Backtester: Calculate once, use multiple times
+   - Quick analysis: Auto-calculate, don't worry about it
+
+4. **Best UX**: Accommodates all user types
+   - Beginners: Simple one-call pattern
+   - Advanced: Explicit control over calculations
+   - Production: Optimize for performance
+
+---
+
+## 📊 USER EXPERIENCE
+
+### Pattern 1: Convenient (Auto-Calculate)
+```python
+# Simplest possible - just analyze!
+result = simulator.simulate_trades(...)
+report = TradeAnalytics.analyze(result, config)
+
+# Behind the scenes:
+# 1. Auto-calculates metrics
+# 2. Generates insights
+# 3. Returns complete report
+```
+
+**Best for**: Quick analysis, prototyping, simple workflows
+
+---
+
+### Pattern 2: Explicit (Pre-Calculated)
+```python
+# Calculate metrics first
+result = simulator.simulate_trades(...)
+metrics = MetricsCalculator.calculate(result)
+
+# Quick check before deep dive
+print(f"Win rate: {metrics.win_rate}%")
+if metrics.win_rate < 10:
+    print("Strategy not viable, skipping analytics")
+else:
+    # Now do deep analysis
+    report = TradeAnalytics.analyze(result, config, metrics=metrics)
+```
+
+**Best for**: Conditional analysis, metrics used elsewhere
+
+---
+
+### Pattern 3: Backtester (Efficient Reuse)
+```python
+# Backtester workflow
+result = simulator.simulate_trades(...)
+
+# Calculate once
+metrics = MetricsCalculator.calculate(result)
+
+# Use in multiple places
+save_to_database(metrics)  # Store for backtester
+log_to_monitoring(metrics)  # Real-time tracking
+analytics = TradeAnalytics.analyze(result, config, metrics=metrics)  # Reuse!
+
+# No duplicate calculation, optimal performance
+```
+
+**Best for**: Production systems, backtester integration
+
+---
+
+## 🔧 IMPLEMENTATION DETAILS
+
+### Import Handling (Avoid Circular Imports)
+```python
+# In analytics_contracts.py
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.strategies.contracts.metrics_contracts import MetricsReport
+
+@dataclass(frozen=True)
+class AnalyticsReport:
+    input_metrics: 'MetricsReport'  # String for runtime, type for IDE
+```
+
+### Runtime Import (Lazy Loading)
+```python
+# In trade_analytics.py
+def analyze(...):
+    if metrics is None:
+        # Import only when needed (avoid startup cost)
+        from src.strategies.specific.modules.metrics_calculator import MetricsCalculator
+        metrics = MetricsCalculator.calculate(trade_result)
+```
+
+---
+
+## ✅ BENEFITS SUMMARY
+
+### Technical Benefits
+- ✅ No code duplication (DRY principle)
+- ✅ Clear dependency chain (understandable flow)
+- ✅ Flexible performance (user controls calculation)
+- ✅ Type-safe (proper type hints throughout)
+
+### User Experience Benefits
+- ✅ Simple for beginners (one call does everything)
+- ✅ Powerful for experts (explicit control available)
+- ✅ Efficient for production (optimal reuse patterns)
+- ✅ Clear documentation (patterns well-explained)
+
+### Architectural Benefits
+- ✅ Single responsibility maintained
+- ✅ Loose coupling (optional dependency)
+- ✅ Extensible (v2.0 can add features)
+- ✅ Testable (mock metrics easily)
+
+---
+
+## 🎓 LESSONS LEARNED
+
+### What This Decision Teaches
+
+1. **Dependencies Aren't Evil**: Natural dependencies are okay
+   - TradeAnalytics NEEDS metrics for insights
+   - Making it optional provides flexibility without complexity
+
+2. **Composition > Duplication**: Reuse is better than independence
+   - Could make everything independent
+   - But duplicating calculations is worse
+
+3. **User Workflows Matter**: Design for real usage patterns
+   - Different users have different needs
+   - Optional parameter accommodates all workflows
+
+4. **Explicit > Implicit**: But convenience matters
+   - Default (None) is convenient for most users
+   - Explicit parameter available when needed
+
+---
+
+## 📋 DECISION RECORD
+
+**Question**: How should TradeAnalytics receive metrics?
+
+**Options Evaluated**: 3 (Aggregate, Independent, Self-Contained)
+
+**Decision**: Aggregate + Optional Parameter
+
+**User Consultation**: Yes (explicit confirmation)
+
+**Rationale**: Natural dependency, complete output, flexible UX
+
+**Status**: ✅ APPROVED & IMPLEMENTED
+
+**Impact**: 
+- Updated contracts (TYPE_CHECKING imports)
+- Updated analyze() signature (optional metrics)
+- Updated documentation (usage patterns)
+- Updated tests (mock handling)
+
+**Next Steps**: Implement in Session 15
+
+---
+
+**Decision Made By**: Project Manager + User  
+**Date**: 2026-02-16  
+**Session**: 14 (Post-Discussion)  
+**Implementation**: Session 15
