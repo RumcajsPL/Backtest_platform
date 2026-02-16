@@ -2,7 +2,7 @@
 Config Schema Validation - Type-Safe Configuration
 
 Session 12 - Task 3
-Version: 1.0.0
+Version: 1.0.3
 
 Provides type-safe configuration loading with validation.
 Replaces fragile dict-based configs with typed dataclasses.
@@ -18,7 +18,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from enum import Enum
+import re
 import yaml
+import pandas as pd
+from zoneinfo import ZoneInfo, available_timezones
 
 
 class SpreadType(Enum):
@@ -270,19 +273,38 @@ class DateRangeConfig:
     end: str
     
     def __post_init__(self):
-        """Validate date format"""
-        import pandas as pd
-        try:
-            pd.Timestamp(self.start)
-            pd.Timestamp(self.end)
-        except Exception as e:
+        """Validate datetime format and range"""
+        # Strict validation: require YYYY-MM-DD HH:MM:SS format
+        # Pattern: 4 digits, dash, 2 digits, dash, 2 digits, space, 2 digits, colon, 2 digits, colon, 2 digits
+        datetime_pattern = r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
+        
+        # Validate start datetime format
+        if not re.match(datetime_pattern, self.start):
             raise ValueError(
-                f"Invalid date format. Use YYYY-MM-DD format. Error: {e}"
+                f"Invalid datetime format for start: '{self.start}'. "
+                f"Must be 'YYYY-MM-DD HH:MM:SS' format (e.g., '2025-01-15 10:30:00')"
             )
         
-        if pd.Timestamp(self.start) >= pd.Timestamp(self.end):
+        # Validate end datetime format
+        if not re.match(datetime_pattern, self.end):
             raise ValueError(
-                f"start date ({self.start}) must be before end date ({self.end})"
+                f"Invalid datetime format for end: '{self.end}'. "
+                f"Must be 'YYYY-MM-DD HH:MM:SS' format (e.g., '2025-12-31 23:59:59')"
+            )
+        
+        # Parse with pandas for range validation
+        try:
+            start_ts = pd.Timestamp(self.start)
+            end_ts = pd.Timestamp(self.end)
+        except Exception as e:
+            raise ValueError(
+                f"Invalid datetime values. Error: {e}"
+            ) from e
+        
+        # Validate date range
+        if start_ts >= end_ts:
+            raise ValueError(
+                f"start datetime ({self.start}) must be before end datetime ({self.end})"
             )
     
     @classmethod
@@ -304,7 +326,6 @@ class DataConfig:
     def __post_init__(self):
         """Validate data configuration"""
         # Validate timezone
-        from zoneinfo import ZoneInfo, available_timezones
         try:
             ZoneInfo(self.timezone)
         except Exception:
@@ -469,8 +490,8 @@ if __name__ == "__main__":
                 'ltf_ohlcv': 'data/ltf.parquet',
             },
             'date_range': {
-                'start': '2025-01-01',
-                'end': '2025-12-31'
+                'start': '2025-01-01 00:00:00',  # Now with time
+                'end': '2025-12-31 23:59:59'      # Now with time
             }
         },
         'trade_management': {
@@ -501,6 +522,7 @@ if __name__ == "__main__":
         print(f"   - ATR Length: {config.trade_management.risk.atr_length}")
         print(f"   - Max Risk: {config.trade_management.risk.max_risk_percentile}%")
         print(f"   - Spread Enabled: {config.trade_management.spread.enabled}")
+        print(f"   - Date Range: {config.data.date_range.start} to {config.data.date_range.end}")
     except ValueError as e:
         print(f"❌ Unexpected error: {e}")
         sys.exit(1)
@@ -517,11 +539,10 @@ if __name__ == "__main__":
     except ValueError as e:
         print(f"✅ Correctly rejected: {e}")
     
-    # Example 3: Invalid date range
-    print("\n3️⃣  Testing INVALID date range...")
+    # Example 3: Invalid datetime format (missing time)
+    print("\n3️⃣  Testing INVALID datetime format (missing time)...")
     invalid_dates = valid_config.copy()
-    invalid_dates['data']['date_range']['start'] = '2025-12-31'
-    invalid_dates['data']['date_range']['end'] = '2025-01-01'
+    invalid_dates['data']['date_range']['start'] = '2025-01-01'  # Missing time
     
     try:
         config = StrategyConfig.from_dict(invalid_dates)
@@ -530,8 +551,45 @@ if __name__ == "__main__":
     except ValueError as e:
         print(f"✅ Correctly rejected: {e}")
     
-    # Example 4: Pyramiding contradiction
-    print("\n4️⃣  Testing PYRAMIDING contradiction...")
+    # Example 4: Invalid datetime format (wrong separator)
+    print("\n4️⃣  Testing INVALID datetime format (wrong separator)...")
+    invalid_dates = valid_config.copy()
+    invalid_dates['data']['date_range']['start'] = '2025/01/01 00:00:00'  # Wrong date separator
+    
+    try:
+        config = StrategyConfig.from_dict(invalid_dates)
+        print("❌ Should have failed validation!")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"✅ Correctly rejected: {e}")
+    
+    # Example 5: Invalid datetime format (MM/DD/YYYY)
+    print("\n5️⃣  Testing INVALID datetime format (MM/DD/YYYY)...")
+    invalid_dates = valid_config.copy()
+    invalid_dates['data']['date_range']['start'] = '01/01/2025 00:00:00'  # Wrong format
+    
+    try:
+        config = StrategyConfig.from_dict(invalid_dates)
+        print("❌ Should have failed validation!")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"✅ Correctly rejected: {e}")
+    
+    # Example 6: Invalid date range
+    print("\n6️⃣  Testing INVALID date range...")
+    invalid_range = valid_config.copy()
+    invalid_range['data']['date_range']['start'] = '2025-12-31 23:59:59'
+    invalid_range['data']['date_range']['end'] = '2025-01-01 00:00:00'
+    
+    try:
+        config = StrategyConfig.from_dict(invalid_range)
+        print("❌ Should have failed validation!")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"✅ Correctly rejected: {e}")
+    
+    # Example 7: Pyramiding contradiction
+    print("\n7️⃣  Testing PYRAMIDING contradiction...")
     invalid_pyramiding = valid_config.copy()
     invalid_pyramiding['trade_management']['pyramiding_enabled'] = True
     invalid_pyramiding['trade_management']['max_positions'] = 1

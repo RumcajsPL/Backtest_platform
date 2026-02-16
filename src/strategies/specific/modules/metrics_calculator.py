@@ -1,415 +1,373 @@
 """
-Metrics Contracts - Performance Metrics for Backtester
+Metrics Calculator - High-Performance Metrics from TradeResult
 
 Session 13 - MetricsCalculator
-Version: 1.0.0
+Version: 1.1.0 (Production)
 
-Defines MetricsReport contract for standardized metrics calculation.
-Consumed by backtester (memory-only, no file I/O).
+Calculates performance metrics from TradeResult contract.
+Optimized for speed (memory-only, vectorized operations).
 
 Design Principles:
-- Single Responsibility: Only holds metrics data
-- Performance-Driven: Lightweight dataclass, fast serialization
-- Explicit Contracts: All fields typed, validated
-- Type Safety: Immutable, frozen dataclass
-- Production-Ready: No file I/O, memory-only
+- Single Responsibility: Only calculates metrics
+- Performance-Driven: Vectorized (numpy), <10ms target
+- Explicit Contracts: TradeResult → MetricsReport
+- Type Safety: All methods typed
+- Production-Ready: Memory-only, no file I/O
+
+Trade Frequency Notes:
+- Uses calendar days between first entry and last exit of closed trades
+- Adds 1 day to include the full range (e.g., trades on Day1 and Day3 span 3 days)
+- Single trade = 1.0 trades/day (intuitive for human reading)
+- All float metrics rounded to 2 decimal places for consistency
+- Edge cases (zero trades) handled gracefully
 """
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
-from datetime import datetime
-import json
+import time
+from typing import List, Tuple
+import numpy as np
+
+from src.strategies.contracts.trade_contracts import TradeResult, Trade
+from src.strategies.contracts.metrics_contracts import (
+    MetricsReport,
+    create_empty_metrics_report
+)
 
 
-@dataclass(frozen=True)
-class MetricsReport:
+class MetricsCalculator:
     """
-    Performance metrics report for backtester.
+    High-performance metrics calculator.
     
-    Contains all essential metrics required by backtester:
-    - Performance metrics (11 fields)
-    - Trade summary (2 fields)
-    - Metadata (1 field)
+    Converts TradeResult to MetricsReport with 14 essential metrics:
+    - Performance metrics (11): counts, P&L, profit factor, extremes, drawdown, streaks
+    - Trade summary (2): frequency (per day/week)
+    - Metadata (1): execution duration
     
     Design:
-    - Immutable (frozen=True)
-    - Type-safe (all fields typed)
-    - Validated (min/max checks)
-    - Serializable (to_dict, to_json)
+    - Static methods (no state)
+    - Vectorized operations (numpy)
+    - Single pass where possible
+    - Memory-only (no I/O)
+    
+    Performance Target: <10ms for 1000 trades
     
     Usage:
-        metrics = MetricsReport(
-            total_trades=1151,
-            winning_trades=194,
-            win_rate=16.85,
-            ...
-        )
+        result: TradeResult = simulator.simulate_trades(...)
+        metrics: MetricsReport = MetricsCalculator.calculate(result)
         
-        # Access fields
-        print(f"Win Rate: {metrics.win_rate:.1f}%")
-        
-        # Serialize for backtester
-        result = metrics.to_dict()
+        # Pass to backtester (memory-only)
+        backtester.consume(metrics)
     """
     
-    # ========================================================================
-    # PERFORMANCE METRICS (11 fields)
-    # ========================================================================
-    
-    total_trades: int
-    """Total number of closed trades"""
-    
-    winning_trades: int
-    """Number of winning trades"""
-    
-    losing_trades: int
-    """Number of losing trades (calculated for convenience)"""
-    
-    win_rate: float
-    """Win rate as percentage (0-100)"""
-    
-    total_pnl_points: float
-    """Total profit/loss in points"""
-    
-    expectancy_points: float
-    """Expected P&L per trade (avg_pnl_points)"""
-    
-    profit_factor: float
-    """Ratio of gross profit to gross loss (0 = all losses, >1 = profitable)"""
-    
-    avg_pnl_points: float
-    """Average P&L per trade (same as expectancy_points)"""
-    
-    largest_win: float
-    """Largest winning trade in points"""
-    
-    largest_loss: float
-    """Largest losing trade in points (negative value)"""
-    
-    max_drawdown: float
-    """Maximum drawdown in points (negative value, worst cumulative loss)"""
-    
-    losing_streak: int
-    """Longest consecutive losing streak"""
-    
-    winning_streak: int
-    """Longest consecutive winning streak (bonus metric)"""
-    
-    # ========================================================================
-    # TRADE SUMMARY (2 fields)
-    # ========================================================================
-    
-    trades_per_week: float
-    """Average number of trades per week"""
-    
-    trades_per_day: float
-    """Average number of trades per day"""
-    
-    # ========================================================================
-    # METADATA (1 field)
-    # ========================================================================
-    
-    execution_duration_ms: float
-    """Execution duration in milliseconds"""
-    
-    execution_date: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    """Execution date/time in ISO format"""
-    
-    def __post_init__(self):
-        """Validate metrics on creation"""
-        # Validate counts
-        if self.total_trades < 0:
-            raise ValueError(f"total_trades must be >= 0, got {self.total_trades}")
-        
-        if self.winning_trades < 0:
-            raise ValueError(f"winning_trades must be >= 0, got {self.winning_trades}")
-        
-        if self.losing_trades < 0:
-            raise ValueError(f"losing_trades must be >= 0, got {self.losing_trades}")
-        
-        # Validate win rate
-        if not (0 <= self.win_rate <= 100):
-            raise ValueError(f"win_rate must be between 0 and 100, got {self.win_rate}")
-        
-        # Validate profit factor
-        if self.profit_factor < 0:
-            raise ValueError(f"profit_factor must be >= 0, got {self.profit_factor}")
-        
-        # Validate streaks
-        if self.losing_streak < 0:
-            raise ValueError(f"losing_streak must be >= 0, got {self.losing_streak}")
-        
-        if self.winning_streak < 0:
-            raise ValueError(f"winning_streak must be >= 0, got {self.winning_streak}")
-        
-        # Validate trade summary
-        if self.trades_per_week < 0:
-            raise ValueError(f"trades_per_week must be >= 0, got {self.trades_per_week}")
-        
-        if self.trades_per_day < 0:
-            raise ValueError(f"trades_per_day must be >= 0, got {self.trades_per_day}")
-        
-        # Validate execution duration
-        if self.execution_duration_ms < 0:
-            raise ValueError(f"execution_duration_ms must be >= 0, got {self.execution_duration_ms}")
-    
-    # ========================================================================
-    # DERIVED PROPERTIES
-    # ========================================================================
-    
-    @property
-    def gross_profit(self) -> float:
-        """Calculate gross profit (sum of all wins)"""
-        # Not stored directly, can be derived from profit_factor and gross_loss
-        if self.profit_factor > 0 and abs(self.total_pnl_points) > 0:
-            if self.total_pnl_points > 0:
-                # Profitable system
-                gross_loss = abs(self.largest_loss) if self.largest_loss < 0 else 0
-                return self.total_pnl_points + gross_loss
-            else:
-                # Losing system
-                return abs(self.total_pnl_points) * self.profit_factor
-        return 0.0
-    
-    @property
-    def gross_loss(self) -> float:
-        """Calculate gross loss (sum of all losses, positive value)"""
-        if self.profit_factor > 0:
-            return abs(self.gross_profit / self.profit_factor) if self.profit_factor > 0 else 0.0
-        return abs(self.total_pnl_points)
-    
-    @property
-    def is_profitable(self) -> bool:
-        """Check if strategy is profitable overall"""
-        return self.total_pnl_points > 0
-    
-    # ========================================================================
-    # SERIALIZATION METHODS
-    # ========================================================================
-    
-    def to_dict(self) -> Dict[str, Any]:
+    @staticmethod
+    def calculate(
+        trade_result: TradeResult,
+        start_time: float | None = None
+    ) -> MetricsReport:
         """
-        Convert to dict for backtester consumption.
-        
-        Format matches backtester requirements:
-        {
-            "simulation_results": {
-                "performance_metrics": {...},
-                "trade_summary": {...}
-            },
-            "execution_date": "...",
-            "execution_duration": "...ms"
-        }
-        
-        Returns:
-            Dict matching backtester format
-        """
-        return {
-            "simulation_results": {
-                "performance_metrics": {
-                    "total_trades": self.total_trades,
-                    "winning_trades": self.winning_trades,
-                    "losing_trades": self.losing_trades,
-                    "win_rate": round(self.win_rate, 2),
-                    "total_pnl_points": round(self.total_pnl_points, 2),
-                    "expectancy_points": round(self.expectancy_points, 2),
-                    "profit_factor": round(self.profit_factor, 2),
-                    "avg_pnl_points": round(self.avg_pnl_points, 2),
-                    "largest_win": round(self.largest_win, 2),
-                    "largest_loss": round(self.largest_loss, 2),
-                    "max_drawdown": round(self.max_drawdown, 2),
-                    "losing_streak": self.losing_streak,
-                    "winning_streak": self.winning_streak,
-                },
-                "trade_summary": {
-                    "trades_per_week": round(self.trades_per_week, 2),
-                    "trades_per_day": round(self.trades_per_day, 2),
-                }
-            },
-            "execution_date": self.execution_date,
-            "execution_duration": f"{self.execution_duration_ms:.2f}ms"
-        }
-    
-    def to_json(self, indent: Optional[int] = None) -> str:
-        """
-        Serialize to JSON string.
+        Calculate all metrics from TradeResult.
         
         Args:
-            indent: JSON indentation (None for compact, 2 for readable)
+            trade_result: Simulation results (in memory)
+            start_time: Execution start time (from time.perf_counter())
         
         Returns:
-            JSON string
+            MetricsReport with all metrics
+        
+        Performance: O(n) single pass + O(n log n) sort for streaks
         
         Example:
-            json_str = metrics.to_json(indent=2)
-            with open('metrics.json', 'w') as f:
-                f.write(json_str)
+            start = time.perf_counter()
+            result = simulator.simulate_trades(...)
+            metrics = MetricsCalculator.calculate(result, start_time=start)
+            print(f"Win Rate: {metrics.win_rate:.1f}%")
         """
-        return json.dumps(self.to_dict(), indent=indent)
-    
-    def to_flat_dict(self) -> Dict[str, Any]:
-        """
-        Convert to flat dict (no nesting).
+        # Calculate execution duration
+        execution_duration_ms = 0.0
+        if start_time is not None:
+            execution_duration_ms = (time.perf_counter() - start_time) * 1000
         
-        Useful for pandas DataFrame, CSV export, etc.
+        # Handle empty trades
+        closed_trades = trade_result.closed_trades
+        if len(closed_trades) == 0:
+            return create_empty_metrics_report(execution_duration_ms)
+        
+        # Calculate all metrics
+        total_trades = len(closed_trades)
+        winning_trades, losing_trades = MetricsCalculator._calculate_win_loss_counts(closed_trades)
+        win_rate = MetricsCalculator._calculate_win_rate(winning_trades, total_trades)
+        
+        total_pnl, expectancy, avg_pnl = MetricsCalculator._calculate_pnl_metrics(closed_trades, total_trades)
+        profit_factor = MetricsCalculator._calculate_profit_factor(closed_trades)
+        largest_win, largest_loss = MetricsCalculator._calculate_extremes(closed_trades, winning_trades, losing_trades)
+        max_drawdown = MetricsCalculator._calculate_max_drawdown(closed_trades)
+        winning_streak, losing_streak = MetricsCalculator._calculate_streaks(closed_trades)
+        trades_per_day, trades_per_week = MetricsCalculator._calculate_frequency(closed_trades, total_trades)
+        
+        return MetricsReport(
+            total_trades=total_trades,
+            winning_trades=winning_trades,
+            losing_trades=losing_trades,
+            win_rate=win_rate,
+            total_pnl_points=total_pnl,
+            expectancy_points=expectancy,
+            profit_factor=profit_factor,
+            avg_pnl_points=avg_pnl,
+            largest_win=largest_win,
+            largest_loss=largest_loss,
+            max_drawdown=max_drawdown,
+            losing_streak=losing_streak,
+            winning_streak=winning_streak,
+            trades_per_week=trades_per_week,
+            trades_per_day=trades_per_day,
+            execution_duration_ms=execution_duration_ms,
+        )
+    
+    # ========================================================================
+    # CALCULATION METHODS (Private)
+    # ========================================================================
+    
+    @staticmethod
+    def _calculate_win_loss_counts(trades: List[Trade]) -> Tuple[int, int]:
+        """
+        Calculate winning and losing trade counts.
+        
+        Args:
+            trades: List of closed trades
         
         Returns:
-            Flat dict with all metrics
+            (winning_trades, losing_trades)
         """
-        return {
-            # Performance metrics
-            "total_trades": self.total_trades,
-            "winning_trades": self.winning_trades,
-            "losing_trades": self.losing_trades,
-            "win_rate": self.win_rate,
-            "total_pnl_points": self.total_pnl_points,
-            "expectancy_points": self.expectancy_points,
-            "profit_factor": self.profit_factor,
-            "avg_pnl_points": self.avg_pnl_points,
-            "largest_win": self.largest_win,
-            "largest_loss": self.largest_loss,
-            "max_drawdown": self.max_drawdown,
-            "losing_streak": self.losing_streak,
-            "winning_streak": self.winning_streak,
-            # Trade summary
-            "trades_per_week": self.trades_per_week,
-            "trades_per_day": self.trades_per_day,
-            # Metadata
-            "execution_date": self.execution_date,
-            "execution_duration_ms": self.execution_duration_ms,
-        }
+        winning_trades = sum(1 for t in trades if t.is_win)
+        losing_trades = len(trades) - winning_trades
+        return winning_trades, losing_trades
     
-    # ========================================================================
-    # STRING REPRESENTATION
-    # ========================================================================
+    @staticmethod
+    def _calculate_win_rate(winning_trades: int, total_trades: int) -> float:
+        """
+        Calculate win rate as percentage.
+        
+        Args:
+            winning_trades: Number of wins
+            total_trades: Total trades
+        
+        Returns:
+            Win rate (0-100) rounded to 2 decimals
+        """
+        if total_trades == 0:
+            return 0.0
+        return round((winning_trades / total_trades * 100), 2)
     
-    def __str__(self) -> str:
-        """Human-readable string representation"""
-        return (
-            f"MetricsReport(\n"
-            f"  Trades: {self.total_trades} ({self.winning_trades}W / {self.losing_trades}L)\n"
-            f"  Win Rate: {self.win_rate:.1f}%\n"
-            f"  Total P&L: {self.total_pnl_points:+.2f} points\n"
-            f"  Expectancy: {self.expectancy_points:+.2f} points/trade\n"
-            f"  Profit Factor: {self.profit_factor:.2f}\n"
-            f"  Max Drawdown: {self.max_drawdown:.2f} points\n"
-            f"  Largest Win: {self.largest_win:+.2f} | Loss: {self.largest_loss:+.2f}\n"
-            f"  Streaks: {self.winning_streak}W / {self.losing_streak}L\n"
-            f"  Frequency: {self.trades_per_day:.1f}/day, {self.trades_per_week:.1f}/week\n"
-            f"  Duration: {self.execution_duration_ms:.2f}ms\n"
-            f")"
-        )
+    @staticmethod
+    def _calculate_pnl_metrics(trades: List[Trade], total_trades: int) -> Tuple[float, float, float]:
+        """
+        Calculate P&L metrics.
+        
+        Args:
+            trades: List of closed trades
+            total_trades: Total trades
+        
+        Returns:
+            (total_pnl, expectancy, avg_pnl) all rounded to 2 decimals
+        """
+        total_pnl = sum(t.pnl_points for t in trades)
+        expectancy = total_pnl / total_trades if total_trades > 0 else 0.0
+        avg_pnl = expectancy  # Same as expectancy
+        
+        return round(total_pnl, 2), round(expectancy, 2), round(avg_pnl, 2)
+    
+    @staticmethod
+    def _calculate_profit_factor(trades: List[Trade]) -> float:
+        """
+        Calculate profit factor (gross_profit / gross_loss).
+        
+        Args:
+            trades: List of closed trades
+        
+        Returns:
+            Profit factor rounded to 2 decimals
+            - 0.0 = all losses
+            - inf = all wins
+            - >1 = profitable strategy
+        """
+        gross_profit = sum(t.pnl_points for t in trades if t.is_win)
+        gross_loss = abs(sum(t.pnl_points for t in trades if t.is_loss))
+        
+        if gross_loss == 0:
+            # All winning trades
+            return float('inf') if gross_profit > 0 else 0.0
+        
+        return round(gross_profit / gross_loss, 2)
+    
+    @staticmethod
+    def _calculate_extremes(
+        trades: List[Trade],
+        winning_trades: int,
+        losing_trades: int
+    ) -> Tuple[float, float]:
+        """
+        Calculate largest win and loss.
+        
+        Args:
+            trades: List of closed trades
+            winning_trades: Number of wins
+            losing_trades: Number of losses
+        
+        Returns:
+            (largest_win, largest_loss) both rounded to 2 decimals
+        """
+        largest_win = max((t.pnl_points for t in trades if t.is_win), default=0.0)
+        largest_loss = min((t.pnl_points for t in trades if t.is_loss), default=0.0)
+        
+        return round(largest_win, 2), round(largest_loss, 2)
+    
+    @staticmethod
+    def _calculate_max_drawdown(trades: List[Trade]) -> float:
+        """
+        Calculate maximum drawdown using iterative algorithm.
+        
+        Algorithm:
+        1. Sort trades by exit time
+        2. Track cumulative P&L starting from 0
+        3. Track peak equity (highest cumulative value)
+        4. Calculate drawdown = current equity - peak
+        5. Track worst (most negative) drawdown
+        
+        Args:
+            trades: List of closed trades
+        
+        Returns:
+            Max drawdown rounded to 2 decimals (negative value)
+        
+        Performance: O(n log n) for sort + O(n) for iteration
+        """
+        if len(trades) == 0:
+            return 0.0
+        
+        # Sort by exit time
+        sorted_trades = sorted(trades, key=lambda t: t.exit.exit_time)
+        
+        cumulative = 0.0
+        peak = 0.0  # Start at 0 (initial equity)
+        max_drawdown = 0.0
+        
+        for trade in sorted_trades:
+            cumulative += trade.pnl_points
+            if cumulative > peak:
+                peak = cumulative
+            drawdown = cumulative - peak  # Will be negative or zero
+            if drawdown < max_drawdown:
+                max_drawdown = drawdown
+        
+        return round(max_drawdown, 2)
+    
+    @staticmethod
+    def _calculate_streaks(trades: List[Trade]) -> Tuple[int, int]:
+        """
+        Calculate longest winning and losing streaks.
+        
+        Args:
+            trades: List of closed trades
+        
+        Returns:
+            (winning_streak, losing_streak)
+        
+        Performance: O(n log n) for sort + O(n) for iteration
+        """
+        if len(trades) == 0:
+            return 0, 0
+        
+        # Sort by exit time
+        sorted_trades = sorted(trades, key=lambda t: t.exit.exit_time)
+        
+        max_win_streak = 0
+        max_loss_streak = 0
+        current_win_streak = 0
+        current_loss_streak = 0
+        
+        for trade in sorted_trades:
+            if trade.is_win:
+                current_win_streak += 1
+                current_loss_streak = 0
+                max_win_streak = max(max_win_streak, current_win_streak)
+            else:
+                current_loss_streak += 1
+                current_win_streak = 0
+                max_loss_streak = max(max_loss_streak, current_loss_streak)
+        
+        return max_win_streak, max_loss_streak
+    
+    @staticmethod
+    def _calculate_frequency(trades: List[Trade], total_trades: int) -> Tuple[float, float]:
+        """
+        Calculate trade frequency (per day and per week).
+        
+        Uses calendar days between first entry and last exit of closed trades,
+        counting full days (adds 1 to include both start and end days).
+        
+        Args:
+            trades: List of closed trades
+            total_trades: Total trades
+        
+        Returns:
+            (trades_per_day, trades_per_week) rounded to 2 decimals
+        """
+        if total_trades == 0:
+            return 0.0, 0.0
+        
+        # Get time range from first entry to last exit
+        first_entry = min(t.entry.entry_time for t in trades)
+        last_exit = max(t.exit.exit_time for t in trades)
+        
+        # Calculate calendar days (count full days between dates + 1)
+        delta = last_exit.date() - first_entry.date()
+        calendar_days = delta.days + 1  # +1 to include both start and end days
+        
+        # For same-day trading, calendar_days will be 1
+        calendar_days = max(1.0, float(calendar_days))
+        
+        # Calculate frequencies
+        trades_per_day = total_trades / calendar_days
+        trades_per_week = trades_per_day * 7
+        
+        # Round to 2 decimals
+        return round(trades_per_day, 2), round(trades_per_week, 2)
 
 
 # ============================================================================
-# HELPER FUNCTIONS
+# CONVENIENCE FUNCTIONS
 # ============================================================================
 
-def create_empty_metrics_report(execution_duration_ms: float = 0.0) -> MetricsReport:
+def calculate_metrics(trade_result: TradeResult) -> MetricsReport:
     """
-    Create metrics report for zero trades.
+    Convenience function for metrics calculation.
     
     Args:
-        execution_duration_ms: Execution time
+        trade_result: Simulation results
     
     Returns:
-        MetricsReport with all metrics = 0
+        MetricsReport with all metrics
     
     Example:
-        # No trades executed
-        metrics = create_empty_metrics_report(execution_duration_ms=5.2)
+        result = simulator.simulate_trades(...)
+        metrics = calculate_metrics(result)
     """
-    return MetricsReport(
-        total_trades=0,
-        winning_trades=0,
-        losing_trades=0,
-        win_rate=0.0,
-        total_pnl_points=0.0,
-        expectancy_points=0.0,
-        profit_factor=0.0,
-        avg_pnl_points=0.0,
-        largest_win=0.0,
-        largest_loss=0.0,
-        max_drawdown=0.0,
-        losing_streak=0,
-        winning_streak=0,
-        trades_per_week=0.0,
-        trades_per_day=0.0,
-        execution_duration_ms=execution_duration_ms,
-    )
+    return MetricsCalculator.calculate(trade_result)
 
 
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == "__main__":
-    # Example 1: Create metrics report
-    metrics = MetricsReport(
-        total_trades=1151,
-        winning_trades=194,
-        losing_trades=957,
-        win_rate=16.85,
-        total_pnl_points=-2998.05,
-        expectancy_points=-2.6,
-        profit_factor=0.81,
-        avg_pnl_points=-2.6,
-        largest_win=159.08,
-        largest_loss=-62.06,
-        max_drawdown=-3383.85,
-        losing_streak=41,
-        winning_streak=5,
-        trades_per_week=56.11,
-        trades_per_day=12.24,
-        execution_duration_ms=2765.23,
-    )
+def calculate_metrics_with_timing(trade_result: TradeResult, start_time: float) -> MetricsReport:
+    """
+    Calculate metrics with execution timing.
     
-    print("="*70)
-    print("METRICS REPORT - EXAMPLE")
-    print("="*70)
-    print(metrics)
+    Args:
+        trade_result: Simulation results
+        start_time: Execution start (from time.perf_counter())
     
-    print("\n" + "="*70)
-    print("BACKTESTER FORMAT (to_dict)")
-    print("="*70)
-    import json
-    print(json.dumps(metrics.to_dict(), indent=2))
+    Returns:
+        MetricsReport with execution_duration_ms
     
-    print("\n" + "="*70)
-    print("FLAT FORMAT (for CSV/DataFrame)")
-    print("="*70)
-    flat = metrics.to_flat_dict()
-    for key, value in flat.items():
-        print(f"  {key}: {value}")
-    
-    print("\n" + "="*70)
-    print("VALIDATION TEST")
-    print("="*70)
-    try:
-        invalid = MetricsReport(
-            total_trades=-1,  # Invalid!
-            winning_trades=0,
-            losing_trades=0,
-            win_rate=0,
-            total_pnl_points=0,
-            expectancy_points=0,
-            profit_factor=0,
-            avg_pnl_points=0,
-            largest_win=0,
-            largest_loss=0,
-            max_drawdown=0,
-            losing_streak=0,
-            winning_streak=0,
-            trades_per_week=0,
-            trades_per_day=0,
-            execution_duration_ms=0,
-        )
-    except ValueError as e:
-        print(f"✅ Validation caught error: {e}")
-    
-    print("\n" + "="*70)
-    print("EMPTY METRICS TEST")
-    print("="*70)
-    empty = create_empty_metrics_report(execution_duration_ms=1.5)
-    print(empty)
-    
-    print("\n✅ All tests passed!")
+    Example:
+        start = time.perf_counter()
+        result = simulator.simulate_trades(...)
+        metrics = calculate_metrics_with_timing(result, start)
+        print(f"Duration: {metrics.execution_duration_ms:.2f}ms")
+    """
+    return MetricsCalculator.calculate(trade_result, start_time=start_time)

@@ -1,4 +1,4 @@
-# SESSION 13 - MetricsCalculator COMPLETE ✅
+# SESSION 13 - MetricsCalculator in progress ✅
 
 **Phase**: 5 - Reporting & Metrics  
 **Session**: 13 (MetricsCalculator implementation)  
@@ -188,53 +188,6 @@ Total: ~O(n log n) dominated by sorting
 
 ---
 
-## 📊 Demo Test Results
-
-### Test 1: Small Dataset (3 trades)
-```
-Trades: 3 (2W / 1L)
-Win Rate: 66.7%
-Total P&L: +0.01 points
-Expectancy: +0.00 points/trade
-Profit Factor: 4.00
-Max Drawdown: -0.01 points
-Largest Win: +0.01 | Loss: -0.01
-Streaks: 1W / 1L
-Frequency: 2.9/day, 20.2/week
-Duration: 0.00ms
-
-✅ Output matches backtester format
-✅ All metrics calculated correctly
-```
-
-### Test 2: Large Dataset (1000 trades)
-```
-Performance: 1.72ms (target <10ms) ✅
-Win Rate: 33.4%
-Total P&L: +0.01 points
-Profit Factor: 1.00
-
-✅ Performance exceeds target by 5.8x
-✅ Scales linearly with trade count
-```
-
-### Test 3: Empty Dataset (0 trades)
-```
-Empty metrics report created successfully
-All fields = 0
-Duration tracked correctly
-
-✅ Edge case handled gracefully
-```
-
-### Test 4: Validation
-```
-Invalid total_trades (-1) → ValueError ✅
-Invalid win_rate (150) → ValueError ✅
-All validation working correctly
-```
-
----
 
 ## 🔧 Technical Highlights
 
@@ -304,7 +257,7 @@ src/strategies/
 │       └── create_empty_metrics_report()
 │
 └── specific/modules/
-    └── metrics_calculator.py (NEW - 450+ lines)
+    └── metrics_calculator.py (NEW - 350+ lines)
         ├── MetricsCalculator (static class)
         ├── calculate_metrics()
         └── calculate_metrics_with_timing()

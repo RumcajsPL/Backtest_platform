@@ -2,7 +2,7 @@
 Structured Logger - Production-Grade JSON Logging
 
 Session 12 - Task 2
-Version: 1.0.0
+Version: 1.0.1
 
 Provides structured JSON logging for audit trails, debugging, and analysis.
 Replaces scattered print/logger statements with consistent, parseable logs.
@@ -16,7 +16,7 @@ Design Principles:
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 from pathlib import Path
@@ -151,7 +151,7 @@ class StructuredLogger:
             )
         """
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),  # Fixed deprecation
             "module": self.module_name,
             "stage": stage.value,
             "event": event,
@@ -275,17 +275,17 @@ class StructuredLogger:
         """
         Serialize value for JSON output.
         
-        Handles pandas Timestamps, numpy types, and other non-JSON types.
+        Handles pandas Timestamps, Enums, numpy types, and other non-JSON types.
         """
         if isinstance(value, pd.Timestamp):
             return value.isoformat()
         elif isinstance(value, (pd.Series, pd.DataFrame)):
             return f"<{type(value).__name__} shape={getattr(value, 'shape', None)}>"
+        elif isinstance(value, Enum):  # Moved this check BEFORE the dataclass check
+            return value.value
         elif hasattr(value, '__dict__') and hasattr(value, '__class__'):
             # Dataclass or custom object
             return f"<{value.__class__.__name__}>"
-        elif isinstance(value, Enum):
-            return value.value
         else:
             # Fallback: convert to string if not JSON serializable
             try:

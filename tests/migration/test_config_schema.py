@@ -6,12 +6,22 @@ Version: 1.0.0
 
 Tests type-safe configuration validation for correctness.
 """
-import pytest
+
+# Add project root to path for proper module resolution
+import sys
 from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+import pytest
 import tempfile
 import yaml
 
-from src.config.config_schema import (
+# Import from configs directory using the correct path
+from configs.config_schema import (
     SpreadConfig,
     SpreadType,
     RiskConfig,
@@ -210,26 +220,34 @@ class TestDateRangeConfig:
     def test_valid_date_range(self):
         """Valid date range should create successfully"""
         config = DateRangeConfig(
-            start="2025-01-01",
-            end="2025-12-31"
+            start="2025-01-01 00:00:00",  # Added time component
+            end="2025-12-31 23:59:59"      # Added time component
         )
-        assert config.start == "2025-01-01"
-        assert config.end == "2025-12-31"
+        assert config.start == "2025-01-01 00:00:00"
+        assert config.end == "2025-12-31 23:59:59"
     
     def test_invalid_date_format(self):
         """Invalid date format should raise ValueError"""
-        with pytest.raises(ValueError, match="Invalid date format"):
+        with pytest.raises(ValueError, match="Invalid datetime format"):
             DateRangeConfig(
-                start="01/01/2025",  # Wrong format
-                end="2025-12-31"
+                start="01/01/2025 00:00:00",  # Wrong format with time
+                end="2025-12-31 23:59:59"
             )
     
     def test_start_after_end(self):
         """start >= end should raise ValueError"""
-        with pytest.raises(ValueError, match="start date.*must be before end date"):
+        with pytest.raises(ValueError, match="start datetime.*must be before end datetime"):
             DateRangeConfig(
-                start="2025-12-31",
-                end="2025-01-01"
+                start="2025-12-31 23:59:59",
+                end="2025-01-01 00:00:00"
+            )
+    
+    def test_missing_time_component(self):
+        """Missing time component should raise ValueError"""
+        with pytest.raises(ValueError, match="Invalid datetime format"):
+            DateRangeConfig(
+                start="2025-01-01",  # Missing time
+                end="2025-12-31 23:59:59"
             )
 
 
@@ -244,22 +262,26 @@ class TestDataConfig:
                 'ltf_ohlcv': 'data/ltf.parquet',
             },
             'date_range': {
-                'start': '2025-01-01',
-                'end': '2025-12-31'
+                'start': '2025-01-01 00:00:00',  # Added time component
+                'end': '2025-12-31 23:59:59'      # Added time component
             },
             'timezone': 'UTC'
         })
         assert config.timezone == 'UTC'
-        assert config.paths.strategy_ohlcv == Path('data/strategy.parquet')
+        # Fix: Use as_posix() to get forward slashes on all platforms
+        assert config.paths.strategy_ohlcv.as_posix() == 'data/strategy.parquet'
     
     def test_invalid_timezone(self):
         """Invalid timezone should raise ValueError"""
-        with pytest.raises(ValueError, match="Invalid timezone"):
+        with pytest.raises(ValueError, match="Invalid timezone.*Must be a valid timezone"):
             DataConfig(
                 paths=DataPathsConfig(
                     strategy_ohlcv=Path('data/strategy.parquet')
                 ),
-                date_range=DateRangeConfig('2025-01-01', '2025-12-31'),
+                date_range=DateRangeConfig(
+                    start='2025-01-01 00:00:00',
+                    end='2025-12-31 23:59:59'
+                ),
                 timezone='InvalidTimezone'
             )
 
@@ -275,8 +297,8 @@ class TestStrategyConfig:
                     'strategy_ohlcv': 'data/strategy.parquet'
                 },
                 'date_range': {
-                    'start': '2025-01-01',
-                    'end': '2025-12-31'
+                    'start': '2025-01-01 00:00:00',  # Added time component
+                    'end': '2025-12-31 23:59:59'      # Added time component
                 }
             },
             'trade_management': {
@@ -313,8 +335,8 @@ class TestStrategyConfig:
                     'strategy_ohlcv': 'data/strategy.parquet'
                 },
                 'date_range': {
-                    'start': '2025-01-01',
-                    'end': '2025-12-31'
+                    'start': '2025-01-01 00:00:00',  # Added time component
+                    'end': '2025-12-31 23:59:59'      # Added time component
                 }
             },
             'trade_management': {
@@ -362,7 +384,10 @@ class TestValidationHelpers:
         config_dict = {
             'data': {
                 'paths': {'strategy_ohlcv': 'data/strategy.parquet'},
-                'date_range': {'start': '2025-01-01', 'end': '2025-12-31'}
+                'date_range': {
+                    'start': '2025-01-01 00:00:00',  # Added time component
+                    'end': '2025-12-31 23:59:59'      # Added time component
+                }
             },
             'trade_management': {
                 'spread': {'enabled': False, 'spread_type': 'percentage', 'spread_value': 0.0},
@@ -389,7 +414,10 @@ class TestValidationHelpers:
                     'strategy_ohlcv': 'data/strategy.parquet',
                     'ltf_ohlcv': 'data/ltf.parquet'  # LTF present
                 },
-                'date_range': {'start': '2025-01-01', 'end': '2025-12-31'}
+                'date_range': {
+                    'start': '2025-01-01 00:00:00',  # Added time component
+                    'end': '2025-12-31 23:59:59'      # Added time component
+                }
             },
             'trade_management': {
                 'spread': {

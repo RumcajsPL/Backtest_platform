@@ -6,10 +6,18 @@ Version: 1.0.0
 
 Tests the structured logging utility for correctness and reliability.
 """
+
+# Add project root to path for proper module resolution
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import pytest
 import json
-import tempfile
-from pathlib import Path
 from datetime import datetime
 
 from src.utils.structured_logger import (
@@ -41,7 +49,8 @@ class TestStructuredLogger:
     
     def test_log_event_basic(self, tmp_path):
         """log_event should create valid JSON log entry"""
-        log_file = tmp_path / "test.log"
+        # The logger creates files with lowercase module name
+        log_file = tmp_path / "testmodule.log"  # Changed from test.log
         logger = StructuredLogger(
             "TestModule",
             log_dir=tmp_path,
@@ -73,7 +82,8 @@ class TestStructuredLogger:
     
     def test_log_decision(self, tmp_path):
         """log_decision should capture decision context"""
-        log_file = tmp_path / "test.log"
+        # The logger creates files with lowercase module name
+        log_file = tmp_path / "testmodule.log"  # Changed from test.log
         logger = StructuredLogger(
             "TestModule",
             log_dir=tmp_path,
@@ -88,6 +98,7 @@ class TestStructuredLogger:
             max_risk=3.0
         )
         
+        assert log_file.exists()  # Add assertion before opening
         with open(log_file, 'r') as f:
             log_data = json.loads(f.readline())
         
@@ -188,6 +199,7 @@ class TestStructuredLogger:
         with open(log_file, 'r') as f:
             log_data = json.loads(f.readline())
         
+        # This will still fail until we fix structured_logger.py
         assert log_data["stage_enum"] == "risk_management"
 
 

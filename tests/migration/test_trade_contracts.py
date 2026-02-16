@@ -5,6 +5,16 @@ Session 11 - Quick Win Implementation
 Tests validation logic in trade_contracts.py dataclasses.
 Ensures contracts catch invalid inputs at creation time.
 """
+
+# Add project root to path for proper module resolution
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).resolve().parents[2]  # Go up from tests/migration/ to project root
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import pytest
 import pandas as pd
 from src.strategies.contracts.trade_contracts import (
