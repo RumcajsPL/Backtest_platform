@@ -161,30 +161,30 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 **ESTIMATED DURATION**: 2-3 hours  
 **EXPECTED OUTCOME**: Pure contract architecture end-to-end
 ---
-## Phase 6: Infrastructure Foundation ⏳ SESSION 12
+## Phase 6: Infrastructure Foundation ✅ SESSION 12
 **Goal**: Production-harden before reporting modules
-### Step 6.1: Architecture Documentation ⏳ SESSION 12
+### Step 6.1: Architecture Documentation ✅ SESSION 12
 - [x] Create ARCHITECTURE.md with system diagrams
 - [x] Document data flow (Mermaid diagrams)
 - [x] Document contract hierarchy
 - [x] Document design decisions and rationale
-### Step 6.2: Structured Logging ⏳ SESSION 12
+### Step 6.2: Structured Logging ✅ SESSION 12
 - [x] Design structured log format (JSON)
 - [x] Implement StructuredLogger utility
 - [x] Add logging to all core modules
 - [x] Log key decisions (filters, rejections, trades)
-### Step 6.3: Config Schema Validation ⏳ SESSION 12
+### Step 6.3: Config Schema Validation ✅ SESSION 12
 - [x] Design config dataclasses
 - [x] Implement validation at load time
 - [x] Better error messages
 - [x] Type hints for IDE support
-**PHASE 6 STATUS**: ⏳ Planned (Session 12)  
+**PHASE 6 STATUS**: ✅ Planned (Session 12)  
 **ESTIMATED DURATION**: 1 session (4-5 hours)  
 **OUTCOME**: Solid foundation for reporting modules
 ---
-## Phase 7: Metrics & Reporting - Design ⏳ SESSIONS 13-21
+## Phase 7: Metrics & Reporting - Design ✅ SESSIONS 13-21
 **Goal**: Complete feature set with intelligent reporting
-### Step 7.1: MetricsCalculator ⏳ SESSIONS 13-14
+### Step 7.1: MetricsCalculator ✅ SESSIONS 13-14
 - [x] Define essential metrics (basic, risk, trade stats)
 - [x] Design MetricsReport contract
 - [x] Implement MetricsCalculator consuming TradeResult
@@ -193,7 +193,7 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 - [x] Documentation
 **ESTIMATED DURATION**: 1-2 sessions  
 **DELIVERABLE**: Contract-based metrics standardization
-### Step 7.2: ProgressiveTracker v2 ⏳ SESSIONS 15-17
+### Step 7.2: ProgressiveTracker v2 ✅ SESSIONS 15-17
 - [x] Design TradeAnalytics contract
 - [x] Define what to track at each stage (signal/filter/risk/position/trade)
 - [x] Implement tracker with contract support
@@ -202,39 +202,40 @@ This document tracks the detailed migration roadmap from dict-based to typed con
 - [x] Testing and documentation
 **ESTIMATED DURATION**: 2-3 sessions  
 **DELIVERABLE**: Redesigned analysis tool
-### Step 7.3: ReportGenerator v2 ⏳ SESSIONS 18-21
+### Step 7.3: ReportGenerator v2 ✅ SESSIONS 18-21
 - [x] Define report types (executive, trade journal, risk analysis)
-- [ ] Design report templates
-- [ ] Implement HTML generation with charts (plotly)
-- [ ] Intelligent insights ("90% losses in Asian session")
-- [ ] Recommendations engine
-- [ ] Multiple output formats (HTML, PDF, Excel, JSON)
-- [ ] Testing and documentation
+- [x] Design report templates
+- [x] Implement HTML generation with charts (plotly)
+- [x] Intelligent insights ("90% losses in Asian session")
+- [x] Recommendations engine
+- [x] Multiple output formats (HTML, PDF, Excel, JSON) => goes to POST_
+- [x] Testing and documentation
 **ESTIMATED DURATION**: 3-4 sessions  
 **DELIVERABLE**: Intelligent reporting system with analysis
-**PHASE 7 STATUS**: ⏳ Design questions documented (Session 12 Placeholder)  
+**PHASE 7 STATUS**: ✅ ReportGenerator ready (Session 17)  
 **TOTAL DURATION**: 6-9 sessions  
-**OUTCOME**: Complete reporting suite
+**OUTCOME**: Complete reporting suite (some evolution moved to post migration)
 ---
 ## Phase 8: Infrastructure Completion ⏳ SESSIONS 22-24
 **Goal**: Production hardening and optimization
 
-### Step 8.1: Observability ⏳ SESSIONS 22-23
+### Step 8.1: Code scan/Observability ⏳ SESSIONS 22-23
+- [ ] Full code scan, all contract, all modules => enhancment of POST_MIGRATION_ROADMAP
+- [ ] Prorization and planning of changes 
 - [ ] Performance metrics collection
 - [ ] Execution logging (audit trail)
 - [ ] Memory usage tracking
-- [ ] Monitoring dashboard (optional)
 
 ### Step 8.2: Quality Enhancements ⏳ SESSION 24
 - [ ] Contract validation enhancement
 - [ ] Test coverage expansion (edge cases)
 - [ ] Timezone handling verification
 - [ ] Spread manager edge case validation
+- [ ] MagicMock cleanup => MetricsCalculator, TradeAnalytics, ReportGenerator
 
 **PHASE 8 STATUS**: ⏳ Planned (POST_MIGRATION_ROADMAP)  
 **ESTIMATED DURATION**: 2-3 sessions  
 **OUTCOME**: Production-hardened system
-
 ---
 
 ## Phase 9: Integration & Orchestrator ⏳ FUTURE

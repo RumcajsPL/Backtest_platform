@@ -1510,3 +1510,536 @@ For implementation details, see:
 For issues or suggestions:
 - Review `DECISION_LOG.md` for architectural decisions
 - Check `ARCHITECTURAL_DECISION.md` for optional metrics rationale
+
+# WBWSStrategy System Architecture
+
+**Version**: 2.1.0  
+**Date**: 2026-02-17  
+**Status**: Production-Ready + Analytics Layer + HTML Reporting Layer  
+**Performance**: 92.6% faster than legacy on realistic data; HTML report ~4–10ms
+
+---
+
+## Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [System Overview](#system-overview)
+3. [Architecture Principles](#architecture-principles)
+4. [Module Responsibilities](#module-responsibilities)
+5. [Data Flow](#data-flow)
+6. [Contract Hierarchy](#contract-hierarchy)
+7. [Performance Optimizations](#performance-optimizations)
+8. [Design Decisions](#design-decisions)
+9. [Integration Guide](#integration-guide)
+10. [Extension Points](#extension-points)
+11. [Phase 5: Analytics Infrastructure](#phase-5-analytics-infrastructure)
+
+---
+
+## Executive Summary
+
+### What Is This System?
+
+WBWSStrategy is a **high-performance, contract-based backtesting engine** with **intelligent analytics** and **HTML reporting** for systematic trading strategies. It processes market data through a pipeline of typed contracts, generating trade signals, simulating realistic trade execution with sub-millisecond precision, providing actionable insights through AI-like recommendations, and exporting self-contained HTML reports.
+
+### Key Characteristics
+
+- **Contract-Based**: End-to-end typed dataclasses (immutable, validated)
+- **High Performance**: 92.6% faster than legacy on realistic datasets
+- **Intelligent Analytics**: AI-like insights with confidence levels (Sessions 14-16)
+- **HTML Reporting**: Self-contained report, dark/light theme, 4 Chart.js charts (Sessions 17-18)
+- **Type Safe**: 100% type hints with strict mypy validation
+- **Modular**: Clean separation of concerns (data → signals → filters → trades → analytics → reports)
+- **Production-Ready**: Tested at scale (88k bars, 9.6k signals, 2M LTF ticks)
+
+### Design Philosophy
+
+> **"Explicit is better than implicit. Performance matters. Contracts prevent bugs. Intelligence adds value."**
+
+Every module accepts and returns strongly-typed contracts. No hidden state, no dict-based communication, no global variables. Pure functional pipeline with optimized hot paths, intelligent insight generation, and portable HTML output.
+
+---
+
+## System Overview
+
+### High-Level Architecture (Updated v2.1)
+
+```mermaid
+graph TD
+    A[Raw Market Data] --> B[DataLoader]
+    B --> C[DataBundle Contract]
+    C --> D[SignalGenerator]
+    D --> E[SignalFrame Contract]
+    E --> F[FilterPipeline]
+    F --> G[FilterResult Contract]
+    G --> H[TradeSimulator]
+    H --> I[TradeResult Contract]
+    I --> J[MetricsCalculator]
+    I --> K[TradeAnalytics]
+    J --> L[MetricsReport]
+    K --> M[AnalyticsReport]
+    M --> N[ReportGenerator]
+    N --> N2[HTML Report]
+    I --> O[ProgressiveTracker]
+    
+    style C fill:#e1f5ff
+    style E fill:#e1f5ff
+    style G fill:#e1f5ff
+    style I fill:#e1f5ff
+    style L fill:#90EE90
+    style M fill:#90EE90
+    style N2 fill:#90EE90
+```
+
+### Processing Pipeline (Enhanced v2.1)
+
+```
+┌─────────────┐
+│ Market Data │ (CSV/Parquet/DataFrame)
+└─────┬───────┘
+      │
+      ▼
+┌─────────────┐
+│ DataLoader  │ → DataBundle (OHLCV + LTF + ARTF)
+└─────┬───────┘
+      │
+      ▼
+┌─────────────────┐
+│ SignalGenerator │ → SignalFrame (BUY/SELL signals)
+└─────┬───────────┘
+      │
+      ▼
+┌──────────────┐
+│ FilterPipeline│ → FilterResult (filtered signals)
+│   ├─Time     │    - Time filters (session, day)
+│   └─Technical│    - Technical filters (trend, vol)
+└─────┬────────┘
+      │
+      ▼
+┌──────────────┐
+│TradeSimulator│ → TradeResult (executed trades)
+│   ├─RiskMgr  │    - Position sizing
+│   ├─TradeMgr │    - Position management
+│   └─LTF Exec │    - Realistic execution
+└─────┬────────┘
+      │
+      ▼
+┌────────────────────────────────┐
+│  Analytics + Reporting Layer   │ (Phase 5 — Sessions 13-18)
+│  ├─MetricsCalculator           │ → MetricsReport (17 core metrics, 1.72ms)
+│  ├─TradeAnalytics              │ → AnalyticsReport (AI insights, <200ms)
+│  └─ReportGenerator             │ → HTML Report (self-contained, ~32KB, ~5ms)
+└────────────────────────────────┘
+```
+
+---
+
+## Architecture Principles
+
+### 1. Single Responsibility Principle
+
+**Rule**: One module = one concern
+
+```python
+# ✅ GOOD: Clear single responsibility
+class MetricsCalculator:
+    """Calculates essential performance metrics"""
+    def calculate(self, trade_result: TradeResult) -> MetricsReport: ...
+
+class TradeAnalytics:
+    """Generates intelligent insights from metrics + trades"""
+    def analyze(self, trade_result: TradeResult, ...) -> AnalyticsReport: ...
+
+class ReportGenerator:
+    """Converts AnalyticsReport to self-contained HTML"""
+    def generate(self, analytics_report: AnalyticsReport, ...) -> GeneratedReport: ...
+```
+
+**Application**:
+- **DataLoader**: Only loads/validates data
+- **SignalGenerator**: Only generates signals
+- **FilterPipeline**: Only filters signals
+- **TradeSimulator**: Only simulates trades
+- **MetricsCalculator**: Only calculates core metrics (Session 13)
+- **TradeAnalytics**: Only generates insights (Sessions 14-16)
+- **ReportGenerator**: Only creates visualisations (Sessions 17-18)
+
+---
+
+### 2. Performance-Driven Design
+
+**Rule**: Vectorization first, loops only when necessary
+
+**Performance Results**:
+- **Trade Simulation**: 92.6% faster than legacy
+- **Metrics Calculation**: 1.72ms for 1000 trades (5.8x faster than target!)
+- **Analytics**: <200ms for comprehensive insights (no hard constraint)
+- **HTML Report**: ~4–10ms to generate a 32KB self-contained file
+
+---
+
+### 3. Explicit Contracts
+
+**Rule**: No hidden assumptions, all inputs/outputs typed
+
+All seven pipeline stages communicate via frozen, validated dataclasses.
+ReportGenerator adds two new contracts (Sessions 17-18):
+
+```python
+@dataclass(frozen=True)
+class ReportConfig:
+    title: str = "Strategy Performance Report"
+    output_dir: Path = Path("outputs/reports")
+    include_raw_data: bool = True
+    theme: str = "dark"            # "dark" | "light"
+    chart_height_px: int = 300
+    subtitle: Optional[str] = None
+
+@dataclass(frozen=True)
+class GeneratedReport:
+    html_path: Path
+    html_content: str              # Full HTML (for tests, no disk I/O needed)
+    generation_duration_ms: float
+    analytics_report: AnalyticsReport
+    layers_included: List[str]     # ["executive", "analytical", "raw"]
+```
+
+---
+
+### 4. Intelligence Over Raw Data
+
+**Rule**: Generate actionable insights, not just statistics
+
+```python
+# ✅ GOOD: Intelligent insight
+Insight(
+    message="Asia session losing -45pts across 234 trades",
+    recommendation="Consider excluding Asia session",
+    confidence="High",
+    impact_estimate="Potential +45pts improvement",
+    category="time",
+    severity="critical"
+)
+
+# ❌ BAD: Just raw data
+{"asia_pnl": -45.2, "asia_trades": 234}  # User must interpret
+```
+
+---
+
+### 5. Portable Single-File Output
+
+**Rule**: HTML reports are self-contained — no server, no asset folder, no build step.
+
+```
+outputs/reports/report_20260217_213514.html   ← share this one file
+                                                 opens in any browser offline
+                                                 ~32KB
+```
+
+Chart.js is loaded from CDN. A CDN failure handler (added v1.1) shows a
+human-readable fallback message if the CDN is unreachable.
+
+---
+
+## Module Responsibilities
+
+### Phase 5: Analytics Infrastructure (Sessions 13-18)
+
+#### MetricsCalculator (Session 13) ✅
+
+**Purpose**: Calculate 17 essential performance metrics (fast, always needed)
+
+**Input**: `TradeResult` → **Output**: `MetricsReport`
+
+**Performance**: 1.72ms for 1000 trades (5.8x faster than 10ms target!)
+
+**Usage**:
+```python
+from src.strategies.specific.modules.metrics_calculator import calculate_metrics
+metrics = calculate_metrics(trade_result)
+print(f"Win Rate: {metrics.win_rate:.1f}%")
+```
+
+---
+
+#### TradeAnalytics (Sessions 14-16) ✅
+
+**Purpose**: Generate intelligent insights from trades and metrics
+
+**Input**: `TradeResult` + optional `MetricsReport` → **Output**: `AnalyticsReport`
+
+**All 19 methods complete**:
+- Time: `_analyze_time_performance()` + 7 insight rules
+- Quality: `_analyze_trade_quality()` + 5 insight rules
+- Risk: `_analyze_risk_adjusted()` + 7 insight rules
+- Executive: `_generate_executive_summary()`, `_calculate_performance_grade()` (A+ to F)
+- Output: `format_markdown_report()`, `_save_report()` (JSON + MD)
+
+**Performance**: <200ms target (accuracy over speed)
+
+**Usage**:
+```python
+from src.strategies.specific.modules.trade_analytics import TradeAnalytics
+report = TradeAnalytics.analyze(result, config)
+print(report.get_executive_summary_markdown())
+```
+
+---
+
+#### ReportGenerator (Sessions 17-18) ✅
+
+**Purpose**: Convert `AnalyticsReport` into a self-contained HTML report.
+
+**Input**: `AnalyticsReport` + optional `TradeResult` (equity curve) → **Output**: `GeneratedReport`
+
+**Three-layer HTML structure**:
+
+```
+Layer 1 — EXECUTIVE  (loads instantly, human-friendly)
+  ├── Performance grade ring (A+ to F, colour-coded)
+  ├── 6-KPI strip (P&L, win rate, trades, PF, drawdown, expectancy)
+  ├── Top 3-5 insights (🚨⚠️✅ℹ️) with severity badges and impact estimates
+  ├── Strengths list
+  └── Improvement areas list
+
+Layer 2 — ANALYTICAL  (charts + full insight detail)
+  ├── Equity curve chart  (cumulative P&L; placeholder if trade_result=None)
+  ├── Session performance bar chart  (P&L + win rate dual-axis)
+  ├── Win/loss distribution bar chart  (small/medium/large)
+  ├── Trade duration doughnut chart  (fast/normal/prolonged)
+  ├── Risk-adjusted metrics table
+  ├── Duration breakdown table
+  └── All insights accordion (first critical auto-opens)
+
+Layer 3 — RAW DATA  (collapsible <details> sections)
+  ├── Base metrics table
+  ├── Session metrics table
+  ├── Hour-by-hour table (zero-trade hours filtered)
+  └── Day-of-week table
+```
+
+**v1.1 Polish (Session 18)**:
+- Fix 1: Equity curve placeholder when `trade_result=None`
+- Fix 2: Hour table filters zero-trade hours
+- Fix 3: Mobile KPI grid: 6→3 cols @900px, 3→2 cols @480px
+- Fix 4: First critical insight auto-opens in analytical accordion
+- Fix 5: Chart.js CDN failure handler + `<noscript>` fallback
+- Fix 6: Version string updated to v1.1
+
+**Performance**: ~4–10ms to generate ~32KB HTML
+
+**Usage**:
+```python
+from src.strategies.specific.modules.report_generator import ReportGenerator
+from src.strategies.contracts.report_contracts import ReportConfig
+
+analytics = TradeAnalytics.analyze(result, config)
+generated = ReportGenerator.generate(
+    analytics,
+    trade_result=result,      # optional — enables equity curve
+    config=ReportConfig(
+        title="WBWSStrategy Report",
+        theme="dark",
+        output_dir=Path("outputs/reports"),
+    )
+)
+print(f"Report: {generated.html_path}")
+```
+
+**Status**: ✅ v1.1 COMPLETE (Sessions 17-18, 131 tests)
+
+---
+
+### [DataLoader, SignalGenerator, FilterPipeline, TradeSimulator]
+
+_(Unchanged from v2.0.0 — see previous version for full descriptions)_
+
+---
+
+## Data Flow
+
+### Full Pipeline with Reporting (v2.1)
+
+```
+TradeResult
+    ↓
+MetricsCalculator → MetricsReport (1.72ms)
+    ↓
+TradeAnalytics → AnalyticsReport (<200ms)
+    │  ├─ ExecutiveSummary (grade A+ to F)
+    │  ├─ TimePerformanceBreakdown (sessions/hours/days)
+    │  ├─ TradeQualityAnalysis (distributions/duration)
+    │  └─ RiskAdjustedMetrics (consistency/recovery)
+    ↓
+ReportGenerator → GeneratedReport (~5ms)
+    └─ HTML file (~32KB, self-contained)
+        ├─ Tab 1: Executive (grade ring, KPIs, top insights)
+        ├─ Tab 2: Analytical (4 Chart.js charts, full insights)
+        └─ Tab 3: Raw Data (collapsible tables)
+```
+
+---
+
+## Contract Hierarchy
+
+### Analytics + Reporting Contracts (Phase 5, v2.1)
+
+```
+Analytics Contracts (analytics_contracts.py) — Sessions 14-16 ✅
+  ├── TradingSessionConfig
+  ├── Insight               ← AI-like recommendation with confidence
+  ├── SessionMetrics
+  ├── TimePerformanceBreakdown
+  ├── TradeDistribution
+  ├── DurationAnalysis
+  ├── TradeQualityAnalysis
+  ├── RiskAdjustedMetrics
+  ├── ComparativeContext
+  ├── ExecutiveSummary
+  └── AnalyticsReport       ← main output
+
+Report Contracts (report_contracts.py) — Sessions 17-18 ✅
+  ├── ReportConfig          ← title, theme, output_dir, chart_height_px
+  └── GeneratedReport       ← html_path, html_content, layers_included
+```
+
+---
+
+## Integration Guide
+
+### Complete Pipeline with Report Generation
+
+```python
+from src.strategies.specific.modules import DataLoader, SignalGenerator, FilterPipeline, TradeSimulator
+from src.strategies.specific.modules.metrics_calculator import calculate_metrics
+from src.strategies.specific.modules.trade_analytics import TradeAnalytics
+from src.strategies.specific.modules.report_generator import ReportGenerator
+from src.strategies.contracts.report_contracts import ReportConfig
+from pathlib import Path
+
+# 1-4. Load data → generate signals → filter → simulate (unchanged)
+trade_result = simulator.simulate_trades(...)
+
+# 5. Metrics
+metrics = calculate_metrics(trade_result)
+
+# 6. Analytics
+analytics = TradeAnalytics.analyze(trade_result, config, metrics=metrics)
+print(analytics.get_executive_summary_markdown())
+
+# 7. HTML Report
+generated = ReportGenerator.generate(
+    analytics,
+    trade_result=trade_result,
+    config=ReportConfig(
+        title="WBWSStrategy Performance Report",
+        subtitle="Q1 2026 Backtest",
+        output_dir=Path("outputs/reports"),
+        theme="dark",
+    )
+)
+print(f"Report: {generated.html_path}")   # open in browser
+```
+
+---
+
+## File Organisation (v2.1)
+
+```
+src/strategies/
+├── contracts/
+│   ├── data_contracts.py
+│   ├── signal_contracts.py
+│   ├── filter_contracts.py
+│   ├── trade_contracts.py
+│   ├── metrics_contracts.py        # Session 13 ✅
+│   ├── analytics_contracts.py      # Session 14 ✅
+│   └── report_contracts.py         # Session 17 ✅  ← NEW
+│
+├── specific/
+│   ├── modules/
+│   │   ├── data_loader.py
+│   │   ├── signal_generator.py
+│   │   ├── filter_pipeline.py
+│   │   ├── trade_simulator.py
+│   │   ├── risk_manager.py
+│   │   ├── trade_manager.py
+│   │   ├── metrics_calculator.py   # Session 13 ✅
+│   │   ├── trade_analytics.py      # Sessions 14-16 ✅
+│   │   └── report_generator.py     # Sessions 17-18 ✅  ← NEW
+│   └── filters/
+│       ├── base.py
+│       ├── time_filters/
+│       └── technical_filters/
+│
+└── utils/
+    ├── paths.py
+    └── validation.py
+
+tests/migration/
+├── test_*_contracts.py
+├── test_analytics_contracts.py      # Session 14, 34 tests ✅
+├── test_trade_analytics_session15.py # Session 15, 124 tests ✅
+├── test_trade_analytics_session16.py # Session 16, 85 tests ✅
+└── test_report_generator_session17.py # Session 17-18, 131 tests ✅
+```
+
+---
+
+## Migration Status (v2.1)
+
+**Completed Phases**:
+- ✅ Phase 1: Data Layer (DataBundle)
+- ✅ Phase 2: Signal Layer (SignalFrame)
+- ✅ Phase 3: Filter Layer (FilterResult)
+- ✅ Phase 4: Trade Layer (TradeResult)
+- ✅ Phase 5.1: Infrastructure Foundation (Session 12)
+- ✅ Phase 5.2: MetricsCalculator (Session 13, 1.72ms)
+- ✅ Phase 5.3: TradeAnalytics (Sessions 14-16, 141 tests)
+- ✅ Phase 5.4: ReportGenerator v1.1 HTML (Sessions 17-18, 131 tests)
+
+**In Progress**:
+- ⏳ Phase 6: Infrastructure Polish (Sessions 19-22)
+
+**Deferred to Post-Migration** (see `POST_MIGRATION_ROADMAP.md`):
+- Excel output (.xlsx via openpyxl)
+- PDF output
+- MagicMock cleanup in test files
+- Theme toggle button, hour heatmap, baseline comparison
+
+**Overall Progress**: ~82% complete
+
+---
+
+## Performance Benchmarks (v2.1)
+
+| Module | Target | Actual | Result |
+|--------|--------|--------|--------|
+| Trade Simulation | baseline | 92.6% faster | 🚀 |
+| MetricsCalculator | <10ms / 1000 trades | 1.72ms | 5.8x faster 🚀 |
+| TradeAnalytics | <200ms (info) | ~50-150ms | ✅ |
+| ReportGenerator | no constraint | ~4-10ms | ✅ |
+
+---
+
+## Test Coverage (v2.1)
+
+| Module | Tests | Status |
+|--------|-------|--------|
+| Analytics Contracts | 34 | ✅ |
+| TradeAnalytics Session 15 | 124 | ✅ |
+| TradeAnalytics Session 16 | 85 | ✅ |
+| ReportGenerator | 131 | ✅ |
+| **Total Phase 5** | **374** | **✅** |
+
+---
+
+**Architecture Version**: 2.1.0  
+**Last Updated**: 2026-02-17  
+**Status**: Production-Ready + Analytics + HTML Reporting ✅  
+**Performance**:
+- Trade Simulation: 92.6% faster 🚀
+- Metrics Calculation: 5.8x faster than target 🚀
+- Analytics: Comprehensive insights with AI recommendations 🧠
+- Reporting: Self-contained HTML in ~5ms 📊

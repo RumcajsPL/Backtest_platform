@@ -1,5 +1,5 @@
 # CONTRACTS QUICK REFERENCE
-**Session 14 | Version 5.0 | 2026-02-16**
+**Session 18 | Version 6.0 | 2026-02-17**
 
 ## 📋 TABLE OF CONTENTS
 - [Phase 1: Data Layer](#data-layer-phase-1-)
@@ -7,6 +7,7 @@
 - [Phase 3: Filter Layer](#filter-layer-phase-3-)
 - [Phase 4: Trade Layer](#trade-layer-phase-4-)
 - [Phase 5: Metrics & Analytics](#metrics--analytics-phase-5-)
+- [Phase 5: Reporting](#reporting-phase-5-)
 - [Contract Organization](#contract-organization)
 - [Migration Status](#migration-status)
 
@@ -61,19 +62,19 @@ class SignalType(Enum):
 ### FilterStatus Enum
 ```python
 class FilterStatus(Enum):
-    PASSED = auto()     # Signals passed filter criteria
-    REJECTED = auto()   # Signals failed filter criteria
-    SKIPPED = auto()    # Filter was disabled or not applicable
-    ERROR = auto()      # Filter execution encountered an error
+    PASSED = auto()
+    REJECTED = auto()
+    SKIPPED = auto()
+    ERROR = auto()
 ```
 
 ### FilterResult
 ```python
 @dataclass(frozen=True)
 class FilterResult:
-    passed: bool                 # Did signals pass this filter?
-    signal_frame: SignalFrame    # Filtered signals (subset)
-    metadata: FilterMetadata     # Execution details
+    passed: bool
+    signal_frame: SignalFrame
+    metadata: FilterMetadata
 ```
 
 ### FilterPipelineResult
@@ -97,13 +98,9 @@ class FilterPipelineResult:
 ### TradeDirection Enum
 ```python
 class TradeDirection(Enum):
-    LONG = 1    # Buy position
-    SHORT = -1  # Sell position
+    LONG = 1
+    SHORT = -1
 ```
-**Key Methods**:
-- `from_string("BUY")` → `TradeDirection.LONG`
-- `to_string()` → "BUY" or "SELL"
-- Properties: `is_long`, `is_short`
 
 ### ExitReason Enum
 ```python
@@ -112,41 +109,32 @@ class ExitReason(Enum):
     TAKE_PROFIT = auto()
     OPPOSITE_SIGNAL = auto()
     END_OF_DATA = auto()
-    MANUAL = auto()              # Reserved for future
-    TIME_EXIT = auto()           # Reserved for future
+    MANUAL = auto()
+    TIME_EXIT = auto()
 ```
 
 ### TradeParameters
 ```python
 @dataclass(frozen=True)
 class TradeParameters:
-    # Core execution prices
     entry_price_mid: float
     entry_price_executed: float
     stop_loss_raw: float
     stop_loss_trigger: float
     take_profit: float
     position_size: float = 1.0
-   
-    # Risk metrics
     atr_value: Optional[float]
     atr_length: Optional[int]
     sl_distance: Optional[float]
     tp_distance: Optional[float]
     risk_reward_ratio: Optional[float]
-    
-    # Annual range validation
     annual_range_value: Optional[float]
     risk_percentile_calculated: Optional[float]
     max_risk_percentile: Optional[float]
     risk_percentile_passed: bool = True
-    
-    # Spread details
     spread_enabled: bool = False
     spread_applied: bool = False
     spread_points: Optional[float]
-    
-    # Adjustments
     sl_adjusted: bool = False
 ```
 
@@ -154,33 +142,22 @@ class TradeParameters:
 ```python
 @dataclass(frozen=True)
 class TradeEntry:
-    # Identity
     entry_id: str
     trade_manager_id: Optional[int]
     signal_id: Optional[int]
-    
-    # Timing
     entry_time: pd.Timestamp
-    
-    # Trade details
     direction: TradeDirection
     entry_price: float
     stop_loss: float
     take_profit: float
     position_size: float = 1.0
-    
-    # Risk metrics
     sl_distance: float
     tp_distance: float
     risk_reward_ratio: float
     atr_value: Optional[float]
-    
-    # Execution details
     spread_enabled: bool = False
     spread_points: Optional[float]
     sl_adjusted: bool = False
-    
-    # Metadata
     comment: Optional[str]
 ```
 
@@ -220,7 +197,7 @@ class RejectedSignal:
     rejection_id: str
     signal_id: Optional[int]
     rejection_time: pd.Timestamp
-    direction: str                           # "BUY" or "SELL"
+    direction: str
     rejection_stage: str
     rejection_reason: str
     current_price: Optional[float]
@@ -263,94 +240,52 @@ class MetricsReport:
     total_trades: int
     winning_trades: int
     losing_trades: int
-    win_rate: float                          # Percentage (0-100)
+    win_rate: float                 # Percentage (0-100)
     total_pnl_points: float
-    expectancy_points: float                 # Average expected return
-    profit_factor: float                     # Gross profit / gross loss
+    expectancy_points: float
+    profit_factor: float
     avg_pnl_points: float
     largest_win: float
     largest_loss: float
-    max_drawdown: float                      # Negative value
-    losing_streak: int                       # Consecutive losses
-    winning_streak: int                      # Consecutive wins
-    
+    max_drawdown: float             # Negative value
+    losing_streak: int
+    winning_streak: int
     # Trade summary (2 fields)
     trades_per_week: float
     trades_per_day: float
-    
     # Metadata (2 fields)
     execution_duration_ms: float
     execution_date: str
 ```
+**Key Methods**: `to_dict()`, `to_json()`, `to_flat_dict()`  
+**Performance**: 1.72ms for 1000 trades (5.8x faster than target!)
 
-**Key Methods**:
-- `to_dict()` → Dictionary format
-- `to_json()` → JSON string
-- `to_flat_dict()` → Flat structure (for databases)
-
-**Performance**: <2ms for 1000 trades (5.8x faster than target!)
-
-**Usage**:
 ```python
 from src.strategies.specific.modules.metrics_calculator import calculate_metrics
-
-result: TradeResult = simulator.simulate_trades(...)
-metrics: MetricsReport = calculate_metrics(result)
-print(f"Win Rate: {metrics.win_rate:.1f}%")
+metrics = calculate_metrics(trade_result)
 ```
 
 ---
 
-### AnalyticsReport (Session 14 - Design Complete)
+### AnalyticsReport (Sessions 14-16) ✅
 
-#### Configuration Contracts
-
-**TradingSessionConfig**
-```python
-@dataclass
-class TradingSessionConfig:
-    sessions: Dict[str, Tuple[int, int]] = {
-        "Asia": (0, 8),      # 00:00 - 08:00 UTC
-        "London": (8, 16),   # 08:00 - 16:00 UTC
-        "NY": (16, 24)       # 16:00 - 24:00 UTC
-    }
-```
-
-**Insight** (Core Building Block)
+#### Insight (Core Building Block)
 ```python
 @dataclass(frozen=True)
 class Insight:
-    message: str                             # Observation
-    recommendation: str                      # Action
-    confidence: str                          # "High" | "Medium" | "Low"
-    impact_estimate: Optional[str]           # Expected benefit
-    category: str                            # "time" | "quality" | "risk" | "general"
-    severity: str                            # "critical" | "warning" | "info" | "success"
+    message: str                  # Observation
+    recommendation: str           # Action
+    confidence: str               # "High" | "Medium" | "Low"
+    impact_estimate: Optional[str]
+    category: str                 # "time" | "quality" | "risk" | "general"
+    severity: str                 # "critical" | "warning" | "info" | "success"
 ```
 
-**Insight Generation Philosophy**: AI-like recommendations with confidence levels
-
-**Example**:
-```python
-Insight(
-    message="Asia session losing -45pts across 234 trades",
-    recommendation="Consider excluding Asia session",
-    confidence="High",
-    impact_estimate="Potential +45pts improvement",
-    category="time",
-    severity="critical"
-)
-```
-
----
-
-#### Time Performance Contracts
-
-**SessionMetrics**
+#### SessionMetrics
 ```python
 @dataclass(frozen=True)
 class SessionMetrics:
-    session_name: str                        # "London", "Monday", "14:00"
+    session_name: str             # "London", "Monday", "14"
     trades: int
     winning_trades: int
     win_rate: float
@@ -360,48 +295,44 @@ class SessionMetrics:
     largest_loss: float
 ```
 
-**TimePerformanceBreakdown**
+#### TimePerformanceBreakdown
 ```python
 @dataclass(frozen=True)
 class TimePerformanceBreakdown:
-    by_session: Dict[str, SessionMetrics]    # Asia/London/NY
-    by_hour: Dict[int, SessionMetrics]       # 0-23
-    by_day: Dict[str, SessionMetrics]        # Mon-Sun
+    by_session: Dict[str, SessionMetrics]   # Asia/London/NY
+    by_hour: Dict[int, SessionMetrics]      # 0-23
+    by_day: Dict[str, SessionMetrics]       # Mon-Sun
     best_session: str
     worst_session: str
-    insights: List[Insight]                  # Time-related insights
+    insights: List[Insight]
 ```
 
----
-
-#### Trade Quality Contracts
-
-**TradeDistribution**
+#### TradeDistribution
 ```python
 @dataclass(frozen=True)
 class TradeDistribution:
-    small_count: int                         # < 3 points
-    medium_count: int                        # 3-7 points
-    large_count: int                         # > 7 points
+    small_count: int    # < 3 points
+    medium_count: int   # 3-7 points
+    large_count: int    # > 7 points
     small_pct: float
     medium_pct: float
     large_pct: float
 ```
 
-**DurationAnalysis**
+#### DurationAnalysis
 ```python
 @dataclass(frozen=True)
 class DurationAnalysis:
     avg_bars: float
     median_bars: int
-    fast_exits_count: int                    # < 3 bars
-    normal_exits_count: int                  # 3-10 bars
-    prolonged_exits_count: int               # > 10 bars
+    fast_exits_count: int       # < 3 bars
+    normal_exits_count: int     # 3-10 bars
+    prolonged_exits_count: int  # > 10 bars
     fast_exits_pct: float
     insights: List[str]
 ```
 
-**TradeQualityAnalysis**
+#### TradeQualityAnalysis
 ```python
 @dataclass(frozen=True)
 class TradeQualityAnalysis:
@@ -414,253 +345,257 @@ class TradeQualityAnalysis:
     insights: List[Insight]
 ```
 
----
-
-#### Risk-Adjusted Contracts
-
-**RiskAdjustedMetrics**
+#### RiskAdjustedMetrics
 ```python
 @dataclass(frozen=True)
 class RiskAdjustedMetrics:
-    return_over_max_dd: float                # Total PnL / Max DD
-    avg_win_over_avg_loss: float             # Risk/reward ratio
-    expectancy_per_trade: float              # Average expected return
-    consistency_score: float                 # 0-100 (volatility-adjusted)
-    recovery_factor: float                   # Total PnL / total losses
+    return_over_max_dd: float       # Total PnL / Max DD
+    avg_win_over_avg_loss: float    # Risk/reward ratio
+    expectancy_per_trade: float
+    consistency_score: float        # 0-100 (CV-based)
+    recovery_factor: float          # Total PnL / gross losses
     insights: List[Insight]
 ```
 
----
-
-#### Executive Summary Contracts
-
-**ExecutiveSummary**
+#### ExecutiveSummary
 ```python
 @dataclass(frozen=True)
 class ExecutiveSummary:
-    performance_grade: str                   # "A+" to "D-"
+    performance_grade: str          # "A+" to "F"
     grade_reasoning: str
-    critical_insights: List[Insight]         # Top 3-5 most important
+    critical_insights: List[Insight]  # Top 3-5 (max 7)
     key_strengths: List[str]
     improvement_areas: List[str]
-    overall_assessment: str                  # 2-3 sentence summary
+    overall_assessment: str
 ```
 
-**Performance Grading Algorithm**:
-- Win rate (0-25 pts)
-- Profit factor (0-25 pts)
-- Drawdown management (0-25 pts)
-- Consistency (0-25 pts)
-- Total score → Grade (A+ to F)
+**Grading algorithm** (4 × 25 pts):
+1. Win rate: ≥20% = 25, ≥15% = 20, ≥10% = 10
+2. Profit factor: ≥2.0 = 25, ≥1.5 = 20, ≥1.2 = 10
+3. Drawdown: DD < 20% of profit = 25, <50% = 15, <100% = 5
+4. Consistency: ≥70 = 25, ≥50 = 15, ≥30 = 5
 
----
+Score → Grade: 90+=A+, 85=A, 80=A-, 75=B+, 70=B, 65=B-, 60=C+, 55=C, 50=C-, 40=D+, 30=D, <30=F
 
-#### Main Analytics Report
-
-**AnalyticsReport**
+#### AnalyticsReport (main)
 ```python
 @dataclass(frozen=True)
 class AnalyticsReport:
-    # Core analytics
     executive_summary: ExecutiveSummary
     time_performance: TimePerformanceBreakdown
     trade_quality: TradeQualityAnalysis
     risk_adjusted: RiskAdjustedMetrics
     comparative: Optional[ComparativeContext]
-    
-    # Reference data
-    input_metrics: MetricsReport             # Base metrics
+    input_metrics: MetricsReport
     analysis_timestamp: str
     analysis_duration_ms: float
 ```
+**Key Methods**: `to_dict()`, `to_json()`, `get_all_insights()`,
+`get_critical_insights_only()`, `get_insights_by_category(category)`
 
-**Key Methods**:
-- `to_dict()` → Complete structured data
-- `to_json()` → JSON export
-- `get_executive_summary_markdown()` → Human-readable report
-- `get_all_insights()` → All insights from all domains
-- `get_critical_insights_only()` → Only critical severity
-
-**Output Formats**:
-1. **Primary**: Markdown executive summary (consulting report style)
-2. **Secondary**: Structured JSON (for ReportGenerator)
-
----
-
-#### Usage Patterns (Session 14 Decision)
-
-**Pattern 1: Auto-Calculate Metrics (Convenient)**
+**Usage**:
 ```python
-from src.strategies.specific.modules.trade_analytics import analyze_trades
-
-result = simulator.simulate_trades(...)
-report = analyze_trades(result, config)  # Auto-calculates metrics
-```
-
-**Pattern 2: Use Pre-Calculated Metrics (Explicit)**
-```python
-metrics = calculate_metrics(result)
-report = analyze_trades(result, config, metrics=metrics)
-```
-
-**Pattern 3: Backtester (Efficient Reuse)**
-```python
-metrics = calculate_metrics(result)
-save_to_db(metrics)  # Store for backtester
-analytics = analyze_trades(result, config, metrics=metrics)  # Reuse
-```
-
-**Architectural Decision**: TradeAnalytics aggregates MetricsReport + adds insights
-- Metrics parameter is **OPTIONAL** (auto-calculates if None)
-- Supports all three usage patterns
-- No code duplication
-
----
-
-#### Example Output
-
-**Markdown Format**:
-```markdown
-=== STRATEGY PERFORMANCE ANALYSIS ===
-Period: 2024-10-01 to 2024-12-31
-Total Trades: 1,151 | Win Rate: 16.85% | Total P&L: +245 points
-
-🎯 KEY INSIGHTS:
-1. ⚠️  Asia session losing -45pts - Consider excluding
-2. ✅ London session drives 73% of profits - Maintain focus
-3. ⚠️  73% trades exit within 2 bars - Review stop placement
-
-📈 STRENGTHS:
-- Excellent directional edge in London session
-- Outstanding risk management
-
-⚠️  IMPROVEMENT AREAS:
-- Asia session drag (-45pts)
-- Premature exits
-
-📊 PERFORMANCE GRADE: B+ (Good, with clear optimization paths)
+from src.strategies.specific.modules.trade_analytics import TradeAnalytics
+report = TradeAnalytics.analyze(result, config)               # auto-metrics
+report = TradeAnalytics.analyze(result, config, metrics=m)    # explicit
 ```
 
 ---
 
-## CONTRACT ORGANIZATION
+## REPORTING (Phase 5 ✅)
+
+### ReportConfig (Session 17)
+```python
+@dataclass(frozen=True)
+class ReportConfig:
+    title: str = "Strategy Performance Report"
+    output_dir: Path = Path("outputs/reports")
+    include_raw_data: bool = True    # Layer 3 toggle
+    theme: str = "dark"              # "dark" | "light"
+    chart_height_px: int = 300       # 100-800
+    subtitle: Optional[str] = None
+```
+
+**Validation**:
+- `theme` must be `"dark"` or `"light"` (raises `ValueError` otherwise)
+- `chart_height_px` must be 100–800
+
+---
+
+### GeneratedReport (Session 17)
+```python
+@dataclass(frozen=True)
+class GeneratedReport:
+    html_path: Path                  # Absolute path to saved file
+    html_content: str                # Full HTML string (for tests / inspection)
+    generation_duration_ms: float    # Wall-clock time to generate
+    analytics_report: AnalyticsReport  # Source data reference
+    layers_included: List[str]       # ["executive", "analytical"] or + "raw"
+```
+**Key Methods**: `to_dict()`, `to_json()`
+
+---
+
+### ReportGenerator (Sessions 17-18) ✅
+
+**Entry point**:
+```python
+@staticmethod
+def generate(
+    analytics_report: AnalyticsReport,
+    trade_result: Optional[TradeResult] = None,  # enables equity curve
+    config: Optional[ReportConfig] = None,
+) -> GeneratedReport
+```
+
+**Internal methods**:
+```python
+_build_html(analytics_report, trade_result, config) -> str
+_build_layer1_executive(report, colours) -> str
+_build_layer2_analytical(report, colours, config, chart_data) -> str
+_build_layer3_raw(report, colours) -> str
+_build_chart_data(trade_result, report) -> Dict     # Chart.js datasets
+_build_insights_accordion(insights, colours) -> str
+_build_css(colours, config) -> str
+_build_js(chart_data, colours, config) -> str
+_save_html(html, config) -> Path
+```
+
+**HTML report features**:
+- Single self-contained `.html` file (~32KB)
+- Three tabs: Executive | Analytical | Raw Data
+- 4 Chart.js charts: equity curve, session bar, win/loss dist, duration doughnut
+- Dark/light theme via `ReportConfig.theme`
+- Mobile-responsive: 6→3 cols @900px, 3→2 cols @480px
+- Lazy chart initialisation (Executive tab loads instantly)
+- CDN failure handler + `<noscript>` fallback (v1.1)
+- First critical insight auto-opens in accordion (v1.1)
+- Zero-trade hours filtered from hour table (v1.1)
+
+**Full pipeline usage**:
+```python
+from src.strategies.specific.modules.report_generator import ReportGenerator
+from src.strategies.contracts.report_contracts import ReportConfig
+from pathlib import Path
+
+analytics = TradeAnalytics.analyze(trade_result, strategy_config)
+generated = ReportGenerator.generate(
+    analytics,
+    trade_result=trade_result,
+    config=ReportConfig(
+        title="WBWSStrategy Performance Report",
+        subtitle="Q1 2026 Backtest",
+        output_dir=Path("outputs/reports"),
+        theme="dark",
+        chart_height_px=300,
+    )
+)
+# generated.html_path   → Path to file (open in browser)
+# generated.html_content → Full HTML string (for tests)
+# generated.layers_included → ["executive", "analytical", "raw"]
+```
+
+**Status**: ✅ v1.1 COMPLETE (Sessions 17-18, 131 tests)  
+**Future formats**: Excel, PDF — see `POST_MIGRATION_ROADMAP.md`
+
+---
+
+## CONTRACT ORGANIZATION (v6.0)
 
 ```
 src/strategies/contracts/
-├── data_contracts.py           # Phase 1: DataBundle, DataInfo
-├── signal_contracts.py         # Phase 2: SignalFrame, SignalType
-├── filter_contracts.py         # Phase 3: FilterResult, FilterPipelineResult
-├── trade_contracts.py          # Phase 4: Trade, RejectedSignal, TradeResult
-├── market_contracts.py         # Phase 4: MarketFrame
-├── position_contracts.py       # Phase 4: Position
+├── data_contracts.py           # Phase 1: DataBundle, DataInfo ✅
+├── signal_contracts.py         # Phase 2: SignalFrame, SignalType ✅
+├── filter_contracts.py         # Phase 3: FilterResult, FilterPipelineResult ✅
+├── trade_contracts.py          # Phase 4: Trade, RejectedSignal, TradeResult ✅
+├── market_contracts.py         # Phase 4: MarketFrame ✅
+├── position_contracts.py       # Phase 4: Position ✅
 ├── metrics_contracts.py        # Phase 5: MetricsReport (Session 13) ✅
-├── analytics_contracts.py      # Phase 5: AnalyticsReport (Session 14) ✅
-└── cache.py                    # Phase 3: FilterPipelineCache
+├── analytics_contracts.py      # Phase 5: AnalyticsReport (Sessions 14-16) ✅
+├── report_contracts.py         # Phase 5: ReportConfig, GeneratedReport (Sessions 17-18) ✅
+└── cache.py                    # Phase 3: FilterPipelineCache ✅
 ```
 
 ---
 
 ## KEY DESIGN PATTERNS
 
-### 1. Immutability (Phase 4+)
-```python
-@dataclass(frozen=True)
-class Trade:
-    entry: TradeEntry
-    exit: Optional[TradeExit] = None
-```
+### 1. Immutability
+All Phase 4+ contracts use `frozen=True`.
 
-### 2. Type Safety
-```python
-direction: TradeDirection  # Not str
-exit_reason: ExitReason    # Not str
-confidence: str            # Validated in __post_init__
-```
-
-### 3. Validation
-```python
-def __post_init__(self):
-    if self.confidence not in {"High", "Medium", "Low"}:
-        raise ValueError(f"Invalid confidence: {self.confidence}")
-```
-
-### 4. Rich Properties
-```python
-@property
-def is_long(self) -> bool:
-    return self.direction == TradeDirection.LONG
-```
-
-### 5. Serialization
-```python
-def to_dict(self) -> Dict:
-    """Convert to dictionary for storage/transport"""
-    
-def to_json(self) -> str:
-    """Convert to JSON string"""
-```
-
-### 6. Optional Parameters for Flexibility (Session 14)
+### 2. Optional Parameters for Flexibility (Session 14)
 ```python
 def analyze(
     trade_result: TradeResult,
     config: StrategyConfig,
-    metrics: Optional[MetricsReport] = None,  # Auto-calculate if None
-    ...
+    metrics: Optional[MetricsReport] = None,  # auto-calculate if None
+    trade_result: Optional[TradeResult] = None,  # equity curve if provided
 ) -> AnalyticsReport
+```
+
+### 3. Validation in `__post_init__`
+```python
+def __post_init__(self):
+    if self.theme not in {"dark", "light"}:
+        raise ValueError(f"Theme must be 'dark' or 'light', got '{self.theme}'")
+```
+
+### 4. Structured Serialization
+All contracts expose `to_dict()` and `to_json()` for downstream consumers.
+
+### 5. html_content in GeneratedReport (Session 17)
+```python
+# Test without touching the filesystem
+result = ReportGenerator.generate(analytics, config=cfg)
+assert "B+" in result.html_content    # Grade in HTML
+assert "chart-equity" in result.html_content
 ```
 
 ---
 
-## MIGRATION STATUS
+## MIGRATION STATUS (v6.0)
 
-**Phase 1 (Data)**: ✅ Complete - DataBundle  
-**Phase 2 (Signals)**: ✅ Complete - SignalFrame  
-**Phase 3 (Filters)**: ✅ Complete - FilterResult  
-**Phase 4 (Trades)**: ✅ Complete - Trade, RejectedSignal, TradeResult  
-**Phase 5.1 (Infrastructure)**: ✅ Complete - Foundation (Session 12)  
-**Phase 5.2 (Metrics)**: ✅ Complete - MetricsCalculator (Session 13)  
-**Phase 5.3 (Analytics)**: ✅ Design Complete - TradeAnalytics (Session 14)  
-**Phase 5.3 (Analytics)**: ⏳ Implementation - TradeAnalytics (Sessions 15-16)  
-**Phase 5.4 (Reporting)**: 📋 Planned - ReportGenerator (Sessions 17-20)
+| Phase | Module | Sessions | Tests | Status |
+|-------|--------|----------|-------|--------|
+| 1 | DataBundle | 1-4 | — | ✅ |
+| 2 | SignalFrame | 5-7 | — | ✅ |
+| 3 | FilterResult | 8-10 | — | ✅ |
+| 4 | TradeResult | 11-13 | — | ✅ |
+| 5.1 | Infrastructure | 12 | — | ✅ |
+| 5.2 | MetricsCalculator | 13 | — | ✅ |
+| 5.3 | TradeAnalytics | 14-16 | 141 | ✅ |
+| 5.4 | ReportGenerator | 17-18 | 131 | ✅ |
+| 6 | Infrastructure Polish | 19-22 | — | ⏳ |
+
+**Total Phase 5 tests**: 374 ✅  
+**Overall progress**: ~82% complete
 
 ---
 
 ## PERFORMANCE BENCHMARKS
 
-**MetricsCalculator** (Session 13):
-- Target: <10ms for 1000 trades
-- Actual: **1.72ms** for 1000 trades
-- Result: **5.8x faster than target!** 🚀
-
-**TradeAnalytics** (Session 14 Design):
-- Target: <200ms for 1000 trades (informational)
-- Philosophy: Accuracy over speed
-- No hard performance constraints
+| Module | Target | Actual |
+|--------|--------|--------|
+| MetricsCalculator | <10ms / 1000 trades | **1.72ms** 🚀 |
+| TradeAnalytics | <200ms (info) | ~50-150ms ✅ |
+| ReportGenerator | no constraint | ~4-10ms ✅ |
+| Trade Simulation | baseline | **92.6% faster** 🚀 |
 
 ---
 
 ## TEST COVERAGE
 
-**Analytics Contracts** (Session 14):
-- **34 tests** - All passing ✅
-- **Coverage**: All 13 contracts validated
-- **Test Time**: 0.49 seconds
-- **Quality**: Production-ready
-
-**Test Categories**:
-- Configuration validation
-- Insight structure and validation
-- Performance breakdown contracts
-- Quality analysis contracts
-- Risk-adjusted metrics
-- Executive summary
-- Integration tests
+| Test File | Tests | Session |
+|-----------|-------|---------|
+| `test_analytics_contracts.py` | 34 | 14 |
+| `test_trade_analytics_session15.py` | 124 | 15 |
+| `test_trade_analytics_session16.py` | 85 | 16 |
+| `test_report_generator_session17.py` | 131 | 17-18 |
+| **Total Phase 5** | **374** | |
 
 ---
 
-**Last Updated**: 2026-02-16 Session 14  
+**Last Updated**: 2026-02-17 Session 18  
 **File Location**: `docs/migration/CONTRACTS_REFERENCE.md`  
-**Phase**: 5 - Metrics & Analytics Infrastructure  
-**Status**: Design Phase Complete ✅  
-**Next**: Session 15 - TradeAnalytics Implementation
+**Version**: 6.0  
+**Status**: ReportGenerator v1.1 Complete ✅

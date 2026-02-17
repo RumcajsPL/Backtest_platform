@@ -47,7 +47,7 @@ Replace MagicMock in test files with real Trade dataclasses — **after ReportGe
 Build `ReportGenerator` — the visualisation layer that sits **after** `TradeAnalytics`.
 
 **Input**: `AnalyticsReport` (already fully computed)  
-**Output**: HTML report file (+ later: Excel, PDF)
+**Output**: HTML report file (+ later: Excel, PDF - not necessary)
 
 ---
 

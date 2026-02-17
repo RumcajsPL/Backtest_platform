@@ -1,0 +1,83 @@
+"""
+Report Contracts for WBWSStrategy Migration Project
+
+Defines the input configuration and output types for ReportGenerator.
+
+Created: 2026-02-17 (Session 17)
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional, Dict, TYPE_CHECKING
+from datetime import datetime
+import json
+
+if TYPE_CHECKING:
+    from src.strategies.contracts.analytics_contracts import AnalyticsReport
+
+
+# ============================================================
+# REPORT CONFIGURATION
+# ============================================================
+
+@dataclass(frozen=True)
+class ReportConfig:
+    """
+    Configuration for HTML report generation.
+
+    Controls visual styling, output location, and which
+    layers of the report to include.
+    """
+    title: str = "Strategy Performance Report"
+    output_dir: Path = Path("outputs/reports")
+    include_raw_data: bool = True           # Layer 3 toggle
+    theme: str = "dark"                     # "dark" | "light"
+    chart_height_px: int = 300
+    subtitle: Optional[str] = None          # Optional subtitle under main title
+
+    def __post_init__(self):
+        valid_themes = {"dark", "light"}
+        if self.theme not in valid_themes:
+            raise ValueError(f"Theme must be one of {valid_themes}, got '{self.theme}'")
+        if self.chart_height_px < 100 or self.chart_height_px > 800:
+            raise ValueError(f"chart_height_px must be 100-800, got {self.chart_height_px}")
+
+
+# ============================================================
+# GENERATED REPORT OUTPUT
+# ============================================================
+
+@dataclass(frozen=True)
+class GeneratedReport:
+    """
+    Output of ReportGenerator.generate().
+
+    Contains both the saved file path and the full HTML content
+    so callers can inspect or test the output without reading from disk.
+    """
+    html_path: Path                         # Where file was saved
+    html_content: str                       # Full HTML string (for tests)
+    generation_duration_ms: float
+    analytics_report: "AnalyticsReport"    # Source data reference
+    layers_included: List[str]             # ["executive", "analytical", "raw"]
+
+    def to_dict(self) -> Dict:
+        return {
+            "html_path": str(self.html_path),
+            "generation_duration_ms": round(self.generation_duration_ms, 2),
+            "layers_included": self.layers_included,
+            "analytics_timestamp": self.analytics_report.analysis_timestamp,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+
+# ============================================================
+# MODULE METADATA
+# ============================================================
+
+__all__ = [
+    "ReportConfig",
+    "GeneratedReport",
+]
