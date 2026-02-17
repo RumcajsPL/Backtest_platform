@@ -1,0 +1,269 @@
+{
+  "timestamp": "2026-02-17T20:23:21.752163",
+  "results": [
+    {
+      "architecture": "LEGACY",
+      "mode": "core",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 12.561,
+        "signal_generation": 0.057,
+        "filter_application": 0.076,
+        "trade_simulation": 33.016,
+        "metrics_calculation": 0.073,
+        "end_to_end": 45.8
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "core"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "core",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'numpy.int8' object has no attribute 'upper'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 474, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals_series,  # Now passing Series, not SignalFrame\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 602, in simulate_trades\n    result = tm.handle_signal(\n        timestamp=timestamp,\n    ...<5 lines>...\n        meta={'signal_id': signal_id} if signal_id else None\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_manager.py\", line 105, in handle_signal\n    direction = TradeDirection.from_string(signal_type)\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\contracts\\trade_contracts.py\", line 52, in from_string\n    direction_upper = direction.upper()\n                      ^^^^^^^^^^^^^^^\nAttributeError: 'numpy.int8' object has no attribute 'upper'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "core",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.527,
+        "signal_generation": 0.054,
+        "filter_application": 0.076,
+        "trade_simulation": 28.852,
+        "metrics_calculation": 0.051,
+        "end_to_end": 30.566
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "core"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 1.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "core",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'numpy.int8' object has no attribute 'upper'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 474, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals_series,  # Now passing Series, not SignalFrame\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 602, in simulate_trades\n    result = tm.handle_signal(\n        timestamp=timestamp,\n    ...<5 lines>...\n        meta={'signal_id': signal_id} if signal_id else None\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_manager.py\", line 105, in handle_signal\n    direction = TradeDirection.from_string(signal_type)\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\contracts\\trade_contracts.py\", line 52, in from_string\n    direction_upper = direction.upper()\n                      ^^^^^^^^^^^^^^^\nAttributeError: 'numpy.int8' object has no attribute 'upper'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "debug",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 14.155,
+        "signal_generation": 1.435,
+        "filter_application": 0.091,
+        "trade_simulation": 27.961,
+        "metrics_calculation": 0.13,
+        "end_to_end": 44.421
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "debug"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "debug",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'numpy.int8' object has no attribute 'upper'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 474, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals_series,  # Now passing Series, not SignalFrame\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 602, in simulate_trades\n    result = tm.handle_signal(\n        timestamp=timestamp,\n    ...<5 lines>...\n        meta={'signal_id': signal_id} if signal_id else None\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_manager.py\", line 105, in handle_signal\n    direction = TradeDirection.from_string(signal_type)\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\contracts\\trade_contracts.py\", line 52, in from_string\n    direction_upper = direction.upper()\n                      ^^^^^^^^^^^^^^^\nAttributeError: 'numpy.int8' object has no attribute 'upper'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "debug",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.68,
+        "signal_generation": 1.426,
+        "filter_application": 0.065,
+        "trade_simulation": 26.923,
+        "metrics_calculation": 0.065,
+        "end_to_end": 30.799
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "debug"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 1.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "debug",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'numpy.int8' object has no attribute 'upper'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 474, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals_series,  # Now passing Series, not SignalFrame\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 602, in simulate_trades\n    result = tm.handle_signal(\n        timestamp=timestamp,\n    ...<5 lines>...\n        meta={'signal_id': signal_id} if signal_id else None\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_manager.py\", line 105, in handle_signal\n    direction = TradeDirection.from_string(signal_type)\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\contracts\\trade_contracts.py\", line 52, in from_string\n    direction_upper = direction.upper()\n                      ^^^^^^^^^^^^^^^\nAttributeError: 'numpy.int8' object has no attribute 'upper'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    }
+  ]
+}

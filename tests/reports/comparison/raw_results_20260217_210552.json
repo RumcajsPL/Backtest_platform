@@ -1,0 +1,413 @@
+{
+  "timestamp": "2026-02-17T21:05:52.984825",
+  "results": [
+    {
+      "architecture": "LEGACY",
+      "mode": "core",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 17.308,
+        "signal_generation": 0.061,
+        "filter_application": 0.141,
+        "trade_simulation": 32.244,
+        "metrics_calculation": 0.053,
+        "end_to_end": 49.818
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "core"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.0,
+      "warnings": [],
+      "artf_loaded": true
+    },
+    {
+      "architecture": "NEW",
+      "mode": "core",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 7.324132700043265,
+        "signal_generation": 0.03452539996942505,
+        "filter_application": 0.05014929996104911,
+        "trade_simulation": 16.327656399982516,
+        "metrics_calculation": 0.0,
+        "end_to_end": 23.736463799956255
+      },
+      "stats": {
+        "data": {
+          "full_bars": 702488,
+          "strategy_bars": 88194,
+          "htf_bars": 1548,
+          "ltf_bars": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667,
+          "time_filtered": 5437,
+          "technical_filtered": 5182,
+          "final_signals": 5182,
+          "final_buy": 2737,
+          "final_sell": 2445
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.0476055664076,
+          "win_rate": 16.85490877497828,
+          "max_drawdown": 0
+        }
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.5,
+      "warnings": [],
+      "artf_loaded": true
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "core",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.805,
+        "signal_generation": 0.048,
+        "filter_application": 0.072,
+        "trade_simulation": 33.149,
+        "metrics_calculation": 0.05,
+        "end_to_end": 35.131
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "core"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 1.0,
+      "warnings": [],
+      "artf_loaded": false
+    },
+    {
+      "architecture": "NEW",
+      "mode": "core",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 0.9138160000438802,
+        "signal_generation": 0.031089500000234693,
+        "filter_application": 0.05724080000072718,
+        "trade_simulation": 14.775729299988598,
+        "metrics_calculation": 0.0,
+        "end_to_end": 15.77787560003344
+      },
+      "stats": {
+        "data": {
+          "full_bars": 702488,
+          "strategy_bars": 88194,
+          "htf_bars": 1548,
+          "ltf_bars": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667,
+          "time_filtered": 5437,
+          "technical_filtered": 5182,
+          "final_signals": 5182,
+          "final_buy": 2737,
+          "final_sell": 2445
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.0476055664076,
+          "win_rate": 16.85490877497828,
+          "max_drawdown": 0
+        }
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.5,
+      "warnings": [],
+      "artf_loaded": true
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "debug",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 12.645,
+        "signal_generation": 1.514,
+        "filter_application": 0.069,
+        "trade_simulation": 29.162,
+        "metrics_calculation": 0.102,
+        "end_to_end": 44.182
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "debug"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.0,
+      "warnings": [],
+      "artf_loaded": true
+    },
+    {
+      "architecture": "NEW",
+      "mode": "debug",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 6.715153600031044,
+        "signal_generation": 0.04771170002641156,
+        "filter_application": 0.05828309996286407,
+        "trade_simulation": 13.257705299998634,
+        "metrics_calculation": 0.0,
+        "end_to_end": 20.078853700018954
+      },
+      "stats": {
+        "data": {
+          "full_bars": 702488,
+          "strategy_bars": 88194,
+          "htf_bars": 1548,
+          "ltf_bars": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667,
+          "time_filtered": 5437,
+          "technical_filtered": 5182,
+          "final_signals": 5182,
+          "final_buy": 2737,
+          "final_sell": 2445
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.0476055664076,
+          "win_rate": 16.85490877497828,
+          "max_drawdown": 0
+        }
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.5,
+      "warnings": [],
+      "artf_loaded": true
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "debug",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.518,
+        "signal_generation": 1.509,
+        "filter_application": 0.065,
+        "trade_simulation": 31.281,
+        "metrics_calculation": 0.063,
+        "end_to_end": 35.101
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "debug"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 1.0,
+      "warnings": [],
+      "artf_loaded": false
+    },
+    {
+      "architecture": "NEW",
+      "mode": "debug",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.4772518999525346,
+        "signal_generation": 0.07166489999508485,
+        "filter_application": 0.05762269999831915,
+        "trade_simulation": 13.294183099991642,
+        "metrics_calculation": 0.0,
+        "end_to_end": 14.90072259993758
+      },
+      "stats": {
+        "data": {
+          "full_bars": 702488,
+          "strategy_bars": 88194,
+          "htf_bars": 1548,
+          "ltf_bars": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667,
+          "time_filtered": 5437,
+          "technical_filtered": 5182,
+          "final_signals": 5182,
+          "final_buy": 2737,
+          "final_sell": 2445
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.0476055664076,
+          "win_rate": 16.85490877497828,
+          "max_drawdown": 0
+        }
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.5,
+      "warnings": [],
+      "artf_loaded": true
+    }
+  ]
+}

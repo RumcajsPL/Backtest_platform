@@ -1,0 +1,269 @@
+{
+  "timestamp": "2026-02-17T19:57:09.233354",
+  "results": [
+    {
+      "architecture": "LEGACY",
+      "mode": "core",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 12.681,
+        "signal_generation": 0.051,
+        "filter_application": 0.092,
+        "trade_simulation": 31.069,
+        "metrics_calculation": 0.061,
+        "end_to_end": 43.969
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "core"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "core",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'SignalFrame' object has no attribute 'index'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 406, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals,\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 534, in simulate_trades\n    if timestamp not in filtered_signals.index or pd.isna(filtered_signals[timestamp]):\n                        ^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'SignalFrame' object has no attribute 'index'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "core",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.493,
+        "signal_generation": 0.045,
+        "filter_application": 0.074,
+        "trade_simulation": 31.976,
+        "metrics_calculation": 0.049,
+        "end_to_end": 33.644
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "core"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 1.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "core",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'SignalFrame' object has no attribute 'index'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 406, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals,\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 534, in simulate_trades\n    if timestamp not in filtered_signals.index or pd.isna(filtered_signals[timestamp]):\n                        ^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'SignalFrame' object has no attribute 'index'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "debug",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 12.69,
+        "signal_generation": 1.501,
+        "filter_application": 0.09,
+        "trade_simulation": 29.148,
+        "metrics_calculation": 0.121,
+        "end_to_end": 44.194
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "debug"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 0.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "debug",
+      "run_type": "cold",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'SignalFrame' object has no attribute 'index'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 406, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals,\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 534, in simulate_trades\n    if timestamp not in filtered_signals.index or pd.isna(filtered_signals[timestamp]):\n                        ^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'SignalFrame' object has no attribute 'index'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    },
+    {
+      "architecture": "LEGACY",
+      "mode": "debug",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 1.502,
+        "signal_generation": 1.429,
+        "filter_application": 0.073,
+        "trade_simulation": 27.805,
+        "metrics_calculation": 0.063,
+        "end_to_end": 31.509
+      },
+      "stats": {
+        "data": {
+          "full": 702488,
+          "strategy": 88194,
+          "htf": 1548,
+          "ltf": 2057478,
+          "date_range": [
+            "2025-09-14 22:06:00",
+            "2025-12-17 21:00:00"
+          ]
+        },
+        "signals": {
+          "buy": 5096,
+          "sell": 4571,
+          "total": 9667
+        },
+        "filters": {
+          "raw_signals": 9667
+        },
+        "trades": {
+          "closed": 1151,
+          "open": 0,
+          "rejected": 4031
+        },
+        "metrics": {
+          "total_pnl": -2998.05,
+          "win_rate": 16.85,
+          "max_drawdown": -3383.85
+        },
+        "mode": "debug"
+      },
+      "success": true,
+      "error_message": "",
+      "cache_hit_rate": 1.0,
+      "warnings": []
+    },
+    {
+      "architecture": "NEW",
+      "mode": "debug",
+      "run_type": "hot",
+      "timings": {
+        "data_loading": 0.0,
+        "signal_generation": 0.0,
+        "filter_application": 0.0,
+        "trade_simulation": 0.0,
+        "metrics_calculation": 0.0,
+        "end_to_end": 0.0
+      },
+      "stats": {},
+      "success": false,
+      "error_message": "New architecture execution failed: 'SignalFrame' object has no attribute 'index'\nTraceback (most recent call last):\n  File \"e:\\Trading\\Backtest_platform\\tests\\test_legacy_vs_new.py\", line 406, in execute\n    trade_result = trade_sim.simulate_trades(\n        filtered_signals=final_signals,\n        df_strategy=data_bundle.strategy,\n        df_ltf=data_bundle.ltf\n    )\n  File \"E:\\Trading\\Backtest_platform\\src\\strategies\\specific\\modules\\trade_simulator.py\", line 534, in simulate_trades\n    if timestamp not in filtered_signals.index or pd.isna(filtered_signals[timestamp]):\n                        ^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'SignalFrame' object has no attribute 'index'\n",
+      "cache_hit_rate": null,
+      "warnings": []
+    }
+  ]
+}
