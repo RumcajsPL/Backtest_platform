@@ -1,6 +1,5 @@
 # src/utils/paths.py
 from pathlib import Path
-
 # ---------------------------------------------------------
 # PROJECT ROOT RESOLUTION
 # ---------------------------------------------------------
@@ -31,10 +30,13 @@ EXPORTS_DATA_DIR = DATA_DIR / "exports"
 # ---------------------------------------------------------
 # OUTPUT SUBDIRECTORIES
 # ---------------------------------------------------------
-BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests"
+BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests" #Future backtester
 LOGS_DIR = OUTPUTS_DIR / "logs"
 REPORTS_DIR = OUTPUTS_DIR / "reports"
 SIGNALS_DIR = OUTPUTS_DIR / "signals"
+STRATEGIES_OUTPUTS_DIR = OUTPUTS_DIR / "strategies" #New architecture strategy-specific outputs (logs, reports, etc.)
+STRATEGIES_LOGS_DIR = STRATEGIES_OUTPUTS_DIR / "logs" #New architecture strategy-specific logs
+STRATEGIES_REPORTS_DIR = STRATEGIES_OUTPUTS_DIR / "reports" #New architecture strategy-specific reports
 
 # ---------------------------------------------------------
 # SCRIPT RUNNERS
@@ -120,11 +122,3 @@ def ensure_dir(path: Path):
     """Create directory if it does not exist."""
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-# ---------------------------------------------------------
-# OPTIONAL: AUTO-CREATE MIGRATION DIRECTORIES (COMMENT IF NOT DESIRED)
-# ---------------------------------------------------------
-ensure_dir(CONTRACTS_DIR)
-ensure_dir(MODULES_DIR)
-ensure_dir(FILTERS_DIR)
-ensure_dir(MIGRATION_TESTS_DIR)

@@ -778,7 +778,7 @@ class TestBuildHTML:
         assert "site-footer" in self._html()
 
     def test_footer_version_string(self):
-        assert "ReportGenerator v1.0" in self._html()
+        assert "ReportGenerator v1.1" in self._html()
 
     def test_all_three_layers_present(self):
         html = self._html()

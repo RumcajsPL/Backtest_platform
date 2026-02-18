@@ -105,8 +105,8 @@ project_root/
 │   │   |   └── # strategy core modules: data_loader.py|signal_generator.py|filter_pipeline.py|trade_simulator.py
 |   |   |               progressive_tracker.py|null_progressive_tracker.py|metrics_calculator.py|report_generator.py  
 │   │   ├── filters/
-│   │   |   └── # time session filter: time_manager.py technical analysis filters:adx_filter.py|bollinger_filter.py|cci_filter.py|choppiness_filter.py|dpo_filter.py
-|   |   |            ma_filter.py|macd_filter.py|pivot_filter.py|rsi_filter.py|supertrend_filter.py  
+│   │   |   └── # time session filter: time_manager.py technical analysis filters: LP¨M
+++++++++++++
 │   │   └── trade_management/ #:
 |   |       └── # tarde management modules: risk_manager.py|spread_manager.py|trade_manager.py   
 │   ├── validation/
