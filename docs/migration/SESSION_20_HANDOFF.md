@@ -2,7 +2,7 @@ SESSION_20_HANDOFF.md — UPDATED
 markdown
 # SESSION 20 HANDOFF
 **Date written**: 2026-02-18 | **Covers**: Phase 8 scan Chapters 0–7 complete
-**Next session goal**: Execute all P0 + P1 fixes, write ~30 new tests
+**Next session goal**: Execute all P0 + P1 fixes, write missing unit tests
 
 ---
 

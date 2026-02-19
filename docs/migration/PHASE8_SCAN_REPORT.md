@@ -418,3 +418,94 @@ text
 | **20 target** | **P0/P1 fix coverage** | **~30** | **~302** |
 | 21 target | P2 + observability | ~20 | ~322 |
 | 22 target | Integration + MagicMock cleanup | ~25 | ~347 |
+
+
+
+# PHASE 8 CODE SCAN REPORT
+**Date**: 2026-02-18 | **Session**: 19 | **Author**: Claude
+**Scope**: Chapters 0–7 complete. Ready for Session 20 fixes.
+
+---
+
+## Architecture Clarifications (Session 19)
+*Supersedes prior assumptions*
+
+### CL-1 — Strategy Configuration
+The `strategy_template.yaml` (not `wbws_strategy_new.yaml`) is the new generic config template designed to support multiple strategies. 
+* **Status**: Living document during the scan.
+* **Note**: WBWS-specific config (`wbws_strategy_v2.yaml`) will be derived in Phase 10.
+
+### CL-2 — Execution Modes
+| Old name | New name | Purpose |
+|----------|----------|---------|
+| `core` | `core` | Max speed for multi-run backtester. Min metrics, no analytics. |
+| `debug` | `analytics` | Full pipeline: TradeAnalytics + ReportGenerator. Production quality. |
+
+> **Action**: All references to `debug` mode must be updated to `analytics`. The legacy label is a backward-compatibility artifact and must be removed.
+
+### CL-3 — The "Leitmotif" Principle
+The new architecture must have **zero backward compatibility dependencies** on the legacy system (DEC-021).
+* No adapters for legacy YAML keys.
+* No `from_legacy_yaml()` methods.
+* No fallback dict-based interfaces from `core/`.
+
+---
+
+## Executive Summary (Chapters 0–7)
+
+| Metric | Ch.0 | Ch.1 | Ch.2 | Ch.3 | Ch.4 | Ch.5 | Ch.6 | Ch.7 | Total |
+|--------|------|------|------|------|------|------|------|------|-------|
+| Files scanned | 3 | 3 | 2 | 3 | 13 | 7 | 4 | 2 | **37** |
+| **P0 — Blockers** | 2 | 2 | 2 | 1 | 3 | 5 | 0 | 0 | **15** |
+| **P1 — Quality** | 6 | 5 | 5 | 5 | 9 | 6 | 5 | 5 | **46** |
+| **P2 — Polish** | 3 | 2 | 4 | 2 | 4 | 3 | 2 | 2 | **22** |
+| **P3 — Deferrals** | 2 | 1 | 2 | 2 | 3 | 4 | 3 | 5 | **22** |
+
+### Pre-confirmed P0 Issues (from E2E test):
+* **P0-E1**: Core mode trade simulation 11% slower than analytics (LTF runs unconditionally).
+* **P0-E2**: Cache hit rate 50% (Cache key missing filter config fingerprint).
+
+---
+
+## Performance Baseline (Session 19)
+
+### Core Mode (Multi-run)
+* **Total Duration**: 42,680ms (**Target: <12,000ms**)
+* **Trade Sim**: 41,052ms (96.2% of total)
+
+### Analytics Mode (Single-run)
+* **Total Duration**: 31,663ms (**Target: <12,000ms**)
+* **Trade Sim**: 29,927ms (94.5% of total)
+
+**Anomaly**: Core mode is **26% SLOWER** than analytics mode despite doing less work. This confirms **P0-E1**.
+
+---
+
+## Chapter Findings
+
+### Chapter 0 — Strategy Bootstrap & Configuration
+* **✅ Good**: `StrategyConfig.from_yaml()` fail-fast logic; `DateRangeConfig` strict regex; `SpreadConfig` validation.
+* **🔴 [P0-CH0-1]**: No `strategy_template.yaml` exists; `StrategyConfig` is currently untested end-to-end.
+* **🔴 [P0-CH0-2]**: `max_risk_percentile` validation range is wrong (0-100, should be 0-5.0).
+
+### Chapter 1 — Data Layer
+* **✅ Good**: ARTF support fully integrated; Parquet optimization sequence (floor → sort → duplicate check).
+* **🔴 [P0-CH1-1]**: Mode string `"debug"` used as a literal (legacy dependency).
+* **🔴 [P0-CH1-2]**: `load_config()` silently overrides constructor mode, violating authoritative source principles.
+
+### Chapter 2 — Signal Generation
+* **✅ Good**: `SignalFrame` uses `int8` storage (5-10% speedup); Correct anti-lookahead via `shift(1)`.
+* **🔴 [P0-CH2-1]**: Mode string `"debug"` appears 8 times; requires global rename to `"analytics"`.
+
+---
+
+## Consolidated Action Plan (Top Priority)
+
+| ID | Issue | File | Effort |
+|----|-------|------|--------|
+| **P0-CH0-1** | No `strategy_template.yaml` | `config_schema.py` | 3-4h |
+| **P0-E2** | Fix cache key (filter config) | `cache.py` | 1-2h |
+| **P0-E1** | Core mode performance inversion | `trade_simulator.py` | 1h |
+| **P0-CH4-3** | Add ATR caching | `risk_manager.py` | 1h |
+
+**Session 20 Target**: Complete all P0/P1 fixes and reach ~302 total tests.
