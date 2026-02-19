@@ -1,130 +1,200 @@
-strategy:
-  name: WBWS strategy with RSI Filter
-  description: We Buy/We Sell Trigger combined with RSI signal validation
-  version: 1.2.0
-  author: Backtest Platform
-  created: '2025-12-17'
-  updated: '2025-12-30'
-asset:
-  symbol: DEUIDXEUR
-  name: DAX 40 Index
-  exchange: EUREX
-  currency: EUR
+# =============================================================================
+# WBWSStrategy — New Architecture Config Template
+# Version: 1.0.0 | Session: 20 Block C | Date: 2026-02-19
+#
+# Generic template for the new architecture.
+# WBWS-specific values are filled in here for the active backtest.
+# Strategy-agnostic sections are marked [GENERIC].
+# WBWS-specific sections are marked [WBWS].
+#
+# Key differences from legacy wbws_strategy.yaml:
+#   - data.paths.*       replaces data.file / file_htf / file_ltf / file_artf
+#   - execution.mode     uses "core" | "analytics" (not "core" | "debug")
+#   - filters            split into time_filters / technical_filters sections
+#   - trade_management   uses atr_multiplier_sl/tp (not sl_multiplier / risk_to_reward_ratio)
+#   - spread.spread_type required field (was implicit)
+#   - htf_period         moved to signal section
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# [GENERIC] DATA
+# -----------------------------------------------------------------------------
 data:
-  file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet #csv | parquet 
-  file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet #csv | parquet
-  file_ltf: data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet #csv | parquet   
-  file_artf: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet #csv | parquet
-  format: parquet #csv | parquet
+  paths:
+    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet"
+    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet"
+    ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet"
+    artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
+
   date_range:
-    start: '2025-09-14 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
-    end: '2025-12-17 21:00:00' 
-  validation:
-    check_ohlc: true
-    check_gaps: false
-    max_price_move: 0.1
-indicator:
-  name: WBWS_Trigger
-  htf_period: 1H
+    start: "2025-09-14 08:00:00"   # Format: YYYY-MM-DD HH:MM:SS (strict)
+    end:   "2025-12-17 21:00:00"
+
+  # Informational only — data is already in CET as prepared by generate_ohlcv.py
+  # No timezone conversion is performed at load time (DEC-035)
+  timezone: "CET"
+
+
+# -----------------------------------------------------------------------------
+# [GENERIC] EXECUTION
+# -----------------------------------------------------------------------------
+execution:
+  # "core"      — max speed for multi-run backtester
+  #               skips LTF execution, progressive tracking, analytics, HTML report
+  #               outputs MetricsReport only
+  #
+  # "analytics" — full single-run analysis pipeline
+  #               LTF execution + TradeAnalytics + ReportGenerator (HTML)
+  #               use for reviewing strategy behaviour in detail
+  #
+  # DEPRECATED: "debug" — renamed to "analytics" in new architecture (DEC-022)
+  mode: "core"
+
+
+# -----------------------------------------------------------------------------
+# [WBWS] SIGNAL
+# Trigger-specific parameters for WBWSTrigger
+# -----------------------------------------------------------------------------
+signal:
+  htf_period: "1H"    # Higher timeframe period passed to WBWSTrigger
+
+
+# -----------------------------------------------------------------------------
+# [GENERIC] FILTERS
+# time_filters  : always run first regardless of filter_sequence (DEC-006)
+# technical_filters : run in order defined by filter_sequence
+# -----------------------------------------------------------------------------
 filters:
-  rsi_filter: {enabled: true, length: 14, overbought: 70, oversold: 30}
-  dpo_filter: {enabled: false, length: 20, smooth: 3, threshold: 0.2}  # smooth optional, pandas_ta has no smooth but we can add post
-  bollinger_filter: {enabled: false, length: 14, width_ma_length: 30, filter_multiplier: 0.5}
-  choppiness_filter: {enabled: false, length: 14, threshold: 61.8}
-  supertrend_filter: {enabled: false, atr_length: 10, factor: 3.0}
-  cci_filter: {enabled: false, length: 20, overbought: 100, oversold: -100}
-  adx_filter: {enabled: false, adx_length: 14, threshold: 18.0}
-  macd_filter: {enabled: false, fast_length: 12, slow_length: 26, signal_length: 9}
-  ma_filter: {enabled: false, ma_type: "TEMA", length: 25, slope_length: 10}
-  pivot_filter: {enabled: false, reversal_percent: 0.2, order: 5}
-  # Trend Following (Slow, Smooth):
-  #MAFilter(ma_type="HMA", length=25)      # Excellent for trends
-  #MAFilter(ma_type="SMA", length=20)      # Classic reliable
-  #MAFilter(ma_type="EMA", length=21)      # Common default
-  #MAFilter(ma_type="WMA", length=21)      # Common default
+  time_filters:
+    time_filter:
+      enabled: true
+      session_start: {hour: 8, minute: 30}
+      session_end:   {hour: 20, minute: 30}
+      excluded_days: []   # e.g. ["Saturday", "Sunday"]
 
-  # Responsive (Fast, Adaptive):
-  #MAFilter(ma_type="KAMA", length=10)     # Adapts to volatility
-  #MAFilter(ma_type="TEMA", length=14)     # Very responsive
+  # Order of technical filter execution.
+  # Only filters listed here AND enabled: true below will run.
+  # Filters absent from this list are skipped even if enabled: true.
+  filter_sequence:
+    - rsi_filter
+    - choppiness_filter
+    - bollinger_filter
+    - adx_filter
+    - supertrend_filter
+    - ma_filter
+    - pivot_filter
+    - cci_filter
+    - macd_filter
+    - dpo_filter
 
-  # Specialized:
-  #MAFilter(ma_type="VWMA", length=20)     # With volume data
-  #MAFilter(ma_type="LSMA", length=14)     # Linear regression based
-  
-filter_sequence:
-  - rsi_filter          # keep as reference / often first momentum
-  - choppiness_filter   # volatility: choppy → reject
-  - bollinger_filter    # volatility expansion
-  - adx_filter          # trend strength
-  - supertrend_filter   # trend direction
-  - ma_filter           # trend slope
-  - pivot_filter        # structure bias
-  - cci_filter          # momentum
-  - macd_filter
-  - dpo_filter          # cycle/momentum
+  technical_filters:
+    rsi_filter:
+      enabled: true
+      length: 14
+      overbought: 70
+      oversold: 30
+
+    dpo_filter:
+      enabled: false
+      length: 20
+      smooth: 3
+      threshold: 0.2
+
+    bollinger_filter:
+      enabled: false
+      length: 14
+      width_ma_length: 30
+      filter_multiplier: 0.5
+
+    choppiness_filter:
+      enabled: false
+      length: 14
+      threshold: 61.8
+
+    supertrend_filter:
+      enabled: false
+      atr_length: 10
+      factor: 3.0
+
+    cci_filter:
+      enabled: false
+      length: 20
+      overbought: 100
+      oversold: -100
+
+    adx_filter:
+      enabled: false
+      adx_length: 14
+      threshold: 18.0
+
+    macd_filter:
+      enabled: false
+      fast_length: 12
+      slow_length: 26
+      signal_length: 9
+
+    ma_filter:
+      enabled: false
+      ma_type: "TEMA"   # Options: HMA SMA EMA WMA KAMA TEMA VWMA LSMA
+      length: 25
+      slope_length: 10
+
+    pivot_filter:
+      enabled: false
+      reversal_percent: 0.2
+      order: 5
+
+  # Error handling when a filter raises an exception (DEC-008/DEC-028)
+  # "pass_through" — log error and pass signals unchanged (production default)
+  # "fail_fast"    — raise exception immediately (development / debugging)
+  # "reject_all"   — reject all signals on any filter error (conservative)
+  default_error_strategy: "pass_through"
+
+
+# -----------------------------------------------------------------------------
+# [GENERIC] TRADE MANAGEMENT
+# -----------------------------------------------------------------------------
 trade_management:
-  time_filter:
-    enabled: true
-    session_start:
-      hour: 8
-      minute: 30
-    session_end:
-      hour: 20
-      minute: 30
-  position_control:
-    close_on_opposite: false
-    pyramiding_enabled: false
-  opposite_signal:
-    enabled: false
-  sl_tp:
-    enabled: true
-    atr_length: 14
-    sl_multiplier: 1.4
-    risk_to_reward_ratio: 5.7
-  risk_management:
-    enabled: true
-    max_risk_percentile: 0.1 # 0.0016
-    allow_exceed_limit: false
   spread:
     enabled: true
-    required: false
-    apply_to_long: true
-    apply_to_short: true
-    log_spread_impact: true
-# =============================================================================
-# EXECUTION MODE CONFIGURATION (NEW)
-# =============================================================================
-execution:
-  mode: "core"  # Options: "core" | "debug"
-  # 
-  # "core"  - Optimized for pipeline orchestrator (45-65% faster)
-  #           - Skips progressive tracking
-  #           - Skips detailed metrics calculation
-  #           - Skips CSV generation
-  #           - Generates minimal JSON report (Part 1 only)
-  #
-  # "debug" - Full detailed tracking and analysis (default if not specified)
-  #           - Generates all CSV files
-  #           - Calculates all detailed metrics
-  #           - Generates complete JSON report (Part 1 + Part 2)
-  #           - Shows cache statistics
-  #
-# =============================================================================
-# OUTPUT CONFIGURATION (AUTO-CONFIGURED BY MODE)
-# =============================================================================
-# Note: These settings are automatically set based on execution.mode
-# You can override them manually if needed
+    # "percentage" — spread_value as fraction of price (e.g. 0.0001 = 1 pip on 1.0 base)
+    # "points"     — spread_value in absolute price points
+    # "pips"       — spread_value in pips
+    spread_type: "points"
+    spread_value: 0.5   # Must be > 0 when enabled: true
+
+  risk:
+    atr_length: 14
+    atr_multiplier_sl: 1.4    # SL = entry ± ATR * atr_multiplier_sl
+    atr_multiplier_tp: 7.98   # TP = entry ± ATR * atr_multiplier_tp  (sl * rr = 1.4 * 5.7)
+    # Maximum allowed SL as % of instrument annual range.
+    # Valid range: 0 < value <= 5.0
+    # Warning is logged if value > 1.0 (unusually large risk per trade)
+    # Typical values: 0.05 – 0.5
+    max_risk_percentile: 0.1
+
+  position_control:
+    pyramiding_enabled: false
+    close_on_opposite: false
+    max_positions: 1    # Must be > 1 if pyramiding_enabled: true
+
+
+# -----------------------------------------------------------------------------
+# [GENERIC] OUTPUT
+# Controls what the analytics/reporting pipeline produces
+# Relevant only in execution.mode: "analytics"
+# In "core" mode all output settings except logging are ignored
+# -----------------------------------------------------------------------------
 output:
-  # Progressive tracking (signal-by-signal detailed analysis)
-  enable_progressive_tracking: false  # true in debug, false in core
-  # Detailed metrics (spread analysis, monthly performance, etc.)
-  enable_detailed_metrics: false      # true in debug, false in core
-  # CSV file generation
-  save_signals_csv: false             # true in debug, false in core
-  # Cache statistics collection and display
-  enable_cache_stats:  false          # true in debug, false in core
-  # Output directories (same in both modes)
-  outputs_dir: "outputs"
-  reports_dir: "reports/WBWS"
-  signals_dir: "signals/strategy"
-  verbose: false
+  reports:
+    enabled: true
+    output_dir: "outputs/strategies/reports/wbws"
+    theme: "dark"           # "dark" | "light"
+    chart_height_px: 300    # Valid range: 100–800
+    brand_name: "WBWSStrategy"
+    include_raw_data: true
+
+  logging:
+    level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+    output_dir: "outputs/strategies/logs/wbws"

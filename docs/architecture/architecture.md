@@ -261,7 +261,7 @@ TESTS_DIR = PROJECT_ROOT / "tests"
 MIGRATION_TESTS_DIR = TESTS_DIR / "migration"
 ```
 # CONTRACTS QUICK REFERENCE
-**Session 18 | Version 6.0 | 2026-02-17**
+**Version 6.0 | 2026-02-17**
 ## 📋 TABLE OF CONTENTS
 - [Phase 1: Data Layer](#data-layer-phase-1-)
 - [Phase 2: Signal Layer](#signal-layer-phase-2-)

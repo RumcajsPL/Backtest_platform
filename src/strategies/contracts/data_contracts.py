@@ -7,8 +7,9 @@ Updates:
 - Enhanced for dual-mode operation
 
 Author: Migration Project
-Version: 2.1.0
-Date: 2025-02-10
+Version: 2.2.0
+Date: 2026-02-19
+Session: 20 — Block B (removed from_yaml_config legacy adapter)
 """
 
 from dataclasses import dataclass, field
@@ -87,7 +88,10 @@ class DataFileConfig:
 class DataConfig:
     """
     Complete data loading configuration.
-    
+
+    Constructed directly from the new architecture's strategy_template.yaml
+    via StrategyConfig — not from the legacy YAML format (DEC-021).
+
     Attributes:
         strategy_data: Main strategy timeframe data config
         htf_data: Higher timeframe data config (optional)
@@ -102,101 +106,6 @@ class DataConfig:
     artf_data: Optional[DataFileConfig] = None
     date_range: Optional[DateRange] = None
     validation_rules: Dict[str, Any] = field(default_factory=dict)
-    
-    @classmethod
-    def from_yaml_config(cls, config: Dict[str, Any], project_root: Path) -> "DataConfig":
-        """
-        Factory method to create DataConfig from YAML config dict.
-        
-        Args:
-            config: Parsed YAML config (the "data" section)
-            project_root: Project root for resolving relative paths
-            
-        Returns:
-            DataConfig instance
-        """
-        # Parse global date range
-        date_range_cfg = config.get("date_range", {})
-        global_date_range = None
-        if date_range_cfg:
-            start_str = date_range_cfg.get("start")
-            end_str = date_range_cfg.get("end")
-            start = pd.to_datetime(start_str) if start_str else None
-            end = pd.to_datetime(end_str) if end_str else None
-            if start or end:
-                global_date_range = DateRange(start=start, end=end)
-        
-        # Parse strategy data file
-        strategy_file = config["file"]
-        strategy_path = Path(strategy_file)
-        if not strategy_path.is_absolute():
-            strategy_path = project_root / strategy_path
-        
-        strategy_data = DataFileConfig(
-            path=strategy_path,
-            format=config.get("format", "parquet"),
-            date_range=global_date_range,
-            description="Strategy timeframe data"
-        )
-        
-        # Parse HTF data (optional)
-        htf_data = None
-        if "file_htf" in config:
-            htf_file = config["file_htf"]
-            htf_path = Path(htf_file)
-            if not htf_path.is_absolute():
-                htf_path = project_root / htf_path
-            
-            htf_data = DataFileConfig(
-                path=htf_path,
-                format=config.get("format", "parquet"),
-                date_range=global_date_range,
-                description="Higher timeframe data"
-            )
-        
-        # Parse LTF data (optional)
-        ltf_data = None
-        if "file_ltf" in config:
-            ltf_file = config["file_ltf"]
-            ltf_path = Path(ltf_file)
-            if not ltf_path.is_absolute():
-                ltf_path = project_root / ltf_path
-            
-            ltf_data = DataFileConfig(
-                path=ltf_path,
-                format=config.get("format", "parquet"),
-                date_range=global_date_range,
-                description="Lower timeframe data (1s)"
-            )
-        
-        # Parse ARTF data (Annual Range Timeframe / Monthly bars) - NEW in v2.1
-        artf_data = None
-        if "file_artf" in config:
-            artf_file = config["file_artf"]
-            artf_path = Path(artf_file)
-            if not artf_path.is_absolute():
-                artf_path = project_root / artf_path
-            
-            # Note: Monthly data typically doesn't need date range slicing
-            # It's used for annual range calculation across full history
-            artf_data = DataFileConfig(
-                path=artf_path,
-                format=config.get("format", "parquet"),
-                date_range=None,  # Load full monthly history
-                description="Annual Range Timeframe (Monthly bars)"
-            )
-        
-        # Parse validation rules
-        validation_rules = config.get("validation", {})
-        
-        return cls(
-            strategy_data=strategy_data,
-            htf_data=htf_data,
-            ltf_data=ltf_data,
-            artf_data=artf_data,
-            date_range=global_date_range,
-            validation_rules=validation_rules
-        )
 
 
 # =============================================================================

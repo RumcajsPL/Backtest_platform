@@ -1,13 +1,13 @@
 """
-Filter Layer Contracts for WBWSStrategy Migration v3.0
+Filter Layer Contracts for WBWSStrategy Migration v3.1
 
 This module defines typed contracts for filter execution and pipeline orchestration.
 These contracts replace dict-based filter statistics and string-based signal filtering.
 
 Author: Migration Project
-Version: 3.0.0
-Date: 2025-02-11
-Session: 4
+Version: 3.1.0
+Date: 2026-02-19
+Session: 20 — Block B (removed pipeline_result_to_old_format / old_format_to_pipeline_result)
 """
 
 from dataclasses import dataclass, field
@@ -54,8 +54,8 @@ class FilterMetadata:
         signals_in: Number of signals before this filter
         signals_out: Number of signals after this filter
         signals_rejected: Number of signals rejected by this filter
-        indicator_values: Indicator values at signal times (debug mode only)
-        execution_time_ms: Filter execution time in milliseconds
+        indicator_values: Indicator values at signal times (analytics mode only)
+        execution_time_ms: Filter execution time in milliseconds (always collected)
     """
     filter_name: str
     status: FilterStatus
@@ -140,7 +140,7 @@ class FilterResult:
     @property
     def signals_count(self) -> int:
         """Number of signals that passed this filter."""
-        return self.signal_frame.count_by_type()["total"]
+        return int(np.sum(self.signal_frame.signals.values != 0))
     
     @property
     def is_empty(self) -> bool:
@@ -292,102 +292,9 @@ class FilterProtocol(Protocol):
             df: OHLCV DataFrame
             indicators: Cached pandas Series indicators
             ind_np: Cached numpy array indicators
-            mode: Execution mode ("core" or "debug")
+            mode: Execution mode ("core" or "analytics")
         
         Returns:
             FilterResult with filtered signals and metadata
         """
         ...
-
-
-# =============================================================================
-# BACKWARD COMPATIBILITY HELPERS
-# =============================================================================
-
-def pipeline_result_to_old_format(result: FilterPipelineResult) -> tuple[pd.Series, Dict]:
-    """
-    Convert FilterPipelineResult to old (pd.Series, dict) format.
-    
-    Used for backward compatibility with existing code that expects the old format.
-    
-    Args:
-        result: New FilterPipelineResult
-        
-    Returns:
-        Tuple of (signals_series, stats_dict) matching old format
-    """
-    # Convert SignalFrame int8 codes back to string signals
-    signals = result.final_signals.signals.copy()
-    string_signals = pd.Series(pd.NA, index=signals.index, dtype=object)
-    string_signals[signals == 1] = "BUY"
-    string_signals[signals == 2] = "SELL"
-    
-    # Convert metadata to old stats dict format
-    stats = {
-        "raw": {
-            "buy": 0,  # Not tracked in new format
-            "sell": 0,  # Not tracked in new format
-            "total": result.raw_count
-        },
-        "time_filtered": {
-            "buy": 0,  # Not tracked in new format
-            "sell": 0,  # Not tracked in new format
-            "total": result.time_filtered_count,
-            "rejected": result.time_rejection_count
-        },
-        "technical": {
-            "buy": result.final_signals.count_by_type()["buy"],
-            "sell": result.final_signals.count_by_type()["sell"],
-            "total": result.technical_filtered_count,
-            "rejected": result.technical_rejection_count
-        },
-        "final": {
-            "buy": result.final_signals.count_by_type()["buy"],
-            "sell": result.final_signals.count_by_type()["sell"],
-            "total": result.final_count
-        }
-    }
-    
-    return string_signals, stats
-
-
-def old_format_to_pipeline_result(
-    signals: pd.Series,
-    stats: Dict,
-    filter_results: list[FilterMetadata] = None
-) -> FilterPipelineResult:
-    """
-    Convert old (pd.Series, dict) format to FilterPipelineResult.
-    
-    Args:
-        signals: String signals ("BUY"/"SELL")
-        stats: Old stats dict
-        filter_results: Optional list of filter metadata
-        
-    Returns:
-        FilterPipelineResult
-    """
-    from .signal_contracts import SignalType
-    
-    # Convert string signals to int8 codes
-    n = len(signals)
-    signal_values = np.zeros(n, dtype=np.int8)
-    signal_values[signals == "BUY"] = 1
-    signal_values[signals == "SELL"] = 2
-    
-    signal_frame = SignalFrame(
-        signals=pd.Series(signal_values, index=signals.index, dtype='int8'),
-        indicator_data=None,
-        signal_metadata={"source": "old_format_conversion"}
-    )
-    
-    return FilterPipelineResult(
-        final_signals=signal_frame,
-        raw_count=stats.get("raw", {}).get("total", 0),
-        time_filtered_count=stats.get("time_filtered", {}).get("total", 0),
-        technical_filtered_count=stats.get("technical", {}).get("total", 0),
-        final_count=stats.get("final", {}).get("total", 0),
-        filter_results=filter_results or [],
-        rejection_reasons={},
-        execution_time_ms=None
-    )

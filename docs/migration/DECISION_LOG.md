@@ -458,76 +458,71 @@ ReportGenerator accepts both `analytics_report` and optional `trade_result`. If 
 - Remove P1-CH1-7 (timezone validation) from action plan
 - `DataLoader` should not attempt to convert or validate timezones
 - Documentation should clarify that data must be in the instrument's local timezone
+---
 
+---
 
-### 3. `DECISION_LOG.md` - Add Performance Decisions
-
-Add these entries:
-
-```markdown
 ### DEC-036 — Performance targets are data-driven, not aspirational
 **Date**: 2026-02-19 | **Session**: 19 | **Status**: ✅ DECIDED
 
-Baseline measurements show:
-- Core mode: 42.7 seconds (96% in TradeSimulator)
-- Analytics mode: 31.7 seconds (94.5% in TradeSimulator)
+Baseline measurements established:
+- Core mode: 42,680ms (96% in TradeSimulator at 41,052ms)
+- Analytics mode: 31,663ms (94.5% in TradeSimulator at 29,927ms)
 
-**Decision**: All performance targets for Session 20 will be based on these baselines. The goal is not arbitrary speed but measurable improvement:
-- Core mode: target 12 seconds (71% improvement)
-- TradeSimulator: target 10 seconds (76% improvement)
+**Decision**: All Session 20 performance targets derive from these baselines:
+- Core mode target: <12,000ms (71% improvement)
+- TradeSimulator target: <10,000ms (76% improvement)
+- "Faster" is not acceptable without "X% faster than baseline Y"
 
-**Rationale**: Leitmotif principle "Performance — Multi-Run Backtester First" - we must have concrete, measurable goals.
+**Rationale**: Leitmotif principle "Production Readiness" — measurable over subjective.
 
 ---
 
 ### DEC-037 — TradeSimulator is the primary optimization target
 **Date**: 2026-02-19 | **Session**: 19 | **Status**: ✅ DECIDED
 
-Baseline profiling reveals TradeSimulator consumes 94-96% of total runtime:
-- Core mode: 41 seconds out of 42.7 seconds
-- Analytics mode: 29.9 seconds out of 31.7 seconds
+Baseline profiling reveals TradeSimulator consumes 94–96% of total runtime.
 
-**Decision**: Session 20 optimization efforts will focus 80% on TradeSimulator. Other modules (DataLoader, SignalGenerator, FilterPipeline) are already well-optimized and contribute <5% each to total runtime.
+**Decision**: Session 20 optimization targets TradeSimulator as primary focus:
+- Gate LTF precomputation on analytics mode only
+- Gate progressive tracking on analytics mode only
+- Gate signal_id lookups on analytics mode only
 
-**Rationale**: Leitmotif principle "Performance — Multi-Run Backtester First" - optimize where it matters most.
+Other modules (DataLoader 3.3%, SignalGenerator 0.2%, FilterPipeline 0.2%) are already well-optimized and are not primary optimization targets.
+
+**Rationale**: Leitmotif principle "Performance — Multi-Run Backtester First" — optimize where it matters most.
 
 ---
 
 ### DEC-038 — Core mode must be faster than analytics mode
 **Date**: 2026-02-19 | **Session**: 19 | **Status**: ✅ DECIDED
 
-Baseline shows a 26% performance inversion:
-- Core mode: 42.7 seconds
-- Analytics mode: 31.7 seconds
+Baseline shows a 26% performance inversion: core 42,680ms vs analytics 31,663ms.
 
-**Decision**: This inversion must be fixed in Session 20. Core mode should be significantly faster because it:
-- Skips LTF execution
-- Skips analytics generation
-- Skips progressive tracking
-- Uses minimal metadata
+**Decision**: This inversion is a P0 correctness issue and must be resolved in Session 20. Core mode skips LTF execution, analytics generation, and progressive tracking — it must be materially faster than analytics mode.
 
-**Rationale**: Leitmotif principle "Performance — Multi-Run Backtester First" - core mode is designed for speed.
+**Root cause**: LTF tick precomputation runs unconditionally in trade_simulator.py, consuming ~15,000ms regardless of mode.
+
+**Fix**: Add `mode` parameter to `simulate_trades()`. Gate LTF on `mode == "analytics"`.
+
+**Rationale**: Leitmotif principle "Performance — Multi-Run Backtester First" — core mode is designed for speed.
 
 ---
 
 ### DEC-039 — All durations must be tracked in baselines
 **Date**: 2026-02-19 | **Session**: 19 | **Status**: ✅ DECIDED
 
-The non-regression test suite now captures stage-by-stage timing in baselines. This enables:
-- Detecting performance regressions automatically
-- Measuring improvement against targets
-- Identifying bottlenecks
+**Decision**: All future performance discussions must reference specific baseline numbers. Per-stage timing is captured in the non-regression test suite. This enables automatic regression detection and measurable improvement tracking.
 
-**Decision**: All future performance discussions must reference baseline numbers. "Faster" is not acceptable without "X% faster than baseline Y".
-
-**Rationale**: Leitmotif principle "Production Readiness" - measurable over subjective.
-
+**Rationale**: Leitmotif principle "Production Readiness" — measurable over subjective.
 ---
 
-## Sessions 20-22 Preview
+## Sessions 20–22 Preview (updated)
 
-| Session | Focus | Expected Output |
-|---------|-------|-----------------|
-| 20 | P0 + P1 Fixes | All P0/P1 issues resolved, ~30 new tests |
+| Session | Focus | Expected Output | Test Target |
+|---------|-------|-----------------|-------------|
+| 20 | All P0 + P1 fixes | Strategy template, mode rename, performance fix | ~302 |
+| 21 | P2 + Observability | AnalyticsConfig, per-stage timing, cache stats | ~322 |
+| 22 | Integration + MagicMock cleanup | Full E2E test, MagicMock removal (DEC-020) | ~347 | new tests |
 | 21 | P2 + Observability | Logging, timing, configurable thresholds |
 | 22 | Integration + MagicMock cleanup | Full E2E test, MagicMock removal |

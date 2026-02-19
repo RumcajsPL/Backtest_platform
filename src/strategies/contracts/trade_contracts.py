@@ -1,13 +1,9 @@
 """
 Trade Contracts - Phase 4 Migration
-Version: 1.1.0 (Session 11)
-Date: 2025-02-15
-
-SESSION 11 CHANGES:
-- TradeResult now uses List[RejectedSignal] instead of List[Dict]
-- Added TradeResult.from_trades() classmethod for direct construction
-- TradeResult.to_dict() handles rejected_signals conversion
-- Complete contract-based architecture (no dicts in core flow)
+Version: 1.2.0
+Date: 2026-02-19
+Session: 20 — Block B (removed to_legacy_trade_dict from RejectedSignal;
+           updated TradeResult.to_dict() to use RejectedSignal.to_dict() directly)
 
 Typed contracts for trade management, replacing dict-based trade structures.
 Designed for zero-regression migration from legacy trade_simulator.py.
@@ -15,7 +11,6 @@ Designed for zero-regression migration from legacy trade_simulator.py.
 Architecture:
 - Immutable dataclasses (frozen=True)
 - Strong typing for all fields
-- Conversion methods to/from legacy dict format
 - Support for LTF execution and progressive tracking
 """
 from dataclasses import dataclass, field
@@ -112,6 +107,7 @@ class DecisionType(Enum):
         except KeyError:
             raise ValueError(f"Invalid decision type: {decision}")
 
+
 # ============================================================================
 # TRADE PARAMETERS
 # ============================================================================
@@ -125,24 +121,24 @@ class TradeParameters:
     Contains all information needed to open a position.
     """
     # Core execution prices
-    entry_price_mid: float                      # Mid/bid price (before spread)
-    entry_price_executed: float                 # Actual execution price (after spread)
-    stop_loss_raw: float                        # SL before spread trigger adjustment
-    stop_loss_trigger: float                    # Chart SL that triggers exit
-    take_profit: float                          # Take profit level
+    entry_price_mid: float
+    entry_price_executed: float
+    stop_loss_raw: float
+    stop_loss_trigger: float
+    take_profit: float
     
     # Position sizing
-    position_size: float = 1.0                  # Number of contracts/shares
+    position_size: float = 1.0
     
     # Risk metrics
     atr_value: Optional[float] = None
     atr_length: Optional[int] = None
     atr_multiplier: Optional[float] = None
-    sl_distance: Optional[float] = None         # SL distance in points
-    tp_distance: Optional[float] = None         # TP distance in points
+    sl_distance: Optional[float] = None
+    tp_distance: Optional[float] = None
     risk_reward_ratio: Optional[float] = None
     
-    # Annual range validation (risk management)
+    # Annual range validation
     annual_range_value: Optional[float] = None
     risk_percentile_calculated: Optional[float] = None
     max_risk_percentile: Optional[float] = None
@@ -151,16 +147,16 @@ class TradeParameters:
     # Spread details
     spread_enabled: bool = False
     spread_applied: bool = False
-    spread_type: Optional[str] = None           # 'percentage', 'points', 'pips'
-    spread_value: Optional[float] = None        # Raw spread value from config
-    spread_points: Optional[float] = None       # Spread in price points
-    spread_cost: Optional[float] = None         # Total spread cost
+    spread_type: Optional[str] = None
+    spread_value: Optional[float] = None
+    spread_points: Optional[float] = None
+    spread_cost: Optional[float] = None
     spread_efficiency_percent: Optional[float] = None
     
     # Adjustments
-    sl_adjusted: bool = False                   # Was SL adjusted for risk limits?
-    sl_distance_raw: Optional[float] = None     # SL distance before adjustment
-    sl_price_raw: Optional[float] = None        # SL price before adjustment
+    sl_adjusted: bool = False
+    sl_distance_raw: Optional[float] = None
+    sl_price_raw: Optional[float] = None
     
     # Metadata
     comment: Optional[str] = None
@@ -181,15 +177,7 @@ class TradeParameters:
         position_size: float = 1.0,
         **kwargs
     ) -> 'TradeParameters':
-        """
-        Create TradeParameters from RiskManager.compute_trade_parameters() output.
-        
-        Args:
-            risk_output: Dict from risk_manager.compute_trade_parameters()
-            position_size: Position size (contracts/shares)
-            **kwargs: Additional fields to override/add
-        """
-        # Calculate distances
+        """Create TradeParameters from RiskManager.compute_trade_parameters() output."""
         executed_entry = risk_output['executed_entry']
         trigger_sl = risk_output['trigger_sl']
         tp = risk_output['tp']
@@ -219,7 +207,7 @@ class TradeParameters:
         )
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for legacy compatibility"""
+        """Convert to dict."""
         return {
             'entry_price_mid': self.entry_price_mid,
             'executed_entry': self.entry_price_executed,
@@ -250,36 +238,35 @@ class TradeEntry:
     Immutable trade entry state.
     
     Represents a position that has been opened.
-    Maps to the 'OPEN' status in legacy trade dict.
     """
     # Identity
-    entry_id: str                               # Unique ID (e.g., "T_20250213_143052_001")
-    trade_manager_id: Optional[int] = None      # TradeManager's position ID
-    position_id: Optional[int] = None           # Position tracking ID
-    signal_id: Optional[int] = None             # Link to source signal
+    entry_id: str
+    trade_manager_id: Optional[int] = None
+    position_id: Optional[int] = None
+    signal_id: Optional[int] = None
     
     # Timing
     entry_time: pd.Timestamp = field(default_factory=pd.Timestamp.now)
     
     # Trade details
     direction: TradeDirection = TradeDirection.LONG
-    entry_price: float = 0.0                    # Executed entry price
-    stop_loss: float = 0.0                      # SL trigger price
-    take_profit: float = 0.0                    # TP price
-    position_size: float = 1.0                  # Position size
+    entry_price: float = 0.0
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    position_size: float = 1.0
     
     # Risk metrics (at entry)
-    sl_distance: float = 0.0                    # SL distance in points
-    tp_distance: float = 0.0                    # TP distance in points
-    risk_reward_ratio: float = 0.0              # TP/SL ratio
-    atr_value: Optional[float] = None           # ATR at entry time
-    risk_percentile: Optional[float] = None     # Risk % of annual range
+    sl_distance: float = 0.0
+    tp_distance: float = 0.0
+    risk_reward_ratio: float = 0.0
+    atr_value: Optional[float] = None
+    risk_percentile: Optional[float] = None
     
     # Execution details
     spread_enabled: bool = False
     spread_points: Optional[float] = None
     spread_cost: Optional[float] = None
-    sl_adjusted: bool = False                   # Was SL adjusted for risk?
+    sl_adjusted: bool = False
     
     # Metadata
     comment: Optional[str] = None
@@ -338,7 +325,7 @@ class TradeEntry:
         )
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for legacy compatibility"""
+        """Convert to dict."""
         return {
             'trade_id': self.entry_id,
             'trade_manager_trade_id': self.trade_manager_id,
@@ -365,34 +352,31 @@ class TradeEntry:
 class TradeExit:
     """
     Immutable trade exit state.
-    
-    Represents the closing of a position.
-    Contains P&L and exit details.
     """
     # Identity
-    exit_id: str                                # Unique ID
-    entry_id: str                               # Link to TradeEntry
+    exit_id: str
+    entry_id: str
     
     # Timing
     exit_time: pd.Timestamp = field(default_factory=pd.Timestamp.now)
-    duration_bars: int = 0                      # Bars held
-    duration_minutes: float = 0.0               # Minutes held
+    duration_bars: int = 0
+    duration_minutes: float = 0.0
     
     # Exit details
-    exit_price: float = 0.0                     # Actual exit price
+    exit_price: float = 0.0
     exit_reason: ExitReason = ExitReason.END_OF_DATA
     
     # P&L
-    pnl_points: float = 0.0                     # P&L in price points
-    pnl_percent: float = 0.0                    # P&L as % of entry
-    is_win: bool = False                        # True if profitable
-    is_loss: bool = False                       # True if loss
+    pnl_points: float = 0.0
+    pnl_percent: float = 0.0
+    is_win: bool = False
+    is_loss: bool = False
     
-    # LTF execution details (if available)
-    exit_bar_high: Optional[float] = None       # High of exit bar
-    exit_bar_low: Optional[float] = None        # Low of exit bar
-    ltf_execution: bool = False                 # Was LTF used?
-    ltf_execution_mode: Optional[str] = None    # LTF mode (e.g., "NUMBA")
+    # LTF execution details
+    exit_bar_high: Optional[float] = None
+    exit_bar_low: Optional[float] = None
+    ltf_execution: bool = False
+    ltf_execution_mode: Optional[str] = None
     
     # Metadata
     comment: Optional[str] = None
@@ -411,22 +395,14 @@ class TradeExit:
         ltf_execution_mode: Optional[str] = None,
         **kwargs
     ) -> 'TradeExit':
-        """
-        Create TradeExit from TradeEntry and exit details.
-        Automatically calculates P&L and duration.
-        """
-        # Calculate P&L
+        """Create TradeExit from TradeEntry and exit details."""
         if entry.is_long:
             pnl_points = exit_price - entry.entry_price
         else:
             pnl_points = entry.entry_price - exit_price
         
         pnl_percent = (pnl_points / entry.entry_price) * 100 if entry.entry_price else 0
-        
-        # Calculate duration
         duration_minutes = (exit_time - entry.entry_time).total_seconds() / 60
-        
-        # Generate exit ID
         exit_id = f"{entry.entry_id}_EXIT"
         
         return cls(
@@ -448,7 +424,7 @@ class TradeExit:
         )
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for legacy compatibility"""
+        """Convert to dict."""
         return {
             'exit_time': self.exit_time,
             'exit_price': self.exit_price,
@@ -470,101 +446,74 @@ class TradeExit:
 
 @dataclass(frozen=True)
 class Trade:
-    """
-    Complete trade: entry + optional exit.
-    
-    Represents a trade from entry to exit (if closed).
-    Provides unified interface for both open and closed trades.
-    """
+    """Complete trade: entry + optional exit."""
     entry: TradeEntry
     exit: Optional[TradeExit] = None
     
     @property
     def is_open(self) -> bool:
-        """Is this trade still open?"""
         return self.exit is None
     
     @property
     def is_closed(self) -> bool:
-        """Is this trade closed?"""
         return self.exit is not None
     
     @property
     def trade_id(self) -> str:
-        """Get trade ID"""
         return self.entry.entry_id
     
     @property
     def status(self) -> str:
-        """Get trade status string"""
         return "CLOSED" if self.is_closed else "OPEN"
     
     @property
     def direction(self) -> TradeDirection:
-        """Get trade direction"""
         return self.entry.direction
     
     @property
     def entry_time(self) -> pd.Timestamp:
-        """Get entry time"""
         return self.entry.entry_time
     
     @property
     def exit_time(self) -> Optional[pd.Timestamp]:
-        """Get exit time (None if open)"""
         return self.exit.exit_time if self.exit else None
     
     @property
     def duration_bars(self) -> Optional[int]:
-        """Get duration in bars (None if open)"""
         return self.exit.duration_bars if self.exit else None
     
     @property
     def duration_minutes(self) -> Optional[float]:
-        """Get duration in minutes (None if open)"""
         return self.exit.duration_minutes if self.exit else None
     
     @property
     def pnl_points(self) -> Optional[float]:
-        """Get P&L in points (None if open)"""
         return self.exit.pnl_points if self.exit else None
     
     @property
     def pnl_percent(self) -> Optional[float]:
-        """Get P&L as percentage (None if open)"""
         return self.exit.pnl_percent if self.exit else None
     
     @property
     def is_win(self) -> bool:
-        """Is this a winning trade?"""
         return self.exit.is_win if self.exit else False
     
     @property
     def is_loss(self) -> bool:
-        """Is this a losing trade?"""
         return self.exit.is_loss if self.exit else False
     
     @property
     def exit_reason(self) -> Optional[ExitReason]:
-        """Get exit reason (None if open)"""
         return self.exit.exit_reason if self.exit else None
     
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Convert to dict for legacy compatibility.
-        Matches the structure of trade_simulator.py trade dicts.
-        """
-        result = {
-            # Identity
+        """Convert to dict."""
+        return {
             "trade_id": self.entry.entry_id,
             "trade_manager_trade_id": self.entry.trade_manager_id,
             "position_id": self.entry.position_id,
             "signal_id": self.entry.signal_id,
-            
-            # Status
             "status": self.status,
-            
-            # Entry details
             "entry_time": self.entry.entry_time,
             "direction": self.entry.direction.to_string(),
             "entry_price": self.entry.entry_price,
@@ -574,8 +523,6 @@ class Trade:
             "tp_distance": self.entry.tp_distance,
             "risk_reward_ratio": self.entry.risk_reward_ratio,
             "comment": self.entry.comment or '',
-            
-            # Exit details (if closed)
             "exit_time": self.exit.exit_time if self.exit else None,
             "exit_price": self.exit.exit_price if self.exit else None,
             "exit_reason": self.exit.exit_reason.to_string() if self.exit else None,
@@ -585,20 +532,17 @@ class Trade:
             "duration_minutes": self.exit.duration_minutes if self.exit else 0,
             "is_win": self.exit.is_win if self.exit else False,
             "is_loss": self.exit.is_loss if self.exit else False,
-            
-            # Rejection fields (for compatibility)
             "reject_reason": None,
         }
-        return result
     
     def __str__(self) -> str:
-        """String representation"""
         status = "OPEN" if self.is_open else f"CLOSED ({self.exit_reason.name})"
         pnl_str = f"{self.pnl_points:+.2f} pts" if self.is_closed else "N/A"
         return (
             f"Trade({self.trade_id}, {self.direction.to_string()}, "
             f"{status}, P&L: {pnl_str})"
         )
+
 
 # ============================================================================
 # REJECTED SIGNAL (NOT A TRADE)
@@ -609,38 +553,34 @@ class RejectedSignal:
     """
     Represents a signal that was rejected before becoming a trade.
     
-    Separate from Trade because rejected signals never had:
-    - Valid entry prices
-    - Stop loss / take profit levels
-    - Position sizing
-    - Risk calculations
-    
-    This is NOT a trade - it's a signal that failed filters.
+    Separate from Trade because rejected signals never had valid entry prices,
+    stop loss / take profit levels, position sizing, or risk calculations.
+    This is NOT a trade — it is a signal that failed to open a position.
     """
     # Identity
-    rejection_id: str                           # Unique ID (e.g., "R1", "R2")
-    signal_id: Optional[int] = None             # Link to source signal
+    rejection_id: str
+    signal_id: Optional[int] = None
     
     # Timing
     rejection_time: pd.Timestamp = field(default_factory=pd.Timestamp.now)
     
     # Signal details
-    direction: str = "BUY"                      # "BUY" or "SELL" (not enum - it never became a trade)
+    direction: str = "BUY"  # String, not enum — it never became a trade
     
     # Rejection details
-    rejection_stage: str = "UNKNOWN"            # "RISK", "POSITION", "FILTER", etc.
-    rejection_reason: str = ""                  # Detailed reason
+    rejection_stage: str = "UNKNOWN"
+    rejection_reason: str = ""
     
     # Context (optional)
-    current_price: Optional[float] = None       # Price when rejected
+    current_price: Optional[float] = None
     meta: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert to dict.
         
-        Note: This does NOT try to match Trade dict format.
-        Rejected signals are fundamentally different from trades.
+        Does NOT try to match Trade dict format — rejected signals are
+        fundamentally different from trades (DEC-031).
         """
         return {
             "rejection_id": self.rejection_id,
@@ -650,59 +590,15 @@ class RejectedSignal:
             "rejection_stage": self.rejection_stage,
             "rejection_reason": self.rejection_reason,
             "current_price": self.current_price,
-            "status": "REJECTED",  # For compatibility with legacy output
-        }
-    
-    def to_legacy_trade_dict(self) -> Dict[str, Any]:
-        """
-        Convert to legacy trade dict format for backward compatibility.
-        
-        Only use this during migration period for test comparisons.
-        Once TradeResult is used, this method can be removed.
-        """
-        return {
-            # Identity (use rejection_id as trade_id for legacy tests)
-            "trade_id": int(self.rejection_id.replace("R", "")),
-            "trade_manager_trade_id": None,
-            "position_id": None,
-            "signal_id": self.signal_id,
-            
-            # Status
             "status": "REJECTED",
-            
-            # Timing
-            "entry_time": self.rejection_time,
-            
-            # Direction
-            "direction": self.direction,
-            
-            # Rejection details
-            "reject_reason": self.rejection_reason,
-            "comment": f"Rejected: {self.rejection_reason}",
-            
-            # Placeholder values (required by legacy format)
-            "entry_price": None,
-            "sl_price": None,
-            "tp_price": None,
-            "exit_time": None,
-            "exit_price": None,
-            "exit_reason": None,
-            "pnl_points": 0,
-            "pnl_percent": 0,
-            "duration_bars": 0,
-            "duration_minutes": 0,
-            "sl_distance": 0,
-            "tp_distance": 0,
-            "risk_reward_ratio": 0,
-            "is_win": False,
-            "is_loss": False,
         }
     
     def __str__(self) -> str:
         return f"RejectedSignal({self.rejection_id}, {self.direction}, {self.rejection_reason})"
-    
+
+
 # ============================================================================
-# TRADE RESULT (PIPELINE OUTPUT) - SESSION 11 UPDATE
+# TRADE RESULT (PIPELINE OUTPUT)
 # ============================================================================
 
 @dataclass(frozen=True)
@@ -712,41 +608,36 @@ class TradeResult:
     
     Aggregates all trades and provides statistics.
     Maps to the output of trade_simulator.simulate_trades().
-    
-    SESSION 11 CHANGES:
-    - rejected_signals: List[RejectedSignal] (was rejected_entries: List[Dict])
-    - Added from_trades() classmethod for direct construction
-    - to_dict() handles rejected_signals → rejected_trades conversion
     """
     # Trades
-    trades: List[Trade]                         # All trades (open + closed)
-    rejected_signals: List[RejectedSignal]      # Rejected entry signals (Session 11)
+    trades: List[Trade]
+    rejected_signals: List[RejectedSignal]
     
     # Counts
-    total_entries: int                          # Total entry signals received
-    total_opened: int                           # Positions opened
-    total_closed: int                           # Positions closed
-    total_rejected: int                         # Entries rejected
-    currently_open: int                         # Positions still open
+    total_entries: int
+    total_opened: int
+    total_closed: int
+    total_rejected: int
+    currently_open: int
     
     # Exit breakdown
-    exits_by_reason: Dict[str, int]             # Exit reason counts
+    exits_by_reason: Dict[str, int]
     
     # Risk statistics
-    risk_approved: int = 0                      # Entries passing risk check
-    risk_rejected: int = 0                      # Entries failing risk check
-    risk_adjusted: int = 0                      # Entries with adjusted SL
+    risk_approved: int = 0
+    risk_rejected: int = 0
+    risk_adjusted: int = 0
     
     # Position control statistics
     position_rejected: Dict[str, int] = field(default_factory=dict)
     trade_manager_metrics: Dict[str, Any] = field(default_factory=dict)
     
-    # Performance metrics (quick access)
+    # Performance metrics
     win_count: int = 0
     loss_count: int = 0
-    win_rate: float = 0.0                       # Wins / (Wins + Losses)
-    total_pnl_points: float = 0.0               # Sum of all PnL
-    average_pnl_points: float = 0.0             # Mean PnL per trade
+    win_rate: float = 0.0
+    total_pnl_points: float = 0.0
+    average_pnl_points: float = 0.0
     
     # Execution details
     execution_mode: str = "UNKNOWN"
@@ -757,12 +648,10 @@ class TradeResult:
     
     @property
     def open_trades(self) -> List[Trade]:
-        """Get all open trades"""
         return [t for t in self.trades if t.is_open]
     
     @property
     def closed_trades(self) -> List[Trade]:
-        """Get all closed trades"""
         return [t for t in self.trades if t.is_closed]
     
     @classmethod
@@ -777,36 +666,15 @@ class TradeResult:
         execution_mode: str,
         execution_time_ms: Optional[float] = None,
     ) -> 'TradeResult':
-        """
-        Create TradeResult directly from simulation components.
-        
-        SESSION 11: Primary construction method for TradeSimulator
-        
-        Args:
-            trades: List of Trade contracts (open + closed)
-            rejected_signals: List of RejectedSignal contracts
-            exit_stats: Dict mapping exit reason to count
-            risk_stats: Dict with risk approval/rejection counts
-            position_rejected: Dict with position rejection counts
-            trade_manager_metrics: Dict from TradeManager.get_metrics()
-            execution_mode: String identifying execution mode
-            execution_time_ms: Optional execution time in milliseconds
-        
-        Returns:
-            TradeResult contract with calculated statistics
-        """
-        # Calculate statistics from Trade objects
+        """Create TradeResult directly from simulation components."""
         closed_trades = [t for t in trades if t.is_closed]
         open_trades = [t for t in trades if t.is_open]
         
         win_count = sum(1 for t in closed_trades if t.is_win)
         loss_count = sum(1 for t in closed_trades if t.is_loss)
         win_rate = (win_count / len(closed_trades) * 100) if closed_trades else 0.0
-        
         total_pnl = sum(t.pnl_points for t in closed_trades)
         avg_pnl = total_pnl / len(closed_trades) if closed_trades else 0.0
-        
-        # Total entries = trades + rejections
         total_entries = len(trades) + len(rejected_signals)
         
         return cls(
@@ -833,31 +701,23 @@ class TradeResult:
         )
     
     def to_dataframe(self) -> pd.DataFrame:
-        """Convert trades to DataFrame for analysis"""
+        """Convert trades to DataFrame for analysis."""
         if not self.trades:
             return pd.DataFrame()
-        rows = [t.to_dict() for t in self.trades]
-        return pd.DataFrame(rows)
+        return pd.DataFrame([t.to_dict() for t in self.trades])
     
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Convert to legacy dict format for backward compatibility.
-        
-        SESSION 11: Handles rejected_signals → rejected_trades conversion
-        """
+        """Convert to dict. Uses RejectedSignal.to_dict() directly (no legacy format)."""
         return {
             'all_trades': [t.to_dict() for t in self.trades],
             'closed_trades': [t.to_dict() for t in self.closed_trades],
             'open_trades': [t.to_dict() for t in self.open_trades],
-            'rejected_trades': [r.to_legacy_trade_dict() for r in self.rejected_signals],
+            'rejected_signals': [r.to_dict() for r in self.rejected_signals],
             'exit_stats': self.exits_by_reason,
             'risk_stats': {
                 'total_approved': self.risk_approved,
                 'total_rejected': self.risk_rejected,
                 'total_adjusted': self.risk_adjusted,
-                'approved': {},  # Legacy format - could be populated if needed
-                'rejected': {},  # Legacy format - could be populated if needed
-                'adjusted': {},  # Legacy format - could be populated if needed
             },
             'position_rejected_count': self.position_rejected,
             'trade_manager_metrics': self.trade_manager_metrics,
@@ -865,25 +725,10 @@ class TradeResult:
         }
     
     def to_json(self, indent: Optional[int] = None) -> str:
-        """
-        Serialize TradeResult to JSON string.
-        
-        Args:
-            indent: JSON indentation level (None for compact, 2 for readable)
-        
-        Returns:
-            JSON string representation
-        
-        Example:
-            result = simulator.simulate_trades(...)
-            json_str = result.to_json(indent=2)
-            with open('results.json', 'w') as f:
-                f.write(json_str)
-        """
+        """Serialize TradeResult to JSON string."""
         import json
         result_dict = self.to_dict()
         
-        # Convert pandas Timestamps to ISO format strings
         def default_handler(obj):
             if isinstance(obj, pd.Timestamp):
                 return obj.isoformat()
@@ -891,42 +736,8 @@ class TradeResult:
         
         return json.dumps(result_dict, indent=indent, default=default_handler)
     
-    @classmethod
-    def from_json(cls, json_str: str) -> 'TradeResult':
-        """
-        Deserialize TradeResult from JSON string.
-        
-        Args:
-            json_str: JSON string representation
-        
-        Returns:
-            TradeResult instance
-        
-        Example:
-            with open('results.json', 'r') as f:
-                json_str = f.read()
-            result = TradeResult.from_json(json_str)
-        """
-        import json
-        result_dict = json.loads(json_str)
-        
-        # Convert ISO format strings back to pandas Timestamps
-        for trade_dict in result_dict.get('all_trades', []):
-            if 'entry_time' in trade_dict and isinstance(trade_dict['entry_time'], str):
-                trade_dict['entry_time'] = pd.Timestamp(trade_dict['entry_time'])
-            if 'exit_time' in trade_dict and isinstance(trade_dict['exit_time'], str):
-                trade_dict['exit_time'] = pd.Timestamp(trade_dict['exit_time'])
-        
-        for reject_dict in result_dict.get('rejected_trades', []):
-            if 'entry_time' in reject_dict and isinstance(reject_dict['entry_time'], str):
-                reject_dict['entry_time'] = pd.Timestamp(reject_dict['entry_time'])
-            if 'rejection_time' in reject_dict and isinstance(reject_dict['rejection_time'], str):
-                reject_dict['rejection_time'] = pd.Timestamp(reject_dict['rejection_time'])
-        
-        return cls.from_simulator_output(result_dict)
-    
     def get_summary(self) -> str:
-        """Get human-readable summary"""
+        """Get human-readable summary."""
         return (
             f"TradeResult Summary:\n"
             f"  Total Entries: {self.total_entries}\n"
@@ -942,109 +753,6 @@ class TradeResult:
     
     def __str__(self) -> str:
         return self.get_summary()
-    
-    @classmethod
-    def from_simulator_output(
-        cls,
-        simulator_result: Dict[str, Any]
-    ) -> 'TradeResult':
-        """
-        Create TradeResult from trade_simulator.simulate_trades() output.
-        
-        Handles conversion from legacy dict-based format.
-        Used for backward compatibility.
-        """
-        # Convert trade dicts to Trade objects
-        all_trades_dicts = simulator_result.get('all_trades', [])
-        trades = []
-        
-        for trade_dict in all_trades_dicts:
-            if trade_dict.get('status') == 'REJECTED':
-                # Skip rejected trades (they're in rejected_entries)
-                continue
-            
-            # Create TradeEntry
-            direction = TradeDirection.from_string(trade_dict['direction'])
-            entry = TradeEntry(
-                entry_id=str(trade_dict['trade_id']),
-                trade_manager_id=trade_dict.get('trade_manager_trade_id'),
-                position_id=trade_dict.get('position_id'),
-                signal_id=trade_dict.get('signal_id'),
-                entry_time=trade_dict['entry_time'],
-                direction=direction,
-                entry_price=trade_dict['entry_price'],
-                stop_loss=trade_dict['sl_price'],
-                take_profit=trade_dict['tp_price'],
-                sl_distance=trade_dict.get('sl_distance', 0.0),
-                tp_distance=trade_dict.get('tp_distance', 0.0),
-                risk_reward_ratio=trade_dict.get('risk_reward_ratio', 0.0),
-                comment=trade_dict.get('comment'),
-            )
-            
-            # Create TradeExit if closed
-            exit_obj = None
-            if trade_dict.get('status') == 'CLOSED':
-                exit_reason = ExitReason.from_string(trade_dict['exit_reason'])
-                exit_obj = TradeExit(
-                    exit_id=f"{entry.entry_id}_EXIT",
-                    entry_id=entry.entry_id,
-                    exit_time=trade_dict['exit_time'],
-                    exit_price=trade_dict['exit_price'],
-                    exit_reason=exit_reason,
-                    pnl_points=trade_dict['pnl_points'],
-                    pnl_percent=trade_dict['pnl_percent'],
-                    duration_bars=trade_dict.get('duration_bars', 0),
-                    duration_minutes=trade_dict.get('duration_minutes', 0.0),
-                    is_win=trade_dict['is_win'],
-                    is_loss=trade_dict['is_loss'],
-                )
-            
-            trades.append(Trade(entry=entry, exit=exit_obj))
-        
-        # Get rejected entries (convert to RejectedSignal if needed)
-        rejected_entries = [
-            t for t in all_trades_dicts if t.get('status') == 'REJECTED'
-        ]
-        
-        # Calculate statistics
-        closed_trades = [t for t in trades if t.is_closed]
-        win_count = sum(1 for t in closed_trades if t.is_win)
-        loss_count = sum(1 for t in closed_trades if t.is_loss)
-        win_rate = (win_count / len(closed_trades) * 100) if closed_trades else 0.0
-        total_pnl = sum(t.pnl_points for t in closed_trades)
-        avg_pnl = total_pnl / len(closed_trades) if closed_trades else 0.0
-        
-        # Get exit statistics
-        exit_stats = simulator_result.get('exit_stats', {})
-        
-        # Get risk statistics
-        risk_stats = simulator_result.get('risk_stats', {})
-        
-        # Convert to RejectedSignal (temporary for backward compatibility)
-        rejected_signals_list = []
-        # For now, keep as empty list since we're returning contracts
-        
-        return cls(
-            trades=trades,
-            rejected_signals=rejected_signals_list,  # Empty for legacy compatibility
-            total_entries=len(all_trades_dicts),
-            total_opened=len(trades),
-            total_closed=len(closed_trades),
-            total_rejected=len(rejected_entries),
-            currently_open=len([t for t in trades if t.is_open]),
-            exits_by_reason=exit_stats,
-            risk_approved=risk_stats.get('total_approved', 0),
-            risk_rejected=risk_stats.get('total_rejected', 0),
-            risk_adjusted=risk_stats.get('total_adjusted', 0),
-            position_rejected=simulator_result.get('position_rejected_count', {}),
-            trade_manager_metrics=simulator_result.get('trade_manager_metrics', {}),
-            win_count=win_count,
-            loss_count=loss_count,
-            win_rate=win_rate,
-            total_pnl_points=total_pnl,
-            average_pnl_points=avg_pnl,
-            execution_mode=simulator_result.get('execution_mode', 'UNKNOWN'),
-        )
 
 
 # ============================================================================
@@ -1057,7 +765,6 @@ class TradeDecision:
     Trade manager decision.
     
     Maps to TradeManager.handle_signal() output.
-    Represents what action to take on a signal.
     """
     decision_type: DecisionType
     reason: str
@@ -1067,7 +774,7 @@ class TradeDecision:
     
     @classmethod
     def from_trade_manager_result(cls, result: Dict[str, Any]) -> 'TradeDecision':
-        """Create TradeDecision from TradeManager.handle_signal() output"""
+        """Create TradeDecision from TradeManager.handle_signal() output."""
         decision_type = DecisionType.from_string(result['action'])
         return cls(
             decision_type=decision_type,
@@ -1077,7 +784,7 @@ class TradeDecision:
         )
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for legacy compatibility"""
+        """Convert to dict."""
         return {
             'action': self.decision_type.name,
             'reason': self.reason,
@@ -1087,15 +794,12 @@ class TradeDecision:
     
     @property
     def is_open(self) -> bool:
-        """Should we open a new position?"""
         return self.decision_type in (DecisionType.OPEN, DecisionType.CLOSE_AND_REVERSE)
     
     @property
     def is_close(self) -> bool:
-        """Should we close existing positions?"""
         return self.decision_type in (DecisionType.CLOSE, DecisionType.CLOSE_AND_REVERSE)
     
     @property
     def is_reject(self) -> bool:
-        """Is this signal rejected?"""
         return self.decision_type == DecisionType.REJECT

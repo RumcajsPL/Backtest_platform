@@ -1,15 +1,23 @@
 """
 Config Schema Validation - Type-Safe Configuration
 
-Session 12 - Task 3
-Version: 1.0.3
+Version: 1.1.0
+Session: 20 Block C
 
-Provides type-safe configuration loading with validation.
-Replaces fragile dict-based configs with typed dataclasses.
+Changes from v1.0.3:
+- P0-CH0-2: Fixed max_risk_percentile validation range (0-100 → 0-5.0)
+             Added warning for values > 1.0
+- P1-CH0-1: All config dataclasses now frozen=True (DEC-004)
+- P1-CH0-2: Coerce Path objects at from_dict boundary, not in __post_init__
+- P1-CH0-4: Added filter_sequence: List[str] to FilterPipelineConfig
+- Added htf_ohlcv to DataPathsConfig (was missing — HTF data has no path)
+- Added ExecutionConfig dataclass for execution.mode
+- Renamed StrategyConfig.debug field to StrategyConfig.metadata (avoid "debug" name)
+- Added migration guard: mode="debug" raises ValueError with message (DEC-022)
 
 Design Principles:
 - Single Responsibility: Only config validation
-- Explicit Contracts: All config fields typed
+- Explicit Contracts: All config fields typed and frozen
 - Type Safety: Dataclasses with validation
 - Production-Ready: Fail fast with clear error messages
 - Performance-Driven: Validate once at startup
@@ -18,10 +26,13 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from enum import Enum
+import logging
 import re
 import yaml
 import pandas as pd
-from zoneinfo import ZoneInfo, available_timezones
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 
 class SpreadType(Enum):
@@ -42,16 +53,15 @@ class ErrorStrategy(Enum):
 # SPREAD CONFIGURATION
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class SpreadConfig:
     """Spread configuration for realistic execution"""
     enabled: bool
-    spread_type: str  # Will validate against SpreadType
+    spread_type: str      # Validated against SpreadType enum
     spread_value: float
-    
+
     def __post_init__(self):
         """Validate spread configuration"""
-        # Validate spread_type
         try:
             SpreadType(self.spread_type)
         except ValueError:
@@ -60,24 +70,23 @@ class SpreadConfig:
                 f"Invalid spread_type '{self.spread_type}'. "
                 f"Must be one of: {valid_types}"
             )
-        
-        # Validate spread_value
+
         if self.spread_value < 0:
             raise ValueError(
                 f"spread_value must be non-negative, got {self.spread_value}"
             )
-        
+
         if self.enabled and self.spread_value == 0:
             raise ValueError(
                 "spread_value cannot be 0 when spread is enabled"
             )
-    
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'SpreadConfig':
         """Create from dict with validation"""
         return cls(
-            enabled=d.get('enabled', False),
-            spread_type=d.get('spread_type', 'percentage'),
+            enabled=bool(d.get('enabled', False)),
+            spread_type=str(d.get('spread_type', 'percentage')),
             spread_value=float(d.get('spread_value', 0.0))
         )
 
@@ -86,37 +95,46 @@ class SpreadConfig:
 # RISK MANAGEMENT CONFIGURATION
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class RiskConfig:
     """Risk management configuration"""
     atr_length: int
     atr_multiplier_sl: float
     atr_multiplier_tp: float
     max_risk_percentile: float
-    
+
     def __post_init__(self):
         """Validate risk configuration"""
         if self.atr_length <= 0:
             raise ValueError(
                 f"atr_length must be positive, got {self.atr_length}"
             )
-        
+
         if self.atr_multiplier_sl <= 0:
             raise ValueError(
                 f"atr_multiplier_sl must be positive, got {self.atr_multiplier_sl}"
             )
-        
+
         if self.atr_multiplier_tp <= 0:
             raise ValueError(
                 f"atr_multiplier_tp must be positive, got {self.atr_multiplier_tp}"
             )
-        
-        if not (0 < self.max_risk_percentile <= 100):
+
+        # P0-CH0-2: Corrected range from (0, 100] to (0, 5.0]
+        # This field is a % of annual instrument range. Values > 1.0 are unusual.
+        if not (0 < self.max_risk_percentile <= 5.0):
             raise ValueError(
-                f"max_risk_percentile must be between 0 and 100, "
-                f"got {self.max_risk_percentile}"
+                f"max_risk_percentile must be between 0 and 5.0 (% of annual range), "
+                f"got {self.max_risk_percentile}. "
+                f"Typical values: 0.05–0.5. Maximum accepted: 5.0."
             )
-    
+
+        if self.max_risk_percentile > 1.0:
+            logger.warning(
+                f"max_risk_percentile={self.max_risk_percentile} is unusually high "
+                f"(>1.0% of annual range). Verify this is intentional."
+            )
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'RiskConfig':
         """Create from dict with validation"""
@@ -124,7 +142,37 @@ class RiskConfig:
             atr_length=int(d.get('atr_length', 14)),
             atr_multiplier_sl=float(d.get('atr_multiplier_sl', 2.0)),
             atr_multiplier_tp=float(d.get('atr_multiplier_tp', 4.0)),
-            max_risk_percentile=float(d.get('max_risk_percentile', 3.0))
+            max_risk_percentile=float(d.get('max_risk_percentile', 0.5))
+        )
+
+
+# ============================================================================
+# POSITION CONTROL CONFIGURATION
+# ============================================================================
+
+@dataclass(frozen=True)
+class PositionControlConfig:
+    """Position control rules"""
+    pyramiding_enabled: bool
+    close_on_opposite: bool
+    max_positions: int
+
+    def __post_init__(self):
+        if self.max_positions < 1:
+            raise ValueError(
+                f"max_positions must be >= 1, got {self.max_positions}"
+            )
+        if self.pyramiding_enabled and self.max_positions == 1:
+            raise ValueError(
+                "Pyramiding enabled but max_positions=1 (contradiction)"
+            )
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'PositionControlConfig':
+        return cls(
+            pyramiding_enabled=bool(d.get('pyramiding_enabled', False)),
+            close_on_opposite=bool(d.get('close_on_opposite', False)),
+            max_positions=int(d.get('max_positions', 1))
         )
 
 
@@ -132,36 +180,22 @@ class RiskConfig:
 # TRADE MANAGEMENT CONFIGURATION
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class TradeManagementConfig:
     """Trade management and position rules"""
     spread: SpreadConfig
     risk: RiskConfig
-    pyramiding_enabled: bool
-    close_on_opposite: bool
-    max_positions: int
-    
-    def __post_init__(self):
-        """Validate trade management configuration"""
-        if self.max_positions < 1:
-            raise ValueError(
-                f"max_positions must be >= 1, got {self.max_positions}"
-            )
-        
-        if self.pyramiding_enabled and self.max_positions == 1:
-            raise ValueError(
-                "Pyramiding enabled but max_positions=1 (contradiction)"
-            )
-    
+    position_control: PositionControlConfig
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'TradeManagementConfig':
         """Create from dict with validation"""
         return cls(
             spread=SpreadConfig.from_dict(d.get('spread', {})),
             risk=RiskConfig.from_dict(d.get('risk', {})),
-            pyramiding_enabled=d.get('pyramiding_enabled', False),
-            close_on_opposite=d.get('close_on_opposite', True),
-            max_positions=int(d.get('max_positions', 1))
+            position_control=PositionControlConfig.from_dict(
+                d.get('position_control', {})
+            )
         )
 
 
@@ -169,15 +203,14 @@ class TradeManagementConfig:
 # FILTER CONFIGURATION
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class FilterConfig:
-    """Filter configuration"""
+    """Single filter configuration"""
     enabled: bool
     error_strategy: str = "pass_through"
     config: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
-        """Validate filter configuration"""
         try:
             ErrorStrategy(self.error_strategy)
         except ValueError:
@@ -186,26 +219,28 @@ class FilterConfig:
                 f"Invalid error_strategy '{self.error_strategy}'. "
                 f"Must be one of: {valid_strategies}"
             )
-    
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'FilterConfig':
-        """Create from dict with validation"""
+        # All filter params except 'enabled' and 'error_strategy' go into config
+        known_keys = {'enabled', 'error_strategy'}
+        config_params = {k: v for k, v in d.items() if k not in known_keys}
         return cls(
-            enabled=d.get('enabled', True),
-            error_strategy=d.get('error_strategy', 'pass_through'),
-            config=d.get('config', {})
+            enabled=bool(d.get('enabled', True)),
+            error_strategy=str(d.get('error_strategy', 'pass_through')),
+            config=config_params
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class FilterPipelineConfig:
     """Complete filter pipeline configuration"""
     time_filters: Dict[str, FilterConfig]
     technical_filters: Dict[str, FilterConfig]
+    filter_sequence: List[str]           # P1-CH0-4: was missing
     default_error_strategy: str = "pass_through"
-    
+
     def __post_init__(self):
-        """Validate pipeline configuration"""
         try:
             ErrorStrategy(self.default_error_strategy)
         except ValueError:
@@ -214,22 +249,22 @@ class FilterPipelineConfig:
                 f"Invalid default_error_strategy '{self.default_error_strategy}'. "
                 f"Must be one of: {valid_strategies}"
             )
-    
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'FilterPipelineConfig':
-        """Create from dict with validation"""
-        time_filters = {}
-        for name, config in d.get('time_filters', {}).items():
-            time_filters[name] = FilterConfig.from_dict(config)
-        
-        technical_filters = {}
-        for name, config in d.get('technical_filters', {}).items():
-            technical_filters[name] = FilterConfig.from_dict(config)
-        
+        time_filters = {
+            name: FilterConfig.from_dict(cfg)
+            for name, cfg in d.get('time_filters', {}).items()
+        }
+        technical_filters = {
+            name: FilterConfig.from_dict(cfg)
+            for name, cfg in d.get('technical_filters', {}).items()
+        }
         return cls(
             time_filters=time_filters,
             technical_filters=technical_filters,
-            default_error_strategy=d.get('default_error_strategy', 'pass_through')
+            filter_sequence=list(d.get('filter_sequence', [])),
+            default_error_strategy=str(d.get('default_error_strategy', 'pass_through'))
         )
 
 
@@ -237,110 +272,199 @@ class FilterPipelineConfig:
 # DATA CONFIGURATION
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class DataPathsConfig:
     """Data file paths configuration"""
     strategy_ohlcv: Path
+    htf_ohlcv: Optional[Path] = None    # Added: was missing in v1.0.3
     ltf_ohlcv: Optional[Path] = None
     artf_ohlcv: Optional[Path] = None
-    
+
     def __post_init__(self):
-        """Validate paths"""
-        # Ensure Path objects
-        if not isinstance(self.strategy_ohlcv, Path):
-            object.__setattr__(self, 'strategy_ohlcv', Path(self.strategy_ohlcv))
-        
-        if self.ltf_ohlcv and not isinstance(self.ltf_ohlcv, Path):
-            object.__setattr__(self, 'ltf_ohlcv', Path(self.ltf_ohlcv))
-        
-        if self.artf_ohlcv and not isinstance(self.artf_ohlcv, Path):
-            object.__setattr__(self, 'artf_ohlcv', Path(self.artf_ohlcv))
-    
+        """Validate that strategy_ohlcv is present."""
+        # Path coercion happens at from_dict boundary (P1-CH0-2)
+        # __post_init__ only validates, does not mutate
+        if self.strategy_ohlcv is None:
+            raise ValueError("data.paths.strategy_ohlcv is required")
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'DataPathsConfig':
-        """Create from dict with validation"""
+        """Create from dict. Path coercion happens here, not in __post_init__."""
+        if 'strategy_ohlcv' not in d or not d['strategy_ohlcv']:
+            raise ValueError(
+                "data.paths.strategy_ohlcv is required and cannot be empty"
+            )
         return cls(
             strategy_ohlcv=Path(d['strategy_ohlcv']),
+            htf_ohlcv=Path(d['htf_ohlcv']) if d.get('htf_ohlcv') else None,
             ltf_ohlcv=Path(d['ltf_ohlcv']) if d.get('ltf_ohlcv') else None,
             artf_ohlcv=Path(d['artf_ohlcv']) if d.get('artf_ohlcv') else None
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class DateRangeConfig:
     """Date range configuration"""
     start: str
     end: str
-    
+
+    # Strict format: YYYY-MM-DD HH:MM:SS
+    _DATETIME_PATTERN: str = field(
+        default=r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$',
+        init=False,
+        repr=False,
+        compare=False
+    )
+
     def __post_init__(self):
-        """Validate datetime format and range"""
-        # Strict validation: require YYYY-MM-DD HH:MM:SS format
-        # Pattern: 4 digits, dash, 2 digits, dash, 2 digits, space, 2 digits, colon, 2 digits, colon, 2 digits
-        datetime_pattern = r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
-        
-        # Validate start datetime format
-        if not re.match(datetime_pattern, self.start):
+        pattern = r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
+
+        if not re.match(pattern, self.start):
             raise ValueError(
                 f"Invalid datetime format for start: '{self.start}'. "
-                f"Must be 'YYYY-MM-DD HH:MM:SS' format (e.g., '2025-01-15 10:30:00')"
+                f"Required: 'YYYY-MM-DD HH:MM:SS' (e.g. '2025-01-15 08:00:00')"
             )
-        
-        # Validate end datetime format
-        if not re.match(datetime_pattern, self.end):
+        if not re.match(pattern, self.end):
             raise ValueError(
                 f"Invalid datetime format for end: '{self.end}'. "
-                f"Must be 'YYYY-MM-DD HH:MM:SS' format (e.g., '2025-12-31 23:59:59')"
+                f"Required: 'YYYY-MM-DD HH:MM:SS' (e.g. '2025-12-31 21:00:00')"
             )
-        
-        # Parse with pandas for range validation
+
         try:
             start_ts = pd.Timestamp(self.start)
             end_ts = pd.Timestamp(self.end)
         except Exception as e:
-            raise ValueError(
-                f"Invalid datetime values. Error: {e}"
-            ) from e
-        
-        # Validate date range
+            raise ValueError(f"Invalid datetime values: {e}") from e
+
         if start_ts >= end_ts:
             raise ValueError(
-                f"start datetime ({self.start}) must be before end datetime ({self.end})"
+                f"start ({self.start}) must be before end ({self.end})"
             )
-    
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'DateRangeConfig':
-        """Create from dict with validation"""
-        return cls(
-            start=d['start'],
-            end=d['end']
-        )
+        if 'start' not in d or 'end' not in d:
+            raise ValueError(
+                "data.date_range requires both 'start' and 'end' keys"
+            )
+        return cls(start=str(d['start']), end=str(d['end']))
 
 
-@dataclass
+@dataclass(frozen=True)
 class DataConfig:
     """Complete data configuration"""
     paths: DataPathsConfig
     date_range: DateRangeConfig
-    timezone: str = "UTC"
-    
-    def __post_init__(self):
-        """Validate data configuration"""
-        # Validate timezone
-        try:
-            ZoneInfo(self.timezone)
-        except Exception:
-            raise ValueError(
-                f"Invalid timezone '{self.timezone}'. "
-                f"Must be a valid timezone (e.g., 'UTC', 'America/New_York')"
-            )
-    
+    # Informational only — data is already in correct timezone (DEC-035).
+    # No conversion is performed at load time.
+    timezone: str = "CET"
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'DataConfig':
-        """Create from dict with validation"""
         return cls(
             paths=DataPathsConfig.from_dict(d.get('paths', {})),
             date_range=DateRangeConfig.from_dict(d.get('date_range', {})),
-            timezone=d.get('timezone', 'UTC')
+            timezone=str(d.get('timezone', 'CET'))
+        )
+
+
+# ============================================================================
+# EXECUTION CONFIGURATION
+# ============================================================================
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    """Execution mode configuration"""
+    mode: str = "core"
+
+    def __post_init__(self):
+        if self.mode == "debug":
+            raise ValueError(
+                "Execution mode 'debug' has been renamed to 'analytics' "
+                "in the new architecture (DEC-022). "
+                "Update your YAML: execution.mode: analytics"
+            )
+        valid_modes = {"core", "analytics"}
+        if self.mode not in valid_modes:
+            raise ValueError(
+                f"Invalid execution.mode '{self.mode}'. "
+                f"Must be one of: {valid_modes}"
+            )
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'ExecutionConfig':
+        return cls(mode=str(d.get('mode', 'core')))
+
+
+# ============================================================================
+# OUTPUT CONFIGURATION
+# ============================================================================
+
+@dataclass(frozen=True)
+class ReportOutputConfig:
+    """Report output settings (analytics mode only)"""
+    enabled: bool = True
+    output_dir: Path = Path("outputs/strategies/reports")
+    theme: str = "dark"
+    chart_height_px: int = 300
+    brand_name: str = "Strategy"
+    include_raw_data: bool = True
+
+    def __post_init__(self):
+        if self.theme not in {"dark", "light"}:
+            raise ValueError(
+                f"output.reports.theme must be 'dark' or 'light', got '{self.theme}'"
+            )
+        if not (100 <= self.chart_height_px <= 800):
+            raise ValueError(
+                f"output.reports.chart_height_px must be 100–800, "
+                f"got {self.chart_height_px}"
+            )
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'ReportOutputConfig':
+        return cls(
+            enabled=bool(d.get('enabled', True)),
+            output_dir=Path(d.get('output_dir', 'outputs/strategies/reports')),
+            theme=str(d.get('theme', 'dark')),
+            chart_height_px=int(d.get('chart_height_px', 300)),
+            brand_name=str(d.get('brand_name', 'Strategy')),
+            include_raw_data=bool(d.get('include_raw_data', True))
+        )
+
+
+@dataclass(frozen=True)
+class LoggingOutputConfig:
+    """Logging output settings"""
+    level: str = "INFO"
+    output_dir: Path = Path("outputs/strategies/logs")
+
+    def __post_init__(self):
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR"}
+        if self.level not in valid_levels:
+            raise ValueError(
+                f"output.logging.level must be one of {valid_levels}, got '{self.level}'"
+            )
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'LoggingOutputConfig':
+        return cls(
+            level=str(d.get('level', 'INFO')).upper(),
+            output_dir=Path(d.get('output_dir', 'outputs/strategies/logs'))
+        )
+
+
+@dataclass(frozen=True)
+class OutputConfig:
+    """Complete output configuration"""
+    reports: ReportOutputConfig = field(default_factory=ReportOutputConfig)
+    logging: LoggingOutputConfig = field(default_factory=LoggingOutputConfig)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'OutputConfig':
+        return cls(
+            reports=ReportOutputConfig.from_dict(d.get('reports', {})),
+            logging=LoggingOutputConfig.from_dict(d.get('logging', {}))
         )
 
 
@@ -348,62 +472,77 @@ class DataConfig:
 # COMPLETE STRATEGY CONFIGURATION
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class StrategyConfig:
-    """Complete strategy configuration (type-safe)"""
+    """
+    Complete strategy configuration (type-safe, frozen).
+    
+    Loaded from strategy_template.yaml via from_yaml().
+    All sub-configs are validated at construction time — fail fast.
+    """
     data: DataConfig
+    execution: ExecutionConfig
     trade_management: TradeManagementConfig
     filters: FilterPipelineConfig
-    
-    # Optional sections
-    output: Dict[str, Any] = field(default_factory=dict)
-    debug: Dict[str, Any] = field(default_factory=dict)
-    
+    output: OutputConfig = field(default_factory=OutputConfig)
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'StrategyConfig':
         """Create from dict with full validation"""
         return cls(
             data=DataConfig.from_dict(d.get('data', {})),
+            execution=ExecutionConfig.from_dict(d.get('execution', {})),
             trade_management=TradeManagementConfig.from_dict(
                 d.get('trade_management', {})
             ),
             filters=FilterPipelineConfig.from_dict(d.get('filters', {})),
-            output=d.get('output', {}),
-            debug=d.get('debug', {})
+            output=OutputConfig.from_dict(d.get('output', {}))
         )
-    
+
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> 'StrategyConfig':
         """
         Load and validate config from YAML file.
-        
+
         Args:
-            yaml_path: Path to YAML config file
-        
+            yaml_path: Path to strategy YAML config file
+
         Returns:
             Validated StrategyConfig
-        
+
         Raises:
             FileNotFoundError: If config file doesn't exist
-            ValueError: If validation fails
-            yaml.YAMLError: If YAML parsing fails
-        
-        Example:
-            config = StrategyConfig.from_yaml(Path("config.yaml"))
-            print(f"Max risk: {config.trade_management.risk.max_risk_percentile}%")
+            ValueError: If any field fails validation
+            yaml.YAMLError: If YAML is malformed
         """
         if not yaml_path.exists():
-            raise FileNotFoundError(f"Config file not found: {yaml_path}")
-        
+            raise FileNotFoundError(
+                f"Config file not found: {yaml_path}. "
+                f"Check the path or copy from configs/strategy_template.yaml"
+            )
+
         with open(yaml_path, 'r') as f:
             raw_config = yaml.safe_load(f)
-        
+
+        if not isinstance(raw_config, dict):
+            raise ValueError(
+                f"Config file {yaml_path} must be a YAML mapping, "
+                f"got {type(raw_config).__name__}"
+            )
+
         try:
-            return cls.from_dict(raw_config)
+            config = cls.from_dict(raw_config)
         except Exception as e:
             raise ValueError(
-                f"Config validation failed for {yaml_path}: {e}"
+                f"Config validation failed for {yaml_path}:\n  {e}"
             ) from e
+
+        logger.debug(
+            f"Config loaded: {yaml_path} | "
+            f"mode={config.execution.mode} | "
+            f"range={config.data.date_range.start} → {config.data.date_range.end}"
+        )
+        return config
 
 
 # ============================================================================
@@ -412,19 +551,19 @@ class StrategyConfig:
 
 def validate_config(config_path: Path) -> StrategyConfig:
     """
-    Validate configuration file and return typed config.
-    
+    Validate a YAML config file and return typed config.
+
     Args:
         config_path: Path to config YAML
-    
+
     Returns:
         Validated StrategyConfig
-    
+
     Example:
         try:
-            config = validate_config(Path("config.yaml"))
+            config = validate_config(Path("configs/strategy_template.yaml"))
             print("✅ Config valid!")
-        except ValueError as e:
+        except (FileNotFoundError, ValueError) as e:
             print(f"❌ Config invalid: {e}")
     """
     return StrategyConfig.from_yaml(config_path)
@@ -436,25 +575,23 @@ def check_config_compatibility(
 ) -> bool:
     """
     Check if config has required features enabled.
-    
+
     Args:
         config: Strategy configuration
-        required_features: List of required features
-            (e.g., ["ltf_data", "spread", "pyramiding"])
-    
+        required_features: Features to check.
+            Supported: "htf_data", "ltf_data", "artf_data", "spread", "pyramiding"
+
     Returns:
-        True if all required features present
-    
-    Example:
-        config = StrategyConfig.from_yaml(path)
-        if check_config_compatibility(config, ["ltf_data", "spread"]):
-            print("✅ Config compatible with LTF execution")
+        True if all required features are present and enabled
     """
     if required_features is None:
         return True
-    
+
     for feature in required_features:
-        if feature == "ltf_data":
+        if feature == "htf_data":
+            if config.data.paths.htf_ohlcv is None:
+                return False
+        elif feature == "ltf_data":
             if config.data.paths.ltf_ohlcv is None:
                 return False
         elif feature == "artf_data":
@@ -464,143 +601,7 @@ def check_config_compatibility(
             if not config.trade_management.spread.enabled:
                 return False
         elif feature == "pyramiding":
-            if not config.trade_management.pyramiding_enabled:
+            if not config.trade_management.position_control.pyramiding_enabled:
                 return False
-    
+
     return True
-
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == "__main__":
-    import sys
-    
-    print("=" * 70)
-    print("CONFIG SCHEMA VALIDATION - DEMO")
-    print("=" * 70)
-    
-    # Example 1: Valid config
-    print("\n1️⃣  Testing VALID config...")
-    valid_config = {
-        'data': {
-            'paths': {
-                'strategy_ohlcv': 'data/strategy.parquet',
-                'ltf_ohlcv': 'data/ltf.parquet',
-            },
-            'date_range': {
-                'start': '2025-01-01 00:00:00',  # Now with time
-                'end': '2025-12-31 23:59:59'      # Now with time
-            }
-        },
-        'trade_management': {
-            'spread': {
-                'enabled': True,
-                'spread_type': 'percentage',
-                'spread_value': 0.0001
-            },
-            'risk': {
-                'atr_length': 14,
-                'atr_multiplier_sl': 2.0,
-                'atr_multiplier_tp': 4.0,
-                'max_risk_percentile': 3.0
-            },
-            'pyramiding_enabled': True,
-            'close_on_opposite': True,
-            'max_positions': 3
-        },
-        'filters': {
-            'time_filters': {},
-            'technical_filters': {}
-        }
-    }
-    
-    try:
-        config = StrategyConfig.from_dict(valid_config)
-        print("✅ Valid config loaded successfully!")
-        print(f"   - ATR Length: {config.trade_management.risk.atr_length}")
-        print(f"   - Max Risk: {config.trade_management.risk.max_risk_percentile}%")
-        print(f"   - Spread Enabled: {config.trade_management.spread.enabled}")
-        print(f"   - Date Range: {config.data.date_range.start} to {config.data.date_range.end}")
-    except ValueError as e:
-        print(f"❌ Unexpected error: {e}")
-        sys.exit(1)
-    
-    # Example 2: Invalid spread_type
-    print("\n2️⃣  Testing INVALID spread_type...")
-    invalid_spread = valid_config.copy()
-    invalid_spread['trade_management']['spread']['spread_type'] = 'invalid_type'
-    
-    try:
-        config = StrategyConfig.from_dict(invalid_spread)
-        print("❌ Should have failed validation!")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"✅ Correctly rejected: {e}")
-    
-    # Example 3: Invalid datetime format (missing time)
-    print("\n3️⃣  Testing INVALID datetime format (missing time)...")
-    invalid_dates = valid_config.copy()
-    invalid_dates['data']['date_range']['start'] = '2025-01-01'  # Missing time
-    
-    try:
-        config = StrategyConfig.from_dict(invalid_dates)
-        print("❌ Should have failed validation!")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"✅ Correctly rejected: {e}")
-    
-    # Example 4: Invalid datetime format (wrong separator)
-    print("\n4️⃣  Testing INVALID datetime format (wrong separator)...")
-    invalid_dates = valid_config.copy()
-    invalid_dates['data']['date_range']['start'] = '2025/01/01 00:00:00'  # Wrong date separator
-    
-    try:
-        config = StrategyConfig.from_dict(invalid_dates)
-        print("❌ Should have failed validation!")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"✅ Correctly rejected: {e}")
-    
-    # Example 5: Invalid datetime format (MM/DD/YYYY)
-    print("\n5️⃣  Testing INVALID datetime format (MM/DD/YYYY)...")
-    invalid_dates = valid_config.copy()
-    invalid_dates['data']['date_range']['start'] = '01/01/2025 00:00:00'  # Wrong format
-    
-    try:
-        config = StrategyConfig.from_dict(invalid_dates)
-        print("❌ Should have failed validation!")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"✅ Correctly rejected: {e}")
-    
-    # Example 6: Invalid date range
-    print("\n6️⃣  Testing INVALID date range...")
-    invalid_range = valid_config.copy()
-    invalid_range['data']['date_range']['start'] = '2025-12-31 23:59:59'
-    invalid_range['data']['date_range']['end'] = '2025-01-01 00:00:00'
-    
-    try:
-        config = StrategyConfig.from_dict(invalid_range)
-        print("❌ Should have failed validation!")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"✅ Correctly rejected: {e}")
-    
-    # Example 7: Pyramiding contradiction
-    print("\n7️⃣  Testing PYRAMIDING contradiction...")
-    invalid_pyramiding = valid_config.copy()
-    invalid_pyramiding['trade_management']['pyramiding_enabled'] = True
-    invalid_pyramiding['trade_management']['max_positions'] = 1
-    
-    try:
-        config = StrategyConfig.from_dict(invalid_pyramiding)
-        print("❌ Should have failed validation!")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"✅ Correctly rejected: {e}")
-    
-    print("\n" + "=" * 70)
-    print("✅ ALL VALIDATION TESTS PASSED!")
-    print("=" * 70)
