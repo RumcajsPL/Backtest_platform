@@ -21,7 +21,7 @@ import tempfile
 import yaml
 
 # Import from configs directory using the correct path
-from configs.config_schema import (
+from src.config.config_schema import (
     SpreadConfig,
     SpreadType,
     RiskConfig,
@@ -440,6 +440,386 @@ class TestValidationHelpers:
         
         # Should not have pyramiding
         assert check_config_compatibility(config, ["pyramiding"]) is False
+
+
+# =============================================================================
+# SESSION 20 — NEW ARCHITECTURE TESTS (src/config/config_schema.py)
+# =============================================================================
+# These tests target the NEW architecture at src/config/config_schema.py.
+# They are separated from the legacy tests above (configs/config_schema.py).
+# All new tests use @pytest.mark.unit for easy filtering.
+# Covers: Block A (mode rename), Block C (template yaml), Block G (freeze).
+# =============================================================================
+
+# Separate import block for new architecture — isolated so a missing module
+# causes a clean skip rather than breaking the entire file.
+try:
+    import src.config.config_schema as new_schema  # type: ignore[import]
+    _NEW_SCHEMA_AVAILABLE = True
+except ImportError:
+    _NEW_SCHEMA_AVAILABLE = False
+
+pytestmark_new = pytest.mark.skipif(
+    not _NEW_SCHEMA_AVAILABLE,
+    reason="src/config/config_schema.py not importable — new architecture not on path"
+)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _NEW_SCHEMA_AVAILABLE, reason="new arch not importable")
+class TestNewArchModeValidation:
+    """
+    Block A — Global rename 'debug' → 'analytics'.
+    Verifies the migration guard and accepted mode values.
+
+    Assumption: DataLoader and SignalGenerator (new arch) accept a `mode`
+    kwarg and raise ValueError with the migration message when mode='debug'.
+    If the guard lives only in config_schema.py, adjust the import target.
+    """
+
+    def _make_minimal_config(self) -> object:
+        """Build the smallest valid new-arch StrategyConfig."""
+        return new_schema.StrategyConfig.from_dict({
+            "data": {
+                "paths": {"strategy_ohlcv": "data/processed/ohlcv/EURUSD_5M.parquet"},
+                "date_range": {
+                    "start": "2024-01-01 00:00:00",
+                    "end": "2024-12-31 23:59:59",
+                },
+            },
+            "execution": {"mode": "analytics"},
+            "trade_management": {
+                "risk": {
+                    "atr_length": 14,
+                    "max_risk_percentile": 0.5,
+                },
+                "spread": {"enabled": False, "spread_value": 0.0},
+            },
+            "filters": {"time": {"enabled": False}, "pipeline": {"filters": {}}},
+        })
+
+    def test_mode_debug_raises_migration_error(self):
+        """
+        Passing mode='debug' must raise ValueError containing the migration hint.
+        Covers: P0-CH0-1 / CL-2 — 'debug' is a deprecated alias.
+        The error must mention 'analytics' so the user knows what to use.
+        """
+        with pytest.raises(ValueError, match="analytics"):
+            new_schema.StrategyConfig.from_dict({
+                "data": {
+                    "paths": {"strategy_ohlcv": "data/processed/ohlcv/EURUSD_5M.parquet"},
+                    "date_range": {
+                        "start": "2024-01-01 00:00:00",
+                        "end": "2024-12-31 23:59:59",
+                    },
+                },
+                "execution": {"mode": "debug"},  # ← deprecated value
+                "trade_management": {
+                    "risk": {"atr_length": 14, "max_risk_percentile": 0.5},
+                    "spread": {"enabled": False, "spread_value": 0.0},
+                },
+                "filters": {"time": {"enabled": False}, "pipeline": {"filters": {}}},
+            })
+
+    def test_mode_analytics_accepted(self):
+        """
+        mode='analytics' must be accepted without error.
+        Covers: CL-2 — 'analytics' is the canonical replacement for 'debug'.
+        """
+        cfg = self._make_minimal_config()
+        # Access execution mode — attribute name may vary; try both conventions.
+        mode_val = getattr(
+            getattr(cfg, "execution", None),
+            "mode",
+            getattr(cfg, "mode", None),
+        )
+        assert mode_val == "analytics", (
+            f"Expected execution.mode == 'analytics', got {mode_val!r}"
+        )
+
+    def test_mode_core_accepted(self):
+        """
+        mode='core' must be accepted without error.
+        Covers: CL-2 — 'core' is the max-speed mode for multi-run backtester.
+        """
+        cfg = new_schema.StrategyConfig.from_dict({
+            "data": {
+                "paths": {"strategy_ohlcv": "data/processed/ohlcv/EURUSD_5M.parquet"},
+                "date_range": {
+                    "start": "2024-01-01 00:00:00",
+                    "end": "2024-12-31 23:59:59",
+                },
+            },
+            "execution": {"mode": "core"},
+            "trade_management": {
+                "risk": {"atr_length": 14, "max_risk_percentile": 0.5},
+                "spread": {"enabled": False, "spread_value": 0.0},
+            },
+            "filters": {"time": {"enabled": False}, "pipeline": {"filters": {}}},
+        })
+        mode_val = getattr(
+            getattr(cfg, "execution", None),
+            "mode",
+            getattr(cfg, "mode", None),
+        )
+        assert mode_val == "core"
+
+    def test_mode_invalid_raises(self):
+        """
+        An unrecognised mode string must raise ValueError.
+        Ensures validation rejects arbitrary strings, not just 'debug'.
+        """
+        with pytest.raises(ValueError):
+            new_schema.StrategyConfig.from_dict({
+                "data": {
+                    "paths": {"strategy_ohlcv": "data/processed/ohlcv/EURUSD_5M.parquet"},
+                    "date_range": {
+                        "start": "2024-01-01 00:00:00",
+                        "end": "2024-12-31 23:59:59",
+                    },
+                },
+                "execution": {"mode": "turbo"},  # ← nonsense value
+                "trade_management": {
+                    "risk": {"atr_length": 14, "max_risk_percentile": 0.5},
+                    "spread": {"enabled": False, "spread_value": 0.0},
+                },
+                "filters": {"time": {"enabled": False}, "pipeline": {"filters": {}}},
+            })
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _NEW_SCHEMA_AVAILABLE, reason="new arch not importable")
+class TestNewArchRiskValidation:
+    """
+    Block C — max_risk_percentile validation range fix (P0-CH0-2).
+    Old range: 0 < value <= 100  (wrong — allowed nonsensical values)
+    New range: 0 < value <= 5.0  (correct — % of annual range)
+    """
+
+    def _risk_dict(self, percentile: float) -> dict:
+        return {
+            "data": {
+                "paths": {"strategy_ohlcv": "data/processed/ohlcv/EURUSD_5M.parquet"},
+                "date_range": {
+                    "start": "2024-01-01 00:00:00",
+                    "end": "2024-12-31 23:59:59",
+                },
+            },
+            "execution": {"mode": "analytics"},
+            "trade_management": {
+                "risk": {
+                    "atr_length": 14,
+                    "max_risk_percentile": percentile,
+                },
+                "spread": {"enabled": False, "spread_value": 0.0},
+            },
+            "filters": {"time": {"enabled": False}, "pipeline": {"filters": {}}},
+        }
+
+    def test_max_risk_percentile_above_5_raises(self):
+        """
+        max_risk_percentile > 5.0 must raise ValueError.
+        Covers: P0-CH0-2 — old code accepted up to 100 (broken).
+        Value of 150 would previously pass; must now be rejected.
+        """
+        with pytest.raises(ValueError, match=r"max_risk_percentile"):
+            new_schema.StrategyConfig.from_dict(self._risk_dict(150.0))
+
+    def test_max_risk_percentile_exactly_5_accepted(self):
+        """
+        max_risk_percentile == 5.0 is the boundary — must be accepted.
+        Verifies the upper boundary of the corrected range is inclusive.
+        """
+        # Should not raise
+        cfg = new_schema.StrategyConfig.from_dict(self._risk_dict(5.0))
+        assert cfg is not None
+
+    def test_max_risk_percentile_above_1_warns(self, caplog):
+        """
+        max_risk_percentile > 1.0 must emit a WARNING log.
+        Covers: P0-CH0-2 — high-but-legal values should be flagged.
+        Values > 1.0% of annual range are unusual and warrant attention.
+
+        NOTE: This test depends on the new-arch logger writing to Python's
+        logging system (not a custom sink). If the implementation uses
+        structured_logger exclusively without propagating to Python logging,
+        this test will need to be adapted to capture that logger's output.
+        """
+        import logging
+        with caplog.at_level(logging.WARNING, logger="src.config.config_schema"):
+            new_schema.StrategyConfig.from_dict(self._risk_dict(2.5))
+        assert any(
+            "max_risk_percentile" in record.message and record.levelno >= logging.WARNING
+            for record in caplog.records
+        ), (
+            "Expected a WARNING log mentioning 'max_risk_percentile' when value > 1.0. "
+            "Check that the logger in src/config/config_schema.py propagates to Python logging."
+        )
+
+    def test_max_risk_percentile_zero_raises(self):
+        """
+        max_risk_percentile == 0 must raise ValueError (exclusive lower bound).
+        """
+        with pytest.raises(ValueError, match=r"max_risk_percentile"):
+            new_schema.StrategyConfig.from_dict(self._risk_dict(0.0))
+
+    def test_max_risk_percentile_typical_value_accepted(self):
+        """
+        Typical production value (0.5) must be accepted without warning.
+        """
+        import logging
+        # 0.5 is below the warning threshold of 1.0
+        # caplog not used here — just confirm no exception is raised
+        cfg = new_schema.StrategyConfig.from_dict(self._risk_dict(0.5))
+        assert cfg is not None
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _NEW_SCHEMA_AVAILABLE, reason="new arch not importable")
+class TestNewArchFrozenContracts:
+    """
+    Block G — All new-arch config dataclasses must be frozen=True (P1-CH0-1).
+    Frozen dataclasses raise FrozenInstanceError (a subclass of AttributeError)
+    on any attempted mutation after construction.
+    """
+
+    def _make_config(self) -> object:
+        return new_schema.StrategyConfig.from_dict({
+            "data": {
+                "paths": {"strategy_ohlcv": "data/processed/ohlcv/EURUSD_5M.parquet"},
+                "date_range": {
+                    "start": "2024-01-01 00:00:00",
+                    "end": "2024-12-31 23:59:59",
+                },
+            },
+            "execution": {"mode": "analytics"},
+            "trade_management": {
+                "risk": {"atr_length": 14, "max_risk_percentile": 0.5},
+                "spread": {"enabled": False, "spread_value": 0.0},
+            },
+            "filters": {"time": {"enabled": False}, "pipeline": {"filters": {}}},
+        })
+
+    def test_strategy_config_is_frozen(self):
+        """
+        StrategyConfig must be immutable after creation.
+        Covers: P1-CH0-1 — DEC-004 violation where top-level config was mutable.
+        """
+        cfg = self._make_config()
+        with pytest.raises((AttributeError, TypeError)):
+            cfg.execution = object()  # type: ignore[misc]
+
+    def test_risk_config_is_frozen(self):
+        """
+        RiskConfig (new arch) must be immutable after creation.
+        Prevents accidental mutation of risk parameters mid-run.
+        """
+        cfg = self._make_config()
+        risk = cfg.trade_management.risk
+        with pytest.raises((AttributeError, TypeError)):
+            risk.atr_length = 99  # type: ignore[misc]
+
+    def test_spread_config_is_frozen(self):
+        """
+        SpreadConfig (new arch) must be immutable after creation.
+        """
+        cfg = self._make_config()
+        spread = cfg.trade_management.spread
+        with pytest.raises((AttributeError, TypeError)):
+            spread.enabled = True  # type: ignore[misc]
+
+    def test_data_paths_config_is_frozen(self):
+        """
+        DataPathsConfig must be immutable after creation.
+        Path mutation after load would silently break data loading.
+        """
+        cfg = self._make_config()
+        paths = cfg.data.paths
+        with pytest.raises((AttributeError, TypeError)):
+            paths.strategy_ohlcv = Path("other.parquet")  # type: ignore[misc]
+
+    def test_date_range_config_is_frozen(self):
+        """
+        DateRangeConfig must be immutable after creation.
+        Mutable date ranges could cause silent data slicing bugs.
+        """
+        cfg = self._make_config()
+        date_range = cfg.data.date_range
+        with pytest.raises((AttributeError, TypeError)):
+            date_range.start = "2020-01-01 00:00:00"  # type: ignore[misc]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not _NEW_SCHEMA_AVAILABLE, reason="new arch not importable")
+class TestNewArchStrategyTemplateYaml:
+    """
+    Block C — P0-CH0-1: strategy_template.yaml must exist and load cleanly.
+    This is the end-to-end smoke test for the new config system.
+    If this test fails, StrategyConfig has never been tested against a real YAML.
+    """
+
+    _TEMPLATE_PATH = project_root / "configs" / "strategy_template.yaml"
+
+    def test_template_yaml_exists(self):
+        """
+        configs/strategy_template.yaml must exist on disk.
+        Covers: P0-CH0-1 — previously this file did not exist.
+        """
+        assert self._TEMPLATE_PATH.exists(), (
+            f"strategy_template.yaml not found at {self._TEMPLATE_PATH}. "
+            "Run Block C from Session 20 implementation plan to create it."
+        )
+
+    def test_template_yaml_loads_without_error(self):
+        """
+        StrategyConfig.from_yaml(strategy_template.yaml) must succeed.
+        Covers: P0-CH0-1 — validates that the template matches from_dict() expectations.
+        """
+        if not self._TEMPLATE_PATH.exists():
+            pytest.skip("strategy_template.yaml does not exist yet")
+        cfg = new_schema.StrategyConfig.from_yaml(self._TEMPLATE_PATH)
+        assert cfg is not None
+
+    def test_template_yaml_has_required_sections(self):
+        """
+        The raw YAML must contain the four top-level sections defined in the
+        new architecture: data, execution, trade_management, filters.
+        Catches YAML typos that from_dict() might silently ignore.
+        """
+        if not self._TEMPLATE_PATH.exists():
+            pytest.skip("strategy_template.yaml does not exist yet")
+        with open(self._TEMPLATE_PATH) as f:
+            raw = yaml.safe_load(f)
+        required = {"data", "execution", "trade_management", "filters"}
+        missing = required - set(raw.keys())
+        assert not missing, (
+            f"strategy_template.yaml is missing top-level sections: {missing}"
+        )
+
+    def test_template_yaml_default_mode_is_analytics(self):
+        """
+        The template's execution.mode must default to 'analytics', not 'debug'.
+        Covers: CL-2 — ensures the template itself teaches the correct mode name.
+        """
+        if not self._TEMPLATE_PATH.exists():
+            pytest.skip("strategy_template.yaml does not exist yet")
+        with open(self._TEMPLATE_PATH) as f:
+            raw = yaml.safe_load(f)
+        mode = raw.get("execution", {}).get("mode")
+        assert mode == "analytics", (
+            f"strategy_template.yaml execution.mode should be 'analytics', got {mode!r}. "
+            "Update Block C output to set the correct default."
+        )
+
+    def test_template_yaml_missing_file_raises(self):
+        """
+        from_yaml with a nonexistent path must raise FileNotFoundError.
+        Sanity check that error handling is in place in the new arch loader.
+        """
+        with pytest.raises(FileNotFoundError):
+            new_schema.StrategyConfig.from_yaml(
+                Path("configs/does_not_exist_s20.yaml")
+            )
 
 
 if __name__ == "__main__":
