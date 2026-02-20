@@ -1,25 +1,20 @@
+"""Signal Layer Contracts for WBWSStrategy Migration.
+
+OPTIMIZED: v2.2 — int8 storage, lazy metadata, fast iterator.
+HARDENED:  Session 20 (Block G) — frozen dataclasses (DEC-004);
+           SignalFrame.__iter__ guard (DEC-024); "debug" → "analytics" (DEC-022);
+           legacy adapter removed (DEC-021).
+
+Version: 2.3.0
 """
-Signal Layer Contracts for WBWSStrategy Migration - OPTIMIZED v2.2
-
-This module defines typed contracts for signal generation and classification.
-These contracts replace string-based signal communication ("BUY"/"SELL").
-
-Author: Migration Project
-Version: 2.2.1 - Performance Optimized (Minimal)
-Date: 2025-02-11
-Session: 3
-
-Performance improvements:
-- int8 storage for signals (1=BUY, 2=SELL) instead of object dtype Enums
-- Lazy metadata loading (no metadata dict construction in core mode)
-"""
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, Dict, Any, Iterator, Tuple
-from datetime import datetime
-import pandas as pd
+from typing import Any, Dict, Iterator, Optional, Tuple
+
 import numpy as np
+import pandas as pd
 
 
 # =============================================================================
@@ -27,347 +22,365 @@ import numpy as np
 # =============================================================================
 
 class SignalType(Enum):
-    """
-    Enumeration of possible signal types.
-    
-    Replaces string-based "BUY"/"SELL" with typed enum.
-    """
+    """Typed replacement for string-based "BUY"/"SELL" communication."""
+
     BUY = auto()
     SELL = auto()
-    
-    def __str__(self) -> str:
+
+    def __str__(self) -> str:  # noqa: D105
         return self.name
-    
+
     @classmethod
     def from_string(cls, s: str) -> Optional["SignalType"]:
-        """
-        Convert string to SignalType.
-        
-        Args:
-            s: String representation ("BUY" or "SELL")
-            
-        Returns:
-            SignalType or None if invalid
-        """
-        s_upper = s.upper() if s else ""
+        """Convert string to SignalType (case-insensitive)."""
+        s_upper = (s or "").upper()
         if s_upper == "BUY":
             return cls.BUY
-        elif s_upper == "SELL":
+        if s_upper == "SELL":
             return cls.SELL
         return None
-    
+
     @classmethod
     def from_code(cls, code: int) -> Optional["SignalType"]:
-        """Convert int8 code to SignalType."""
+        """Convert int8 code to SignalType (1=BUY, 2=SELL)."""
         if code == 1:
             return cls.BUY
-        elif code == 2:
+        if code == 2:
             return cls.SELL
         return None
-    
+
     @property
     def is_long(self) -> bool:
-        """Returns True if this is a buy/long signal."""
+        """True for BUY signals."""
         return self == SignalType.BUY
-    
+
     @property
     def is_short(self) -> bool:
-        """Returns True if this is a sell/short signal."""
+        """True for SELL signals."""
         return self == SignalType.SELL
 
 
 # =============================================================================
-# SIGNAL CONTRACTS
+# SIGNAL (single point-in-time)
 # =============================================================================
 
 @dataclass(frozen=True)
 class Signal:
+    """Single trading signal at a specific timestamp.
+
+    ``mid_price`` must be positive; use ``Signal.mid_price > 0`` as a guard
+    before arithmetic.  ``metadata`` defaults to an empty dict.
     """
-    Represents a single trading signal at a specific timestamp.
-    
-    Attributes:
-        timestamp: When the signal occurred
-        signal_type: Type of signal (BUY/SELL)
-        mid_price: Market price at signal time
-        metadata: Additional signal context (indicator values, etc.)
-    """
-    timestamp: datetime
+
+    timestamp: pd.Timestamp
     signal_type: SignalType
     mid_price: float
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def __post_init__(self):
-        """Validate signal."""
+
+    def __post_init__(self) -> None:
         if self.mid_price <= 0:
             raise ValueError(f"mid_price must be positive, got {self.mid_price}")
-    
-    def __str__(self) -> str:
+
+    def __str__(self) -> str:  # noqa: D105
         return f"{self.signal_type} @ {self.timestamp} (price: {self.mid_price:.2f})"
-    
+
     @property
     def is_long(self) -> bool:
-        """Returns True if this is a buy/long signal."""
+        """True for BUY / LONG signals."""
         return self.signal_type.is_long
-    
+
     @property
     def is_short(self) -> bool:
-        """Returns True if this is a sell/short signal."""
+        """True for SELL / SHORT signals."""
         return self.signal_type.is_short
 
 
-@dataclass
+# =============================================================================
+# SIGNAL FRAME
+# =============================================================================
+
+@dataclass(frozen=True)
 class SignalFrame:
+    """Collection of signals with associated indicator data.
+
+    Storage
+    -------
+    ``signals`` is a ``pd.Series`` with ``dtype=int8``:
+    * 0 = no signal
+    * 1 = BUY
+    * 2 = SELL
+
+    ``indicator_data`` is present only in **analytics** mode; it is ``None``
+    in **core** mode.  This is the authoritative flag for which mode produced
+    the frame.
+
+    Frozen note
+    -----------
+    ``frozen=True`` freezes the *references* held by this dataclass — the
+    pandas objects themselves are mutable, but reassignment of ``self.signals``
+    etc. is prevented.  This is the correct and intended behaviour (DEC-004).
+
+    Session 20 changes (Block G)
+    ----------------------------
+    * ``frozen=True`` added (DEC-004 / P1-CH2-1).
+    * ``__iter__`` raises ``RuntimeError`` when ``indicator_data is None``
+      (DEC-024) — forces callers to use ``iter_raw()`` in core mode.
+    * ``from_wbws_trigger`` signal_metadata mode tag: ``"debug"`` → ``"analytics"``.
     """
-    Collection of signals with associated indicator data.
-    
-    This bridges the gap between vectorized signal generation
-    and per-signal processing.
-    
-    Attributes:
-        signals: Series of int8 codes (1=BUY, 2=SELL, index = timestamps)
-        indicator_data: DataFrame of indicator values (optional)
-        signal_metadata: Additional context about signal generation
-    """
-    signals: pd.Series  # Now int8 dtype: 1=BUY, 2=SELL, 0=no signal
+
+    signals: pd.Series          # int8: 1=BUY, 2=SELL, 0=no signal; DatetimeIndex
     indicator_data: Optional[pd.DataFrame] = None
     signal_metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def __post_init__(self):
-        """Validate signal frame."""
+
+    def __post_init__(self) -> None:
         if not isinstance(self.signals.index, pd.DatetimeIndex):
-            raise ValueError("signals must have DatetimeIndex")
-    
+            raise ValueError("SignalFrame.signals must have a DatetimeIndex.")
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+
     @classmethod
     def from_wbws_trigger(
         cls,
         signals_df: pd.DataFrame,
         strategy_df: pd.DataFrame,
-        include_metadata: bool = True
+        include_metadata: bool = True,
     ) -> "SignalFrame":
+        """Create a SignalFrame from WBWSTrigger output.
+
+        Parameters
+        ----------
+        signals_df:
+            DataFrame with boolean columns ``we_buy`` and ``we_sell``.
+        strategy_df:
+            OHLCV DataFrame used to attach price data in analytics mode.
+        include_metadata:
+            ``True``  → analytics mode (full ``indicator_data`` attached).
+            ``False`` → core mode (``indicator_data=None``, fastest path).
         """
-        Create SignalFrame from WBWSTrigger output - OPTIMIZED.
-        
-        Performance improvements:
-        - int8 storage for signals (1=BUY, 2=SELL) instead of object dtype Enums
-        - No metadata dict construction in core mode
-        
-        Args:
-            signals_df: DataFrame with 'we_buy' and 'we_sell' boolean columns
-            strategy_df: Original OHLCV DataFrame (for metadata)
-            include_metadata: If True, include full indicator data (debug mode).
-                              If False, skip metadata for performance (core mode).
-        
-        Returns:
-            SignalFrame with typed signals
-        """
-        # Fast boolean masks
         buy_mask = signals_df["we_buy"].values
         sell_mask = signals_df["we_sell"].values
-        
-        # int8 storage - much faster than object dtype
+
         n = len(signals_df)
         signal_values = np.zeros(n, dtype=np.int8)
-        signal_values[buy_mask] = 1  # BUY
+        signal_values[buy_mask] = 1   # BUY
         signal_values[sell_mask] = 2  # SELL
-        
-        # Store as int8 Series
+
         signals = pd.Series(
             signal_values,
             index=signals_df.index,
             name="signal_type",
-            dtype='int8'
+            dtype="int8",
         )
-        
-        # Only create metadata if requested (lazy)
+
         indicator_data = None
         if include_metadata:
             indicator_data = strategy_df.assign(
                 we_buy=buy_mask,
                 we_sell=sell_mask,
             )
-        
+
+        # DEC-022: mode tag is "analytics" (never "debug")
+        mode_tag = "analytics" if include_metadata else "core"
+
         return cls(
             signals=signals,
             indicator_data=indicator_data,
             signal_metadata={
                 "source": "wbws_trigger",
-                "mode": "debug" if include_metadata else "core"
-            }
+                "mode": mode_tag,
+            },
         )
-    
-    def __len__(self) -> int:
-        return len(self.signals)
-    
+
+    # ------------------------------------------------------------------
+    # Iteration
+    # ------------------------------------------------------------------
+
     def __iter__(self) -> Iterator[Signal]:
-        """Iterate over individual Signal objects."""
-        for ts, code in self.signals[self.signals != 0].items():
-            # Convert code to SignalType
-            sig_type = SignalType.from_code(code)
+        """Iterate over ``Signal`` objects.
+
+        .. warning::
+            **Requires analytics mode** (``indicator_data`` must not be
+            ``None``).  In core mode, ``indicator_data`` is ``None`` and
+            constructing ``Signal`` objects would silently produce
+            ``mid_price=0.0`` — an invalid state that causes wrong P&L.
+
+            Use ``iter_raw()`` instead when ``indicator_data`` is absent.
+
+        Raises
+        ------
+        RuntimeError
+            If ``indicator_data is None`` (i.e. core mode).
+        """
+        if self.indicator_data is None:
+            raise RuntimeError(
+                "SignalFrame.__iter__ requires indicator_data (analytics mode only). "
+                "In core mode, indicator_data is None — use iter_raw() which returns "
+                "(timestamp, signal_code) tuples without needing price data. "
+                "See DEC-024."
+            )
+
+        active = self.signals[self.signals != 0]
+        for ts, code in active.items():
+            sig_type = SignalType.from_code(int(code))
             if sig_type is None:
                 continue
-            
-            # Get mid price and metadata (only if available)
+
             mid_price = 0.0
-            metadata = {}
-            if self.indicator_data is not None and ts in self.indicator_data.index:
+            metadata: Dict[str, Any] = {}
+            if ts in self.indicator_data.index:
+                row = self.indicator_data.loc[ts]
                 if "close" in self.indicator_data.columns:
-                    mid_price = float(self.indicator_data.loc[ts, "close"])
-                metadata = self.indicator_data.loc[ts].to_dict()
-            
+                    mid_price = float(row["close"])
+                metadata = row.to_dict()
+
             yield Signal(
                 timestamp=ts,
                 signal_type=sig_type,
                 mid_price=mid_price,
-                metadata=metadata
+                metadata=metadata,
             )
-    
-    def iter_raw(self) -> Iterator[Tuple[datetime, int]]:
-        """
-        Fast iterator over raw signal codes without constructing Signal objects.
-        
-        Returns:
-            Iterator of (timestamp, code) where code is 1=BUY, 2=SELL
+
+    def iter_raw(self) -> Iterator[Tuple[pd.Timestamp, int]]:
+        """Fast iterator — no ``Signal`` object construction.
+
+        Returns ``(timestamp, code)`` pairs where ``code`` is ``1`` (BUY)
+        or ``2`` (SELL).  Works in both core and analytics mode.
         """
         for ts, code in self.signals[self.signals != 0].items():
-            yield ts, code
-    
-    def get_signal_at(self, timestamp: datetime) -> Optional[Signal]:
-        """
-        Get signal at specific timestamp.
-        
-        Args:
-            timestamp: Timestamp to query
-            
-        Returns:
-            Signal object or None if no signal at that time
-        """
+            yield ts, int(code)
+
+    # ------------------------------------------------------------------
+    # Accessors
+    # ------------------------------------------------------------------
+
+    def get_signal_at(self, timestamp: pd.Timestamp) -> Optional[Signal]:
+        """Return the ``Signal`` at ``timestamp``, or ``None``."""
         if timestamp not in self.signals.index:
             return None
-        
-        code = self.signals.loc[timestamp]
-        if code == 0 or pd.isna(code):
+        code = int(self.signals.loc[timestamp])
+        if code == 0:
             return None
-        
         sig_type = SignalType.from_code(code)
         if sig_type is None:
             return None
-        
-        # Get mid price and metadata (only if available)
+
         mid_price = 0.0
-        metadata = {}
+        metadata: Dict[str, Any] = {}
         if self.indicator_data is not None and timestamp in self.indicator_data.index:
+            row = self.indicator_data.loc[timestamp]
             if "close" in self.indicator_data.columns:
-                mid_price = float(self.indicator_data.loc[timestamp, "close"])
-            metadata = self.indicator_data.loc[timestamp].to_dict()
-        
+                mid_price = float(row["close"])
+            metadata = row.to_dict()
+
         return Signal(
             timestamp=timestamp,
             signal_type=sig_type,
             mid_price=mid_price,
-            metadata=metadata
+            metadata=metadata,
         )
-    
+
     @property
     def buy_signals(self) -> pd.Series:
-        """Return only BUY signals."""
+        """Series of BUY signal timestamps (code == 1)."""
         return self.signals[self.signals == 1]
-    
+
     @property
     def sell_signals(self) -> pd.Series:
-        """Return only SELL signals."""
+        """Series of SELL signal timestamps (code == 2)."""
         return self.signals[self.signals == 2]
-    
+
     def count_by_type(self) -> Dict[str, int]:
+        """Vectorised count — no Python loop.
+
+        Returns ``{"buy": N, "sell": N, "total": N}``.
         """
-        Count signals by type - OPTIMIZED.
-        
-        Uses vectorized operations on int8 array.
-        
-        Returns:
-            Dict with counts for each signal type
-        """
-        values = self.signals.values
+        values = self.signals.values  # numpy int8 array
         buy_count = int(np.sum(values == 1))
         sell_count = int(np.sum(values == 2))
-        total = buy_count + sell_count
-        
-        return {
-            "buy": buy_count,
-            "sell": sell_count,
-            "total": total,
-        }
-    
-    def __str__(self) -> str:
-        counts = self.count_by_type()
-        return f"SignalFrame({counts['total']} signals: {counts['buy']} BUY, {counts['sell']} SELL)"
+        return {"buy": buy_count, "sell": sell_count, "total": buy_count + sell_count}
+
+    # ------------------------------------------------------------------
+    # Dunder helpers
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:  # noqa: D105
+        return len(self.signals)
+
+    def __str__(self) -> str:  # noqa: D105
+        c = self.count_by_type()
+        mode = self.signal_metadata.get("mode", "unknown")
+        return (
+            f"SignalFrame({c['total']} signals: {c['buy']} BUY, {c['sell']} SELL"
+            f", mode={mode})"
+        )
 
 
 # =============================================================================
 # SIGNAL STATISTICS
 # =============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class SignalStats:
+    """Aggregated statistics about a set of signals.
+
+    Session 20 change: ``frozen=True`` added (DEC-004 / P1-CH2-1).
+    ``metadata`` is a plain ``dict``; its reference is frozen but its
+    contents remain mutable — acceptable for read-only stats objects.
     """
-    Statistics about generated signals.
-    
-    Attributes:
-        buy_count: Number of BUY signals
-        sell_count: Number of SELL signals
-        total_count: Total number of signals
-        buy_percentage: Percentage of BUY signals
-        sell_percentage: Percentage of SELL signals
-        metadata: Additional statistics
-    """
+
     buy_count: int = 0
     sell_count: int = 0
     total_count: int = 0
     buy_percentage: float = 0.0
     sell_percentage: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     @classmethod
-    def from_signal_frame(cls, signal_frame: SignalFrame, verbose: bool = True) -> "SignalStats":
-        """
-        Create SignalStats from a SignalFrame.
-        
-        Args:
-            signal_frame: SignalFrame to analyze
-            verbose: If True, include detailed metadata (debug mode)
-            
-        Returns:
-            SignalStats instance
+    def from_signal_frame(
+        cls,
+        signal_frame: SignalFrame,
+        verbose: bool = True,
+    ) -> "SignalStats":
+        """Build ``SignalStats`` from a ``SignalFrame``.
+
+        Parameters
+        ----------
+        signal_frame:
+            Source frame.
+        verbose:
+            ``True`` → include ``signal_metadata`` in stats (analytics mode).
+            ``False`` → empty metadata dict (core mode).
         """
         counts = signal_frame.count_by_type()
         total = counts["total"]
         buy_pct = (counts["buy"] / total * 100) if total > 0 else 0.0
         sell_pct = (counts["sell"] / total * 100) if total > 0 else 0.0
-        
-        metadata = {}
-        if verbose:
-            metadata = signal_frame.signal_metadata.copy()
-        
+
+        metadata = signal_frame.signal_metadata.copy() if verbose else {}
+
         return cls(
             buy_count=counts["buy"],
             sell_count=counts["sell"],
             total_count=total,
             buy_percentage=buy_pct,
             sell_percentage=sell_pct,
-            metadata=metadata
+            metadata=metadata,
         )
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
+        """Serialise to dict (JSON-safe)."""
         return {
             "buy": self.buy_count,
             "sell": self.sell_count,
             "total": self.total_count,
             "buy_percentage": round(self.buy_percentage, 2),
             "sell_percentage": round(self.sell_percentage, 2),
-            **self.metadata
+            **self.metadata,
         }
-    
-    def __str__(self) -> str:
+
+    def __str__(self) -> str:  # noqa: D105
         return (
             f"BUY: {self.buy_count} ({self.buy_percentage:.1f}%), "
             f"SELL: {self.sell_count} ({self.sell_percentage:.1f}%), "

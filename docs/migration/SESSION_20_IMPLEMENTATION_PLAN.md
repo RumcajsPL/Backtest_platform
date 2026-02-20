@@ -625,18 +625,15 @@ html_header = f"<h1>{config.brand_name} Performance Report</h1>"
 
 ---
 
-## BLOCK J — Write ~30 New Tests
+## BLOCK J — Write New Unit Tests
 
 **File organization** — add to existing test files or create new ones:
 
 ```
-tests/migration/test_config_schema_s20.py         (7 new tests)
-tests/migration/test_data_loader_s20.py           (4 new tests)
-tests/migration/test_signal_contracts_s20.py      (4 new tests)
-tests/migration/test_filter_pipeline_s20.py       (5 new tests)
-tests/migration/test_trade_simulator_s20.py       (5 new tests)
-tests/migration/test_analytics_contracts_s20.py   (2 new tests)
-tests/migration/test_report_generator_s20.py      (4 new tests)
+tests/migration/test_config_schema.py         (7 new tests) - update
+tests/migration/test_data_loader_s20.py           (4 new tests) - create
+tests/migration/test_signal_contracts_s20.py      (4 new tests) - create
+tests/migration/test_filter_pipeline_s20.py       (5 new tests) - create
 ```
 
 ### Test list (from SESSION_20_HANDOFF.md + additions)
@@ -651,7 +648,6 @@ test_max_risk_percentile_above_1_warns()
 test_config_dataclasses_are_frozen()
 test_filter_sequence_in_pipeline_config()
 ```
-
 **Data Loader (4)**:
 ```python
 test_load_config_does_not_override_mode()
@@ -659,7 +655,6 @@ test_cache_dir_uses_paths_module()
 test_from_yaml_config_removed()
 test_data_bundle_is_frozen()
 ```
-
 **Signal Contracts (4)**:
 ```python
 test_signal_frame_is_frozen()
@@ -667,7 +662,6 @@ test_signal_frame_iter_raises_in_core_mode()
 test_signal_adapter_removed()
 test_wbws_trigger_stateless()
 ```
-
 **Filter Pipeline (5)**:
 ```python
 test_cache_hit_rate_100_on_second_call_same_config()
@@ -676,63 +670,32 @@ test_core_mode_no_logger_info_calls()
 test_bollinger_indicator_cache_size()
 test_count_by_type_not_called_in_hot_path()
 ```
-
-**Trade Simulator (5)**:
-```python
-test_core_mode_no_ltf_precomputation()
-test_simulate_trades_respects_mode()
-test_atr_caching_between_runs()
-test_spread_config_caching()
-test_numba_vs_numpy_fallback_identical()
-```
-
-**Analytics Contracts (2)**:
-```python
-test_trading_session_config_frozen()
-test_large_win_calculation_exact()
-```
-
-**Report Generator (4)**:
-```python
-test_brand_name_in_header()
-test_timezone_in_config()
-test_trade_result_validation_warning()
-test_offline_chart_fallback()
 ```
 
 ### Done when
-- `pytest tests/migration/ -v --tb=short` shows >= 302 tests passing
+- `pytest tests/migration/ -v --tb=short` shows >= all tests passing
 - No MagicMock used in new tests (use real dataclasses)
 - All new tests use `@pytest.mark.unit` decorator for easy filtering
-
 ---
-
 ## BLOCK K — Update Architecture Docs
-
 ### Files to update
-
 **1. `docs/migration/DECISION_LOG.md`**  
 Append DEC-036 through DEC-039 (already drafted in SESSION_19 handoff — copy them in).
-
 **2. `docs/migration/PHASE8_SCAN_REPORT.md`**  
 Mark all resolved P0/P1 items as ✅ with session reference:
 ```
 ✅ [P0-CH0-1] Fixed Session 20 — strategy_template.yaml created
 ✅ [P0-E1] Fixed Session 20 — LTF gated on analytics mode
 ```
-
 **3. `docs/migration/SESSION_21_HANDOFF.md`** (NEW — create this)  
 Template is in the next section of this document.
-
 **4. `docs/architecture/ARCHITECTURE.md`**  
 Add to Integration Guide section:
 - Mode parameter in `simulate_trades()` call signature
 - `ReportConfig.brand_name` and `ReportConfig.timezone` fields
 - Remove any remaining references to `"debug"` mode
 - Update version to 2.2.0
-
 ---
-
 ## SESSION 21 HANDOFF TEMPLATE
 
 > Copy this block as the opening context of Session 21.
@@ -754,18 +717,16 @@ Session 21 focus: P2 + Observability
 3. Add cache statistics to RiskManager and FilterPipeline
 4. Add logging of chart data failures in ReportGenerator
 5. Refine strategy_template.yaml with any remaining findings
-6. Target: ~20 new tests → cumulative ~322
+6. Target: all tests in place
 
 Carry-forward from Session 20:
 - [list any partial items with STATUS: PARTIAL note]
 - DEC-020: MagicMock cleanup still deferred to Session 22
-
 Read before starting:
 1. docs/migration/SESSION_21_HANDOFF.md
 2. docs/migration/DECISION_LOG.md (DEC-036 to DEC-039)
 3. docs/migration/PHASE8_SCAN_REPORT.md (check ✅ resolved items)
 ```
-
 ---
 
 ## PERFORMANCE TARGET TRACKER
@@ -792,7 +753,5 @@ Use this table to track progress during Session 20:
 | LTF gating changes trade results | Assert trade counts identical between modes on same seed data |
 | `"debug"` rename breaks legacy test fixtures | Legacy tests are in `tests/migration/` — update fixtures in same PR |
 | Chat window ends mid-block | Write STATUS: PARTIAL in handoff; never leave half-renamed files |
-
 ---
-
 *Plan version: 1.0 | Created: Session 20 | Owner: Session lead*

@@ -1,262 +1,213 @@
+"""Time Filter — session hours gate.
+
+Migrated:  Session 4  v3.0.0
+Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
+           collect timing); P1-CH3-3 (count_by_type removed from hot path);
+           DEC-021 (legacy methods removed); logging gated on analytics mode.
+
+NOTE P1-CH3-8 (deferred to Block A):
+    Constructor still accepts ``config: Dict[str, Any]`` because ``FilterPipeline``
+    constructs ``TimeFilter`` directly from the raw trade-management config dict.
+    Switching to typed parameters requires a coordinated change in filter_pipeline.py.
+    The raw dict is unpacked immediately and ``self.config`` is NOT stored, which
+    eliminates accidental downstream mutation of the config reference.
+
+Removed (DEC-021):
+    * ``is_in_trading_hours()``  — legacy scalar helper
+    * ``get_session_info()``     — legacy debug dict
 """
-Time Filter - Migration v3.0
+from __future__ import annotations
 
-Filters signals based on configured session hours.
-Migrated from dict-based to typed contract architecture.
-
-Author: Migration Project
-Version: 3.0.0
-Date: 2025-02-11
-Session: 4
-"""
-
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, Any
 from time import perf_counter
+from typing import Any, Dict
 
-from src.strategies.contracts.signal_contracts import SignalFrame
+import numpy as np
+import pandas as pd
+
 from src.strategies.contracts.filter_contracts import (
-    FilterResult,
     FilterMetadata,
+    FilterResult,
     FilterStatus,
-    FilterProtocol
 )
+from src.strategies.contracts.signal_contracts import SignalFrame
 
 logger = logging.getLogger(__name__)
 
 
 class TimeFilter:
+    """Time-based signal filter — allows trades only during session hours.
+
+    Uses pre-converted timezone timestamps on the ``SignalFrame`` index.
+    Implements ``FilterProtocol`` for integration with ``FilterPipeline``.
+
+    Constructor signature kept as ``(config, name)`` pending P1-CH3-8 refactor
+    of ``FilterPipeline`` (see module docstring).
     """
-    Time-based signal filter using pre-converted timezone timestamps.
-    
-    Filters signals to only allow trades during configured session hours.
-    Implements FilterProtocol for integration with FilterPipeline.
-    """
-    
-    def __init__(self, config: Dict[str, Any], name: str = "time_filter"):
-        """
-        Initialize TimeFilter with session configuration.
-        
-        Args:
-            config: Trade management config (contains time_filter section)
-            name: Filter name for logging
-        """
-        self.name = name
-        self.config = config
-        self.time_filter_config = config.get('time_filter', {})
-        
-        self.enabled = self.time_filter_config.get('enabled', True)
-        
-        # Parse session times
-        self.session_start_hour = self.time_filter_config.get('session_start', {}).get('hour', 8)
-        self.session_start_minute = self.time_filter_config.get('session_start', {}).get('minute', 30)
-        self.session_end_hour = self.time_filter_config.get('session_end', {}).get('hour', 20)
-        self.session_end_minute = self.time_filter_config.get('session_end', {}).get('minute', 30)
-        
-        # Convert to minutes for fast comparison
+
+    def __init__(self, config: Dict[str, Any], name: str = "time_filter") -> None:
+        # Unpack immediately — do NOT store the raw dict reference (avoids
+        # accidental mutation and makes dependencies explicit).
+        tf = config.get("time_filter", {})
+
+        self.name    = name
+        self.enabled = tf.get("enabled", True)
+
+        self.session_start_hour   = tf.get("session_start", {}).get("hour",   8)
+        self.session_start_minute = tf.get("session_start", {}).get("minute", 30)
+        self.session_end_hour     = tf.get("session_end",   {}).get("hour",   20)
+        self.session_end_minute   = tf.get("session_end",   {}).get("minute", 30)
+
+        # Convert to minutes once for fast vectorised comparison
         self.session_start_minutes = self.session_start_hour * 60 + self.session_start_minute
-        self.session_end_minutes = self.session_end_hour * 60 + self.session_end_minute
-        
+        self.session_end_minutes   = self.session_end_hour   * 60 + self.session_end_minute
+
         if self.enabled:
-            # Validate session times
             if self.session_start_minutes >= self.session_end_minutes:
-                error_msg = (
-                    f"Invalid session config: Start ({self.session_start_hour:02d}:{self.session_start_minute:02d}) "
-                    f"must be before End ({self.session_end_hour:02d}:{self.session_end_minute:02d})"
+                msg = (
+                    f"Invalid session config: start "
+                    f"({self.session_start_hour:02d}:{self.session_start_minute:02d}) "
+                    f"must be before end "
+                    f"({self.session_end_hour:02d}:{self.session_end_minute:02d})"
                 )
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            
+                logger.error(msg)
+                raise ValueError(msg)
+
             logger.info(
-                f"TimeFilter: session {self.session_start_hour:02d}:{self.session_start_minute:02d}-"
-                f"{self.session_end_hour:02d}:{self.session_end_minute:02d}"
+                "%s: session %02d:%02d–%02d:%02d",
+                self.name,
+                self.session_start_hour, self.session_start_minute,
+                self.session_end_hour,   self.session_end_minute,
             )
         else:
-            logger.info("TimeFilter: DISABLED")
-    
+            logger.info("%s: DISABLED", self.name)
+
+    # ------------------------------------------------------------------
+    # Indicator computation (no-op — time filter uses index, not OHLCV)
+    # ------------------------------------------------------------------
+
     def compute_indicators(
         self,
         df: pd.DataFrame,
         indicators: Dict[str, pd.Series],
-        ind_np: Dict[str, np.ndarray]
+        ind_np: Dict[str, np.ndarray],
     ) -> None:
-        """
-        Time filter doesn't use indicators.
-        
-        Implements FilterProtocol interface but does nothing.
-        """
-        pass
-    
+        """No-op — time filter derives its mask from the DataFrame index."""
+
+    # ------------------------------------------------------------------
+    # Signal filtering
+    # ------------------------------------------------------------------
+
     def apply_filter(
         self,
         signal_frame: SignalFrame,
         df: pd.DataFrame,
         indicators: Dict[str, pd.Series],
         ind_np: Dict[str, np.ndarray],
-        mode: str = "core"
+        mode: str = "core",
     ) -> FilterResult:
-        """
-        Filter signals based on trading hours - VECTORIZED.
-        
-        Args:
-            signal_frame: Input signals to filter
-            df: OHLCV DataFrame (not used, but required by protocol)
-            indicators: Cached indicators (not used)
-            ind_np: Cached numpy indicators (not used)
-            mode: Execution mode ("core" or "debug")
-        
-        Returns:
-            FilterResult with time-filtered signals
+        """Filter signals to configured session hours — vectorised.
+
+        Parameters
+        ----------
+        mode:
+            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            The removal-rate ``logger.info`` is gated on analytics mode.
         """
         start_time = perf_counter()
-        
-        # If disabled, pass all signals through
+
+        # ---- disabled fast-path ----------------------------------------
         if not self.enabled:
-            metadata = FilterMetadata(
-                filter_name=self.name,
-                status=FilterStatus.SKIPPED,
-                signals_in=signal_frame.count_by_type()["total"],
-                signals_out=signal_frame.count_by_type()["total"],
-                signals_rejected=0,
-                reason="Filter disabled",
-                execution_time_ms=None
-            )
+            n = int(np.sum(signal_frame.signals.values != 0))
             return FilterResult(
                 passed=True,
                 signal_frame=signal_frame,
-                metadata=metadata
+                metadata=FilterMetadata(
+                    filter_name=self.name,
+                    status=FilterStatus.SKIPPED,
+                    signals_in=n,
+                    signals_out=n,
+                    signals_rejected=0,
+                    reason="Filter disabled",
+                    execution_time_ms=(perf_counter() - start_time) * 1000,
+                ),
             )
-        
-        # Count input signals
-        signals_in = signal_frame.count_by_type()["total"]
-        
-        # If no signals, short-circuit
+
+        # ---- signal count (single numpy call) --------------------------
+        signal_values = signal_frame.signals.values
+        signals_in = int(np.sum(signal_values != 0))
+
         if signals_in == 0:
-            execution_time = (perf_counter() - start_time) * 1000
-            metadata = FilterMetadata(
-                filter_name=self.name,
-                status=FilterStatus.SKIPPED,
-                signals_in=0,
-                signals_out=0,
-                signals_rejected=0,
-                reason="No input signals",
-                execution_time_ms=execution_time if mode == "debug" else None
-            )
             return FilterResult(
                 passed=False,
                 signal_frame=signal_frame,
-                metadata=metadata
+                metadata=FilterMetadata(
+                    filter_name=self.name,
+                    status=FilterStatus.SKIPPED,
+                    signals_in=0,
+                    signals_out=0,
+                    signals_rejected=0,
+                    reason="No input signals",
+                    execution_time_ms=(perf_counter() - start_time) * 1000,
+                ),
             )
-        
-        # Vectorized time filtering
-        timestamps = signal_frame.signals.index
-        hours = timestamps.hour.values
-        minutes = timestamps.minute.values
-        minutes_col = hours * 60 + minutes
-        
-        # Boolean mask for signals within trading hours
+
+        # ---- vectorised time mask --------------------------------------
+        timestamps   = signal_frame.signals.index
+        minutes_col  = timestamps.hour.values * 60 + timestamps.minute.values
+
         trading_hours_mask = (
             (minutes_col >= self.session_start_minutes) &
-            (minutes_col < self.session_end_minutes)
+            (minutes_col <  self.session_end_minutes)
         )
-        
-        # Apply mask to signals
-        filtered_signals = signal_frame.signals.copy()
-        filtered_signals[~trading_hours_mask] = 0  # Zero out rejected signals
-        
-        # Create new SignalFrame with filtered signals
-        filtered_frame = SignalFrame(
-            signals=filtered_signals,
-            indicator_data=signal_frame.indicator_data if mode == "debug" else None,
-            signal_metadata={
-                "source": "time_filter",
-                "mode": mode,
-                "session_hours": f"{self.session_start_hour:02d}:{self.session_start_minute:02d}-{self.session_end_hour:02d}:{self.session_end_minute:02d}"
-            }
-        )
-        
-        # Count output signals
-        signals_out = filtered_frame.count_by_type()["total"]
+
+        # Operate on numpy values — avoids pandas copy overhead
+        filtered_signals = signal_values.copy()
+        filtered_signals[~trading_hours_mask] = 0
+
+        signals_out      = int(np.sum(filtered_signals != 0))
         signals_rejected = signals_in - signals_out
-        
-        # Determine status
-        if signals_out == 0:
-            status = FilterStatus.REJECTED
-            reason = "All signals outside trading hours"
-        elif signals_rejected == 0:
-            status = FilterStatus.PASSED
-            reason = "All signals within trading hours"
-        else:
-            status = FilterStatus.PASSED
-            reason = f"{signals_rejected} signals outside trading hours"
-        
-        # Calculate execution time
-        execution_time = (perf_counter() - start_time) * 1000
-        
-        # Build metadata
-        metadata = FilterMetadata(
-            filter_name=self.name,
-            status=status,
-            signals_in=signals_in,
-            signals_out=signals_out,
-            signals_rejected=signals_rejected,
-            reason=reason,
-            indicator_values=None,  # Time filter doesn't use indicators
-            execution_time_ms=execution_time if mode == "debug" else None
+
+        filtered_frame = SignalFrame(
+            signals=pd.Series(filtered_signals, index=signal_frame.signals.index, dtype="int8"),
+            indicator_data=signal_frame.indicator_data if mode == "analytics" else None,
+            signal_metadata={
+                "source": self.name,
+                "mode": mode,
+                "session_hours": (
+                    f"{self.session_start_hour:02d}:{self.session_start_minute:02d}"
+                    f"–"
+                    f"{self.session_end_hour:02d}:{self.session_end_minute:02d}"
+                ),
+            },
         )
-        
-        # Log significant removals
-        if signals_rejected > 0:
+
+        if signals_out == 0:
+            status, reason = FilterStatus.REJECTED, "All signals outside trading hours"
+        elif signals_rejected == 0:
+            status, reason = FilterStatus.PASSED, "All signals within trading hours"
+        else:
+            status, reason = FilterStatus.PASSED, f"{signals_rejected} signals outside trading hours"
+
+        # Removal-rate log — analytics mode only (DEC-022 logging gate)
+        if mode == "analytics" and signals_rejected > 0:
             removal_rate = signals_rejected / signals_in
-            if removal_rate > 0.1 or logger.isEnabledFor(logging.DEBUG):
-                logger.info(
-                    f"Time filtering: {signals_rejected}/{signals_in} removed ({removal_rate*100:.1f}%)"
-                )
-        
+            logger.info(
+                "%s: %d/%d removed (%.1f%%)",
+                self.name, signals_rejected, signals_in, removal_rate * 100,
+            )
+
         return FilterResult(
             passed=(signals_out > 0),
             signal_frame=filtered_frame,
-            metadata=metadata
+            metadata=FilterMetadata(
+                filter_name=self.name,
+                status=status,
+                signals_in=signals_in,
+                signals_out=signals_out,
+                signals_rejected=signals_rejected,
+                reason=reason,
+                indicator_values=None,
+                execution_time_ms=(perf_counter() - start_time) * 1000,
+            ),
         )
-    
-    def is_in_trading_hours(self, timestamp: pd.Timestamp) -> bool:
-        """
-        Check if single timestamp is within trading hours.
-        
-        Legacy method for backward compatibility.
-        
-        Args:
-            timestamp: Timestamp to check
-            
-        Returns:
-            True if within trading hours
-        """
-        if not self.enabled:
-            return True
-        
-        current_minutes = timestamp.hour * 60 + timestamp.minute
-        return self.session_start_minutes <= current_minutes < self.session_end_minutes
-    
-    def get_session_info(self, timestamp: pd.Timestamp) -> Dict[str, Any]:
-        """
-        Get session information for a timestamp.
-        
-        Legacy method for backward compatibility.
-        
-        Args:
-            timestamp: Timestamp to query
-            
-        Returns:
-            Dict with session information
-        """
-        return {
-            'is_in_trading_hours': self.is_in_trading_hours(timestamp),
-            'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            'hour': timestamp.hour,
-            'minute': timestamp.minute,
-            'session_start': f"{self.session_start_hour:02d}:{self.session_start_minute:02d}",
-            'session_end': f"{self.session_end_hour:02d}:{self.session_end_minute:02d}",
-            'session_type': 'intraday'
-        }

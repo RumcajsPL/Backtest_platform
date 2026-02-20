@@ -1,45 +1,50 @@
-"""
-ReportGenerator Module for WBWSStrategy Migration Project
+"""ReportGenerator — AnalyticsReport → self-contained HTML report.
 
-Visualisation layer that converts AnalyticsReport → self-contained HTML report.
-Philosophy: Single file, no external dependencies at runtime, production-grade design.
+Philosophy: single file, no external runtime dependencies, production-grade.
 
 Architecture:
     TradeAnalytics.analyze()
         → AnalyticsReport
             → ReportGenerator.generate()
-                → GeneratedReport (HTML file)
+                → GeneratedReport (HTML file + in-memory content)
 
-Created: 2026-02-17 (Session 17)
-Updated: 2026-02-17 (Session 18) — HTML polish pass
+Created:  2026-02-17  Session 17
+Updated:  2026-02-17  Session 18 — HTML polish pass
+Hardened: 2026-02-20  Session 20 Block I
+    - ``brand_name`` wired through ``ReportConfig`` to HTML header + footer
+      (was hardcoded "WBWSStrategy" in three places)
+    - ``generate()`` now raises ``ValueError`` for ``None`` analytics_report
+    - Duplicate ``logger.info`` in ``_save_html()`` removed
+    - ``__main__`` status-dump block removed (DEC-021)
+
+Session 18 fixes (Track A — HTML Polish):
+    Fix 1 — Equity curve placeholder shown when trade_result=None
+    Fix 2 — Hour table filters out zero-trade hours
+    Fix 3 — KPI strip mobile breakpoints: 6→3 cols at 900px, 3→2 cols at 480px
+    Fix 4 — First critical insight auto-opens in analytical accordion
+    Fix 5 — Chart.js CDN failure handler + <noscript> fallback
+    Fix 6 — Version string v1.1 in footer
 
 Three-layer report structure:
     Layer 1 — EXECUTIVE  : Grade badge, assessment, top insights
     Layer 2 — ANALYTICAL : Chart.js charts + full insight detail
-    Layer 3 — RAW DATA   : Collapsible tables (toggleable)
-
-Session 18 fixes (Track A — HTML Polish):
-    Fix 1 — Equity curve placeholder shown when trade_result=None (consistent layout)
-    Fix 2 — Hour table filters out zero-trade hours (less noise)
-    Fix 3 — KPI strip mobile breakpoints: 6→3 cols at 900px, 3→2 cols at 480px
-    Fix 4 — First critical insight auto-opens in analytical accordion
-    Fix 5 — Chart.js CDN failure handler + <noscript> fallback message
-    Fix 6 — Version string updated to v1.1 in footer
+    Layer 3 — RAW DATA   : Collapsible tables (toggleable via ReportConfig)
 """
+from __future__ import annotations
 
-import time
 import json
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+import time
 from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-from src.strategies.contracts.report_contracts import ReportConfig, GeneratedReport
 from src.strategies.contracts.analytics_contracts import (
     AnalyticsReport,
     Insight,
     SessionMetrics,
 )
+from src.strategies.contracts.report_contracts import GeneratedReport, ReportConfig
 
 if TYPE_CHECKING:
     from src.strategies.contracts.trade_contracts import TradeResult
@@ -52,36 +57,36 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 DARK_THEME = {
-    "bg":       "#0d1117",
-    "card":     "#161b22",
-    "card2":    "#1c2128",
-    "border":   "#30363d",
-    "text":     "#e6edf3",
-    "muted":    "#8b949e",
-    "accent":   "#58a6ff",
-    "green":    "#3fb950",
-    "yellow":   "#e3b341",
-    "red":      "#f85149",
-    "orange":   "#ff7b72",
-    "purple":   "#d2a8ff",
-    "font":     "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
+    "bg":        "#0d1117",
+    "card":      "#161b22",
+    "card2":     "#1c2128",
+    "border":    "#30363d",
+    "text":      "#e6edf3",
+    "muted":     "#8b949e",
+    "accent":    "#58a6ff",
+    "green":     "#3fb950",
+    "yellow":    "#e3b341",
+    "red":       "#f85149",
+    "orange":    "#ff7b72",
+    "purple":    "#d2a8ff",
+    "font":      "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
     "font_body": "'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif",
 }
 
 LIGHT_THEME = {
-    "bg":       "#f6f8fa",
-    "card":     "#ffffff",
-    "card2":    "#f0f2f5",
-    "border":   "#d0d7de",
-    "text":     "#1f2328",
-    "muted":    "#57606a",
-    "accent":   "#0969da",
-    "green":    "#1a7f37",
-    "yellow":   "#9a6700",
-    "red":      "#cf222e",
-    "orange":   "#bc4c00",
-    "purple":   "#8250df",
-    "font":     "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
+    "bg":        "#f6f8fa",
+    "card":      "#ffffff",
+    "card2":     "#f0f2f5",
+    "border":    "#d0d7de",
+    "text":      "#1f2328",
+    "muted":     "#57606a",
+    "accent":    "#0969da",
+    "green":     "#1a7f37",
+    "yellow":    "#9a6700",
+    "red":       "#cf222e",
+    "orange":    "#bc4c00",
+    "purple":    "#8250df",
+    "font":      "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
     "font_body": "'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif",
 }
 
@@ -113,11 +118,11 @@ SEVERITY_CSS_CLASS = {
 # ============================================================
 
 class ReportGenerator:
-    """
-    Visualisation layer: AnalyticsReport → self-contained HTML file.
+    """Visualisation layer: AnalyticsReport → self-contained HTML file.
 
-    Usage:
-        report = TradeAnalytics.analyze(result, config)
+    Usage::
+
+        report    = TradeAnalytics.analyze(result, config)
         generated = ReportGenerator.generate(report, trade_result)
         print(f"Report saved: {generated.html_path}")
     """
@@ -132,18 +137,35 @@ class ReportGenerator:
         trade_result: Optional["TradeResult"] = None,
         config: Optional[ReportConfig] = None,
     ) -> GeneratedReport:
-        """
-        Main entry point. Build HTML report and save to disk.
+        """Build HTML report and save to disk.
 
-        Args:
-            analytics_report: Complete AnalyticsReport from TradeAnalytics.
-            trade_result:     Raw trades (needed for equity curve). If None,
-                              equity curve is omitted.
-            config:           Visual + output configuration. Defaults applied.
+        Parameters
+        ----------
+        analytics_report:
+            Complete ``AnalyticsReport`` from ``TradeAnalytics.analyze()``.
+            Must not be ``None``.
+        trade_result:
+            Raw trades required for the equity curve.  If ``None``, the equity
+            curve section shows an informative placeholder (Fix 1).
+        config:
+            Visual + output configuration.  Defaults applied when ``None``.
 
-        Returns:
-            GeneratedReport with html_path and html_content.
+        Returns
+        -------
+        GeneratedReport
+            Contains ``html_path`` (saved file) and ``html_content`` (string).
+
+        Raises
+        ------
+        ValueError
+            If ``analytics_report`` is ``None``.
         """
+        if analytics_report is None:
+            raise ValueError(
+                "analytics_report must not be None — "
+                "call TradeAnalytics.analyze() first."
+            )
+
         start = time.perf_counter()
 
         if config is None:
@@ -151,7 +173,7 @@ class ReportGenerator:
 
         logger.info("ReportGenerator: building HTML report…")
 
-        html = ReportGenerator._build_html(analytics_report, trade_result, config)
+        html      = ReportGenerator._build_html(analytics_report, trade_result, config)
         html_path = ReportGenerator._save_html(html, config)
 
         duration_ms = (time.perf_counter() - start) * 1000
@@ -160,7 +182,9 @@ class ReportGenerator:
         if config.include_raw_data:
             layers.append("raw")
 
-        logger.info(f"ReportGenerator: done in {duration_ms:.1f}ms → {html_path}")
+        logger.info(
+            "ReportGenerator: done in %.1fms → %s", duration_ms, html_path
+        )
 
         return GeneratedReport(
             html_path=html_path,
@@ -181,13 +205,18 @@ class ReportGenerator:
         config: ReportConfig,
     ) -> str:
         """Assemble the full, self-contained HTML document."""
-        colours = DARK_THEME if config.theme == "dark" else LIGHT_THEME
-
+        colours    = DARK_THEME if config.theme == "dark" else LIGHT_THEME
         chart_data = ReportGenerator._build_chart_data(trade_result, analytics_report)
 
         layer1 = ReportGenerator._build_layer1_executive(analytics_report, colours)
-        layer2 = ReportGenerator._build_layer2_analytical(analytics_report, colours, config, chart_data)
-        layer3 = ReportGenerator._build_layer3_raw(analytics_report, colours) if config.include_raw_data else ""
+        layer2 = ReportGenerator._build_layer2_analytical(
+            analytics_report, colours, config, chart_data
+        )
+        layer3 = (
+            ReportGenerator._build_layer3_raw(analytics_report, colours)
+            if config.include_raw_data
+            else ""
+        )
 
         css = ReportGenerator._build_css(colours, config)
         js  = ReportGenerator._build_js(chart_data, colours, config)
@@ -196,10 +225,28 @@ class ReportGenerator:
         m  = analytics_report.input_metrics
         ts = analytics_report.analysis_timestamp[:10]
 
-        subtitle_html = f'<p class="header-subtitle">{config.subtitle}</p>' if config.subtitle else ""
+        subtitle_html = (
+            f'<p class="header-subtitle">{config.subtitle}</p>'
+            if config.subtitle
+            else ""
+        )
         grade_colour = GRADE_COLOURS_DARK.get(es.performance_grade, colours["accent"])
 
-        html = f"""<!DOCTYPE html>
+        raw_tab_btn = (
+            "<button class='tab-btn' onclick=\"showTab('raw')\">Raw Data</button>"
+            if config.include_raw_data
+            else ""
+        )
+        raw_tab_pane = (
+            f"<div id='tab-raw' class='tab-pane hidden'>{layer3}</div>"
+            if config.include_raw_data
+            else ""
+        )
+
+        # brand_name wired from config (Block I)
+        brand = config.brand_name
+
+        return f"""<!DOCTYPE html>
 <html lang="en" data-theme="{config.theme}">
 <head>
 <meta charset="UTF-8">
@@ -220,7 +267,7 @@ class ReportGenerator:
   <div class="header-inner">
     <div class="header-brand">
       <span class="brand-dot" style="background:{grade_colour}"></span>
-      <span class="brand-name">WBWSStrategy</span>
+      <span class="brand-name">{brand}</span>
       <span class="brand-sep">/</span>
       <span class="brand-module">Analytics</span>
     </div>
@@ -244,22 +291,18 @@ class ReportGenerator:
 <nav class="tab-nav" id="tab-nav">
   <button class="tab-btn active" onclick="showTab('executive')">Executive</button>
   <button class="tab-btn" onclick="showTab('analytical')">Analytical</button>
-  {"<button class='tab-btn' onclick=\"showTab('raw')\">Raw Data</button>" if config.include_raw_data else ""}
+  {raw_tab_btn}
 </nav>
 
 <!-- ═══ LAYERS ════════════════════════════════════════════ -->
 <main class="main-content">
-
   <div id="tab-executive" class="tab-pane active">
 {layer1}
   </div>
-
   <div id="tab-analytical" class="tab-pane hidden">
 {layer2}
   </div>
-
-  {"<div id='tab-raw' class='tab-pane hidden'>" + layer3 + "</div>" if config.include_raw_data else ""}
-
+  {raw_tab_pane}
 </main>
 
 <!-- ═══ FOOTER ════════════════════════════════════════════ -->
@@ -268,7 +311,7 @@ class ReportGenerator:
   <span class="meta-sep">·</span>
   <span>Analysis took {analytics_report.analysis_duration_ms:.1f}ms</span>
   <span class="meta-sep">·</span>
-  <span>WBWSStrategy ReportGenerator v1.1</span>
+  <span>{brand} ReportGenerator v1.1</span>
 </footer>
 
 <script>
@@ -276,7 +319,6 @@ class ReportGenerator:
 </script>
 </body>
 </html>"""
-        return html
 
     # ──────────────────────────────────────────────────────────
     # LAYER 1 — EXECUTIVE
@@ -296,16 +338,19 @@ class ReportGenerator:
 
         # ── KPI strip ─────────────────────────────────────────────────────────
         pnl_colour = colours["green"] if m.total_pnl_points >= 0 else colours["red"]
-        pf_colour  = colours["green"] if m.profit_factor >= 1.5 else (
-                     colours["yellow"] if m.profit_factor >= 1.0 else colours["red"])
+        pf_colour  = (
+            colours["green"]  if m.profit_factor >= 1.5 else
+            colours["yellow"] if m.profit_factor >= 1.0 else
+            colours["red"]
+        )
 
         kpis = [
-            ("Total P&L", f"{m.total_pnl_points:+.1f} pts", pnl_colour),
-            ("Win Rate",   f"{m.win_rate:.1f}%",             colours["accent"]),
-            ("Total Trades", f"{m.total_trades:,}",          colours["text"]),
-            ("Profit Factor", f"{m.profit_factor:.2f}",      pf_colour),
-            ("Max Drawdown", f"{m.max_drawdown:.1f} pts",    colours["red"]),
-            ("Expectancy", f"{ra.expectancy_per_trade:+.3f} pts", pnl_colour),
+            ("Total P&L",     f"{m.total_pnl_points:+.1f} pts", pnl_colour),
+            ("Win Rate",       f"{m.win_rate:.1f}%",             colours["accent"]),
+            ("Total Trades",   f"{m.total_trades:,}",            colours["text"]),
+            ("Profit Factor",  f"{m.profit_factor:.2f}",         pf_colour),
+            ("Max Drawdown",   f"{m.max_drawdown:.1f} pts",      colours["red"]),
+            ("Expectancy",     f"{ra.expectancy_per_trade:+.3f} pts", pnl_colour),
         ]
         kpi_html = "".join(
             f'<div class="kpi-card">'
@@ -320,9 +365,16 @@ class ReportGenerator:
         for insight in es.critical_insights:
             icon      = SEVERITY_ICON.get(insight.severity, "•")
             css_class = SEVERITY_CSS_CLASS.get(insight.severity, "sev-info")
-            impact    = f'<div class="insight-impact">💡 {insight.impact_estimate}</div>' \
-                        if insight.impact_estimate else ""
-            conf_colour = {"High": colours["green"], "Medium": colours["yellow"], "Low": colours["muted"]}.get(insight.confidence, colours["muted"])
+            impact    = (
+                f'<div class="insight-impact">💡 {insight.impact_estimate}</div>'
+                if insight.impact_estimate
+                else ""
+            )
+            conf_colour = {
+                "High":   colours["green"],
+                "Medium": colours["yellow"],
+                "Low":    colours["muted"],
+            }.get(insight.confidence, colours["muted"])
             insights_html += f"""
       <div class="insight-card {css_class}">
         <div class="insight-header">
@@ -402,8 +454,7 @@ class ReportGenerator:
         ra = report.risk_adjusted
         h  = config.chart_height_px
 
-        # ── Chart canvases ─────────────────────────────────────────────────────
-        # Fix 1: always render equity card — placeholder when data unavailable
+        # ── Equity chart card (Fix 1: always render — placeholder when no data) ─
         if chart_data.get("equity_labels"):
             equity_section = f"""
       <div class="card chart-card">
@@ -416,16 +467,13 @@ class ReportGenerator:
         <h3 class="card-heading">Equity Curve</h3>
         <div class="placeholder-body">
           <span class="placeholder-icon">📈</span>
-          <p class="placeholder-msg">Pass <code>trade_result</code> to <code>ReportGenerator.generate()</code> to enable the equity curve.</p>
+          <p class="placeholder-msg">Pass <code>trade_result</code> to
+          <code>ReportGenerator.generate()</code> to enable the equity curve.</p>
         </div>
       </div>"""
 
         # ── All-insights accordion ─────────────────────────────────────────────
-        all_insights = (
-            list(tp.insights)
-            + list(tq.insights)
-            + list(ra.insights)
-        )
+        all_insights = list(tp.insights) + list(tq.insights) + list(ra.insights)
         insights_detail = ReportGenerator._build_insights_accordion(all_insights, colours)
 
         # ── Risk metrics table ─────────────────────────────────────────────────
@@ -442,19 +490,21 @@ class ReportGenerator:
 
         # ── Duration breakdown ─────────────────────────────────────────────────
         dur = tq.duration_analysis
-        dur_rows = [
-            ("Average",  f"{dur.avg_bars:.1f} bars"),
-            ("Median",   f"{dur.median_bars} bars"),
-            (f"Fast (<3 bars)", f"{dur.fast_exits_count} ({dur.fast_exits_pct:.1f}%)"),
-            ("Normal (3-10)",   f"{dur.normal_exits_count}"),
-            ("Prolonged (>10)", f"{dur.prolonged_exits_count}"),
+        dur_rows: List = [
+            ("Average",            f"{dur.avg_bars:.1f} bars"),
+            ("Median",             f"{dur.median_bars} bars"),
+            ("Fast (<3 bars)",     f"{dur.fast_exits_count} ({dur.fast_exits_pct:.1f}%)"),
+            ("Normal (3–10)",      f"{dur.normal_exits_count}"),
+            ("Prolonged (>10)",    f"{dur.prolonged_exits_count}"),
         ]
         if tq.avg_bars_to_profit is not None:
             dur_rows.append(("Avg bars to profit", f"{tq.avg_bars_to_profit:.1f}"))
         if tq.avg_bars_to_loss is not None:
             dur_rows.append(("Avg bars to loss",   f"{tq.avg_bars_to_loss:.1f}"))
 
-        dur_table = ReportGenerator._build_simple_table(["Field", "Value"], dur_rows, colours)
+        dur_table = ReportGenerator._build_simple_table(
+            ["Field", "Value"], dur_rows, colours
+        )
 
         return f"""    <!-- LAYER 2: ANALYTICAL -->
     <section class="analytical-section">
@@ -506,24 +556,29 @@ class ReportGenerator:
         report: AnalyticsReport,
         colours: Dict,
     ) -> str:
-        """Collapsible tables: session / hour / day / risk."""
+        """Collapsible tables: base metrics / session / hour / day."""
         tp = report.time_performance
         ra = report.risk_adjusted
         m  = report.input_metrics
 
         # ── Session table ──────────────────────────────────────────────────────
         session_rows = [
-            (sm.session_name, str(sm.trades), f"{sm.win_rate:.1f}%",
-             f"{sm.total_pnl:+.1f}", f"{sm.avg_pnl:+.2f}",
-             f"{sm.largest_win:+.1f}", f"{sm.largest_loss:+.1f}")
-            for sm in sorted(tp.by_session.values(), key=lambda s: s.total_pnl, reverse=True)
+            (
+                sm.session_name, str(sm.trades),
+                f"{sm.win_rate:.1f}%", f"{sm.total_pnl:+.1f}",
+                f"{sm.avg_pnl:+.2f}", f"{sm.largest_win:+.1f}", f"{sm.largest_loss:+.1f}",
+            )
+            for sm in sorted(
+                tp.by_session.values(), key=lambda s: s.total_pnl, reverse=True
+            )
         ]
         session_tbl = ReportGenerator._build_data_table(
-            ["Session", "Trades", "Win Rate", "Total P&L", "Avg P&L", "Largest Win", "Largest Loss"],
-            session_rows, colours
+            ["Session", "Trades", "Win Rate", "Total P&L",
+             "Avg P&L", "Largest Win", "Largest Loss"],
+            session_rows, colours,
         )
 
-        # ── Hour table — only hours with at least 1 trade ─────────────────────
+        # ── Hour table — only hours with at least 1 trade (Fix 2) ─────────────
         hour_rows = [
             (f"{h:02d}:00", str(sm.trades), f"{sm.win_rate:.1f}%",
              f"{sm.total_pnl:+.1f}", f"{sm.avg_pnl:+.2f}")
@@ -532,32 +587,38 @@ class ReportGenerator:
         ]
         hour_tbl = ReportGenerator._build_data_table(
             ["Hour (UTC)", "Trades", "Win Rate", "Total P&L", "Avg P&L"],
-            hour_rows, colours
+            hour_rows, colours,
         )
 
         # ── Day table ──────────────────────────────────────────────────────────
-        day_order = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        day_order = [
+            "Monday", "Tuesday", "Wednesday", "Thursday",
+            "Friday", "Saturday", "Sunday",
+        ]
         day_rows = [
-            (day, str(tp.by_day[day].trades),
-             f"{tp.by_day[day].win_rate:.1f}%",
-             f"{tp.by_day[day].total_pnl:+.1f}",
-             f"{tp.by_day[day].avg_pnl:+.2f}")
-            for day in day_order if day in tp.by_day
+            (
+                day, str(tp.by_day[day].trades),
+                f"{tp.by_day[day].win_rate:.1f}%",
+                f"{tp.by_day[day].total_pnl:+.1f}",
+                f"{tp.by_day[day].avg_pnl:+.2f}",
+            )
+            for day in day_order
+            if day in tp.by_day
         ]
         day_tbl = ReportGenerator._build_data_table(
             ["Day", "Trades", "Win Rate", "Total P&L", "Avg P&L"],
-            day_rows, colours
+            day_rows, colours,
         )
 
         # ── Base metrics table ─────────────────────────────────────────────────
         base_rows = [
-            ("Total Trades",   str(m.total_trades)),
-            ("Win Rate",       f"{m.win_rate:.2f}%"),
-            ("Total P&L",      f"{m.total_pnl_points:+.2f} pts"),
-            ("Profit Factor",  f"{m.profit_factor:.4f}"),
-            ("Max Drawdown",   f"{m.max_drawdown:.2f} pts"),
-            ("Largest Win",    f"{m.largest_win:.2f} pts"),
-            ("Largest Loss",   f"{m.largest_loss:.2f} pts"),
+            ("Total Trades",  str(m.total_trades)),
+            ("Win Rate",      f"{m.win_rate:.2f}%"),
+            ("Total P&L",     f"{m.total_pnl_points:+.2f} pts"),
+            ("Profit Factor", f"{m.profit_factor:.4f}"),
+            ("Max Drawdown",  f"{m.max_drawdown:.2f} pts"),
+            ("Largest Win",   f"{m.largest_win:.2f} pts"),
+            ("Largest Loss",  f"{m.largest_loss:.2f} pts"),
         ]
         base_tbl = ReportGenerator._build_data_table(
             ["Metric", "Value"], base_rows, colours
@@ -565,11 +626,12 @@ class ReportGenerator:
 
         def collapsible(title: str, content: str, open_: bool = False) -> str:
             attr = " open" if open_ else ""
-            return f"""
-    <details class="raw-section"{attr}>
-      <summary class="raw-summary">{title}</summary>
-      <div class="raw-content">{content}</div>
-    </details>"""
+            return (
+                f'<details class="raw-section"{attr}>'
+                f'<summary class="raw-summary">{title}</summary>'
+                f'<div class="raw-content">{content}</div>'
+                f"</details>"
+            )
 
         return f"""    <!-- LAYER 3: RAW DATA -->
     <section class="raw-section-wrap">
@@ -589,7 +651,7 @@ class ReportGenerator:
         trade_result: Optional["TradeResult"],
         report: AnalyticsReport,
     ) -> Dict:
-        """Prepare all Chart.js datasets."""
+        """Prepare all Chart.js datasets from analytics + optional trade_result."""
         data: Dict = {}
 
         # ── Equity curve ───────────────────────────────────────────────────────
@@ -599,8 +661,8 @@ class ReportGenerator:
                 key=lambda t: t.entry.entry_time,
             )
             cumulative = 0.0
-            eq_labels = []
-            eq_values = []
+            eq_labels:  List[str]   = []
+            eq_values:  List[float] = []
             for t in closed:
                 cumulative += t.exit.pnl_points
                 eq_labels.append(t.entry.entry_time.strftime("%Y-%m-%d"))
@@ -615,20 +677,24 @@ class ReportGenerator:
         tp = report.time_performance
         session_names = list(tp.by_session.keys())
         data["session_labels"] = session_names
-        data["session_pnl"]    = [tp.by_session[s].total_pnl for s in session_names]
-        data["session_wr"]     = [tp.by_session[s].win_rate  for s in session_names]
+        data["session_pnl"]    = [tp.by_session[s].total_pnl  for s in session_names]
+        data["session_wr"]     = [tp.by_session[s].win_rate   for s in session_names]
 
         # ── Win/loss distribution ──────────────────────────────────────────────
         wd = report.trade_quality.win_distribution
         ld = report.trade_quality.loss_distribution
-        data["dist_labels"]    = ["Small (<3pts)", "Medium (3-7pts)", "Large (>7pts)"]
-        data["win_dist"]       = [wd.small_count, wd.medium_count, wd.large_count]
-        data["loss_dist"]      = [ld.small_count, ld.medium_count, ld.large_count]
+        data["dist_labels"] = ["Small (<3 pts)", "Medium (3–7 pts)", "Large (>7 pts)"]
+        data["win_dist"]    = [wd.small_count, wd.medium_count, wd.large_count]
+        data["loss_dist"]   = [ld.small_count, ld.medium_count, ld.large_count]
 
         # ── Duration distribution ──────────────────────────────────────────────
         dur = report.trade_quality.duration_analysis
-        data["dur_labels"] = ["Fast (<3 bars)", "Normal (3-10)", "Prolonged (>10)"]
-        data["dur_values"] = [dur.fast_exits_count, dur.normal_exits_count, dur.prolonged_exits_count]
+        data["dur_labels"] = ["Fast (<3 bars)", "Normal (3–10)", "Prolonged (>10)"]
+        data["dur_values"] = [
+            dur.fast_exits_count,
+            dur.normal_exits_count,
+            dur.prolonged_exits_count,
+        ]
 
         return data
 
@@ -641,22 +707,26 @@ class ReportGenerator:
         if not insights:
             return '<div class="no-data">No insights generated.</div>'
 
-        # Fix 4: auto-open the first critical insight so it's immediately visible
+        # Fix 4: auto-open the first critical insight
         first_critical_opened = False
         items = ""
-        for i, ins in enumerate(insights):
+        for ins in insights:
             icon      = SEVERITY_ICON.get(ins.severity, "•")
             css_class = SEVERITY_CSS_CLASS.get(ins.severity, "sev-info")
-            impact    = f'<div class="insight-impact">💡 {ins.impact_estimate}</div>' \
-                        if ins.impact_estimate else ""
+            impact    = (
+                f'<div class="insight-impact">💡 {ins.impact_estimate}</div>'
+                if ins.impact_estimate
+                else ""
+            )
             conf_colour = {
                 "High":   colours["green"],
                 "Medium": colours["yellow"],
                 "Low":    colours["muted"],
             }.get(ins.confidence, colours["muted"])
-            cat_badge = f'<span class="cat-badge cat-{ins.category}">{ins.category}</span>'
+            cat_badge = (
+                f'<span class="cat-badge cat-{ins.category}">{ins.category}</span>'
+            )
 
-            # Auto-open first critical item once
             auto_open = ""
             if ins.severity == "critical" and not first_critical_opened:
                 auto_open = " open"
@@ -681,18 +751,25 @@ class ReportGenerator:
         return f'<div class="accordion">{items}</div>'
 
     @staticmethod
-    def _build_simple_table(headers: List[str], rows: List, colours: Dict) -> str:
-        th = "".join(f"<th>{h}</th>" for h in headers)
-        trs = ""
-        for row in rows:
-            trs += "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
-        return f"""<table class="data-table simple-table">
-<thead><tr>{th}</tr></thead>
-<tbody>{trs}</tbody>
-</table>"""
+    def _build_simple_table(
+        headers: List[str], rows: List, colours: Dict
+    ) -> str:
+        th  = "".join(f"<th>{h}</th>" for h in headers)
+        trs = "".join(
+            "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+            for row in rows
+        )
+        return (
+            f'<table class="data-table simple-table">'
+            f"<thead><tr>{th}</tr></thead>"
+            f"<tbody>{trs}</tbody>"
+            f"</table>"
+        )
 
     @staticmethod
-    def _build_data_table(headers: List[str], rows: List, colours: Dict) -> str:
+    def _build_data_table(
+        headers: List[str], rows: List, colours: Dict
+    ) -> str:
         return ReportGenerator._build_simple_table(headers, rows, colours)
 
     # ──────────────────────────────────────────────────────────
@@ -839,7 +916,7 @@ body {{
   margin-bottom: 14px;
   font-family: {c["font"]};
 }}
-.green-head {{ color: {c["green"]}; }}
+.green-head  {{ color: {c["green"]}; }}
 .yellow-head {{ color: {c["yellow"]}; }}
 
 /* ── Section ─────────────────────────────────────────────── */
@@ -869,9 +946,6 @@ body {{
 }}
 
 /* ── Layer 1: Executive ──────────────────────────────────── */
-.exec-section {{ }}
-
-/* Grade hero */
 .grade-hero {{
   display: flex;
   align-items: flex-start;
@@ -927,8 +1001,6 @@ body {{
   border-radius: 6px;
   border-left: 3px solid {c["border"]};
 }}
-
-/* KPI strip */
 .kpi-strip {{
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -960,8 +1032,6 @@ body {{
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }}
-
-/* Insights grid */
 .insights-grid {{ display: flex; flex-direction: column; gap: 10px; }}
 .insight-card {{
   border-radius: 8px;
@@ -971,9 +1041,9 @@ body {{
   border-color: {c["border"]};
   animation: fadeSlideIn 0.3s ease;
 }}
-.insight-card.sev-critical {{ border-left-color: {c["red"]}; background: {c["red"]}0a; }}
+.insight-card.sev-critical {{ border-left-color: {c["red"]};    background: {c["red"]}0a; }}
 .insight-card.sev-warning  {{ border-left-color: {c["yellow"]}; background: {c["yellow"]}0a; }}
-.insight-card.sev-success  {{ border-left-color: {c["green"]}; background: {c["green"]}0a; }}
+.insight-card.sev-success  {{ border-left-color: {c["green"]};  background: {c["green"]}0a; }}
 .insight-card.sev-info     {{ border-left-color: {c["accent"]}; background: {c["accent"]}0a; }}
 .insight-header {{
   display: flex;
@@ -981,34 +1051,11 @@ body {{
   gap: 10px;
   margin-bottom: 6px;
 }}
-.insight-icon {{ font-size: 16px; flex-shrink: 0; margin-top: 1px; }}
-.insight-message {{
-  flex: 1;
-  font-weight: 500;
-  font-size: 13px;
-  line-height: 1.4;
-}}
-.insight-badge {{
-  font-family: {c["font"]};
-  font-size: 10px;
-  font-weight: 600;
-  flex-shrink: 0;
-  text-transform: uppercase;
-}}
-.insight-rec {{
-  font-size: 12px;
-  color: {c["muted"]};
-  padding-left: 26px;
-}}
-.insight-impact {{
-  font-size: 12px;
-  color: {c["yellow"]};
-  padding-left: 26px;
-  margin-top: 4px;
-  font-style: italic;
-}}
-
-/* Strengths / improvements */
+.insight-icon    {{ font-size: 16px; flex-shrink: 0; margin-top: 1px; }}
+.insight-message {{ flex: 1; font-weight: 500; font-size: 13px; line-height: 1.4; }}
+.insight-badge   {{ font-family: {c["font"]}; font-size: 10px; font-weight: 600; flex-shrink: 0; text-transform: uppercase; }}
+.insight-rec     {{ font-size: 12px; color: {c["muted"]}; padding-left: 26px; }}
+.insight-impact  {{ font-size: 12px; color: {c["yellow"]}; padding-left: 26px; margin-top: 4px; font-style: italic; }}
 .strengths-list, .improve-list {{
   list-style: none;
   display: flex;
@@ -1022,25 +1069,19 @@ body {{
   font-size: 13px;
   line-height: 1.5;
 }}
-.str-icon {{ color: {c["green"]}; font-weight: 700; flex-shrink: 0; }}
+.str-icon {{ color: {c["green"]};  font-weight: 700; flex-shrink: 0; }}
 .imp-icon {{ color: {c["yellow"]}; font-weight: 700; flex-shrink: 0; }}
 
 /* ── Layer 2: Analytical ─────────────────────────────────── */
-.analytical-section {{ }}
 .charts-grid {{
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
   margin-bottom: 16px;
 }}
-@media (max-width: 900px) {{
-  .charts-grid {{ grid-template-columns: 1fr; }}
-}}
+@media (max-width: 900px) {{ .charts-grid {{ grid-template-columns: 1fr; }} }}
 .chart-card canvas {{ width: 100% !important; }}
-.chart-placeholder {{
-  display: flex;
-  flex-direction: column;
-}}
+.chart-placeholder {{ display: flex; flex-direction: column; }}
 .placeholder-body {{
   flex: 1;
   display: flex;
@@ -1054,7 +1095,7 @@ body {{
   min-height: 140px;
 }}
 .placeholder-icon {{ font-size: 28px; opacity: 0.4; }}
-.placeholder-msg {{
+.placeholder-msg  {{
   font-size: 12px;
   color: {c["muted"]};
   text-align: center;
@@ -1067,18 +1108,11 @@ body {{
   border-radius: 3px;
   font-size: 11px;
 }}
-
-/* Accordion */
-.accordion {{ display: flex; flex-direction: column; gap: 8px; }}
-.accordion-item {{
-  border-radius: 8px;
-  border: 1px solid {c["border"]};
-  background: {c["card"]};
-  overflow: hidden;
-}}
-.accordion-item.sev-critical {{ border-left: 3px solid {c["red"]}; }}
+.accordion          {{ display: flex; flex-direction: column; gap: 8px; }}
+.accordion-item     {{ border-radius: 8px; border: 1px solid {c["border"]}; background: {c["card"]}; overflow: hidden; }}
+.accordion-item.sev-critical {{ border-left: 3px solid {c["red"]};    }}
 .accordion-item.sev-warning  {{ border-left: 3px solid {c["yellow"]}; }}
-.accordion-item.sev-success  {{ border-left: 3px solid {c["green"]}; }}
+.accordion-item.sev-success  {{ border-left: 3px solid {c["green"]};  }}
 .accordion-item.sev-info     {{ border-left: 3px solid {c["accent"]}; }}
 .acc-header {{
   display: flex;
@@ -1090,17 +1124,8 @@ body {{
 }}
 .acc-header:hover {{ background: {c["card2"]}; }}
 .acc-icon {{ font-size: 14px; flex-shrink: 0; }}
-.acc-msg {{
-  flex: 1;
-  font-size: 13px;
-  font-weight: 500;
-}}
-.acc-meta {{
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}}
+.acc-msg  {{ flex: 1; font-size: 13px; font-weight: 500; }}
+.acc-meta {{ display: flex; align-items: center; gap: 8px; flex-shrink: 0; }}
 .cat-badge {{
   font-family: {c["font"]};
   font-size: 9px;
@@ -1114,16 +1139,8 @@ body {{
 .cat-quality {{ color: {c["purple"]}; }}
 .cat-risk    {{ color: {c["orange"]}; }}
 .cat-general {{ color: {c["muted"]}; }}
-.conf-badge {{
-  font-family: {c["font"]};
-  font-size: 10px;
-  font-weight: 600;
-}}
-.acc-chevron {{
-  color: {c["muted"]};
-  font-size: 12px;
-  transition: transform 0.2s;
-}}
+.conf-badge  {{ font-family: {c["font"]}; font-size: 10px; font-weight: 600; }}
+.acc-chevron {{ color: {c["muted"]}; font-size: 12px; transition: transform 0.2s; }}
 .accordion-item.open .acc-chevron {{ transform: rotate(180deg); }}
 .acc-body {{
   display: none;
@@ -1131,11 +1148,7 @@ body {{
   border-top: 1px solid {c["border"]};
 }}
 .accordion-item.open .acc-body {{ display: block; }}
-.acc-rec {{
-  font-size: 12px;
-  color: {c["muted"]};
-  margin-top: 10px;
-}}
+.acc-rec {{ font-size: 12px; color: {c["muted"]}; margin-top: 10px; }}
 .premature-note {{
   font-size: 12px;
   color: {c["muted"]};
@@ -1146,12 +1159,7 @@ body {{
 }}
 
 /* ── Layer 3: Raw Data ───────────────────────────────────── */
-.raw-section-wrap {{ }}
-.raw-intro {{
-  font-size: 13px;
-  color: {c["muted"]};
-  margin-bottom: 16px;
-}}
+.raw-intro {{ font-size: 13px; color: {c["muted"]}; margin-bottom: 16px; }}
 .raw-section {{
   background: {c["card"]};
   border: 1px solid {c["border"]};
@@ -1172,8 +1180,6 @@ body {{
 }}
 .raw-summary:hover {{ background: {c["card2"]}; }}
 .raw-content {{ padding: 0 18px 18px; overflow-x: auto; }}
-
-/* Data tables */
 .data-table {{
   width: 100%;
   border-collapse: collapse;
@@ -1196,10 +1202,8 @@ body {{
   border-bottom: 1px solid {c["border"]}50;
   color: {c["text"]};
 }}
-.data-table tr:last-child td {{ border-bottom: none; }}
-.data-table tr:hover td {{ background: {c["card2"]}; }}
-
-/* ── Misc ────────────────────────────────────────────────── */
+.data-table tr:last-child td  {{ border-bottom: none; }}
+.data-table tr:hover td       {{ background: {c["card2"]}; }}
 .no-data {{
   color: {c["muted"]};
   font-style: italic;
@@ -1229,8 +1233,8 @@ body {{
 
     @staticmethod
     def _build_js(chart_data: Dict, colours: Dict, config: ReportConfig) -> str:
-        c = colours
-        h = config.chart_height_px
+        c  = colours
+        h  = config.chart_height_px
         cd = json.dumps(chart_data)
         return f"""
 // ── Fix 5: Chart.js CDN failure handler ───────────────────
@@ -1246,7 +1250,6 @@ body {{
       card.appendChild(fb);
     }});
   }}
-  // Check after a short delay to allow CDN script to load
   window.addEventListener('DOMContentLoaded', () => {{
     if (window._chartJsFailed || typeof Chart === 'undefined') {{
       showChartFallback();
@@ -1254,7 +1257,6 @@ body {{
   }});
 }})();
 
-// Chart data from Python
 const CD = {cd};
 
 const COLOURS = {{
@@ -1267,14 +1269,10 @@ const COLOURS = {{
   purple: '{c["purple"]}',
 }};
 
-// ── Chart.js global defaults ───────────────────────────────
-Chart.defaults.color = '{c["muted"]}';
+Chart.defaults.color       = '{c["muted"]}';
 Chart.defaults.font.family = "{c['font']}";
-Chart.defaults.font.size = 11;
-const gridOpts = {{
-  color: '{c["border"]}',
-  drawBorder: false,
-}};
+Chart.defaults.font.size   = 11;
+const gridOpts = {{ color: '{c["border"]}', drawBorder: false }};
 
 // ── Tab switching ──────────────────────────────────────────
 function showTab(name) {{
@@ -1285,7 +1283,6 @@ function showTab(name) {{
   document.querySelectorAll('.tab-btn').forEach(b => {{
     if (b.textContent.toLowerCase().startsWith(name)) b.classList.add('active');
   }});
-  // Lazy-init charts on first visit
   if (name === 'analytical' && !window._chartsInit) {{
     window._chartsInit = true;
     initCharts();
@@ -1294,42 +1291,39 @@ function showTab(name) {{
 
 // ── Accordion ──────────────────────────────────────────────
 function toggleAcc(header) {{
-  const item = header.closest('.accordion-item');
-  item.classList.toggle('open');
+  header.closest('.accordion-item').classList.toggle('open');
 }}
 
 // ── Chart initialisation ───────────────────────────────────
 function initCharts() {{
   // Equity curve
   if (CD.equity_labels && CD.equity_labels.length > 0) {{
-    const eqCtx = document.getElementById('chart-equity');
-    if (eqCtx) {{
-      new Chart(eqCtx, {{
-        type: 'line',
-        data: {{
-          labels: CD.equity_labels,
-          datasets: [{{
-            label: 'Cumulative P&L (pts)',
-            data: CD.equity_values,
-            borderColor: COLOURS.accent,
-            backgroundColor: COLOURS.accent + '20',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: true,
-            tension: 0.1,
-          }}]
-        }},
-        options: {{
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {{ legend: {{ display: false }}, tooltip: {{ mode: 'index', intersect: false }} }},
-          scales: {{
-            x: {{ grid: gridOpts, ticks: {{ maxTicksLimit: 8, maxRotation: 0 }} }},
-            y: {{ grid: gridOpts, ticks: {{ callback: v => v + ' pts' }} }},
-          }}
+    const ctx = document.getElementById('chart-equity');
+    if (ctx) new Chart(ctx, {{
+      type: 'line',
+      data: {{
+        labels: CD.equity_labels,
+        datasets: [{{
+          label: 'Cumulative P&L (pts)',
+          data: CD.equity_values,
+          borderColor: COLOURS.accent,
+          backgroundColor: COLOURS.accent + '20',
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.1,
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{ legend: {{ display: false }}, tooltip: {{ mode: 'index', intersect: false }} }},
+        scales: {{
+          x: {{ grid: gridOpts, ticks: {{ maxTicksLimit: 8, maxRotation: 0 }} }},
+          y: {{ grid: gridOpts, ticks: {{ callback: v => v + ' pts' }} }},
         }}
-      }});
-    }}
+      }}
+    }});
   }}
 
   // Session bar chart
@@ -1361,8 +1355,8 @@ function initCharts() {{
         maintainAspectRatio: false,
         plugins: {{ legend: {{ position: 'bottom' }} }},
         scales: {{
-          x: {{ grid: gridOpts }},
-          y: {{ grid: gridOpts, ticks: {{ callback: v => v + ' pts' }} }},
+          x:  {{ grid: gridOpts }},
+          y:  {{ grid: gridOpts, ticks: {{ callback: v => v + ' pts' }} }},
           y2: {{
             position: 'right',
             grid: {{ display: false }},
@@ -1414,7 +1408,11 @@ function initCharts() {{
         labels: CD.dur_labels,
         datasets: [{{
           data: CD.dur_values,
-          backgroundColor: [COLOURS.orange + 'cc', COLOURS.green + 'cc', COLOURS.purple + 'cc'],
+          backgroundColor: [
+            COLOURS.orange + 'cc',
+            COLOURS.green  + 'cc',
+            COLOURS.purple + 'cc',
+          ],
           borderWidth: 0,
         }}]
       }},
@@ -1432,14 +1430,13 @@ function initCharts() {{
 
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {{
-  // Staggered KPI entrance
   document.querySelectorAll('.kpi-card').forEach((el, i) => {{
-    el.style.opacity = '0';
+    el.style.opacity   = '0';
     el.style.transform = 'translateY(16px)';
     setTimeout(() => {{
       el.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-      el.style.opacity = '1';
-      el.style.transform = 'none';
+      el.style.opacity    = '1';
+      el.style.transform  = 'none';
     }}, 60 + i * 50);
   }});
 }});
@@ -1451,13 +1448,12 @@ document.addEventListener('DOMContentLoaded', () => {{
 
     @staticmethod
     def _save_html(html: str, config: ReportConfig) -> Path:
-        """Write HTML file and return path."""
+        """Write HTML to disk and return the path."""
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = output_dir / f"report_{timestamp}.html"
         path.write_text(html, encoding="utf-8")
-        logger.info(f"HTML report saved: {path}")
         return path
 
 
@@ -1466,28 +1462,3 @@ document.addEventListener('DOMContentLoaded', () => {{
 # ============================================================
 
 __all__ = ["ReportGenerator"]
-
-
-if __name__ == "__main__":
-    print("ReportGenerator Module")
-    print("=" * 50)
-    print("Status: ✅ COMPLETE (Session 17 + Session 18 polish)")
-    print()
-    print("Entry points:")
-    print("  ✅ generate()                — Main API (analytics → HTML)")
-    print("  ✅ _build_html()             — Full HTML assembly")
-    print("  ✅ _build_layer1_executive() — Grade + KPIs + Insights")
-    print("  ✅ _build_layer2_analytical() — Charts + Full insight detail")
-    print("  ✅ _build_layer3_raw()       — Collapsible data tables")
-    print("  ✅ _build_chart_data()       — Chart.js dataset preparation")
-    print("  ✅ _build_css()              — Dark/light theme CSS")
-    print("  ✅ _build_js()               — Chart init + tab/accordion JS")
-    print("  ✅ _save_html()              — Write file, return Path")
-    print()
-    print("Session 18 — HTML Polish fixes:")
-    print("  ✅ Fix 1 — Equity curve placeholder when trade_result=None")
-    print("  ✅ Fix 2 — Hour table filters zero-trade hours")
-    print("  ✅ Fix 3 — Mobile KPI grid: 6→3 cols @900px, 3→2 cols @480px")
-    print("  ✅ Fix 4 — First critical insight auto-opens in accordion")
-    print("  ✅ Fix 5 — Chart.js CDN failure handler + noscript fallback")
-    print("  ✅ Fix 6 — Version string updated to v1.1")
