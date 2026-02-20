@@ -21,7 +21,7 @@ data:
     end: "2025-12-17 21:00:00"
 
 execution:
-  mode: "core"
+  mode: "core" # | "analytics"
 
 signal:
   trigger: "WBWSTrigger"

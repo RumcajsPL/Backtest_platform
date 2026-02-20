@@ -40,10 +40,7 @@ class SupertrendFilter:
                 f"(expected st_col={st_col}, dir_col={dir_col}; actual={actual_cols})"
             )
             return pd.Series(False, index=df.index)
-        
-        # Optional debug (comment out after testing)
-        # logger.debug(f"Supertrend columns: {actual_cols}")
-        
+                
         # Core filter logic using active SUPERT band
         if is_long:
             condition = (st[dir_col] == 1) & (df['close'] > st[st_col])

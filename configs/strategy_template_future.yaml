@@ -34,10 +34,10 @@ data:
   
   # Timezone is informational only - data is already in CET (UTC+1)
   timezone: "Europe/Berlin"
-  format: "parquet"
+  format: "parquet" 
 
 execution:
-  mode: "core"  # Will be overridden by test script for analytics mode
+  mode: "core"  # | analytics Will be overridden by test script for analytics mode
 
 signal:
   trigger: "WBWSTrigger"

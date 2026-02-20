@@ -4,7 +4,7 @@ DataLoader v2.1 - Final Optimized Implementation
 Features:
 - Performance optimizations (Parquet 60-70% faster, 8-15% additional speedup)
 - Monthly/ARTF data support (Annual Range Timeframe)
-- Dual-mode execution (core vs debug)
+- Dual-mode execution (core vs analytics) with mode-aware logging and validation
 - Typed contracts (DataBundle)
 
 Optimizations:
@@ -52,7 +52,7 @@ class DataLoader:
     - Returns DataBundle (typed contract)
     - Supports CSV + Parquet (Parquet optimized)
     - Monthly/ARTF data support
-    - Dual-mode execution (core/debug)
+    - Dual-mode execution (core vs analytics)
     - Intelligent caching with MD5 validation
     - Data sanitization (inf → nan → ffill/bfill)
     - Date range slicing
@@ -71,7 +71,7 @@ class DataLoader:
         self, 
         config_path: str, 
         project_root: Optional[Path] = None,
-        mode: str = "debug"
+        mode: str = "core"
     ):
         """
         Initialize DataLoader.
@@ -79,7 +79,7 @@ class DataLoader:
         Args:
             config_path: Path to YAML configuration file
             project_root: Project root for resolving relative paths (default: auto-detect)
-            mode: Execution mode ("core" or "debug")
+            mode: Execution mode ("core" or "analytics")
         """
         self.config_path = Path(config_path).resolve()
         self.project_root = project_root or PROJECT_ROOT
@@ -93,12 +93,12 @@ class DataLoader:
         self.cache_dir = Path.home() / ".wbws_data_cache"
         self.cache_dir.mkdir(exist_ok=True)
         
-        # Cache statistics (only collected in debug mode)
+        # Cache statistics (only collected in analytics mode)
         self._cache_hits = 0
         self._cache_misses = 0
         
         # Mode-aware logging
-        self._verbose = (mode == "debug")
+        self._verbose = (mode == "analytics")
 
     def _log(self, level: str, message: str):
         """Mode-aware logging."""
@@ -137,10 +137,10 @@ class DataLoader:
         
         # Extract execution mode from config if present
         execution_cfg = self.raw_config.get("execution", {})
-        config_mode = execution_cfg.get("mode", "debug")
+        config_mode = execution_cfg.get("mode", "analytics").lower()
         
         # Use config mode if not explicitly overridden
-        if self.mode == "debug" and config_mode == "core":
+        if self.mode == "analytics" and config_mode == "core":
             self.mode = config_mode
             self._verbose = False
             self._log("info", "  Switching to CORE mode (from config)")
@@ -353,7 +353,7 @@ class DataLoader:
         
         OPTIMIZATION #2: Fast path for core mode (3-5% speedup)
         - Core mode: Skip expensive validation, trust data quality
-        - Debug mode: Full validation with detailed logging
+        - Analytics mode: Full validation with detailed logging
         
         Args:
             df: DataFrame to sanitize
@@ -371,7 +371,7 @@ class DataLoader:
                 df = df.ffill().bfill()
             return df
         
-        # SLOW PATH: Debug mode (full validation)
+        # SLOW PATH: analytics mode (full validation)
         # Check for inf values
         inf_count = np.isinf(df.select_dtypes(include=[np.number])).sum().sum()
         if inf_count > 0:
@@ -526,7 +526,7 @@ class DataLoader:
             error_msg = "\n".join(validation.errors)
             raise ValueError(f"Data validation failed:\n{error_msg}")
 
-        # Log warnings (only in debug mode)
+        # Log warnings (only in analytics mode)
         for warning in validation.warnings:
             self._log("warning", f"  {warning}")
 
@@ -565,7 +565,7 @@ class DataLoader:
         return bundle
 
     # =============================================================================
-    # CACHE STATISTICS (only in debug mode)
+    # CACHE STATISTICS (only in analytics mode)
     # =============================================================================
 
     @property
@@ -574,7 +574,7 @@ class DataLoader:
         Get cache performance statistics.
         
         Returns:
-            CacheStats object (debug mode) or None (core mode)
+            CacheStats object (analytics mode) or None (core mode)
         """
         if not self._verbose:
             return None  # Core mode doesn't collect stats

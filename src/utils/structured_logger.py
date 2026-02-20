@@ -4,12 +4,12 @@ Structured Logger - Production-Grade JSON Logging
 Session 12 - Task 2
 Version: 1.0.1
 
-Provides structured JSON logging for audit trails, debugging, and analysis.
+Provides structured JSON logging for audit trails and analysis.
 Replaces scattered print/logger statements with consistent, parseable logs.
 
 Design Principles:
 - Single Responsibility: Only logging, no business logic
-- Performance-Driven: Minimal overhead, optional debug detail
+- Performance-Driven: Minimal overhead, optional analytics detail
 - Explicit Contracts: All fields typed, no hidden state
 - Type Safety: Enum-based log levels
 - Production-Ready: JSON format for log aggregation tools

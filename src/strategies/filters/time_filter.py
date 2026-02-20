@@ -70,7 +70,7 @@ class TimeManager:
         trading_hours_mask = (minutes_col >= self.session_start_minutes) & \
                              (minutes_col < self.session_end_minutes)
         
-        # Log only if significant removal (>10%) or debug mode
+        # Log only if significant removal (>10%) or analytics mode
         total_signals = len(df)
         filtered_signals = trading_hours_mask.sum()
         removed_signals = total_signals - filtered_signals

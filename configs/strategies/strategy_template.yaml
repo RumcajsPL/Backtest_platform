@@ -9,7 +9,7 @@
 #
 # Key differences from legacy wbws_strategy.yaml:
 #   - data.paths.*       replaces data.file / file_htf / file_ltf / file_artf
-#   - execution.mode     uses "core" | "analytics" (not "core" | "debug")
+#   - execution.mode     uses "core" | "analytics" (not "core" | "analytics")
 #   - filters            split into time_filters / technical_filters sections
 #   - trade_management   uses atr_multiplier_sl/tp (not sl_multiplier / risk_to_reward_ratio)
 #   - spread.spread_type required field (was implicit)
@@ -47,10 +47,8 @@ execution:
   # "analytics" — full single-run analysis pipeline
   #               LTF execution + TradeAnalytics + ReportGenerator (HTML)
   #               use for reviewing strategy behaviour in detail
-  #
-  # DEPRECATED: "debug" — renamed to "analytics" in new architecture (DEC-022)
+  # 
   mode: "core"
-
 
 # -----------------------------------------------------------------------------
 # [WBWS] SIGNAL
@@ -147,7 +145,7 @@ filters:
 
   # Error handling when a filter raises an exception (DEC-008/DEC-028)
   # "pass_through" — log error and pass signals unchanged (production default)
-  # "fail_fast"    — raise exception immediately (development / debugging)
+  # "fail_fast"    — raise exception immediately (development / analyticsging)
   # "reject_all"   — reject all signals on any filter error (conservative)
   default_error_strategy: "pass_through"
 
@@ -196,5 +194,5 @@ output:
     include_raw_data: true
 
   logging:
-    level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+    level: "INFO"           # analytics | INFO | WARNING | ERROR
     output_dir: "outputs/strategies/logs/wbws"

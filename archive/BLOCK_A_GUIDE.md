@@ -19,154 +19,144 @@ Do not start until all of Blocks B–K are complete.
 
 ---
 
-## RENAME MAP
+            ## RENAME MAP
 
-### `src/strategies/specific/modules/signal_generator.py`
-**Already fully addressed in Block B** — default changed from `"debug"` to `"core"`, migration guard active.  
-**Remaining**: None.
+            ### `src/strategies/specific/modules/signal_generator.py`
+            **Already fully addressed in Block B** — default changed from `"debug"` to `"core"`, migration guard active.  
+            **Remaining**: None.
 
----
+            ---
 
-### `src/strategies/specific/modules/data_loader.py`
-*(Not yet visited — will be updated when Block touches this file)*
+            ### `src/strategies/specific/modules/data_loader.py`
+            *(Not yet visited — will be updated when Block touches this file)*
 
-**Expected findings** (from scan report P0-CH1-1):
-- `mode: str = "debug"` default in `__init__` → change to `"core"`
-- `self._verbose = (mode == "debug")` → change to `(mode == "analytics")`
-- `if mode == "debug":` occurrences → `if mode == "analytics":`
-- Add migration guard raising `ValueError` on `mode="debug"`
+            **Expected findings** (from scan report P0-CH1-1):
+            - `mode: str = "debug"` default in `__init__` → change to `"core"`
+            - `self._verbose = (mode == "debug")` → change to `(mode == "analytics")`
+            - `if mode == "debug":` occurrences → `if mode == "analytics":`
+            - Add migration guard raising `ValueError` on `mode="debug"`
 
----
+            ---
 
-### `src/strategies/specific/filters/*.py` (all 10 filters)
-*(Not yet visited)*
+            ### `src/strategies/specific/filters/*.py` (all 10 filters)
+            *(Not yet visited)*
 
-**Expected findings** (from scan report P0-CH3-2):
-- `mode: str = "debug"` in `apply_filter()` signature → `"core"`
-- `if mode == "debug":` logging guards → `if mode == "analytics":`
+            **Expected findings** (from scan report P0-CH3-2):
+            - `mode: str = "debug"` in `apply_filter()` signature → `"core"`
+            - `if mode == "debug":` logging guards → `if mode == "analytics":`
 
----
+            ---
 
-### `src/strategies/specific/modules/filter_pipeline.py`
-**Already fully addressed in Block D** — migration guard active, logging gates fixed.  
-**Remaining**: None.
+            ### `src/strategies/specific/modules/filter_pipeline.py`
+            **Already fully addressed in Block D** — migration guard active, logging gates fixed.  
+            **Remaining**: None.
 
----
+            ---
 
-### `src/strategies/specific/modules/trade_simulator.py`
-**Already fully addressed in Block E** — one remnant noted:
-- `config.get("analytics", config.get("debug", {}))` — intentional backward-compat fallback.
-- **Block A action**: After Block A YAML key rename (`debug:` → `analytics:` in any config files), remove the inner `.get("debug", {})` fallback: `config.get("analytics", {})`.
+            ### `src/strategies/specific/modules/trade_simulator.py`
+            **Already fully addressed in Block E** — one remnant noted:
+            - `config.get("analytics", config.get("debug", {}))` — intentional backward-compat fallback.
+            - **Block A action**: After Block A YAML key rename (`debug:` → `analytics:` in any config files), remove the inner `.get("debug", {})` fallback: `config.get("analytics", {})`.
 
----
+            ---
 
-### `src/config/config_schema.py`
-**Already fully addressed in Block C** — `ExecutionConfig.__post_init__` raises `ValueError` on `mode="debug"`.  
-**Remaining**: None.
+            ### `src/config/config_schema.py`
+            **Already fully addressed in Block C** — `ExecutionConfig.__post_init__` raises `ValueError` on `mode="debug"`.  
+            **Remaining**: None.
 
----
+            ---
 
-### `src/utils/structured_logger.py`
-*(Not yet visited)*
+            ### `src/utils/structured_logger.py`
+            *(Not yet visited)*
 
-**Expected findings** (from scan report P1-CH0-6):
-- `LogStage` enum may have `DEBUG = "debug"` → rename to `ANALYTICS = "analytics"`
-- Add `REPORTING = "reporting"` for Phase 5 stage coverage
+            **Expected findings** (from scan report P1-CH0-6):
+            - `LogStage` enum may have `DEBUG = "debug"` → rename to `ANALYTICS = "analytics"`
+            - Add `REPORTING = "reporting"` for Phase 5 stage coverage
 
----
+            ---
 
-### `src/strategies/specific/modules/risk_manager.py`
-**Fully addressed in Block F** — migration guard active; `"debug"` raises `ValueError`; all logging gated on `mode == "analytics"`.  
-**Remaining**: None.
+            ### `src/strategies/specific/modules/risk_manager.py`
+            **Fully addressed in Block F** — migration guard active; `"debug"` raises `ValueError`; all logging gated on `mode == "analytics"`.  
+            **Remaining**: None.
 
----
+            ---
 
-### `src/strategies/specific/modules/spread_manager.py`
-**Fully addressed in Block F** — migration guard active; `"debug"` raises `ValueError`; logging gated on `mode == "analytics"`.  
-**Remaining**: None.
+            ### `src/strategies/specific/modules/spread_manager.py`
+            **Fully addressed in Block F** — migration guard active; `"debug"` raises `ValueError`; logging gated on `mode == "analytics"`.  
+            **Remaining**: None.
 
----
+            ---
 
-### `src/strategies/contracts/signal_contracts.py`
-**Fully addressed in Block G.**
+            ### `src/strategies/contracts/signal_contracts.py`
+            **Fully addressed in Block G.**
 
-| Location | Old value | New value | Notes |
-|----------|-----------|-----------|-------|
-| `from_wbws_trigger()` `signal_metadata["mode"]` | `"debug"` | `"analytics"` | Mode tag in metadata dict |
-| `from_wbws_trigger()` docstring | mentions `"debug mode"` | `"analytics mode"` | |
+            | Location | Old value | New value | Notes |
+            |----------|-----------|-----------|-------|
+            | `from_wbws_trigger()` `signal_metadata["mode"]` | `"debug"` | `"analytics"` | Mode tag in metadata dict |
+            | `from_wbws_trigger()` docstring | mentions `"debug mode"` | `"analytics mode"` | |
 
-**Block G also added**: `__iter__` guard raising `RuntimeError` when `indicator_data is None` (DEC-024). This is not a rename item but was applied in the same pass.
+            **Block G also added**: `__iter__` guard raising `RuntimeError` when `indicator_data is None` (DEC-024). This is not a rename item but was applied in the same pass.
 
-**Remaining for Block A**: None. File is fully clean.
+            **Remaining for Block A**: None. File is fully clean.
 
----
+            ---
 
-### `src/strategies/contracts/analytics_contracts.py`
-**Fully addressed in Block G.**
+            ### `src/strategies/contracts/analytics_contracts.py`
+            **Fully addressed in Block G.**
 
-- No `"debug"` string was present in this file — confirmed clean in scan.
-- `TradingSessionConfig` frozen (DEC-004 / P1-CH5-1) applied in Block G.
-- Placeholder `UserWarning` for unimplemented features removed (P1-CH5-2 resolved: stubs replaced with clear docstring notes).
+            - No `"debug"` string was present in this file — confirmed clean in scan.
+            - `TradingSessionConfig` frozen (DEC-004 / P1-CH5-1) applied in Block G.
+            - Placeholder `UserWarning` for unimplemented features removed (P1-CH5-2 resolved: stubs replaced with clear docstring notes).
 
-**Remaining for Block A**: None. File is clean.
+            **Remaining for Block A**: None. File is clean.
 
----
+            ---
 
-## BLOCK B CONFIRMED CHANGES (already applied)
+            ## BLOCK B CONFIRMED CHANGES (already applied)
 
-| File | What was changed |
-|------|-----------------|
-| `signal_generator.py` | `mode: str = "debug"` → `"core"`; `if self.mode == "debug"` → `"analytics"` (5 occurrences); `SignalGeneratorAdapter` deleted |
-| `filter_contracts.py` | `mode: str = "debug"` in `FilterProtocol.apply_filter()` docstring → `"analytics"` |
-| `data_contracts.py` | No `"debug"` occurrences found |
-| `trade_contracts.py` | No `"debug"` occurrences found |
-| `trade_manager.py` | No `"debug"` occurrences found (`logger.debug()` calls untouched — log level, not mode string) |
+            | File | What was changed |
+            |------|-----------------|
+            | `signal_generator.py` | `mode: str = "debug"` → `"core"`; `if self.mode == "debug"` → `"analytics"` (5 occurrences); `SignalGeneratorAdapter` deleted |
+            | `filter_contracts.py` | `mode: str = "debug"` in `FilterProtocol.apply_filter()` docstring → `"analytics"` |
+            | `data_contracts.py` | No `"debug"` occurrences found |
+            | `trade_contracts.py` | No `"debug"` occurrences found |
+            | `trade_manager.py` | No `"debug"` occurrences found (`logger.debug()` calls untouched — log level, not mode string) |
 
----
+            ---
 
-## BLOCK C CONFIRMED CHANGES (already applied)
+            ## BLOCK C CONFIRMED CHANGES (already applied)
 
-| File | What was changed |
-|------|-----------------|
-| `config_schema.py` | No `"debug"` string in file. `ExecutionConfig.__post_init__` guard added. Clean. |
-| `configs/strategy_template.yaml` | `execution.mode: "core"` — correct; deprecated `"debug"` noted in comment only |
+            | File | What was changed |
+            |------|-----------------|
+            | `config_schema.py` | No `"debug"` string in file. `ExecutionConfig.__post_init__` guard added. Clean. |
+            | `configs/strategy_template.yaml` | `execution.mode: "core"` — correct; deprecated `"debug"` noted in comment only |
 
----
+            ---
 
-## BLOCK D CONFIRMED CHANGES (already applied)
+            ## BLOCK D CONFIRMED CHANGES (already applied)
 
-| File | What was changed |
-|------|-----------------|
-| `cache.py` | No `"debug"` string. Clean. |
-| `filter_pipeline.py` | Migration guard in `__init__` raises `ValueError` on `"debug"`. No live `mode == "debug"` branch. |
+            | File | What was changed |
+            |------|-----------------|
+            | `cache.py` | No `"debug"` string. Clean. |
+            | `filter_pipeline.py` | Migration guard in `__init__` raises `ValueError` on `"debug"`. No live `mode == "debug"` branch. |
 
----
+            ---
 
-## BLOCK E CONFIRMED CHANGES (already applied)
+            ## BLOCK E CONFIRMED CHANGES (already applied)
 
-| File | What was changed |
-|------|-----------------|
-| `trade_simulator.py` | `"debug"` in docstring only (historical). Intentional fallback `config.get("debug", {})` kept; remove in Block A after YAML key rename. |
+            | File | What was changed |
+            |------|-----------------|
+            | `trade_simulator.py` | `"debug"` in docstring only (historical). Intentional fallback `config.get("debug", {})` kept; remove in Block A after YAML key rename. |
 
----
+            ---
 
-## BLOCK F CONFIRMED CHANGES (already applied)
+            ## BLOCK F CONFIRMED CHANGES (already applied)
 
-| File | What was changed |
-|------|-----------------|
-| `risk_manager.py` | `mode` parameter added; `"debug"` raises `ValueError`; all `logger.info()` gated on `mode == "analytics"`. Fully clean. |
-| `spread_manager.py` | `mode` parameter added; `"debug"` raises `ValueError`; logging gated on analytics. Fully clean. |
+            | File | What was changed |
+            |------|-----------------|
+            | `risk_manager.py` | `mode` parameter added; `"debug"` raises `ValueError`; all `logger.info()` gated on `mode == "analytics"`. Fully clean. |
+            | `spread_manager.py` | `mode` parameter added; `"debug"` raises `ValueError`; logging gated on analytics. Fully clean. |
 
----
-
-## BLOCK G CONFIRMED CHANGES (already applied)
-
-| File | What was changed |
-|------|-----------------|
-| `signal_contracts.py` | `signal_metadata["mode"]` tag: `"debug"` → `"analytics"` in `from_wbws_trigger()`. `frozen=True` added to `SignalFrame`, `SignalStats`. `__iter__` guard added (DEC-024). |
-| `analytics_contracts.py` | No `"debug"` string present — confirmed clean. `frozen=True` added to `TradingSessionConfig`. Placeholder warning removed. |
-
----
 
 ## FINAL VERIFICATION COMMAND
 Run after Block A rename pass is complete:
