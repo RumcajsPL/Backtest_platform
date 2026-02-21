@@ -1,0 +1,63 @@
+# Test Runner Configuration
+# Version: 1.0.0
+# Date: 2026-02-21
+
+# Run mode: "all" or "selected"
+run_mode: "selected"
+
+# Test execution settings
+execution:
+  parallel: false
+  workers: 4
+  fail_fast: false
+  verbose: true
+
+# Test selection (used when run_mode = "selected")
+enabled_tests:
+  # Core modules
+  test_config_schema: true
+  test_data_loader: true
+  test_signal_generator: true
+  test_filter_pipeline: true
+  test_trade_simulator: true
+  test_risk_manager: true
+  test_spread_manager: true
+  test_trade_manager: true
+  test_metrics_calculator: true
+  test_trade_analytics: true
+  test_report_generator: true
+  test_orchestrator: true
+  test_cache_manager: true
+  
+  # Filters
+  test_time_filter: true
+  test_rsi_filter: true
+  test_adx_filter: true
+  test_bollinger_filter: true
+  test_cci_filter: true
+  test_choppiness_filter: true
+  test_dpo_filter: true
+  test_ma_filter: true
+  test_macd_filter: true
+  test_pivot_filter: true
+  test_supertrend_filter: true
+
+# Test data settings
+test_data:
+  use_real_data: true
+  data_path: "configs/tests/test_data_paths.yaml"
+  sample_size: 1000  # bars for quick tests
+  cache_test_data: true
+
+# Report settings
+report:
+  output_dir: "tests/reports"
+  format: "markdown"
+  include_timings: true
+  include_traceback: true
+  include_skipped: true
+
+# Logging
+logging:
+  level: "INFO"
+  file: "tests/diagnostic_output/test_run.log"

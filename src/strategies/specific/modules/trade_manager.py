@@ -1,9 +1,12 @@
 """Trade position management: handles position opening/closing logic and pyramiding
 
-MIGRATION STATUS: Session 20 — Block B
-- Removed handle_signal_legacy() (DEC-021, P1-CH4-3)
-- Removed open_position_legacy() (DEC-021, P1-CH4-4)
-- All callers must use handle_signal() and open_position() with full price parameters
+Version: 2.0.0 (Phase 5 Final)
+Session: 21 - Final Hardening
+
+Changes from v1.0.0:
+- Phase 5.2: Now accepts StrategyConfig instead of raw Dict (DEC-035)
+- Phase 5.2: Reads position control settings from typed config
+- All legacy methods removed (DEC-021)
 """
 import logging
 from typing import Dict, Optional, List, Any
@@ -15,6 +18,7 @@ from src.strategies.contracts.trade_contracts import (
     TradeDirection
 )
 from src.strategies.contracts.position_contracts import Position
+from src.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,20 +26,27 @@ logger = logging.getLogger(__name__)
 class TradeManager:
     """
     Manages trading positions with configurable pyramiding and reversal logic.
-    
+
     ID System:
     - position_id: Sequential position identifier used for tracking and closing
     """
-    
-    def __init__(self, config: Dict):
-        position_config = config.get('trade_management', {}).get('position_control', {})
-        
-        self.close_on_opposite = position_config.get('close_on_opposite', False)
-        self.pyramiding_enabled = position_config.get('pyramiding_enabled', False)
-        
+
+    def __init__(self, config: StrategyConfig):  # Phase 5.2: Now accepts StrategyConfig
+        """
+        Initialize TradeManager with StrategyConfig.
+
+        Args:
+            config: StrategyConfig instance (typed)
+        """
+        position_config = config.trade_management.position_control
+
+        self.close_on_opposite = position_config.close_on_opposite
+        self.pyramiding_enabled = position_config.pyramiding_enabled
+        self.max_positions = position_config.max_positions
+
         self.current_positions: List[Position] = []
         self.trade_counter = 0
-        
+
         self.metrics = {
             'total_signals_received': 0,
             'signals_accepted': 0,
@@ -43,20 +54,22 @@ class TradeManager:
             'rejected_reasons': {
                 'pyramiding_disabled': 0,
                 'opposite_ignored': 0,
+                'max_positions_reached': 0,
             },
             'positions_closed_by_opposite': 0,
             'positions_reversed': 0,
         }
-        
+
         logger.info("TradeManager initialized:")
         logger.info(f"  Close on Opposite: {self.close_on_opposite}")
         logger.info(f"  Pyramiding: {'ENABLED' if self.pyramiding_enabled else 'DISABLED'}")
-    
+        logger.info(f"  Max Positions: {self.max_positions}")
+
     @property
     def current_direction(self) -> Optional[TradeDirection]:
         """Returns current position direction or None if no positions."""
         return self.current_positions[0].direction if self.current_positions else None
-    
+
     def handle_signal(
         self,
         timestamp: pd.Timestamp,
@@ -69,7 +82,7 @@ class TradeManager:
     ) -> TradeDecision:
         """
         Handle incoming signal and return trading decision.
-        
+
         Args:
             timestamp: Signal timestamp (pandas Timestamp)
             signal_type: 'BUY' or 'SELL'
@@ -78,20 +91,13 @@ class TradeManager:
             take_profit: TP price from RiskManager
             position_size: Position size (default 1.0)
             meta: Optional metadata dict for Position contract
-        
+
         Returns:
             TradeDecision contract with decision type, reason, and action details
-            
-        Decision Logic:
-            - No positions → OPEN
-            - Same direction + pyramiding enabled → OPEN
-            - Same direction + pyramiding disabled → REJECT
-            - Opposite direction + close_on_opposite → CLOSE_AND_REVERSE
-            - Opposite direction + no close_on_opposite → REJECT
         """
         self.metrics['total_signals_received'] += 1
         direction = TradeDirection.from_string(signal_type)
-        
+
         # Case 1: No positions — open new
         if not self.current_positions:
             return self._create_open_decision(
@@ -103,11 +109,22 @@ class TradeManager:
                 position_size=position_size,
                 meta=meta
             )
-        
+
         is_same_direction = direction == self.current_direction
-        
+
         # Case 2: Same direction signal
         if is_same_direction:
+            # Check max positions limit
+            if len(self.current_positions) >= self.max_positions:
+                self.metrics['signals_rejected'] += 1
+                self.metrics['rejected_reasons']['max_positions_reached'] += 1
+                return TradeDecision(
+                    decision_type=DecisionType.REJECT,
+                    reason=f'Max positions ({self.max_positions}) reached',
+                    close_trade_ids=None,
+                    new_trade_id=None,
+                )
+
             if self.pyramiding_enabled:
                 return self._create_open_decision(
                     direction=direction,
@@ -127,7 +144,7 @@ class TradeManager:
                     close_trade_ids=None,
                     new_trade_id=None,
                 )
-        
+
         # Case 3: Opposite direction signal
         else:
             if self.close_on_opposite:
@@ -135,7 +152,7 @@ class TradeManager:
                 self.metrics['positions_closed_by_opposite'] += len(close_trade_ids)
                 self.metrics['positions_reversed'] += 1
                 self.metrics['signals_accepted'] += 1
-                
+
                 return TradeDecision(
                     decision_type=DecisionType.CLOSE_AND_REVERSE,
                     reason=(
@@ -154,7 +171,7 @@ class TradeManager:
                     close_trade_ids=None,
                     new_trade_id=None,
                 )
-    
+
     def _create_open_decision(
         self,
         direction: TradeDirection,
@@ -168,14 +185,14 @@ class TradeManager:
         """Create decision for opening new position."""
         new_trade_id = self.trade_counter + 1
         self.metrics['signals_accepted'] += 1
-        
+
         return TradeDecision(
             decision_type=DecisionType.OPEN,
             reason=f'Opening {direction.to_string()} position',
             close_trade_ids=None,
             new_trade_id=new_trade_id,
         )
-    
+
     def open_position(
         self,
         trade_id: int,
@@ -189,7 +206,7 @@ class TradeManager:
     ):
         """
         Register new open position in state.
-        
+
         Args:
             trade_id: Position ID (sequential)
             timestamp: Entry timestamp
@@ -212,16 +229,16 @@ class TradeManager:
         )
         self.current_positions.append(position)
         self.trade_counter = max(self.trade_counter, trade_id)
-        
+
         logger.debug(
             f"Position opened: ID={trade_id}, Direction={direction.to_string()}, "
             f"Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}"
         )
-    
+
     def close_positions(self, trade_ids: List[int]):
         """
         Remove closed positions from state.
-        
+
         Args:
             trade_ids: List of position IDs to close
         """
@@ -231,19 +248,19 @@ class TradeManager:
             if pos.position_id not in trade_ids_set
         ]
         logger.debug(f"Positions closed: IDs={trade_ids}, Remaining={len(self.current_positions)}")
-    
+
     def has_open_position(self) -> bool:
         """Check if any positions are currently open."""
         return len(self.current_positions) > 0
-    
+
     def get_current_positions(self) -> List[Position]:
         """Get copy of current positions list."""
         return self.current_positions.copy()
-    
+
     def get_metrics(self) -> Dict:
         """Get copy of metrics dictionary."""
         return self.metrics.copy()
-    
+
     def reset(self):
         """Reset all state and metrics to initial values."""
         self.current_positions = []
@@ -255,6 +272,7 @@ class TradeManager:
             'rejected_reasons': {
                 'pyramiding_disabled': 0,
                 'opposite_ignored': 0,
+                'max_positions_reached': 0,
             },
             'positions_closed_by_opposite': 0,
             'positions_reversed': 0,

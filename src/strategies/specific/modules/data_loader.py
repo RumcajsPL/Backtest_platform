@@ -1,20 +1,14 @@
 """
-DataLoader v2.1 - Final Optimized Implementation
+DataLoader v3.0 - Final Migrated Implementation
 
-Features:
-- Performance optimizations (Parquet 60-70% faster, 8-15% additional speedup)
-- Monthly/ARTF data support (Annual Range Timeframe)
-- Dual-mode execution (core vs analytics) with mode-aware logging and validation
-- Typed contracts (DataBundle)
+Version: 3.0.0 (Phase 5 Final)
+Session: 21 - Final Hardening
 
-Optimizations:
-1. Parquet loading: floor → sort, lazy duplicate checking
-2. Optional content hash (5-10% speedup, enabled via parameter)
-3. Fast sanitization in core mode (3-5% speedup)
-
-Author: Migration Project
-Version: 2.1.0 FINAL
-Date: 2025-02-10
+Changes from v2.1.0:
+- Phase 5.1: Now accepts StrategyConfig instead of config_path (DEC-033)
+- Phase 5.1: No longer loads its own config - trusts StrategyConfig
+- Phase 5.1: All validation now in config_schema.py - DataLoader only loads data
+- Performance optimizations preserved (Parquet 60-70% faster, 8-15% additional speedup)
 """
 
 import pandas as pd
@@ -25,7 +19,6 @@ import hashlib
 import pickle
 import logging
 
-# Import contracts from the contracts module
 from src.strategies.contracts.data_contracts import (
     DataConfig,
     DataBundle,
@@ -33,7 +26,9 @@ from src.strategies.contracts.data_contracts import (
     DataValidationResult,
     CacheStats,
     DateRange,
+    DataFileConfig,
 )
+from src.config.config_schema import StrategyConfig
 
 # Fallback for PROJECT_ROOT
 try:
@@ -46,59 +41,67 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    Modern DataLoader with typed contracts (v2.1 FINAL).
-    
+    DataLoader v3.0 - Fully migrated, trusts StrategyConfig.
+
     Features:
-    - Returns DataBundle (typed contract)
+    - Accepts StrategyConfig directly (DEC-033)
+    - No config loading or validation - trusts the typed config
+    - Returns DataBundle with typed contracts
     - Supports CSV + Parquet (Parquet optimized)
     - Monthly/ARTF data support
     - Dual-mode execution (core vs analytics)
     - Intelligent caching with MD5 validation
-    - Data sanitization (inf → nan → ffill/bfill)
-    - Date range slicing
-    - Comprehensive validation
-    
-    Performance (v2.1 FINAL):
+
+    Performance:
     - Parquet: ~40ms (cold), ~5ms (cache) - 60-70% faster than v2.0
     - CSV: ~200ms (cold), ~5ms (cache)
-    - Additional 8-15% speedup from optimizations #1 and #2
-    - Core mode: 3-5% faster sanitization, no content hash overhead
+    - Additional 8-15% speedup from optimizations
+    - Core mode: 3-5% faster sanitization
     """
 
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
     def __init__(
-        self, 
-        config_path: str, 
-        project_root: Optional[Path] = None,
+        self,
+        config: StrategyConfig,  # Now accepts StrategyConfig directly
         mode: str = "core"
     ):
         """
-        Initialize DataLoader.
-        
+        Initialize DataLoader with StrategyConfig.
+
         Args:
-            config_path: Path to YAML configuration file
-            project_root: Project root for resolving relative paths (default: auto-detect)
+            config: StrategyConfig instance (fully validated)
             mode: Execution mode ("core" or "analytics")
         """
-        self.config_path = Path(config_path).resolve()
-        self.project_root = project_root or PROJECT_ROOT
+        self.config = config
+        self.strategy_config = config
         self.mode = mode
-        
-        # Will be populated by load_config()
-        self.raw_config = None
-        self.data_config: Optional[DataConfig] = None
-        
+
         # Cache management
         self.cache_dir = Path.home() / ".wbws_data_cache"
         self.cache_dir.mkdir(exist_ok=True)
-        
+
         # Cache statistics (only collected in analytics mode)
         self._cache_hits = 0
         self._cache_misses = 0
-        
+
         # Mode-aware logging
         self._verbose = (mode == "analytics")
+
+        # Build DataConfig from StrategyConfig
+        self.data_config = self._build_data_config()
+
+        if self._verbose:
+            logger.info(f"DataLoader initialized (mode={mode})")
+            logger.info(f"  Strategy data: {self.data_config.strategy_data.path.name}")
+            if self.data_config.htf_data:
+                logger.info(f"  HTF data: {self.data_config.htf_data.path.name}")
+            if self.data_config.ltf_data:
+                logger.info(f"  LTF data: {self.data_config.ltf_data.path.name}")
+            if self.data_config.artf_data:
+                logger.info(f"  ARTF data: {self.data_config.artf_data.path.name}")
+            if self.data_config.date_range:
+                logger.info(f"  Date range: {self.data_config.date_range}")
 
     def _log(self, level: str, message: str):
         """Mode-aware logging."""
@@ -111,77 +114,49 @@ class DataLoader:
                 logger.error(message)
 
     # =============================================================================
-    # CONFIGURATION LOADING
+    # Build DataConfig from StrategyConfig (Phase 5.1)
     # =============================================================================
 
-    def load_config(self) -> DataConfig:
-        """
-        Load and parse configuration file.
-        
-        Returns:
-            DataConfig: Typed configuration object
-            
-        Raises:
-            FileNotFoundError: If config file doesn't exist
-            ValueError: If config is malformed
-        """
-        if not self.config_path.exists():
-            raise FileNotFoundError(f"Config file not found: {self.config_path}")
-        
-        self._log("info", f"Loading config from: {self.config_path.name}")
-        
-        # Load raw YAML
-        import yaml
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            self.raw_config = yaml.safe_load(f)
-        
-        # Extract execution mode from config if present
-        execution_cfg = self.raw_config.get("execution", {})
-        config_mode = execution_cfg.get("mode", "analytics").lower()
-        
-        # Use config mode if not explicitly overridden
-        if self.mode == "analytics" and config_mode == "core":
-            self.mode = config_mode
-            self._verbose = False
-            self._log("info", "  Switching to CORE mode (from config)")
-        
-        # Parse into typed DataConfig
-        data_section = self.raw_config.get("data", {})
-        self.data_config = DataConfig.from_yaml_config(data_section, self.project_root)
-        
-        self._log("info", f"  Strategy data: {self.data_config.strategy_data.path.name}")
-        if self.data_config.htf_data:
-            self._log("info", f"  HTF data: {self.data_config.htf_data.path.name}")
-        if self.data_config.ltf_data:
-            self._log("info", f"  LTF data: {self.data_config.ltf_data.path.name}")
-        if self.data_config.artf_data:
-            self._log("info", f"  ARTF data: {self.data_config.artf_data.path.name}")
-        if self.data_config.date_range:
-            self._log("info", f"  Date range: {self.data_config.date_range}")
-        
-        return self.data_config
+    def _build_data_config(self) -> DataConfig:
+        """Build DataConfig from the typed StrategyConfig — no YAML re-parse."""
+        cfg = self.strategy_config.data
+
+        def _build_file_config(path: Optional[Path]) -> Optional[DataFileConfig]:
+            if path is None:
+                return None
+            return DataFileConfig(
+                path=path,
+                format=path.suffix.lower().lstrip("."),
+            )
+
+        # Create date range if both start and end are present
+        date_range = None
+        if cfg.date_range.start and cfg.date_range.end:
+            date_range = DateRange(
+                start=pd.Timestamp(cfg.date_range.start).to_pydatetime(),
+                end=pd.Timestamp(cfg.date_range.end).to_pydatetime(),
+            )
+
+        return DataConfig(
+            strategy_data=_build_file_config(cfg.paths.strategy_ohlcv),
+            htf_data=_build_file_config(cfg.paths.htf_ohlcv),
+            ltf_data=_build_file_config(cfg.paths.ltf_ohlcv),
+            artf_data=_build_file_config(cfg.paths.artf_ohlcv),
+            date_range=date_range,
+        )
 
     # =============================================================================
     # CACHE MANAGEMENT
     # =============================================================================
 
     def _get_cache_key(
-        self, 
-        file_path: Path, 
+        self,
+        file_path: Path,
         date_range: Optional[DateRange] = None,
-        use_content_hash: bool = False  # NEW: Optional content hash (5-10% speedup)
+        use_content_hash: bool = False
     ) -> Optional[str]:
         """
         Generate cache key for a file.
-        
-        Args:
-            file_path: Path to data file
-            date_range: Optional date range (affects cache key)
-            use_content_hash: Whether to include MD5 hash of file content
-                             Default False (trust mtime + size for speed)
-        
-        Returns:
-            MD5 hash cache key or None if file doesn't exist
         """
         if not file_path.exists():
             return None
@@ -191,11 +166,9 @@ class DataLoader:
             str(file_path.resolve()),
             f"size:{stat.st_size}",
             f"mtime:{stat.st_mtime}",
-            "v2.1",  # Cache version (invalidates on code changes)
+            "v3.0",  # Cache version (invalidates on code changes)
         ]
 
-        # OPTIMIZATION #1: Only compute content hash if explicitly requested
-        # Default: False (trust mtime + size for 5-10% speedup on cold loads)
         if use_content_hash:
             try:
                 with open(file_path, "rb") as f:
@@ -204,7 +177,6 @@ class DataLoader:
             except Exception as e:
                 self._log("warning", f"Failed to compute content hash for {file_path.name}: {e}")
 
-        # Add date range to key
         if date_range:
             if date_range.start:
                 key_parts.append(f"start:{date_range.start.isoformat()}")
@@ -242,30 +214,35 @@ class DataLoader:
             self._log("warning", f"Cache save failed for {cache_file.name}: {e}")
 
     # =============================================================================
-    # FILE LOADING (OPTIMIZED v2.1)
+    # FILE LOADING
     # =============================================================================
 
     def _load_file_with_cache(
-        self, 
-        file_path: Path, 
+        self,
+        file_config: DataFileConfig,
         data_type: str,
-        date_range: Optional[DateRange] = None
+        apply_date_range: bool = True
     ) -> pd.DataFrame:
         """
         Load a single data file with caching.
-        
+
         Args:
-            file_path: Path to data file
+            file_config: DataFileConfig for the file to load
             data_type: Description (e.g., "strategy", "htf", "ltf", "artf")
-            date_range: Optional date range for slicing
-            
+            apply_date_range: Whether to apply date range slicing
+
         Returns:
             DataFrame with DatetimeIndex
         """
+        file_path = file_config.path
+
         # Validate file exists
         if not file_path.exists():
             raise FileNotFoundError(f"{data_type} file not found: {file_path}")
-        
+
+        # Determine date range for cache key
+        date_range = self.data_config.date_range if apply_date_range else None
+
         # Try cache
         cache_key = self._get_cache_key(file_path, date_range)
         cached = self._load_cached_data(cache_key)
@@ -287,24 +264,18 @@ class DataLoader:
             df["timestamp"] = pd.to_datetime(df["timestamp"], format=self.DATE_FORMAT)
             df = df.set_index("timestamp").sort_index()
 
-        # Load Parquet (OPTIMIZED v2.1)
+        # Load Parquet
         elif suffix == ".parquet":
             df = pd.read_parquet(file_path)
             df.columns = df.columns.str.lower()
 
             # Case 1: timestamp is stored as index
             if df.index.name == "timestamp":
-                # OPTIMIZATION 1: Only remove timezone if present
                 if hasattr(df.index, 'tz') and df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
-
-                # OPTIMIZATION 2: Floor to seconds BEFORE sorting
                 df.index = df.index.floor("s")
-                
-                # OPTIMIZATION 3: Sort after flooring
                 df = df.sort_index()
 
-                # OPTIMIZATION 4: Lazy duplicate checking
                 if not df.index.is_unique:
                     dup_count = df.index.duplicated().sum()
                     self._log("warning", f"  ⚠️ Found {dup_count} duplicate timestamps in {file_path.name}, keeping last")
@@ -316,7 +287,7 @@ class DataLoader:
                 df = df.dropna(subset=["timestamp"])
                 df["timestamp"] = df["timestamp"].dt.floor("s")
                 df = df.set_index("timestamp").sort_index()
-                
+
                 if not df.index.is_unique:
                     dup_count = df.index.duplicated().sum()
                     self._log("warning", f"  ⚠️ Found {dup_count} duplicate timestamps, keeping last")
@@ -333,7 +304,7 @@ class DataLoader:
         df = df.copy()
 
         # Date range slicing (skip for ARTF - we need full history)
-        if date_range and data_type != "artf":
+        if apply_date_range and date_range and data_type != "artf":
             start = date_range.start
             end = date_range.end
             if start or end:
@@ -350,41 +321,31 @@ class DataLoader:
     def _sanitize_df(self, df: pd.DataFrame, name: str) -> pd.DataFrame:
         """
         Sanitize DataFrame: inf → nan → ffill → bfill.
-        
-        OPTIMIZATION #2: Fast path for core mode (3-5% speedup)
-        - Core mode: Skip expensive validation, trust data quality
-        - Analytics mode: Full validation with detailed logging
-        
+
         Args:
             df: DataFrame to sanitize
             name: Name for logging
-            
+
         Returns:
             Sanitized DataFrame
         """
-        # FAST PATH: Core mode (production)
         if not self._verbose:
-            # Replace inf with NaN
             df = df.replace([np.inf, -np.inf], np.nan)
-            # Fast check using numpy array directly (faster than select_dtypes)
             if df.isnull().values.any():
                 df = df.ffill().bfill()
             return df
-        
-        # SLOW PATH: analytics mode (full validation)
-        # Check for inf values
+
         inf_count = np.isinf(df.select_dtypes(include=[np.number])).sum().sum()
         if inf_count > 0:
             self._log("warning", f"  ⚠️ {name}: Found {inf_count} inf values, replacing with NaN")
-        
+
         df = df.replace([np.inf, -np.inf], np.nan)
-        
-        # Check for NaN after replacement
+
         nan_count = df.select_dtypes(include=[np.number]).isnull().sum().sum()
         if nan_count > 0:
             self._log("warning", f"  ⚠️ {name}: Found {nan_count} NaN values, forward/backward filling")
             df = df.ffill().bfill()
-        
+
         return df
 
     # =============================================================================
@@ -397,12 +358,10 @@ class DataLoader:
         errors = []
         warnings = []
 
-        # Check: Has data
         checks["has_data"] = len(df) > 0
         if not checks["has_data"]:
             errors.append(f"{name}: DataFrame is empty")
 
-        # Check: OHLC columns exist
         required_cols = ["open", "high", "low", "close"]
         checks["ohlc_columns"] = all(col in df.columns for col in required_cols)
         if not checks["ohlc_columns"]:
@@ -410,23 +369,19 @@ class DataLoader:
             errors.append(f"{name}: Missing OHLC columns: {missing}")
 
         if checks["ohlc_columns"]:
-            # Check: No NaN values
             checks["no_nan"] = not df[required_cols].isnull().any().any()
             if not checks["no_nan"]:
                 nan_counts = df[required_cols].isnull().sum()
                 warnings.append(f"{name}: NaN values found: {nan_counts[nan_counts > 0].to_dict()}")
 
-            # Check: Positive prices
             checks["positive_prices"] = (df[required_cols] > 0).all().all()
             if not checks["positive_prices"]:
                 errors.append(f"{name}: Found non-positive prices")
 
-            # Check: High >= Low
             checks["high_low_valid"] = (df["high"] >= df["low"]).all()
             if not checks["high_low_valid"]:
                 errors.append(f"{name}: Found bars where high < low")
 
-            # Check: Open/Close within High/Low
             checks["open_close_valid"] = (
                 (df["open"] >= df["low"]) &
                 (df["open"] <= df["high"]) &
@@ -451,82 +406,73 @@ class DataLoader:
     def load_data(self) -> DataBundle:
         """
         Load all data files and return a typed DataBundle.
-        
+
         Returns:
             DataBundle: Complete data package with validation
-            
+
         Raises:
             ValueError: If data is invalid
             FileNotFoundError: If required files are missing
         """
-        # Ensure config is loaded
-        if self.data_config is None:
-            self.load_config()
-
         self._log("info", "Loading data files...")
 
         # Load strategy data (required)
         df_full = self._load_file_with_cache(
-            self.data_config.strategy_data.path,
+            self.data_config.strategy_data,
             "strategy",
-            None  # Load full file first
+            apply_date_range=False  # Load full file first
         )
         df_full = self._sanitize_df(df_full, "strategy_full")
 
         # Slice to strategy period
-        if self.data_config.date_range:
+        if self.data_config.date_range and self.data_config.date_range.is_bounded:
             start = self.data_config.date_range.start
             end = self.data_config.date_range.end
             df_strategy = df_full.loc[start:end].copy()
         else:
             df_strategy = df_full.copy()
-        
+
         df_strategy = self._sanitize_df(df_strategy, "strategy_period")
 
         # Load HTF data (optional)
         df_htf = None
         if self.data_config.htf_data:
             df_htf = self._load_file_with_cache(
-                self.data_config.htf_data.path,
+                self.data_config.htf_data,
                 "htf",
-                self.data_config.date_range
+                apply_date_range=True
             )
             df_htf = self._sanitize_df(df_htf, "htf")
 
         # Load LTF data (optional)
         df_ltf = None
-        ltf_timeframe = "1s"
+        ltf_timeframe = self.config.data.ltf_timeframe
         if self.data_config.ltf_data:
             df_ltf = self._load_file_with_cache(
-                self.data_config.ltf_data.path,
+                self.data_config.ltf_data,
                 "ltf",
-                self.data_config.date_range
+                apply_date_range=True
             )
             df_ltf = self._sanitize_df(df_ltf, "ltf")
-            if self.raw_config and "data" in self.raw_config:
-                ltf_timeframe = self.raw_config["data"].get("ltf_timeframe", "1s")
 
-        # Load ARTF data (Annual Range Timeframe / Monthly) - NEW in v2.1
+        # Load ARTF data (Annual Range Timeframe / Monthly)
         df_artf = None
-        artf_timeframe = "1ME"
+        artf_timeframe = self.config.data.artf_timeframe
         if self.data_config.artf_data:
             df_artf = self._load_file_with_cache(
-                self.data_config.artf_data.path,
+                self.data_config.artf_data,
                 "artf",
-                None  # Load full history, no date range
+                apply_date_range=False  # Load full history
             )
             df_artf = self._sanitize_df(df_artf, "artf")
-            if self.raw_config and "data" in self.raw_config:
-                artf_timeframe = self.raw_config["data"].get("artf_timeframe", "1ME")
 
         # Validate strategy data
         validation = self._validate_dataframe(df_strategy, "strategy")
-        
+
         if not validation.is_valid:
             error_msg = "\n".join(validation.errors)
             raise ValueError(f"Data validation failed:\n{error_msg}")
 
-        # Log warnings (only in analytics mode)
         for warning in validation.warnings:
             self._log("warning", f"  {warning}")
 
@@ -565,20 +511,20 @@ class DataLoader:
         return bundle
 
     # =============================================================================
-    # CACHE STATISTICS (only in analytics mode)
+    # CACHE STATISTICS
     # =============================================================================
 
     @property
     def cache_stats(self) -> Optional[CacheStats]:
         """
         Get cache performance statistics.
-        
+
         Returns:
             CacheStats object (analytics mode) or None (core mode)
         """
         if not self._verbose:
-            return None  # Core mode doesn't collect stats
-        
+            return None
+
         total = self._cache_hits + self._cache_misses
         hit_rate = (self._cache_hits / total * 100) if total > 0 else 0.0
 

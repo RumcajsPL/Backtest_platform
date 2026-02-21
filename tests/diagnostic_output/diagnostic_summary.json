@@ -1,9 +1,0 @@
-{
-  "timestamp": "2026-01-16T21:20:30.520624",
-  "results": {
-    "test1": false,
-    "test2": true,
-    "test3": true
-  },
-  "test_output_dir": "e:\\Trading\\Backtest_platform\\tests\\diagnostic_output"
-}

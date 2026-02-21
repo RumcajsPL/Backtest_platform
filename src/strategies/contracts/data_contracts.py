@@ -1,15 +1,13 @@
 """
 Data Layer Contracts for WBWSStrategy Migration v2.1
 
-Updates:
-- Added artf_data (Annual Range Timeframe / Monthly bars) support
-- Added execution mode awareness
-- Enhanced for dual-mode operation
+Version: 2.2.0 (Hardening II Final)
+Date: 2026-02-21
+Session: 21 - Final Hardening
 
-Author: Migration Project
-Version: 2.2.0
-Date: 2026-02-19
-Session: 20 — Block B (removed from_yaml_config legacy adapter)
+Changes from v2.2.0:
+- Block B: Removed from_yaml_config legacy adapter (B-5)
+- Block B: Enhanced validation for date ranges and data quality
 """
 
 from dataclasses import dataclass, field
@@ -89,8 +87,7 @@ class DataConfig:
     """
     Complete data loading configuration.
 
-    Constructed directly from the new architecture's strategy_template.yaml
-    via StrategyConfig — not from the legacy YAML format (DEC-021).
+    Constructed directly from StrategyConfig - no legacy adapters.
 
     Attributes:
         strategy_data: Main strategy timeframe data config
@@ -106,6 +103,8 @@ class DataConfig:
     artf_data: Optional[DataFileConfig] = None
     date_range: Optional[DateRange] = None
     validation_rules: Dict[str, Any] = field(default_factory=dict)
+
+    # NOTE: from_yaml_config has been removed (B-5)
 
 
 # =============================================================================
@@ -191,7 +190,6 @@ class DataBundle:
     Complete bundle of loaded market data.
     
     This is the primary contract returned by DataLoader.
-    Replaces the 4-tuple return value (df_full, df_strategy, df_htf, df_ltf).
     
     Attributes:
         full: Complete dataset (all available data)
@@ -214,10 +212,8 @@ class DataBundle:
     
     def __post_init__(self):
         """Validate DataFrame structure."""
-        # Validate strategy data (required)
         self._validate_dataframe(self.strategy, "strategy")
         
-        # Validate optional dataframes
         if self.htf is not None:
             self._validate_dataframe(self.htf, "htf")
         if self.ltf is not None:
@@ -227,11 +223,9 @@ class DataBundle:
     
     def _validate_dataframe(self, df: pd.DataFrame, name: str):
         """Validate a single DataFrame."""
-        # Check index
         if not isinstance(df.index, pd.DatetimeIndex):
             raise ValueError(f"{name} DataFrame must have DatetimeIndex")
         
-        # Check required columns
         required = ["open", "high", "low", "close"]
         missing = [col for col in required if col not in df.columns]
         if missing:
@@ -239,17 +233,14 @@ class DataBundle:
     
     @property
     def has_htf(self) -> bool:
-        """Returns True if HTF data is available."""
         return self.htf is not None and not self.htf.empty
     
     @property
     def has_ltf(self) -> bool:
-        """Returns True if LTF data is available."""
         return self.ltf is not None and not self.ltf.empty
     
     @property
     def has_artf(self) -> bool:
-        """Returns True if ARTF data is available."""
         return self.artf is not None and not self.artf.empty
     
     def __str__(self) -> str:
@@ -281,7 +272,6 @@ class CacheStats:
     cache_dir: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
             "hits": self.hits,
             "misses": self.misses,

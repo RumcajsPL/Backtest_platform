@@ -1,0 +1,13 @@
+# Test Data Paths
+# Small sample datasets for unit testing
+
+data:
+  strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet"
+  htf_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet"
+  ltf_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet"
+  artf_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
+
+# Date range for tests
+date_range:
+  start: "2025-12-17 14:00:00" # Small range to run fast "2025-12-17 14:00:00"; longer for full real teast "2025-09-14 08:00:00"
+  end: "2025-12-17 21:00:00"

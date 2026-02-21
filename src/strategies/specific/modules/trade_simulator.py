@@ -1,39 +1,14 @@
-"""Trade simulation with LTF OHLC execution
-
-Version: 4.7.0
-Session: 20 Block E
-
-Performance overhaul — target: 41,052ms → <10,000ms (>75% reduction)
-
-v4.7.0 (Session 20 Block E): O(N²) → O(1) data structure overhaul
-    Four quadratic hot paths eliminated:
-
-    1. _check_exits_with_ltf_ohlc: open_trades scan
-       OLD: [t for t in self.all_trades if t.is_open ...]   O(all_trades) per bar
-       NEW: self._open_trades dict values                    O(open_trades) per bar
-       Expected: 60x speedup on exit check path
-
-    2. _execute_trade_exit: linear trade lookup
-       OLD: for i, t in enumerate(self.all_trades): ...     O(all_trades) per exit
-       NEW: self._open_trades[entry_id]                      O(1)
-
-    3. _handle_close: linear scan by trade_manager_id
-       OLD: next(t for t in self.all_trades if t.entry.trade_manager_id == tid)  O(N)
-       NEW: self._tm_id_to_entry_id[tid] -> self._open_trades[entry_id]          O(1)
-
-    4. simulate_trades: signal lookup per bar
-       OLD: if timestamp not in filtered_signals.index      O(1) but expensive hash
-       NEW: signals_dict = {ts: val} pre-built              pure dict O(1) lookup
-
-    Additional:
-    - strategy_index converted to list before loop (avoids pd.Index overhead per iteration)
-    - df.astype() uses copy=False + direct assignment avoiding SettingWithCopyWarning
-    - config.get("analytics") replaces config.get("debug") for profiler key (DEC-022)
-
-v4.6 (Session 11): TradeResult contract output
-v4.5.1 (Session 10.1): RejectedSignal contract for rejected signals
-v4.5 (Session 10): Internal Trade contract usage
 """
+Trade simulation with LTF OHLC execution
+
+Version: 5.1.0 (Phase 5 Final)
+Session: 21 - Final Hardening
+
+Changes from v5.0.0:
+- Phase 5.8: TradeManager now initialized with StrategyConfig
+- Phase 5.7: Spread settings read exclusively from SpreadManager
+"""
+
 import time
 import logging
 from collections import defaultdict
@@ -46,6 +21,7 @@ from src.strategies.specific.modules.risk_manager import RiskManager
 from src.strategies.specific.modules.spread_manager import SpreadManager
 from src.strategies.specific.modules.trade_manager import TradeManager
 from src.strategies.core.null_progressive_tracker import NullProgressiveTracker
+from src.strategies.core.cache_manager import CacheManager
 
 from src.strategies.contracts.trade_contracts import (
     Trade,
@@ -59,6 +35,8 @@ from src.strategies.contracts.trade_contracts import (
     RejectedSignal,
     TradeResult,
 )
+from src.strategies.contracts.signal_contracts import SignalFrame
+from src.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +45,8 @@ try:
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
+
+_SIGNAL_CODE_TO_STR = {1: "BUY", 2: "SELL"}
 
 
 class TradeSimulatorProfiler:
@@ -98,8 +78,6 @@ class TradeSimulatorProfiler:
             )
 
 
-# ─── Numba-accelerated helpers ─────────────────────────────────────────── #
-
 if NUMBA_AVAILABLE:
     @njit
     def _numba_find_first_hit_long(low_np, high_np, sl_price, tp_price, is_sl):
@@ -129,33 +107,39 @@ if NUMBA_AVAILABLE:
 class TradeSimulator:
     """
     Trade simulator with LTF OHLC execution for realistic SL/TP triggers.
-
-    Data structures (v4.7):
-    - self.all_trades: List[Trade]         — append-only, canonical record
-    - self._open_trades: Dict[str, Trade]  — entry_id → Trade (open only)
-    - self._tm_id_to_entry_id: Dict[int, str] — trade_manager_id → entry_id
-    These replace all linear scans over self.all_trades.
     """
 
-    def __init__(self, config: Dict, df_full: pd.DataFrame):
+    def __init__(
+        self,
+        config: StrategyConfig,
+        df_full: pd.DataFrame,
+        cache_manager: Optional[CacheManager] = None,
+    ):
+        """
+        Initialize TradeSimulator with typed config.
+
+        Args:
+            config: StrategyConfig instance
+            df_full: Full OHLCV DataFrame
+            cache_manager: Optional cache manager for multi-run state
+        """
         self.config = config
         self.df_full = df_full
+        self._cache_manager = cache_manager or CacheManager()
 
-        # DEC-022: "analytics" key replaces "debug"
-        analytics_cfg = config.get("analytics", config.get("debug", {}))
+        analytics_cfg = getattr(config, "analytics", {})
         self.profile_enabled = analytics_cfg.get("profile_simulator", False)
 
-        # ── Canonical trade store (append-only) ──────────────────────── #
+        # ── Canonical trade store ──────────────────────────────────────── #
         self.all_trades: List[Trade] = []
         self.rejected_signals: List[RejectedSignal] = []
         self.trade_counter = 0
         self.rejection_counter = 0
 
-        # ── O(1) lookup indices (Block E) ─────────────────────────────── #
-        # entry_id (str) → Trade reference for open trades
+        # ── O(1) lookup indices ──────────────────────────────────────── #
         self._open_trades: Dict[str, Trade] = {}
-        # trade_manager_id (int) → entry_id (str) for close-by-tm-id path
         self._tm_id_to_entry_id: Dict[int, str] = {}
+        self._trade_list_index: Dict[str, int] = {}
 
         # ── Managers ─────────────────────────────────────────────────── #
         self.trade_manager: Optional[TradeManager] = None
@@ -164,7 +148,15 @@ class TradeSimulator:
         self._tracking_enabled = False
         self.df_ltf: Optional[pd.DataFrame] = None
         self._ltf_windows: Dict = {}
-        self.risk_manager = RiskManager(self.config, df_full)
+
+        # Phase 5.7/5.8: All managers now use StrategyConfig
+        self.risk_manager = RiskManager(
+            config=self.config,
+            ohlcv_data=df_full,
+            ohlcv_artf=None,
+            mode="core",
+            cache_manager=self._cache_manager,
+        )
 
         self.initialize_managers()
 
@@ -179,19 +171,26 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Initialization
     # ──────────────────────────────────────────────────────────────────── #
+
     def initialize_managers(self) -> None:
+        """Initialize trade, spread, and risk managers."""
+        # Phase 5.8: TradeManager now accepts StrategyConfig
         self.trade_manager = TradeManager(self.config)
 
-        tm_config = self.config.get("trade_management", {})
-        spread_config = tm_config.get("spread", {})
-        if spread_config.get("enabled", False):
-            asset_symbol = self.config.get("asset", {}).get("symbol", "")
-            config_path = spread_config.get("config_path")
-            self.spread_manager = SpreadManager(asset_symbol, config_path)
+        spread_config = self.config.trade_management.spread
+        if spread_config.enabled:
+            asset_symbol = self.config.asset.symbol
+            self.spread_manager = SpreadManager(
+                asset_symbol=asset_symbol,
+                spread_config_path=str(spread_config.config_path) if spread_config.config_path else None,
+                mode="core",
+                cache_manager=self._cache_manager,
+            )
 
     # ──────────────────────────────────────────────────────────────────── #
     # LTF window precomputation
     # ──────────────────────────────────────────────────────────────────── #
+
     def _precompute_ltf_windows(self, df_strategy: pd.DataFrame) -> None:
         """Pre-compute LTF windows and numpy views for each strategy bar."""
         if self.df_ltf is None or self.df_ltf.empty:
@@ -233,6 +232,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Numba-accelerated exact exit detection
     # ──────────────────────────────────────────────────────────────────── #
+
     def _find_exact_exit_bar_numba(
         self,
         trade: Trade,
@@ -281,6 +281,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Exit execution
     # ──────────────────────────────────────────────────────────────────── #
+
     def _execute_trade_exit(
         self,
         trade: Trade,
@@ -295,14 +296,17 @@ class TradeSimulator:
         """
         Execute trade exit and update tracking.
 
-        Block E: O(1) — entry_id lookup in self._open_trades and _tm_id_to_entry_id.
-        Old code scanned self.all_trades linearly.
+        TS-2: Fail-fast on unknown exit reason - no silent default.
         """
+        # TS-2: Strict exit reason validation
         try:
             exit_reason_enum = ExitReason[exit_reason]
         except KeyError:
-            logger.warning(f"Unknown exit reason '{exit_reason}', using END_OF_DATA")
-            exit_reason_enum = ExitReason.END_OF_DATA
+            raise ValueError(
+                f"Unknown exit reason '{exit_reason}'. "
+                f"Valid values: {[e.name for e in ExitReason]}. "
+                f"This is a code defect — exit_reason must always be a valid ExitReason name."
+            ) from None
 
         trade_exit = TradeExit.create(
             entry=trade.entry,
@@ -312,13 +316,10 @@ class TradeSimulator:
         )
         updated_trade = Trade(entry=trade.entry, exit=trade_exit)
 
-        # ── O(1) bookkeeping (Block E) ───────────────────────────────── #
+        # O(1) bookkeeping
         entry_id = trade.entry.entry_id
-        # Update canonical list: find once by entry_id via dict index tracking
-        # all_trades is append-only so index never shifts — we store it at open time
         list_idx = self._trade_list_index[entry_id]
         self.all_trades[list_idx] = updated_trade
-        # Remove from open index
         del self._open_trades[entry_id]
         if trade.entry.trade_manager_id is not None:
             self._tm_id_to_entry_id.pop(trade.entry.trade_manager_id, None)
@@ -357,21 +358,16 @@ class TradeSimulator:
             )
 
     # ──────────────────────────────────────────────────────────────────── #
-    # LTF exit engine  ← THE PRIMARY PERFORMANCE HOT PATH
+    # LTF exit engine
     # ──────────────────────────────────────────────────────────────────── #
+
     def _check_exits_with_ltf_ohlc(
         self,
         strategy_timestamp: pd.Timestamp,
         exit_stats: Dict,
         verbose: bool,
     ) -> None:
-        """
-        Check for SL/TP exits using vectorized LTF OHLC.
-
-        Block E: O(open_trades) per bar instead of O(all_trades).
-        With avg 5 open positions vs 300 total trades:
-        200,000 bars × 5 open ≈ 1M ops  vs  200,000 × 300 ≈ 60M ops.
-        """
+        """Check for SL/TP exits using vectorized LTF OHLC."""
         window = self._ltf_windows.get(strategy_timestamp)
         if window is None:
             return
@@ -382,8 +378,7 @@ class TradeSimulator:
         if low_np.size == 0:
             return
 
-        # ── O(open_trades) — not O(all_trades) ───────────────────────── #
-        # Filter to trades opened before this bar (entry_time < strategy_timestamp)
+        # Filter to trades opened before this bar
         open_list = [
             t for t in self._open_trades.values()
             if t.entry.entry_time < strategy_timestamp
@@ -442,10 +437,11 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Main simulation loop
     # ──────────────────────────────────────────────────────────────────── #
+
     def simulate_trades(
         self,
         df_strategy: pd.DataFrame,
-        filtered_signals: pd.Series,
+        signal_frame: SignalFrame,  # Now accepts SignalFrame directly (CF-6)
         verbose: bool = False,
         progressive_tracker=None,
         signal_id_map: Dict = None,
@@ -454,14 +450,16 @@ class TradeSimulator:
         """
         Simulate trades with realistic LTF execution.
 
-        Returns:
-            TradeResult contract. Call result.to_dict() for dict output.
+        Args:
+            df_strategy: Strategy timeframe OHLCV
+            signal_frame: SignalFrame with int8 signals (CF-6)
+            verbose: Enable verbose logging
+            progressive_tracker: Optional progressive tracker
+            signal_id_map: Optional signal ID map
+            df_ltf: LTF data for execution
 
-        Block E changes:
-        - signals_dict pre-built before loop (O(1) per-bar lookup)
-        - strategy_index converted to list (faster iteration than pd.Index)
-        - _trade_list_index dict initialised here (entry_id → list index)
-        - df.astype() uses copy=False to avoid SettingWithCopyWarning
+        Returns:
+            TradeResult contract
         """
         if df_ltf is None or df_ltf.empty:
             logger.error("EXECUTION ABORTED: LTF data missing")
@@ -470,6 +468,13 @@ class TradeSimulator:
                 "Verify config paths.ltf_ohlcv_file points to valid 1-second OHLCV data."
             )
 
+        # CF-6: Translate SignalFrame to string Series internally
+        filtered_signals: pd.Series = (
+            signal_frame.signals
+            .map(_SIGNAL_CODE_TO_STR)
+            .dropna()
+        )
+
         self.progressive_tracker = progressive_tracker
         self._tracking_enabled = (
             progressive_tracker is not None
@@ -477,12 +482,12 @@ class TradeSimulator:
         )
         self.df_ltf = df_ltf
 
-        # ── Reset O(1) lookup structures ─────────────────────────────── #
+        # Reset O(1) lookup structures
         self._open_trades        = {}
         self._tm_id_to_entry_id  = {}
-        self._trade_list_index: Dict[str, int] = {}  # entry_id → index in all_trades
+        self._trade_list_index: Dict[str, int] = {}
 
-        # ── dtype optimization — avoids SettingWithCopyWarning ──────── #
+        # dtype optimization
         ohlc_cols = ["open", "high", "low", "close"]
         for df in (self.df_ltf, df_strategy):
             for col in ohlc_cols:
@@ -494,20 +499,19 @@ class TradeSimulator:
         if verbose:
             logger.info(f"LTF Execution: {len(df_ltf):,} bars (float32 optimized)")
             logger.info(f"Numba: {'ENABLED' if NUMBA_AVAILABLE else 'NOT AVAILABLE (numpy fallback)'}")
-            logger.info("v4.7: O(1) index structures active")
 
         self._precompute_ltf_windows(df_strategy)
         if verbose:
             logger.info(f"Pre-computed {len(self._ltf_windows):,} LTF windows")
 
-        # ── Pre-build signals dict (Block E: O(1) lookup per bar) ───── #
+        # Pre-build signals dict for O(1) lookup
         signals_dict: Dict[pd.Timestamp, Any] = {
             ts: val
             for ts, val in zip(filtered_signals.index, filtered_signals.values)
             if not pd.isna(val)
         }
 
-        # ── Convert index to list (faster iteration than pd.Index) ──── #
+        # Convert index to list for faster iteration
         strategy_index_list: List[pd.Timestamp] = list(df_strategy.index)
         close_np = df_strategy["close"].to_numpy(np.float32)
 
@@ -537,7 +541,7 @@ class TradeSimulator:
             # 1) Check exits on LTF
             check_exits(timestamp, exit_stats, verbose)
 
-            # 2) Skip if no signal — O(1) dict lookup (Block E)
+            # 2) Skip if no signal — O(1) dict lookup
             signal_type = signals_dict.get(timestamp)
             if signal_type is None:
                 continue
@@ -613,7 +617,7 @@ class TradeSimulator:
                 meta={"signal_id": signal_id} if signal_id else None,
             )
 
-            # 5) Progressive tracking: position management
+            # 5) Progressive tracking
             if tracking_enabled and signal_id:
                 current_dir_str = tm.current_direction.to_string() if tm.current_direction else None
                 tracker.update_position_management_details(
@@ -656,7 +660,7 @@ class TradeSimulator:
             self.profiler.print_report()
 
         execution_mode = (
-            "LTF_OHLC_V4_7_NUMBA" if NUMBA_AVAILABLE else "LTF_OHLC_V4_7"
+            "LTF_OHLC_V5_NUMBA" if NUMBA_AVAILABLE else "LTF_OHLC_V5"
         )
 
         return TradeResult.from_trades(
@@ -672,6 +676,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Rejected signals
     # ──────────────────────────────────────────────────────────────────── #
+
     def _reject_signal(
         self,
         timestamp: pd.Timestamp,
@@ -699,6 +704,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Risk rejection handling
     # ──────────────────────────────────────────────────────────────────── #
+
     def _handle_risk_rejection(
         self,
         action: str,
@@ -736,6 +742,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Close positions on opposite signal
     # ──────────────────────────────────────────────────────────────────── #
+
     def _handle_close(
         self,
         timestamp: pd.Timestamp,
@@ -744,19 +751,13 @@ class TradeSimulator:
         exit_stats: Dict,
         verbose: bool,
     ) -> None:
-        """
-        Close positions due to opposite signal.
-
-        Block E: O(1) lookup via _tm_id_to_entry_id → _open_trades.
-        Old code: next(t for t in self.all_trades if ...) — O(N).
-        """
+        """Close positions due to opposite signal."""
         spread = (
             self.spread_manager.get_spread_in_points(current_bid)
             if self.spread_manager else 0.0
         )
 
         for tid in close_trade_ids:
-            # O(1) lookups (Block E)
             entry_id = self._tm_id_to_entry_id.get(tid)
             if entry_id is None:
                 continue
@@ -774,7 +775,6 @@ class TradeSimulator:
             )
             updated_trade = Trade(entry=trade.entry, exit=trade_exit)
 
-            # Update canonical list (O(1) via _trade_list_index)
             list_idx = self._trade_list_index[entry_id]
             self.all_trades[list_idx] = updated_trade
             del self._open_trades[entry_id]
@@ -790,6 +790,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Open new position
     # ──────────────────────────────────────────────────────────────────── #
+
     def _handle_open(
         self,
         timestamp: pd.Timestamp,
@@ -800,11 +801,7 @@ class TradeSimulator:
         comment_suffix: str = "",
         signal_id: Optional[int] = None,
     ) -> None:
-        """
-        Open new position.
-
-        Block E: appends to all_trades and registers in O(1) index structures.
-        """
+        """Open new position."""
         self.trade_counter += 1
         entry_id = f"E{self.trade_counter}"
 
@@ -836,7 +833,7 @@ class TradeSimulator:
 
         trade = Trade(entry=entry_with_metadata, exit=None)
 
-        # ── Register in O(1) index structures (Block E) ──────────────── #
+        # Register in O(1) index structures
         list_idx = len(self.all_trades)
         self.all_trades.append(trade)
         self._trade_list_index[entry_id]            = list_idx
@@ -874,18 +871,14 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
     # Close remaining positions at end of backtest
     # ──────────────────────────────────────────────────────────────────── #
+
     def _close_remaining_positions(
         self,
         df_strategy: pd.DataFrame,
         exit_stats: Dict,
         verbose: bool,
     ) -> None:
-        """
-        Close all remaining open positions at end of backtest.
-
-        Block E: iterates self._open_trades.values() (open only, O(open_trades))
-        instead of [t for t in self.all_trades if t.is_open] (O(all_trades)).
-        """
+        """Close all remaining open positions at end of backtest."""
         if df_strategy.empty or not self._open_trades:
             return
 
@@ -896,7 +889,6 @@ class TradeSimulator:
             if self.spread_manager else 0.0
         )
 
-        # Snapshot open trades (dict may be mutated during loop via _execute_trade_exit)
         for trade in list(self._open_trades.values()):
             exit_price = last_bid if trade.entry.is_long else last_bid + spread
             self._execute_trade_exit(

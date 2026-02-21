@@ -1,25 +1,11 @@
 """
 Filter Pipeline - Orchestrator for Signal Filtering
 
-Coordinates time and technical filters with indicator caching and early exit.
-Migrated from dict-based to typed contract architecture.
+Version: 2.2.0 (Phase 5 Update)
+Session: 21 - Final Hardening
 
-Author: Migration Project
-Version: 2.1.0
-Date: 2026-02-19
-Session: 20 Block D
-
-Changes from v2.0.0:
-- P0-CH3-2: All logger.info() calls gated on self._mode == "analytics"
-             logger.error/warning remain ungated (always surfaced)
-- Fixed broken final log: was `logger.info(...) if mode == "debug" else ""`
-  which passed empty string to logger.info in core mode (syntax bug)
-- P0-E2 (DEC-026): cache key now includes filter config fingerprint
-  self._filter_cfg_hash computed once at init, passed to compute_cache_id()
-- DEC-027: execution_time_ms always collected (was None in core mode)
-           timing collection is ~50ns and has no meaningful overhead
-- P1-CH3-3: count_by_type() replaced with np.sum(values != 0) in all hot paths
-- P1-CH3-7: __init__ now accepts StrategyConfig (typed) not raw Dict
+Changes from v2.1.0:
+- Phase 5.3: Properly instantiates TimeFilterConfig for time_filter
 """
 
 import hashlib
@@ -40,7 +26,7 @@ from src.strategies.contracts.filter_contracts import (
     FilterProtocol,
 )
 from src.strategies.contracts.cache import FilterPipelineCache
-from src.config.config_schema import StrategyConfig
+from src.config.config_schema import StrategyConfig, TimeFilterConfig
 
 # Import all filter implementations
 from src.strategies.specific.filters.time_filter import TimeFilter
@@ -61,22 +47,9 @@ logger = logging.getLogger(__name__)
 class FilterPipeline:
     """
     Orchestrates signal filtering through time and technical filters.
-
-    Features:
-    - Accepts StrategyConfig (typed) — no raw dicts
-    - Time filter always runs first (DEC-006)
-    - Indicator caching with config-aware cache key (DEC-026)
-    - All logging gated on analytics mode (P0-CH3-2)
-    - Timing always collected (DEC-027)
-    - Early exit on empty signals
-
-    Performance:
-    - Core mode: ~10-20ms for 200 signals (cached indicators), zero log overhead
-    - Analytics mode: +2-5ms for metadata and logging
-    - First run per config: +50-100ms for indicator computation
     """
 
-    # Filter class mapping for auto-instantiation (DEC-005)
+    # Filter class mapping for auto-instantiation
     FILTER_CLASSES = {
         "rsi_filter": RSIFilter,
         "cci_filter": CCIFilter,
@@ -100,18 +73,13 @@ class FilterPipeline:
         Initialize FilterPipeline with typed configuration.
 
         Args:
-            config: Validated StrategyConfig (from config_schema.py)
-            mode: Execution mode — "core" (fast) or "analytics" (full logging)
+            config: Validated StrategyConfig
+            mode: Execution mode — "core" or "analytics"
             cache: Optional cache instance (creates new if not provided)
 
         Raises:
-            ValueError: If mode is invalid or "debug" (deprecated)
+            ValueError: If mode is invalid
         """
-        if mode == "debug":
-            raise ValueError(
-                "Mode 'debug' has been renamed to 'analytics' (DEC-022). "
-                "Update your call: mode='analytics'"
-            )
         valid_modes = {"core", "analytics"}
         if mode not in valid_modes:
             raise ValueError(
@@ -121,21 +89,15 @@ class FilterPipeline:
         self._mode = mode
         self.config = config
 
-        # Filter execution order (time filter is not in this list — always first per DEC-006)
         self.filter_sequence: List[str] = list(config.filters.filter_sequence)
 
-        # Compute filter config fingerprint ONCE at init (DEC-026)
-        # This ensures cache key is unique per filter configuration
         self._filter_cfg_hash = self._compute_filter_cfg_hash(config)
 
-        # Initialize cache
         self.cache = cache or FilterPipelineCache()
 
-        # Shared indicator storage (populated by compute_indicators)
         self.indicators: Dict[str, pd.Series] = {}
         self.ind_np: Dict[str, np.ndarray] = {}
 
-        # Filter instances
         self.time_filter: Optional[TimeFilter] = None
         self.technical_filters: List[FilterProtocol] = []
 
@@ -151,18 +113,7 @@ class FilterPipeline:
 
     @staticmethod
     def _compute_filter_cfg_hash(config: StrategyConfig) -> str:
-        """
-        Compute stable hash of active filter configuration (DEC-026).
-
-        Only enabled technical filters contribute to the hash.
-        Time filter is excluded — its parameters don't affect indicator computation.
-
-        Args:
-            config: Validated StrategyConfig
-
-        Returns:
-            12-character MD5 hex digest
-        """
+        """Compute stable hash of active filter configuration."""
         active = {
             name: fcfg.config
             for name, fcfg in config.filters.technical_filters.items()
@@ -178,10 +129,7 @@ class FilterPipeline:
 
     def _load_time_filter(self) -> None:
         """
-        Initialize time filter from config.
-
-        Time filter is special — no indicators needed, always runs first (DEC-006).
-        Config sourced from filters.time_filters section of StrategyConfig.
+        Initialize time filter from config using typed TimeFilterConfig (Phase 5.3).
         """
         try:
             time_filter_cfg = self.config.filters.time_filters.get("time_filter")
@@ -190,8 +138,14 @@ class FilterPipeline:
                     logger.info("Time filter: not configured — skipped")
                 return
 
+            # Phase 5.3: Create typed TimeFilterConfig from the raw config dict
+            typed_config = TimeFilterConfig.from_dict({
+                "enabled": time_filter_cfg.enabled,
+                **time_filter_cfg.config  # Unpack the nested config dict
+            })
+
             self.time_filter = TimeFilter(
-                config=time_filter_cfg.config,
+                config=typed_config,
                 name="time_filter"
             )
 
@@ -211,12 +165,7 @@ class FilterPipeline:
             self.time_filter = None
 
     def _load_technical_filters(self) -> None:
-        """
-        Initialize technical filters from configuration.
-
-        Only loads enabled filters, in filter_sequence order.
-        Unknown filter names log a warning and are skipped (DEC-008).
-        """
+        """Initialize technical filters from configuration."""
         for filter_name in self.filter_sequence:
             filter_cfg = self.config.filters.technical_filters.get(filter_name)
 
@@ -240,15 +189,7 @@ class FilterPipeline:
                 logger.error(f"Failed to load filter '{filter_name}': {e}")
 
     def compute_indicators(self, df: pd.DataFrame) -> None:
-        """
-        Compute indicators for all technical filters, or load from cache.
-
-        Cache key includes both data fingerprint and filter config fingerprint
-        (DEC-026) to prevent cross-config collisions.
-
-        Args:
-            df: OHLCV DataFrame (strategy timeframe)
-        """
+        """Compute indicators for all technical filters, or load from cache."""
         cache_id = self.cache.compute_cache_id(df, self._filter_cfg_hash)
 
         if self.cache.has(cache_id):
@@ -292,31 +233,10 @@ class FilterPipeline:
         df: pd.DataFrame,
         mode: Optional[str] = None,
     ) -> FilterPipelineResult:
-        """
-        Apply all filters to signals (time filter first, then technical).
-
-        Execution flow:
-        1. Count raw signals (numpy, no dict allocation)
-        2. Apply time filter (if configured and enabled)
-        3. Early exit if no signals remain
-        4. Compute/load indicators
-        5. Apply technical filters sequentially with early exit
-        6. Return FilterPipelineResult with full counts and timing
-
-        Args:
-            signal_frame: Raw signals from SignalGenerator
-            df: OHLCV DataFrame (strategy timeframe)
-            mode: Execution mode override. If None, uses self._mode set at init.
-                  Provided for call-site convenience only — prefer setting mode at init.
-
-        Returns:
-            FilterPipelineResult with final_signals, counts, filter_results,
-            rejection_reasons, and execution_time_ms (always populated, DEC-027).
-        """
+        """Apply all filters to signals (time filter first, then technical)."""
         effective_mode = mode if mode is not None else self._mode
         pipeline_start = perf_counter()
 
-        # Raw signal count — numpy direct, no dict (P1-CH3-3)
         raw_count = int(np.sum(signal_frame.signals.values != 0))
 
         filter_results: List[FilterMetadata] = []
@@ -328,7 +248,7 @@ class FilterPipeline:
             )
 
         # ----------------------------------------------------------------
-        # STAGE 1: Time Filter (always first — DEC-006)
+        # STAGE 1: Time Filter (always first)
         # ----------------------------------------------------------------
         current_signals = signal_frame
         time_filtered_count = raw_count
@@ -370,7 +290,7 @@ class FilterPipeline:
                     final_count=0,
                     filter_results=filter_results,
                     rejection_reasons=rejection_reasons,
-                    execution_time_ms=pipeline_time_ms,  # DEC-027: always set
+                    execution_time_ms=pipeline_time_ms,
                 )
 
         # ----------------------------------------------------------------
@@ -389,7 +309,6 @@ class FilterPipeline:
                     mode=effective_mode,
                 )
             except Exception as e:
-                # DEC-008/DEC-028: log error, pass signals through unchanged
                 logger.error(f"Filter '{filt.name}' raised an exception: {e}")
                 signals_n = int(np.sum(current_signals.signals.values != 0))
                 result = FilterResult(
@@ -419,7 +338,6 @@ class FilterPipeline:
                     f"({result.metadata.signals_rejected} rejected)"
                 )
 
-            # Early exit — numpy direct (P1-CH3-3)
             if int(np.sum(current_signals.signals.values != 0)) == 0:
                 if effective_mode == "analytics":
                     logger.info(
@@ -427,9 +345,8 @@ class FilterPipeline:
                     )
                 break
 
-        # Final count — numpy direct (P1-CH3-3)
         final_count = int(np.sum(current_signals.signals.values != 0))
-        pipeline_time_ms = (perf_counter() - pipeline_start) * 1000  # DEC-027: always
+        pipeline_time_ms = (perf_counter() - pipeline_start) * 1000
 
         pipeline_result = FilterPipelineResult(
             final_signals=current_signals,
