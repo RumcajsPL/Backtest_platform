@@ -1,20 +1,35 @@
 # =============================================================================
 # WBWSStrategy — New Architecture Config Template
-# Version: 1.0.0 | Session: 20 Block C | Date: 2026-02-19
+# Version: 1.1.0 | Session: 21 | Date: 2026-02-21
+#
+# Changes from v1.0.0 (Session 20 Block C):
+#   - asset:              section added (DEC-035 / DEC-036) — required for spread
+#   - spread.config_path: added (DEC-036) — path to broker_spreads.yaml
+#   - spread.spread_type/value: clarified as FALLBACK ONLY (broker file takes precedence)
+#   - signal.htf_period:  moved to data.htf_period (DEC-033) — now part of DataConfig
+#   - data.ltf_timeframe: added (DEC-033)
+#   - data.artf_timeframe: added (DEC-033)
+#   - risk.tp_mode:       added (DEC-037) — 'rr_ratio' | 'atr_multiplier'
+#   - risk.risk_to_reward_ratio: added (DEC-037) — first-class R:R config
+#   - risk.atr_multiplier_tp: kept as alternative (used when tp_mode: atr_multiplier)
 #
 # Generic template for the new architecture.
 # WBWS-specific values are filled in here for the active backtest.
 # Strategy-agnostic sections are marked [GENERIC].
 # WBWS-specific sections are marked [WBWS].
-#
-# Key differences from legacy wbws_strategy.yaml:
-#   - data.paths.*       replaces data.file / file_htf / file_ltf / file_artf
-#   - execution.mode     uses "core" | "analytics" (not "core" | "analytics")
-#   - filters            split into time_filters / technical_filters sections
-#   - trade_management   uses atr_multiplier_sl/tp (not sl_multiplier / risk_to_reward_ratio)
-#   - spread.spread_type required field (was implicit)
-#   - htf_period         moved to signal section
 # =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# [GENERIC] ASSET
+# Required when trade_management.spread.enabled: true.
+# symbol must match a key in the broker_spreads.yaml file exactly.
+# DEC-035 / DEC-036
+# -----------------------------------------------------------------------------
+asset:
+  symbol: "DEUIDXEUR"    # DAX 40 — matches key in configs/spreads/broker_spreads.yaml
+  pip_size: 0.1          # DAX — minimum tick (0.1 index point)
+  point_size: 1.0        # DAX — 1 point = 1.0 index point
 
 
 # -----------------------------------------------------------------------------
@@ -31,9 +46,17 @@ data:
     start: "2025-09-14 08:00:00"   # Format: YYYY-MM-DD HH:MM:SS (strict)
     end:   "2025-12-17 21:00:00"
 
-  # Informational only — data is already in CET as prepared by generate_ohlcv.py
-  # No timezone conversion is performed at load time (DEC-035)
+  # Informational — data is already in CET as prepared by generate_ohlcv.py
   timezone: "CET"
+
+  # DEC-033: timeframe fields added to DataConfig (previously read from raw YAML by DataLoader)
+  htf_period: "1H"         # HTF resampling period passed to WBWSTrigger (was: signal.htf_period)
+  ltf_timeframe: "1s"      # LTF bar frequency — must match ltf_ohlcv file content
+  artf_timeframe: "1ME"    # ARTF bar frequency — must match artf_ohlcv file content
+
+  # Fail-fast rules (enforced in DataConfig.__post_init__ after DEC-033):
+  #   ltf_timeframe is REQUIRED when ltf_ohlcv is set
+  #   artf_timeframe is REQUIRED when artf_ohlcv is set
 
 
 # -----------------------------------------------------------------------------
@@ -47,15 +70,16 @@ execution:
   # "analytics" — full single-run analysis pipeline
   #               LTF execution + TradeAnalytics + ReportGenerator (HTML)
   #               use for reviewing strategy behaviour in detail
-  # 
+  #
   mode: "core"
 
-# -----------------------------------------------------------------------------
-# [WBWS] SIGNAL
-# Trigger-specific parameters for WBWSTrigger
-# -----------------------------------------------------------------------------
-signal:
-  htf_period: "1H"    # Higher timeframe period passed to WBWSTrigger
+
+# NOTE: signal.htf_period has moved to data.htf_period (DEC-033).
+# The signal: section is kept here as a comment during the migration period.
+# Remove entirely once DEC-033 is merged.
+#
+# signal:
+#   htf_period: "1H"    ← DEPRECATED — use data.htf_period instead
 
 
 # -----------------------------------------------------------------------------
@@ -71,9 +95,6 @@ filters:
       session_end:   {hour: 20, minute: 30}
       excluded_days: []   # e.g. ["Saturday", "Sunday"]
 
-  # Order of technical filter execution.
-  # Only filters listed here AND enabled: true below will run.
-  # Filters absent from this list are skipped even if enabled: true.
   filter_sequence:
     - rsi_filter
     - choppiness_filter
@@ -134,7 +155,7 @@ filters:
 
     ma_filter:
       enabled: false
-      ma_type: "TEMA"   # Options: HMA SMA EMA WMA KAMA TEMA VWMA LSMA
+      ma_type: "TEMA"
       length: 25
       slope_length: 10
 
@@ -143,10 +164,6 @@ filters:
       reversal_percent: 0.2
       order: 5
 
-  # Error handling when a filter raises an exception (DEC-008/DEC-028)
-  # "pass_through" — log error and pass signals unchanged (production default)
-  # "fail_fast"    — raise exception immediately (development / analyticsging)
-  # "reject_all"   — reject all signals on any filter error (conservative)
   default_error_strategy: "pass_through"
 
 
@@ -156,16 +173,52 @@ filters:
 trade_management:
   spread:
     enabled: true
-    # "percentage" — spread_value as fraction of price (e.g. 0.0001 = 1 pip on 1.0 base)
-    # "points"     — spread_value in absolute price points
-    # "pips"       — spread_value in pips
-    spread_type: "points"
-    spread_value: 0.5   # Must be > 0 when enabled: true
+
+    # DEC-036: Path to broker spread definitions.
+    # SpreadManager reads spread_type and spread_value for the asset EXCLUSIVELY
+    # from this file — the spread_type/spread_value fields below are FALLBACK ONLY
+    # (used if the asset is not found in the broker file).
+    #
+    # broker_spreads.yaml entry for DEUIDXEUR:
+    #   spread_type: "percentage"
+    #   spread_value: 0.015    → ≈3.0 pts at DAX 20 000 (0.015% × 20000)
+    config_path: "configs/spreads/broker_spreads.yaml"
+
+    # FALLBACK values — used ONLY if DEUIDXEUR is absent from broker file.
+    # These do NOT override the broker file. Keep in sync with the broker entry
+    # for documentation clarity.
+    spread_type: "percentage"   # matches DEUIDXEUR entry in broker_spreads.yaml
+    spread_value: 0.015         # matches DEUIDXEUR entry in broker_spreads.yaml
+
+    # apply_to_long / apply_to_short are read from broker_spreads.yaml settings.*
+    # (DEC-036 single source of truth). Values below are IGNORED at runtime.
+    # Broker file: apply_to_long: true, apply_to_short: true
+    # application_method: "entry_only" — one spread per round trip
 
   risk:
     atr_length: 14
-    atr_multiplier_sl: 1.4    # SL = entry ± ATR * atr_multiplier_sl
-    atr_multiplier_tp: 7.98   # TP = entry ± ATR * atr_multiplier_tp  (sl * rr = 1.4 * 5.7)
+    atr_multiplier_sl: 1.4    # SL = entry ± ATR × atr_multiplier_sl
+
+    # DEC-037: TP mode selector
+    # "rr_ratio"     — TP = entry ± ATR × atr_multiplier_sl × risk_to_reward_ratio
+    #                  Set risk_to_reward_ratio below. Default and legacy mode.
+    #                  Advantage: TP scales automatically when sl multiplier changes.
+    # "atr_multiplier" — TP = entry ± ATR × atr_multiplier_tp
+    #                  Set atr_multiplier_tp below. Mode used in v1.0.0.
+    #                  Advantage: absolute TP target regardless of SL size.
+    tp_mode: "rr_ratio"
+
+    # Used when tp_mode: rr_ratio (default / legacy mode)
+    # TP distance = ATR × atr_multiplier_sl × risk_to_reward_ratio
+    # e.g. ATR=5.0, sl_mult=1.4, rr=5.7 → TP distance = 5.0 × 1.4 × 5.7 = 39.9 pts
+    risk_to_reward_ratio: 5.7
+
+    # Used when tp_mode: atr_multiplier (alternative mode)
+    # TP distance = ATR × atr_multiplier_tp
+    # Note: 1.4 × 5.7 = 7.98 — equivalent to rr_ratio=5.7 when sl_mult=1.4
+    # Only relevant when tp_mode: atr_multiplier (ignored otherwise)
+    atr_multiplier_tp: 7.98
+
     # Maximum allowed SL as % of instrument annual range.
     # Valid range: 0 < value <= 5.0
     # Warning is logged if value > 1.0 (unusually large risk per trade)
@@ -180,9 +233,9 @@ trade_management:
 
 # -----------------------------------------------------------------------------
 # [GENERIC] OUTPUT
-# Controls what the analytics/reporting pipeline produces
+# Controls what the analytics/reporting pipeline produces.
 # Relevant only in execution.mode: "analytics"
-# In "core" mode all output settings except logging are ignored
+# In "core" mode all output settings except logging are ignored.
 # -----------------------------------------------------------------------------
 output:
   reports:
@@ -194,5 +247,5 @@ output:
     include_raw_data: true
 
   logging:
-    level: "INFO"           # analytics | INFO | WARNING | ERROR
+    level: "INFO"           # DEBUG | INFO | WARNING | ERROR
     output_dir: "outputs/strategies/logs/wbws"

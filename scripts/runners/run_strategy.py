@@ -7,10 +7,10 @@ Loads config from a YAML file, runs the pipeline, prints a result summary.
 Usage:
     python scripts/runners/run_strategy.py
     python scripts/runners/run_strategy.py --config configs/strategies/wbws/wbws_strategy_v2.yaml
-    python scripts/runners/run_strategy.py --config configs/strategies/strategy_template.yaml --mode core
+    python scripts/runners/run_strategy.py --config configs/strategies/wbws/wbws_strategy_v2.yaml --mode core
 
-The --mode flag overrides execution.mode in the YAML (useful for quick switches
-without editing the config file).
+The --mode flag passes mode_override to orchestrator.run() — the YAML is not mutated.
+StrategyConfig is frozen so the override happens at the run() call site only.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.strategies.orchestrator import StrategyOrchestrator
+from src.strategies.orchestrator import StrategyOrchestrator, OrchestratorResult
 from src.utils.paths import CONFIGS_DIR
 
 
@@ -53,7 +53,8 @@ def _parse_args() -> argparse.Namespace:
 Examples:
   python scripts/runners/run_strategy.py
   python scripts/runners/run_strategy.py --config configs/strategies/wbws/wbws_strategy_v2.yaml
-  python scripts/runners/run_strategy.py --mode core --log-level DEBUG
+  python scripts/runners/run_strategy.py --config configs/strategies/wbws/wbws_strategy_v2.yaml --mode core
+  python scripts/runners/run_strategy.py --mode analytics --log-level DEBUG
         """,
     )
     parser.add_argument(
@@ -66,7 +67,10 @@ Examples:
         "--mode",
         choices=["core", "analytics"],
         default=None,
-        help="Override execution.mode from the config YAML.",
+        help=(
+            "Override execution.mode from the config YAML. "
+            "Passed as mode_override to orchestrator.run() — YAML is not modified."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -78,68 +82,69 @@ Examples:
 
 
 # ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+def _print_result(result: OrchestratorResult) -> None:
+    """Print formatted result summary to stdout (separate from the log stream)."""
+    SEP = "=" * 60
+    print()
+    print(SEP)
+    print("RESULT SUMMARY")
+    print(SEP)
+    print(f"  Mode          : {result.mode}")
+    print(f"  Total trades  : {result.total_trades}")
+    print(f"  Win rate      : {result.win_rate:.1f}%")
+    print(f"  Total PnL     : {result.total_pnl_points:+.1f} pts")
+    print(f"  Expectancy    : {result.metrics.expectancy_points:+.2f} pts/trade")
+    print(f"  Profit factor : {result.metrics.profit_factor:.2f}")
+    print(f"  Max drawdown  : {result.metrics.max_drawdown:.1f} pts")
+    print()
+    print("  Stage timing:")
+    for stage, ms in result.stage_durations_ms.items():
+        print(f"    {stage:<12} {ms:>8.1f} ms")
+    print(f"    {'TOTAL':<12} {result.total_duration_ms:>8.1f} ms")
+    print(SEP)
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> int:
     """
     Returns 0 on success, 1 on failure.
-    All exceptions are caught here and printed cleanly — the orchestrator
-    itself does not swallow errors (fail-fast), so they surface here.
+
+    All exceptions are caught here and logged cleanly. The orchestrator
+    itself does not swallow errors (fail-fast), so they always surface here.
     """
     args = _parse_args()
     _configure_logging(args.log_level)
 
     log = logging.getLogger(__name__)
     log.info("Strategy runner starting")
-    log.info("Config: %s", args.config)
+    log.info("Config : %s", args.config)
+    if args.mode:
+        log.info("Mode   : %s (CLI override)", args.mode)
 
-    # Validate config path before handing to orchestrator
     if not args.config.exists():
         log.error(
             "Config file not found: %s\n"
-            "Copy configs/strategies/strategy_template.yaml and fill in your parameters.",
+            "  → Copy configs/strategies/strategy_template.yaml and fill in your parameters.",
             args.config,
         )
         return 1
 
     try:
+        # from_yaml loads StrategyConfig AND stores the path for DataLoader
         orchestrator = StrategyOrchestrator.from_yaml(args.config)
 
-        # ASSUMPTION: if --mode is supplied, we need to override the config's mode.
-        # StrategyConfig is frozen so we cannot mutate it. Two options:
-        #   A) StrategyOrchestrator.run() accepts an optional mode override (chosen here)
-        #   B) Build a new config with the overridden mode via from_dict()
-        # Option A is simpler and keeps the override at the call site.
-        # If StrategyOrchestrator.run() does not support a mode kwarg, use Option B.
-        run_kwargs = {}
-        if args.mode is not None:
-            # ASSUMPTION: run() accepts mode= as an optional override.
-            # If not supported, remove this and document the limitation.
-            run_kwargs["mode_override"] = args.mode
-            log.info("Mode overridden by CLI: %s", args.mode)
+        result = orchestrator.run(
+            mode_override=args.mode,  # None if not supplied — orchestrator ignores None
+        )
 
-        result = orchestrator.run(**run_kwargs)
-
-        # Print result summary to stdout (separate from log stream)
-        print()
-        print("=" * 60)
-        print("RESULT SUMMARY")
-        print("=" * 60)
-        print(f"  Mode          : {result.mode}")
-        print(f"  Total trades  : {result.total_trades}")
-        print(f"  Win rate      : {result.win_rate:.1f}%")
-        print(f"  Total PnL     : {result.total_pnl_points:+.1f} pts")
-        print(f"  Expectancy    : {result.metrics.expectancy_points:+.2f} pts/trade")
-        print(f"  Profit factor : {result.metrics.profit_factor:.2f}")
-        print(f"  Max drawdown  : {result.metrics.max_drawdown:.1f} pts")
-        print()
-        print("  Stage timing:")
-        for stage, ms in result.stage_durations_ms.items():
-            print(f"    {stage:<12} {ms:>8.1f} ms")
-        print(f"    {'TOTAL':<12} {result.total_duration_ms:>8.1f} ms")
-        print("=" * 60)
-
+        _print_result(result)
         return 0
 
     except FileNotFoundError as e:
