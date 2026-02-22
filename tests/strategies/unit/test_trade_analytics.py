@@ -8,7 +8,9 @@ import pytest
 import pandas as pd
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
+from pathlib import Path
 
+from src.strategies.orchestrator import StrategyOrchestrator
 from src.strategies.specific.modules.trade_analytics import TradeAnalytics
 from src.strategies.contracts.analytics_contracts import (
     AnalyticsReport,
@@ -20,6 +22,7 @@ from src.strategies.contracts.trade_contracts import (
     Trade, TradeEntry, TradeExit, ExitReason, TradeDirection
 )
 from src.strategies.contracts.metrics_contracts import MetricsReport
+from src.utils.paths import test_path
 
 
 class TestTradeAnalytics:
@@ -624,3 +627,283 @@ class TestTradeAnalytics:
         
         assert len(json_files) >= 1
         assert len(md_files) >= 1
+    
+    # ========================================================================
+    # REAL DATA TESTS
+    # ========================================================================
+
+    def test_analytics_on_real_trades(self, real_data_config):
+        """Run full pipeline on real data and generate analytics."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: TradeAnalytics Full Pipeline")
+        print(f"{'='*60}")
+        print(f"Asset: {real_data_config.asset.symbol}")
+        print(f"Date Range: {real_data_config.data.date_range.start} to {real_data_config.data.date_range.end}")
+        
+        # Run the full strategy on real data
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        print(f"\nTrade Results:")
+        print(f"  Total entries: {result.trade_result.total_entries}")
+        print(f"  Opened trades: {result.trade_result.total_opened}")
+        print(f"  Closed trades: {result.trade_result.total_closed}")
+        print(f"  Rejected signals: {result.trade_result.total_rejected}")
+        print(f"  Win rate: {result.metrics.win_rate:.1f}%")
+        print(f"  Total P&L: {result.metrics.total_pnl_points:+.2f} pts")
+        print(f"  Profit factor: {result.metrics.profit_factor:.2f}")
+        
+        # Generate analytics
+        report = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        # Basic validation
+        assert report is not None
+        assert report.executive_summary.performance_grade is not None
+        assert report.time_performance is not None
+        assert report.trade_quality is not None
+        assert report.risk_adjusted is not None
+        
+        print(f"\n{'-'*60}")
+        print(f"ANALYTICS REPORT")
+        print(f"{'-'*60}")
+        print(f"Performance Grade: {report.executive_summary.performance_grade}")
+        print(f"Grade Reasoning: {report.executive_summary.grade_reasoning}")
+        
+        # Top insights
+        if report.executive_summary.critical_insights:
+            print(f"\nTop Insights:")
+            for i, insight in enumerate(report.executive_summary.critical_insights[:3], 1):
+                print(f"  {i}. [{insight.severity.upper()}] {insight.message}")
+                print(f"     → {insight.recommendation}")
+        
+        # Strengths and improvements
+        if report.executive_summary.key_strengths:
+            print(f"\nStrengths:")
+            for strength in report.executive_summary.key_strengths[:3]:
+                print(f"  ✓ {strength}")
+        
+        if report.executive_summary.improvement_areas:
+            print(f"\nImprovement Areas:")
+            for area in report.executive_summary.improvement_areas[:3]:
+                print(f"  ⚠ {area}")
+        
+        return report
+
+    def test_time_performance_on_real_data(self, real_data_config):
+        """Test time-based performance breakdown with real trade timestamps."""
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        report = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        tp = report.time_performance
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Time Performance Analysis")
+        print(f"{'='*60}")
+        
+        # Session breakdown
+        if tp.by_session:
+            print(f"\nSession Performance:")
+            print(f"{'Session':12} | {'Trades':>7} | {'Win Rate':>8} | {'Total P&L':>10} | {'Avg P&L':>8}")
+            print(f"{'-'*12}-+-{'-'*7}-+-{'-'*8}-+-{'-'*10}-+-{'-'*8}")
+            
+            for name, sm in sorted(tp.by_session.items()):
+                if sm.trades > 0:
+                    marker = " ★" if name == tp.best_session else (" ✗" if name == tp.worst_session else "")
+                    print(f"{name+marker:12} | {sm.trades:7} | {sm.win_rate:7.1f}% | {sm.total_pnl:10.1f} | {sm.avg_pnl:8.2f}")
+        
+        # Hour breakdown
+        if tp.by_hour:
+            active_hours = [(h, sm) for h, sm in tp.by_hour.items() if sm.trades > 0]
+            if active_hours:
+                print(f"\nActive Hours (UTC):")
+                hours_str = ", ".join([f"{h:02d}:00 ({sm.trades})" for h, sm in sorted(active_hours)])
+                print(f"  {hours_str}")
+        
+        # Day breakdown
+        if tp.by_day:
+            print(f"\nDay of Week Performance:")
+            day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            for day in day_order:
+                if day in tp.by_day and tp.by_day[day].trades > 0:
+                    dm = tp.by_day[day]
+                    print(f"  {day:9}: {dm.trades:2} trades, {dm.win_rate:5.1f}% WR, {dm.total_pnl:+6.1f} pts")
+
+    def test_trade_quality_on_real_data(self, real_data_config):
+        """Test trade quality analysis with real trades."""
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        report = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        tq = report.trade_quality
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Trade Quality Analysis")
+        print(f"{'='*60}")
+        
+        # Duration analysis
+        dur = tq.duration_analysis
+        print(f"\nDuration Analysis:")
+        print(f"  Average bars: {dur.avg_bars:.1f}")
+        print(f"  Median bars: {dur.median_bars}")
+        print(f"  Fast exits (<3 bars): {dur.fast_exits_count} ({dur.fast_exits_pct:.1f}%)")
+        print(f"  Normal exits: {dur.normal_exits_count}")
+        print(f"  Prolonged exits (>10): {dur.prolonged_exits_count}")
+        
+        if tq.avg_bars_to_profit:
+            print(f"  Avg bars to profit: {tq.avg_bars_to_profit:.1f}")
+        if tq.avg_bars_to_loss:
+            print(f"  Avg bars to loss: {tq.avg_bars_to_loss:.1f}")
+        
+        # Win distribution
+        wd = tq.win_distribution
+        print(f"\nWin Distribution:")
+        print(f"  Small (<3 pts): {wd.small_count:3} ({wd.small_pct:.1f}%)")
+        print(f"  Medium (3-7 pts): {wd.medium_count:3} ({wd.medium_pct:.1f}%)")
+        print(f"  Large (>7 pts): {wd.large_count:3} ({wd.large_pct:.1f}%)")
+        
+        # Loss distribution
+        ld = tq.loss_distribution
+        print(f"\nLoss Distribution:")
+        print(f"  Small (<3 pts): {ld.small_count:3} ({ld.small_pct:.1f}%)")
+        print(f"  Medium (3-7 pts): {ld.medium_count:3} ({ld.medium_pct:.1f}%)")
+        print(f"  Large (>7 pts): {ld.large_count:3} ({ld.large_pct:.1f}%)")
+        
+        print(f"\nPremature Exit Estimate: {tq.premature_exit_estimate}")
+
+    def test_risk_metrics_on_real_data(self, real_data_config):
+        """Test risk-adjusted metrics with real trades."""
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        report = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        ra = report.risk_adjusted
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Risk-Adjusted Metrics")
+        print(f"{'='*60}")
+        
+        print(f"\nRisk Metrics:")
+        print(f"  Return / Max DD: {ra.return_over_max_dd:.2f}")
+        print(f"  Avg Win / Avg Loss: {ra.avg_win_over_avg_loss:.2f}")
+        print(f"  Expectancy per trade: {ra.expectancy_per_trade:+.4f} pts")
+        print(f"  Consistency score: {ra.consistency_score:.1f}/100")
+        print(f"  Recovery factor: {ra.recovery_factor:.2f}")
+        
+        if ra.insights:
+            print(f"\nRisk Insights:")
+            for insight in ra.insights:
+                print(f"  [{insight.severity}] {insight.message}")
+                print(f"    → {insight.recommendation}")
+
+    def test_markdown_report_from_real_data(self, real_data_config, tmp_path):
+        """Generate actual markdown report from real data results."""
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        report = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        # Generate markdown
+        markdown = TradeAnalytics.format_markdown_report(report)
+        
+        # Save to temp file for inspection
+        report_file = tmp_path / "real_data_report.md"
+        report_file.write_text(markdown)
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Markdown Report Generation")
+        print(f"{'='*60}")
+        print(f"Report saved to: {report_file}")
+        print(f"Report size: {len(markdown)} characters")
+        
+        # Preview first few lines
+        print(f"\nPreview:")
+        for line in markdown.split('\n')[:10]:
+            print(f"  {line}")
+        
+        # Basic validation
+        assert len(markdown) > 0
+        assert report.executive_summary.performance_grade in markdown
+        assert "STRATEGY PERFORMANCE ANALYSIS" in markdown
+
+    def test_compare_multiple_real_data_runs(self, real_data_config):
+        """Compare analytics across multiple runs (useful for parameter tuning)."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Multiple Run Comparison")
+        print(f"{'='*60}")
+        
+        # Run with different modes or parameters
+        results = []
+        
+        # Core mode run
+        print("\n1. Running in CORE mode...")
+        real_data_config.execution.mode = "core"
+        orchestrator1 = StrategyOrchestrator(config=real_data_config)
+        result1 = orchestrator1.run()
+        report1 = TradeAnalytics.analyze(
+            trade_result=result1.trade_result,
+            config=real_data_config,
+            metrics=result1.metrics
+        )
+        results.append(("Core", report1))
+        
+        # Analytics mode run (if different)
+        print("2. Running in ANALYTICS mode...")
+        real_data_config.execution.mode = "analytics"
+        orchestrator2 = StrategyOrchestrator(config=real_data_config)
+        result2 = orchestrator2.run()
+        report2 = TradeAnalytics.analyze(
+            trade_result=result2.trade_result,
+            config=real_data_config,
+            metrics=result2.metrics
+        )
+        results.append(("Analytics", report2))
+        
+        # Comparison table
+        print(f"\n{'-'*60}")
+        print("COMPARISON RESULTS")
+        print(f"{'-'*60}")
+        print(f"{'Metric':20} | {'Core':>12} | {'Analytics':>12} | {'Diff':>10}")
+        print(f"{'-'*20}-+-{'-'*12}-+-{'-'*12}-+-{'-'*10}")
+        
+        metrics_to_compare = [
+            ("Total Trades", lambda r: r.input_metrics.total_trades, "{:d}"),
+            ("Win Rate", lambda r: r.input_metrics.win_rate, "{:.1f}%"),
+            ("Total P&L", lambda r: r.input_metrics.total_pnl_points, "{:+.1f}"),
+            ("Profit Factor", lambda r: r.input_metrics.profit_factor, "{:.2f}"),
+            ("Max DD", lambda r: r.input_metrics.max_drawdown, "{:.1f}"),
+            ("Consistency", lambda r: r.risk_adjusted.consistency_score, "{:.1f}"),
+            ("Grade", lambda r: r.executive_summary.performance_grade, "{}"),
+        ]
+        
+        for name, func, fmt in metrics_to_compare:
+            val1 = func(results[0][1])
+            val2 = func(results[1][1])
+            if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+                diff = val2 - val1
+                print(f"{name:20} | {fmt.format(val1):>12} | {fmt.format(val2):>12} | {diff:>+10.1f}")
+            else:
+                print(f"{name:20} | {str(val1):>12} | {str(val2):>12} | {'N/A':>10}")

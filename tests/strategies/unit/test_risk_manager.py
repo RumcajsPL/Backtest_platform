@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from src.strategies.specific.modules.risk_manager import RiskManager
 from src.strategies.core.cache_manager import CacheManager
 from src.strategies.contracts.trade_contracts import TradeParameters
-
+from src.utils.paths import config_path
 
 class TestRiskManager:
     """Tests for RiskManager class."""
@@ -564,3 +564,284 @@ class TestRiskManager:
         
         # Values should differ
         assert not manager1.atr_series.equals(manager2.atr_series)
+
+        # ========================================================================
+    # REAL DATA TESTS
+    # ========================================================================
+
+    def test_with_real_data(self, real_data_config, real_data_bundle):
+        """Test RiskManager with real market data."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: RiskManager")
+        print(f"{'='*60}")
+        print(f"Asset: {real_data_config.asset.symbol}")
+        print(f"Period: {real_data_bundle.strategy.index[0]} to {real_data_bundle.strategy.index[-1]}")
+        print(f"Bars: {len(real_data_bundle.strategy)}")
+        
+        risk_manager = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            ohlcv_artf=real_data_bundle.artf,
+            mode="analytics"
+        )
+        
+        print(f"\nRisk Parameters:")
+        print(f"  ATR length: {risk_manager.atr_length}")
+        print(f"  SL multiplier: {risk_manager.sl_multiplier}")
+        print(f"  TP mode: {risk_manager.tp_mode}")
+        if risk_manager.tp_mode == "rr_ratio":
+            print(f"  R:R ratio: {risk_manager.rr_ratio}")
+        else:
+            print(f"  TP multiplier: {risk_manager.atr_multiplier_tp}")
+        print(f"  Max risk percentile: {risk_manager.max_risk_percentile*100:.2f}%")
+        
+        # Test a few timestamps throughout the period
+        stride = max(1, len(real_data_bundle.strategy) // 10)
+        test_timestamps = real_data_bundle.strategy.index[::stride][:5]  # First 5 samples
+        
+        print(f"\nTrade Parameter Calculations:")
+        print(f"{'Timestamp':20} | {'Direction':6} | {'Entry':>8} | {'SL':>8} | {'TP':>8} | {'Risk%':>6}")
+        print(f"{'-'*20}-+-{'-'*6}-+-{'-'*8}-+-{'-'*8}-+-{'-'*8}-+-{'-'*6}")
+        
+        for timestamp in test_timestamps:
+            bid_price = float(real_data_bundle.strategy.loc[timestamp, "close"])
+            
+            # Test LONG
+            params_long = risk_manager.compute_trade_parameters(
+                timestamp=timestamp,
+                bid_price=bid_price,
+                is_long=True
+            )
+            
+            if params_long:
+                risk_pct = params_long.risk_percentile_calculated * 100 if params_long.risk_percentile_calculated else 0
+                print(f"{str(timestamp):20} | LONG   | {params_long.entry_price_executed:8.2f} | {params_long.stop_loss_trigger:8.2f} | {params_long.take_profit:8.2f} | {risk_pct:6.2f}")
+                assert isinstance(params_long, TradeParameters)
+            else:
+                print(f"{str(timestamp):20} | LONG   | {'REJECTED':^27} |")
+            
+            # Test SHORT
+            params_short = risk_manager.compute_trade_parameters(
+                timestamp=timestamp,
+                bid_price=bid_price,
+                is_long=False
+            )
+            
+            if params_short:
+                assert isinstance(params_short, TradeParameters)
+
+    def test_atr_calculation_on_real_data(self, real_data_config, real_data_bundle):
+        """Test ATR calculation on real market data."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: ATR Calculation")
+        print(f"{'='*60}")
+        
+        risk_manager = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            mode="analytics"
+        )
+        
+        atr = risk_manager.atr_series
+        
+        # Basic validation
+        assert atr is not None
+        assert len(atr) == len(real_data_bundle.strategy)
+        assert (atr > 0).all()  # ATR should always be positive
+        
+        # ATR should be reasonable for the instrument
+        # For DEUIDXEUR, typical ATR(14) on 1min might be 2-20 points
+        mean_atr = atr.mean()
+        min_atr = atr.min()
+        max_atr = atr.max()
+        
+        print(f"\nATR Statistics:")
+        print(f"  Mean ATR(14): {mean_atr:.2f} pts")
+        print(f"  Min ATR: {min_atr:.2f} pts")
+        print(f"  Max ATR: {max_atr:.2f} pts")
+        print(f"  Std Dev: {atr.std():.2f} pts")
+        
+        assert 0.5 < mean_atr < 50  # Sanity check
+        
+        # Show ATR trend
+        print(f"\nATR Sample (first 10 bars):")
+        for i, (ts, val) in enumerate(list(atr.head(10).items())):
+            print(f"  {ts.time()}: {val:.2f} pts")
+
+    def test_annual_range_on_real_data(self, real_data_config, real_data_bundle):
+        """Test annual range calculation with real monthly data."""
+        if real_data_bundle.artf is None:
+            print(f"\n⚠ Skipping annual range test: ARTF data not available")
+            pytest.skip("ARTF data not available for this instrument")
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Annual Range Calculation")
+        print(f"{'='*60}")
+        
+        risk_manager = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            ohlcv_artf=real_data_bundle.artf,
+            mode="analytics"
+        )
+        
+        annual_range = risk_manager.annual_range_series
+        
+        assert annual_range is not None
+        assert len(annual_range) == len(real_data_bundle.strategy)
+        
+        # Annual range should be positive and reasonable
+        valid_ranges = annual_range.dropna()
+        if len(valid_ranges) > 0:
+            mean_range = valid_ranges.mean()
+            min_range = valid_ranges.min()
+            max_range = valid_ranges.max()
+            
+            print(f"\nAnnual Range Statistics:")
+            print(f"  Available: {len(valid_ranges)}/{len(annual_range)} bars ({len(valid_ranges)/len(annual_range)*100:.1f}%)")
+            print(f"  Mean annual range: {mean_range:.2f} pts")
+            print(f"  Min annual range: {min_range:.2f} pts")
+            print(f"  Max annual range: {max_range:.2f} pts")
+            
+            assert mean_range > 0
+            assert mean_range < 5000  # Sanity check for indices
+            
+            # Show sample
+            print(f"\nAnnual Range Sample (first 10 bars with values):")
+            samples = 0
+            for ts, val in annual_range.items():
+                if not pd.isna(val) and samples < 10:
+                    print(f"  {ts}: {val:.2f} pts")
+                    samples += 1
+
+    def test_tp_modes_on_real_data(self, real_data_config, real_data_bundle):
+        """Test both TP modes on real data."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: TP Mode Comparison")
+        print(f"{'='*60}")
+        
+        # Test RR ratio mode
+        real_data_config.trade_management.risk.tp_mode = "rr_ratio"
+        risk_manager_rr = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            mode="analytics"
+        )
+        
+        # Test ATR multiplier mode
+        real_data_config.trade_management.risk.tp_mode = "atr_multiplier"
+        risk_manager_atr = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            mode="analytics"
+        )
+        
+        # Test at a few timestamps
+        timestamps = real_data_bundle.strategy.index[::100][:3]
+        
+        print(f"\nTP Mode Comparison (LONG positions):")
+        print(f"{'Timestamp':20} | {'Bid':>8} | {'ATR':>8} | {'RR TP':>8} | {'ATR TP':>8} | {'Ratio':>6}")
+        print(f"{'-'*20}-+-{'-'*8}-+-{'-'*8}-+-{'-'*8}-+-{'-'*8}-+-{'-'*6}")
+        
+        for ts in timestamps:
+            bid = float(real_data_bundle.strategy.loc[ts, "close"])
+            atr = float(risk_manager_rr.atr_series.loc[ts])
+            
+            params_rr = risk_manager_rr.compute_trade_parameters(ts, bid, is_long=True)
+            params_atr = risk_manager_atr.compute_trade_parameters(ts, bid, is_long=True)
+            
+            if params_rr and params_atr:
+                ratio = params_atr.tp_distance / params_rr.tp_distance if params_rr.tp_distance else 0
+                print(f"{str(ts):20} | {bid:8.2f} | {atr:8.2f} | {params_rr.take_profit:8.2f} | {params_atr.take_profit:8.2f} | {ratio:6.2f}")
+
+    def test_risk_rejection_on_real_data(self, real_data_config, real_data_bundle):
+        """Test that risk validation can reject trades on real data."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Risk Rejection")
+        print(f"{'='*60}")
+        
+        # Create a manager with very strict risk limits
+        real_data_config.trade_management.risk.max_risk_percentile = 0.001  # Very small (0.1%)
+        
+        risk_manager = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            ohlcv_artf=real_data_bundle.artf,
+            mode="analytics"
+        )
+        
+        accepted = 0
+        rejected = 0
+        
+        print(f"\nTesting with max_risk_percentile = {real_data_config.trade_management.risk.max_risk_percentile*100:.3f}%")
+        print(f"\nSample results (first 20 bars):")
+        
+        for i, (ts, row) in enumerate(real_data_bundle.strategy.head(20).iterrows()):
+            params = risk_manager.compute_trade_parameters(
+                timestamp=ts,
+                bid_price=float(row["close"]),
+                is_long=True
+            )
+            
+            if params is None:
+                rejected += 1
+                print(f"  {ts.time()}: ❌ REJECTED")
+            else:
+                accepted += 1
+                risk_pct = params.risk_percentile_calculated * 100 if params.risk_percentile_calculated else 0
+                print(f"  {ts.time()}: ✅ ACCEPTED (risk: {risk_pct:.3f}%)")
+        
+        print(f"\nSummary:")
+        print(f"  Accepted: {accepted}")
+        print(f"  Rejected: {rejected}")
+        print(f"  Rejection rate: {rejected/(accepted+rejected)*100:.1f}%")
+
+    def test_cache_performance_with_real_data(self, real_data_config, real_data_bundle):
+        """Test cache performance across multiple runs."""
+        from src.strategies.core.cache_manager import CacheManager
+        import time
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Cache Performance")
+        print(f"{'='*60}")
+        
+        cache_manager = CacheManager()
+        
+        # First run - cache miss
+        print("\nFirst run (cache miss)...")
+        start = time.perf_counter()
+        risk_manager1 = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            ohlcv_artf=real_data_bundle.artf,
+            cache_manager=cache_manager,
+            mode="analytics"
+        )
+        time1 = (time.perf_counter() - start) * 1000
+        
+        # Second run - cache hit
+        print("Second run (should be cache hit)...")
+        start = time.perf_counter()
+        risk_manager2 = RiskManager(
+            config=real_data_config,
+            ohlcv_data=real_data_bundle.strategy,
+            ohlcv_artf=real_data_bundle.artf,
+            cache_manager=cache_manager,
+            mode="analytics"
+        )
+        time2 = (time.perf_counter() - start) * 1000
+        
+        print(f"\nTiming Results:")
+        print(f"  First run (cold): {time1:.2f}ms")
+        print(f"  Second run (cached): {time2:.2f}ms")
+        print(f"  Speedup: {time1/time2:.1f}x")
+        
+        # Verify ATR series are identical
+        assert risk_manager1.atr_series.equals(risk_manager2.atr_series)
+        
+        # Check cache stats
+        stats = cache_manager.get_stats()
+        print(f"\nCache Statistics:")
+        print(f"  ATR hits: {stats['atr']['hits']}")
+        print(f"  ATR misses: {stats['atr']['misses']}")
+        print(f"  ATR hit rate: {stats['atr']['hit_rate']:.1f}%")

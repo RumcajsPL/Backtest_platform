@@ -1,5 +1,5 @@
 # Test Data Paths
-# Small sample datasets for unit testing
+# Small sample managed by short data ranges
 
 data:
   strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet"
@@ -9,5 +9,5 @@ data:
 
 # Date range for tests
 date_range:
-  start: "2025-12-17 14:00:00" # Small range to run fast "2025-12-17 14:00:00"; longer for full real teast "2025-09-14 08:00:00"
+  start: "2025-12-17 14:00:00" # Small range to run fast "2025-12-17 14:00:00"; longer for full real test "2025-09-14 08:00:00"
   end: "2025-12-17 21:00:00"

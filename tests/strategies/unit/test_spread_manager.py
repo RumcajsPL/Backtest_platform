@@ -9,6 +9,7 @@ import pytest
 import yaml
 from pathlib import Path
 from unittest.mock import mock_open, patch
+from src.utils.paths import config_path
 
 from src.strategies.specific.modules.spread_manager import SpreadManager
 from src.strategies.core.cache_manager import CacheManager
@@ -19,7 +20,6 @@ class TestSpreadManager:
 
     def test_initialization_with_valid_config(self, tmp_path):
         """Test initializing SpreadManager with valid config."""
-        # Create a temporary broker_spreads.yaml
         config_path = tmp_path / "broker_spreads.yaml"
         config_data = {
             "settings": {
@@ -463,3 +463,225 @@ class TestSpreadManager:
         assert "DEUIDXEUR" in repr_str
         assert "0.015" in repr_str
         assert "percentage" in repr_str
+    
+    # ========================================================================
+    # REAL DATA TESTS
+    # ========================================================================
+
+    def test_with_real_broker_config(self, real_data_config):
+        """Test SpreadManager with actual broker_spreads.yaml if available."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: SpreadManager with Broker Config")
+        print(f"{'='*60}")
+        
+        # Try to find actual broker config
+        broker_config_path = config_path("spreads", "broker_spreads.yaml")
+        
+        if not broker_config_path.exists():
+            print(f"⚠ Broker config not found at {broker_config_path}")
+            print("Skipping test - create configs/spreads/broker_spreads.yaml to enable")
+            pytest.skip("Real broker_spreads.yaml not found")
+        
+        print(f"Using broker config: {broker_config_path}")
+        print(f"Asset symbol: {real_data_config.asset.symbol}")
+        
+        manager = SpreadManager(
+            asset_symbol=real_data_config.asset.symbol,
+            spread_config_path=str(broker_config_path),
+            mode="analytics"
+        )
+        
+        # Test with realistic price range for DEUIDXEUR
+        test_prices = [18000.0, 20000.0, 22000.0]
+        
+        print(f"\nSpread Calculations:")
+        for price in test_prices:
+            spread = manager.get_spread_in_points(price)
+            assert spread >= 0
+            
+            # LONG entry calculation
+            long_entry = manager.calculate_entry_cost(price, is_long=True)
+            assert long_entry >= price
+            
+            # SHORT entry calculation
+            short_entry = manager.calculate_entry_cost(price, is_long=False)
+            assert short_entry == price
+            
+            print(f"  Price: {price:,.1f} → Spread: {spread:.3f} pts")
+            print(f"    LONG entry: {long_entry:.2f} (+{spread:.2f})")
+            print(f"    SHORT entry: {short_entry:.2f} (no spread)")
+        
+        # Check spread info
+        info = manager.get_spread_info()
+        assert info["enabled"] is True
+        assert info["asset"] == real_data_config.asset.symbol
+        
+        print(f"\nSpread Configuration:")
+        print(f"  Type: {info['spread_type']}")
+        print(f"  Value: {info['spread_value']}")
+        print(f"  Apply to LONG: {info['apply_to_long']}")
+        print(f"  Apply to SHORT: {info['apply_to_short']}")
+        print(f"  Method: {info['application_method']}")
+
+    def test_sl_tp_trigger_with_real_spreads(self, real_data_config):
+        """Test SL/TP trigger calculations with real spread values."""
+        broker_config_path = config_path("spreads", "broker_spreads.yaml")
+        
+        if not broker_config_path.exists():
+            pytest.skip("Real broker_spreads.yaml not found")
+        
+        manager = SpreadManager(
+            asset_symbol=real_data_config.asset.symbol,
+            spread_config_path=str(broker_config_path),
+            mode="analytics"
+        )
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: SL/TP Trigger Calculations")
+        print(f"{'='*60}")
+        
+        test_price = 20000.0
+        spread = manager.get_spread_in_points(test_price)
+        raw_sl_long = 19980.0
+        raw_sl_short = 20020.0
+        raw_tp_long = 20050.0
+        raw_tp_short = 19950.0
+        
+        print(f"Bid price: {test_price:.2f}")
+        print(f"Spread: {spread:.3f} pts")
+        
+        # SL triggers
+        sl_trigger_long = manager.get_sl_trigger_level(raw_sl_long, spread, is_long=True)
+        sl_trigger_short = manager.get_sl_trigger_level(raw_sl_short, spread, is_long=False)
+        
+        print(f"\nSL Triggers:")
+        print(f"  LONG raw SL: {raw_sl_long:.2f} → trigger: {sl_trigger_long:.2f} (Bid - spread)")
+        print(f"  SHORT raw SL: {raw_sl_short:.2f} → trigger: {sl_trigger_short:.2f} (Bid + spread)")
+        
+        assert sl_trigger_long == raw_sl_long - spread
+        assert sl_trigger_short == raw_sl_short + spread
+        
+        # TP triggers (DEC-038)
+        tp_trigger_long = manager.get_tp_trigger_level(raw_tp_long, spread, is_long=True)
+        tp_trigger_short = manager.get_tp_trigger_level(raw_tp_short, spread, is_long=False)
+        
+        print(f"\nTP Triggers:")
+        print(f"  LONG raw TP: {raw_tp_long:.2f} → trigger: {tp_trigger_long:.2f} (no spread)")
+        print(f"  SHORT raw TP: {raw_tp_short:.2f} → trigger: {tp_trigger_short:.2f} (Bid + spread)")
+        
+        assert tp_trigger_long == raw_tp_long
+        assert tp_trigger_short == raw_tp_short + spread
+
+    def test_asset_not_in_broker_config(self, real_data_config, tmp_path):
+        """Test handling when asset not found in broker config."""
+        # Create broker config without our asset
+        broker_config = tmp_path / "broker_spreads.yaml"
+        config_data = {
+            "settings": {},
+            "spreads": {
+                "SOME_OTHER_ASSET": {
+                    "spread_value": 0.01,
+                    "spread_type": "percentage"
+                }
+            }
+        }
+        with open(broker_config, 'w') as f:
+            yaml.dump(config_data, f)
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Asset Not in Broker Config")
+        print(f"{'='*60}")
+        print(f"Looking for: {real_data_config.asset.symbol}")
+        print(f"Available in config: SOME_OTHER_ASSET")
+        
+        # Should not raise, but return 0.0 for spread
+        manager = SpreadManager(
+            asset_symbol=real_data_config.asset.symbol,
+            spread_config_path=str(broker_config),
+            mode="analytics"
+        )
+        
+        assert manager.is_enabled() is False
+        
+        spread = manager.get_spread_in_points(20000.0)
+        print(f"Spread returned: {spread} (should be 0.0)")
+        assert spread == 0.0
+
+    def test_spread_calculation_with_real_price_range(self, real_data_config):
+        """Test spread calculation with realistic price ranges."""
+        broker_config_path = config_path("spreads", "broker_spreads.yaml")
+        
+        if not broker_config_path.exists():
+            pytest.skip("Real broker_spreads.yaml not found")
+        
+        manager = SpreadManager(
+            asset_symbol=real_data_config.asset.symbol,
+            spread_config_path=str(broker_config_path),
+            mode="analytics"
+        )
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Spread Across Price Range")
+        print(f"{'='*60}")
+        
+        # Test across a range of realistic prices for indices
+        prices = [15000, 17500, 20000, 22500, 25000]
+        
+        print(f"{'Price':>10} | {'Spread':>10} | {'Type':>10} | {'LONG Entry':>12} | {'SHORT Entry':>12}")
+        print(f"{'-'*10}-+-{'-'*10}-+-{'-'*10}-+-{'-'*12}-+-{'-'*12}")
+        
+        for price in prices:
+            spread = manager.get_spread_in_points(price)
+            long_entry = manager.calculate_entry_cost(price, is_long=True)
+            short_entry = manager.calculate_entry_cost(price, is_long=False)
+            
+            print(f"{price:10.0f} | {spread:10.3f} | {manager.asset_config['spread_type']:10} | {long_entry:12.2f} | {short_entry:12.2f}")
+            
+            # Spread should be proportional to price if percentage-based
+            if manager.asset_config and manager.asset_config["spread_type"] == "percentage":
+                expected = (manager.asset_config["spread_value"] / 100.0) * price
+                assert abs(spread - expected) < 0.001
+
+    def test_cache_integration_with_real_config(self, real_data_config):
+        """Test that SpreadManager uses CacheManager with real config."""
+        broker_config_path = config_path("spreads", "broker_spreads.yaml")
+        
+        if not broker_config_path.exists():
+            pytest.skip("Real broker_spreads.yaml not found")
+        
+        cache_manager = CacheManager()
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Cache Integration")
+        print(f"{'='*60}")
+        
+        # First instance - should load from file
+        print("Loading first instance (cache miss)...")
+        manager1 = SpreadManager(
+            asset_symbol=real_data_config.asset.symbol,
+            spread_config_path=str(broker_config_path),
+            cache_manager=cache_manager,
+            mode="analytics"
+        )
+        spread1 = manager1.get_spread_in_points(20000.0)
+        
+        # Second instance - should hit cache
+        print("Loading second instance (should be cache hit)...")
+        manager2 = SpreadManager(
+            asset_symbol=real_data_config.asset.symbol,
+            spread_config_path=str(broker_config_path),
+            cache_manager=cache_manager,
+            mode="analytics"
+        )
+        spread2 = manager2.get_spread_in_points(20000.0)
+        
+        print(f"Spread from first instance: {spread1:.3f}")
+        print(f"Spread from second instance: {spread2:.3f}")
+        
+        assert spread1 == spread2
+        
+        # Check cache stats
+        stats = cache_manager.get_stats()
+        print(f"\nCache stats: {stats['spread_config']['hits']} hits, {stats['spread_config']['misses']} misses")
+        assert stats['spread_config']['hits'] >= 1
+        assert stats['spread_config']['misses'] == 1

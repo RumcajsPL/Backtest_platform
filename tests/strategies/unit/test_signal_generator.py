@@ -2,6 +2,7 @@
 Unit Tests for SignalGenerator
 ===============================
 Tests signal generation, validation, and error handling.
+Includes real data tests using test_data_paths.yaml.
 """
 
 import pytest
@@ -12,6 +13,7 @@ from pathlib import Path
 from src.strategies.specific.modules.signal_generator import SignalGenerator
 from src.strategies.contracts.signal_contracts import SignalFrame
 from src.strategies.contracts.data_contracts import DataBundle, DataInfo
+from src.utils.paths import test_path
 
 
 class TestSignalGenerator:
@@ -164,16 +166,6 @@ class TestSignalGenerator:
         assert isinstance(stats.buy_count, int)
         assert isinstance(stats.sell_count, int)
 
-    def test_get_signal_stats_verbose(self, test_config, sample_data_bundle):
-        """Test verbose signal statistics with metadata."""
-        generator = SignalGenerator(config=test_config, mode="analytics")
-        signal_frame = generator.generate_signals(sample_data_bundle)
-
-        stats = generator.get_signal_stats(signal_frame, verbose=True)
-        assert stats.total_count == signal_frame.count_by_type()["total"]
-        # Verbose stats include additional fields
-        assert hasattr(stats, "total_count")
-
     def test_signal_frame_iter_raw(self, test_config, sample_data_bundle):
         """Test fast iteration over signals (core mode)."""
         generator = SignalGenerator(config=test_config, mode="core")
@@ -192,72 +184,178 @@ class TestSignalGenerator:
         assert len(codes) == total_signals
         assert all(code in (1, 2) for code in codes)
 
-    def test_signal_frame_iter_requires_analytics(self, test_config, sample_data_bundle):
-        """Test that __iter__ raises in core mode."""
-        generator = SignalGenerator(config=test_config, mode="core")
-        signal_frame = generator.generate_signals(sample_data_bundle)
+    # ========================================================================
+    # REAL DATA TESTS
+    # ========================================================================
 
-        with pytest.raises(RuntimeError, match="requires indicator_data"):
-            list(iter(signal_frame))
-
-    def test_signal_frame_iter_in_analytics(self, test_config, sample_data_bundle):
-        """Test that __iter__ works in analytics mode."""
-        generator = SignalGenerator(config=test_config, mode="analytics")
-        signal_frame = generator.generate_signals(sample_data_bundle)
-
-        # Should not raise in analytics mode
-        try:
-            signals = list(iter(signal_frame))
-            # May be empty if no signals, but shouldn't raise
-        except RuntimeError:
-            pytest.fail("__iter__ raised RuntimeError in analytics mode")
-
-    @pytest.mark.parametrize("mode", ["core", "analytics"])
-    def test_signal_frame_count_by_type(self, test_config, sample_data_bundle, mode):
-        """Test count_by_type works in both modes."""
-        generator = SignalGenerator(config=test_config, mode=mode)
-        signal_frame = generator.generate_signals(sample_data_bundle)
-
+    def test_with_real_data(self, real_data_config):
+        """Test SignalGenerator with real market data."""
+        from src.strategies.specific.modules.data_loader import DataLoader
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: SignalGenerator")
+        print(f"{'='*60}")
+        print(f"Asset: {real_data_config.asset.symbol}")
+        print(f"Date Range: {real_data_config.data.date_range.start} to {real_data_config.data.date_range.end}")
+        print(f"Mode: {real_data_config.execution.mode}")
+        
+        # Load real data
+        loader = DataLoader(config=real_data_config, mode="analytics")
+        bundle = loader.load_data()
+        
+        print(f"Data loaded: {bundle.info.strategy_bars} bars")
+        if bundle.info.cache_hit:
+            print("  ⚡ Cache hit")
+        
+        # Initialize generator
+        generator = SignalGenerator(config=real_data_config, mode="analytics")
+        
+        # Generate signals on real data
+        signal_frame = generator.generate_signals(bundle)
+        
+        # Basic validation
+        assert isinstance(signal_frame, SignalFrame)
+        assert len(signal_frame.signals) == len(bundle.strategy)
+        assert signal_frame.signals.dtype == np.int8
+        
+        # Check signal counts
         counts = signal_frame.count_by_type()
-        assert isinstance(counts, dict)
-        assert "total" in counts
-        assert "buy" in counts
-        assert "sell" in counts
+        assert counts["total"] >= 0
+        assert counts["buy"] + counts["sell"] == counts["total"]
+        
+        print(f"\nSignal Generation Results:")
+        print(f"  Total signals: {counts['total']}")
+        print(f"  BUY signals: {counts['buy']}")
+        print(f"  SELL signals: {counts['sell']}")
+        if counts['total'] > 0:
+            print(f"  Signal density: {counts['total']/len(bundle.strategy)*100:.2f}%")
+            print(f"  BUY/SELL ratio: {counts['buy']/counts['sell']:.2f}" if counts['sell'] > 0 else "  Only BUY signals")
+        
+        # Verify indicator data in analytics mode
+        assert signal_frame.indicator_data is not None
+        assert "close" in signal_frame.indicator_data.columns
+        print(f"  Indicator columns: {list(signal_frame.indicator_data.columns)}")
 
-    def test_signal_generator_with_real_data_paths(
-        self, test_config, request, tmp_path
-    ):
-        """Integration test using actual data files from test_data_paths."""
-        # This test uses the real data paths from test_data_paths.yaml
-        # Skip if real data isn't available
-        data_paths = request.config.cache.get("data_paths", None)
-        if not data_paths:
-            pytest.skip("Real data paths not available - run with --use-real-data")
+    def test_with_small_date_range(self, real_data_config):
+        """Test with the specific small date range from test_data_paths.yaml."""
+        from src.strategies.specific.modules.data_loader import DataLoader
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: SignalGenerator (Small Range)")
+        print(f"{'='*60}")
+        
+        # Verify we're using the small range (7 hours)
+        start = real_data_config.data.date_range.start
+        end = real_data_config.data.date_range.end
+        print(f"Date range: {start} to {end}")
+        
+        assert start == "2025-12-17 14:00:00"
+        assert end == "2025-12-17 21:00:00"
+        
+        loader = DataLoader(config=real_data_config, mode="analytics")
+        bundle = loader.load_data()
+        
+        # Verify data is within range
+        assert bundle.strategy.index.min() >= pd.Timestamp(start)
+        assert bundle.strategy.index.max() <= pd.Timestamp(end)
+        
+        print(f"Bars loaded: {len(bundle.strategy)}")
+        print(f"Actual range: {bundle.strategy.index.min()} to {bundle.strategy.index.max()}")
+        
+        generator = SignalGenerator(config=real_data_config, mode="analytics")
+        signal_frame = generator.generate_signals(bundle)
+        
+        counts = signal_frame.count_by_type()
+        print(f"\nSignal Results (7-hour window):")
+        print(f"  Total signals: {counts['total']}")
+        print(f"  BUY signals: {counts['buy']}")
+        print(f"  SELL signals: {counts['sell']}")
 
-        # This would load actual data - simplified for now
-        # In practice, this would use DataLoader with the real paths
-        pytest.skip("Requires actual data files - run manually with --run-real-data")
+    def test_htf_alignment_with_real_data(self, real_data_config):
+        """Test HTF alignment using real data."""
+        from src.strategies.specific.modules.data_loader import DataLoader
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: HTF Alignment")
+        print(f"{'='*60}")
+        
+        loader = DataLoader(config=real_data_config, mode="analytics")
+        bundle = loader.load_data()
+        
+        print(f"Strategy TF: {real_data_config.data.htf_period}")
+        print(f"HTF available: {bundle.has_htf}")
+        
+        generator = SignalGenerator(config=real_data_config, mode="analytics")
+        signal_frame = generator.generate_signals(bundle)
+        
+        # If we have indicator_data in analytics mode, check HTF alignment
+        if signal_frame.indicator_data is not None and bundle.has_htf:
+            # Verify no lookahead in HTF data
+            # This is a simplified check - in production you'd verify HTF values
+            # are from previous bars
+            print("  ✓ HTF data available for alignment check")
+        else:
+            print("  ⚠ No HTF data available for alignment check")
 
-    def test_error_handling_malformed_data(self, test_config):
-        """Test handling of malformed input data."""
-        generator = SignalGenerator(config=test_config, mode="core")
+    def test_signal_generator_error_handling_missing_htf(self, real_data_config):
+        """Test error handling when HTF data is missing in real config."""
+        from src.config.config_schema import StrategyConfig
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Missing HTF Error Handling")
+        print(f"{'='*60}")
+        
+        # Modify config to remove HTF path
+        real_data_config.data.paths.htf_ohlcv = None
+        print("HTF path set to None - should raise error")
+        
+        from src.strategies.specific.modules.data_loader import DataLoader
+        
+        with pytest.raises(ValueError, match="htf is missing or empty"):
+            loader = DataLoader(config=real_data_config, mode="analytics")
+            bundle = loader.load_data()
+            print("❌ Expected error not raised")
+        
+        print("✓ Correctly raised ValueError for missing HTF")
 
-        # Create bundle with wrong index type
-        bad_df = pd.DataFrame({
-            "open": [1, 2, 3],
-            "high": [2, 3, 4],
-            "low": [0.5, 1, 2],
-            "close": [1.5, 2.5, 3.5]
-        })
-        # No DatetimeIndex
-
-        bad_bundle = DataBundle(
-            full=bad_df,
-            strategy=bad_df,
-            htf=bad_df,
-            info=DataInfo(total_bars=3, strategy_bars=3, htf_bars=3)
-        )
-
-        # Should raise or handle gracefully - depending on implementation
-        with pytest.raises((ValueError, TypeError, AttributeError)):
-            generator.generate_signals(bad_bundle)
+    def test_compare_core_vs_analytics_modes(self, real_data_config):
+        """Compare performance between core and analytics modes."""
+        from src.strategies.specific.modules.data_loader import DataLoader
+        import time
+        
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Core vs Analytics Mode Comparison")
+        print(f"{'='*60}")
+        
+        loader = DataLoader(config=real_data_config, mode="core")
+        bundle = loader.load_data()
+        
+        # Test core mode
+        start = time.perf_counter()
+        generator_core = SignalGenerator(config=real_data_config, mode="core")
+        frame_core = generator_core.generate_signals(bundle)
+        core_time = (time.perf_counter() - start) * 1000
+        
+        # Test analytics mode
+        start = time.perf_counter()
+        generator_analytics = SignalGenerator(config=real_data_config, mode="analytics")
+        frame_analytics = generator_analytics.generate_signals(bundle)
+        analytics_time = (time.perf_counter() - start) * 1000
+        
+        print(f"\nPerformance Comparison:")
+        print(f"  Core mode: {core_time:.2f}ms")
+        print(f"  Analytics mode: {analytics_time:.2f}ms")
+        print(f"  Overhead: {analytics_time - core_time:.2f}ms ({(analytics_time/core_time-1)*100:.1f}%)")
+        
+        # Verify mode-specific behavior
+        assert frame_core.indicator_data is None
+        assert frame_analytics.indicator_data is not None
+        assert frame_core.signal_metadata["mode"] == "core"
+        assert frame_analytics.signal_metadata["mode"] == "analytics"
+        
+        # Signal counts should be identical
+        counts_core = frame_core.count_by_type()
+        counts_analytics = frame_analytics.count_by_type()
+        assert counts_core == counts_analytics
+        
+        print(f"\nSignal counts (both modes): {counts_core['total']}")

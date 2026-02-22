@@ -51,7 +51,7 @@ test_data:
 
 # Report settings
 report:
-  output_dir: "tests/reports"
+  output_dir: "tests/strategies/reports"
   format: "markdown"
   include_timings: true
   include_traceback: true
@@ -60,4 +60,4 @@ report:
 # Logging
 logging:
   level: "INFO"
-  file: "tests/diagnostic_output/test_run.log"
+  file: "tests/strategies/diagnostics/test_run.log"

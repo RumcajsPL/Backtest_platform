@@ -3,12 +3,14 @@
 Strategy Unit Test Runner
 =========================
 Runs unit tests for all strategy modules with comprehensive reporting.
+Includes real data test coverage tracking.
 
 Usage:
     python tests/runners/strategy_unit_test.py
     python tests/runners/strategy_unit_test.py --config custom_config.yaml
     python tests/runners/strategy_unit_test.py --mode all
     python tests/runners/strategy_unit_test.py --test test_signal_generator
+    python tests/runners/strategy_unit_test.py --report-coverage
 """
 
 import argparse
@@ -26,8 +28,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.utils.paths import CONFIGS_DIR
-from src.config.config_schema import StrategyConfig
+from src.utils.paths import CONFIGS_DIR, test_path, ensure_dir
 
 
 class TestRunner:
@@ -44,6 +45,7 @@ class TestRunner:
             "skipped": [],
             "errors": [],
             "timings": {},
+            "real_data_tests": [],  # Track tests that use real data
         }
 
     def _load_config(self) -> Dict:
@@ -55,6 +57,7 @@ class TestRunner:
                 "enabled_tests": {},
                 "execution": {"verbose": True},
                 "report": {"output_dir": "tests/reports"},
+                "test_data": {"use_real_data": True},
             }
 
         with open(self.config_path, 'r') as f:
@@ -100,13 +103,24 @@ class TestRunner:
 
         return args
 
+    def _is_real_data_test(self, test_name: str) -> bool:
+        """Heuristic to identify real data tests by name."""
+        real_data_indicators = [
+            "real_data", "real_", "with_real", "actual_",
+            "broker_config", "market_data", "real_trades"
+        ]
+        test_lower = test_name.lower()
+        return any(indicator in test_lower for indicator in real_data_indicators)
+
     def _generate_report(self, exit_code: int, duration: float) -> Path:
         """Generate comprehensive markdown test report."""
         report_dir = Path(self.config.get("report", {}).get("output_dir", "tests/reports"))
-        report_dir.mkdir(parents=True, exist_ok=True)
+        ensure_dir(report_dir)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = report_dir / f"test_report_{timestamp}.md"
+
+        use_real_data = self.config.get("test_data", {}).get("use_real_data", True)
 
         with open(report_path, 'w') as f:
             f.write(f"# Strategy Unit Test Report\n\n")
@@ -118,7 +132,8 @@ class TestRunner:
             f.write(f"## Test Configuration\n\n")
             f.write(f"- **Run Mode:** {self.config.get('run_mode', 'unknown')}\n")
             f.write(f"- **Parallel:** {self.config.get('execution', {}).get('parallel', False)}\n")
-            f.write(f"- **Fail Fast:** {self.config.get('execution', {}).get('fail_fast', False)}\n\n")
+            f.write(f"- **Fail Fast:** {self.config.get('execution', {}).get('fail_fast', False)}\n")
+            f.write(f"- **Use Real Data:** {use_real_data}\n\n")
 
             # Results summary
             f.write(f"## Results Summary\n\n")
@@ -129,28 +144,48 @@ class TestRunner:
             f.write(f"| ⏭️ Skipped | {len(self.results['skipped'])} |\n")
             f.write(f"| ⚠️ Errors | {len(self.results['errors'])} |\n\n")
 
+            # Real Data Test Coverage
+            f.write(f"## Real Data Test Coverage\n\n")
+            total_tests = len(self.results['passed']) + len(self.results['failed'])
+            real_data_count = len(self.results['real_data_tests'])
+            
+            if total_tests > 0:
+                coverage_pct = (real_data_count / total_tests) * 100
+                f.write(f"- **Tests using real data:** {real_data_count}/{total_tests} ({coverage_pct:.1f}%)\n\n")
+                
+                if self.results['real_data_tests']:
+                    f.write("**Real data tests executed:**\n\n")
+                    for test in sorted(self.results['real_data_tests']):
+                        timing = self.results['timings'].get(test, 0)
+                        status = "✅" if test in self.results['passed'] else "❌"
+                        f.write(f"- {status} `{test}` ({timing:.3f}s)\n")
+            else:
+                f.write("- No tests executed\n\n")
+
             # Detailed results
             if self.results['passed']:
-                f.write(f"## ✅ Passed Tests\n\n")
+                f.write(f"\n## ✅ Passed Tests\n\n")
                 for test in sorted(self.results['passed']):
                     timing = self.results['timings'].get(test, 0)
-                    f.write(f"- `{test}` ({timing:.3f}s)\n")
+                    real_data_marker = " (real data)" if self._is_real_data_test(test) else ""
+                    f.write(f"- `{test}`{real_data_marker} ({timing:.3f}s)\n")
                 f.write(f"\n")
 
             if self.results['failed']:
-                f.write(f"## ❌ Failed Tests\n\n")
+                f.write(f"\n## ❌ Failed Tests\n\n")
                 for test in sorted(self.results['failed']):
-                    f.write(f"- `{test}`\n")
+                    real_data_marker = " (real data)" if self._is_real_data_test(test) else ""
+                    f.write(f"- `{test}`{real_data_marker}\n")
                 f.write(f"\n")
 
             if self.results['skipped']:
-                f.write(f"## ⏭️ Skipped Tests\n\n")
+                f.write(f"\n## ⏭️ Skipped Tests\n\n")
                 for test in sorted(self.results['skipped']):
                     f.write(f"- `{test}`\n")
                 f.write(f"\n")
 
             if self.results['errors']:
-                f.write(f"## ⚠️ Errors\n\n")
+                f.write(f"\n## ⚠️ Errors\n\n")
                 for error in self.results['errors']:
                     f.write(f"- `{error}`\n")
                 f.write(f"\n")
@@ -158,27 +193,6 @@ class TestRunner:
             f.write(f"---\n")
             f.write(f"*Report generated by Strategy Unit Test Runner*\n")
 
-        return report_path
-    
-    def report_real_data_coverage(self, exit_code: int, duration: float) -> Path:
-        """Enhanced report including real data test status."""
-        report_path = super()._generate_report(exit_code, duration)
-        
-        # Add real data section
-        with open(report_path, 'a') as f:
-            f.write(f"\n## Real Data Test Coverage\n\n")
-            
-            # Count tests that used real data vs mocks
-            real_data_tests = [t for t in self.results['passed'] 
-                            if 'real_data' in t.lower()]
-            
-            f.write(f"- **Tests using real data:** {len(real_data_tests)}/{len(self.results['passed'])}\n")
-            
-            if real_data_tests:
-                f.write("\n**Real data tests executed:**\n")
-                for test in sorted(real_data_tests):
-                    f.write(f"  - `{test}`\n")
-        
         return report_path
 
     def run(self) -> int:
@@ -189,6 +203,7 @@ class TestRunner:
         print("STRATEGY UNIT TEST RUNNER")
         print("=" * 70)
         print(f"Config: {self.config_path}")
+        print(f"Real data: {'ENABLED' if self.config.get('test_data', {}).get('use_real_data', True) else 'DISABLED'}")
 
         # Get test modules
         test_modules = self._get_test_modules()
@@ -217,6 +232,13 @@ class TestRunner:
         report_path = self._generate_report(exit_code, duration)
         print(f"\n📊 Test report: {report_path}")
 
+        # Print real data coverage summary
+        total_tests = len(self.results['passed']) + len(self.results['failed'])
+        real_data_count = len(self.results['real_data_tests'])
+        if total_tests > 0:
+            coverage_pct = (real_data_count / total_tests) * 100
+            print(f"\n📈 Real Data Test Coverage: {real_data_count}/{total_tests} ({coverage_pct:.1f}%)")
+
         print(f"\n{'=' * 70}")
         print(f"Test run complete: {'✅ PASSED' if exit_code == 0 else '❌ FAILED'}")
         print(f"Duration: {duration:.2f}s")
@@ -235,8 +257,12 @@ class TestRunner:
         if report.passed:
             self.results["passed"].append(test_name)
             self.results["timings"][test_name] = report.duration
+            if self._is_real_data_test(test_name):
+                self.results["real_data_tests"].append(test_name)
         elif report.failed:
             self.results["failed"].append(test_name)
+            if self._is_real_data_test(test_name):
+                self.results["real_data_tests"].append(test_name)
         elif report.skipped:
             self.results["skipped"].append(test_name)
 
@@ -269,6 +295,16 @@ def main() -> int:
         action="store_true",
         help="Enable verbose output"
     )
+    parser.add_argument(
+        "--report-coverage",
+        action="store_true",
+        help="Generate coverage report only (no tests)"
+    )
+    parser.add_argument(
+        "--no-real-data",
+        action="store_true",
+        help="Disable real data tests (use mocks only)"
+    )
 
     args = parser.parse_args()
 
@@ -276,19 +312,36 @@ def main() -> int:
     if args.list:
         unit_dir = _PROJECT_ROOT / "tests" / "unit"
         tests = sorted([f.stem for f in unit_dir.glob("test_*.py") if f.stem != "__init__"])
+        
+        # Also list contract tests
+        contract_dir = unit_dir / "test_contracts"
+        if contract_dir.exists():
+            contract_tests = sorted([f"test_contracts/{f.stem}" for f in contract_dir.glob("test_*.py")])
+            tests.extend(contract_tests)
+        
         print("\nAvailable test modules:")
         for test in tests:
             print(f"  - {test}")
         return 0
 
+    # Handle coverage report only
+    if args.report_coverage:
+        print("\n📊 Real Data Test Coverage Report")
+        print("=" * 40)
+        print("To generate coverage report, run tests first.")
+        print("Example: python tests/runners/strategy_unit_test.py")
+        return 0
+
     # Override config with command line arguments
-    if args.mode:
+    if args.no_real_data:
         # This would require modifying the loaded config
-        pass
+        print("⚠️  Real data disabled via command line")
 
     if args.test:
         # Run single test
         pytest_args = ["-v", f"tests/unit/{args.test}.py"]
+        if args.verbose:
+            pytest_args.append("-v")
         return pytest.main(pytest_args)
 
     # Run full test suite

@@ -24,6 +24,8 @@ from src.strategies.contracts.analytics_contracts import (
 )
 from src.strategies.contracts.report_contracts import GeneratedReport, ReportConfig
 from src.strategies.contracts.metrics_contracts import MetricsReport
+from src.strategies.orchestrator import StrategyOrchestrator
+from src.strategies.specific.modules.trade_analytics import TradeAnalytics
 
 
 class TestReportGenerator:
@@ -527,3 +529,292 @@ class TestReportGenerator:
         assert dark_html != light_html
         assert 'data-theme="dark"' in dark_html
         assert 'data-theme="light"' in light_html
+    
+        # ========================================================================
+    # REAL DATA TESTS
+    # ========================================================================
+
+    def test_generate_html_report_from_real_data(self, real_data_config, tmp_path):
+        """Generate actual HTML report from real data results."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: HTML Report Generation")
+        print(f"{'='*60}")
+        
+        # Run full pipeline
+        print("Running strategy pipeline...")
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        print(f"Trades executed: {result.trade_result.total_closed} closed, {result.trade_result.currently_open} open")
+        
+        # Generate analytics
+        print("Generating analytics...")
+        analytics = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        # Generate HTML report
+        print("Generating HTML report...")
+        config = ReportConfig(
+            title=f"Test Report - {real_data_config.asset.symbol}",
+            brand_name="TestStrategy",
+            theme="dark",
+            output_dir=str(tmp_path),
+            include_raw_data=True,
+            chart_height_px=300,
+            subtitle=f"Test run on {real_data_config.data.date_range.start}"
+        )
+        
+        generated = ReportGenerator.generate(
+            analytics_report=analytics,
+            trade_result=result.trade_result,
+            config=config
+        )
+        
+        # Verify report was created
+        assert generated.html_path.exists()
+        assert generated.html_path.suffix == ".html"
+        
+        html_content = generated.html_path.read_text(encoding="utf-8")
+        
+        print(f"\n{'='*60}")
+        print("REPORT GENERATION RESULTS")
+        print(f"{'='*60}")
+        print(f"Report path: {generated.html_path}")
+        print(f"File size: {generated.html_path.stat().st_size:,} bytes")
+        print(f"Generation time: {generated.generation_duration_ms:.1f}ms")
+        print(f"Layers included: {generated.layers_included}")
+        
+        # Basic HTML validation
+        assert "<!DOCTYPE html>" in html_content
+        assert real_data_config.asset.symbol in html_content
+        assert f"{result.metrics.total_trades} trades" in html_content
+        
+        # Check for key sections
+        assert "grade-hero" in html_content
+        assert "kpi-strip" in html_content
+        assert "chart-equity" in html_content or "placeholder" in html_content
+        
+        print(f"\nHTML Preview (first 500 chars):")
+        print(f"{html_content[:500]}...")
+
+    def test_report_with_different_themes(self, real_data_config, tmp_path):
+        """Test both dark and light themes with real data."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Theme Comparison")
+        print(f"{'='*60}")
+        
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        analytics = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        # Generate both themes
+        reports = {}
+        theme_dir = tmp_path / "themes"
+        theme_dir.mkdir()
+        
+        for theme in ["dark", "light"]:
+            print(f"\nGenerating {theme} theme...")
+            config = ReportConfig(
+                title=f"Theme Test - {theme}",
+                brand_name="TestStrategy",
+                theme=theme,
+                output_dir=str(theme_dir / theme),
+                include_raw_data=True
+            )
+            
+            generated = ReportGenerator.generate(
+                analytics_report=analytics,
+                trade_result=result.trade_result,
+                config=config
+            )
+            
+            reports[theme] = generated.html_path
+            assert generated.html_path.exists()
+            
+            # Check theme in HTML
+            html = generated.html_path.read_text(encoding="utf-8")
+            assert f'data-theme="{theme}"' in html
+            
+            size = generated.html_path.stat().st_size
+            print(f"  {theme}: {size:,} bytes")
+        
+        # Compare sizes
+        print(f"\nSize comparison:")
+        print(f"  Dark: {reports['dark'].stat().st_size:,} bytes")
+        print(f"  Light: {reports['light'].stat().st_size:,} bytes")
+
+    def test_report_without_trade_result(self, real_data_config, tmp_path):
+        """Test report generation without trade_result (equity curve placeholder)."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Report Without Trade Result")
+        print(f"{'='*60}")
+        
+        # Run just analytics without passing trade_result
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        analytics = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        config = ReportConfig(
+            title="Placeholder Test",
+            brand_name="TestStrategy",
+            output_dir=str(tmp_path / "placeholder")
+        )
+        
+        generated = ReportGenerator.generate(
+            analytics_report=analytics,
+            trade_result=None,  # Don't pass trade result
+            config=config
+        )
+        
+        html_content = generated.html_path.read_text(encoding="utf-8")
+        
+        # Should have placeholder for equity curve
+        assert "placeholder" in html_content.lower()
+        assert "chart-equity" in html_content
+        assert "pass <code>trade_result</code>" in html_content.lower()
+        
+        print(f"\nReport with placeholder generated:")
+        print(f"  Path: {generated.html_path}")
+        print(f"  Size: {generated.html_path.stat().st_size:,} bytes")
+
+    def test_report_with_raw_data_disabled(self, real_data_config, tmp_path):
+        """Test report with raw data layer disabled."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Raw Data Disabled")
+        print(f"{'='*60}")
+        
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        analytics = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        config = ReportConfig(
+            title="No Raw Data Test",
+            brand_name="TestStrategy",
+            output_dir=str(tmp_path / "no_raw"),
+            include_raw_data=False
+        )
+        
+        generated = ReportGenerator.generate(
+            analytics_report=analytics,
+            trade_result=result.trade_result,
+            config=config
+        )
+        
+        html_content = generated.html_path.read_text(encoding="utf-8")
+        
+        # Raw data tab should not be present
+        assert "raw" not in generated.layers_included
+        assert "Raw Data" not in html_content
+        
+        print(f"\nReport without raw data:")
+        print(f"  Layers: {generated.layers_included}")
+        print(f"  Size: {generated.html_path.stat().st_size:,} bytes")
+
+    def test_report_with_custom_branding(self, real_data_config, tmp_path):
+        """Test report with custom branding."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Custom Branding")
+        print(f"{'='*60}")
+        
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        analytics = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        config = ReportConfig(
+            title="Custom Brand Report",
+            brand_name="MyTradingStrategy v2.0",
+            subtitle="Performance Analysis - December 2025",
+            output_dir=str(tmp_path / "branding"),
+            include_raw_data=True
+        )
+        
+        generated = ReportGenerator.generate(
+            analytics_report=analytics,
+            trade_result=result.trade_result,
+            config=config
+        )
+        
+        html_content = generated.html_path.read_text(encoding="utf-8")
+        
+        # Check for custom branding
+        assert "MyTradingStrategy v2.0" in html_content
+        assert "Performance Analysis - December 2025" in html_content
+        
+        print(f"\nCustom branded report generated:")
+        print(f"  Brand: {config.brand_name}")
+        print(f"  Title: {config.title}")
+        print(f"  Subtitle: {config.subtitle}")
+
+    def test_report_sections_validation(self, real_data_config, tmp_path):
+        """Validate that all expected sections are present in the report."""
+        print(f"\n{'='*60}")
+        print("REAL DATA TEST: Report Sections Validation")
+        print(f"{'='*60}")
+        
+        orchestrator = StrategyOrchestrator(config=real_data_config)
+        result = orchestrator.run()
+        
+        analytics = TradeAnalytics.analyze(
+            trade_result=result.trade_result,
+            config=real_data_config,
+            metrics=result.metrics
+        )
+        
+        config = ReportConfig(
+            title="Section Validation",
+            brand_name="Test",
+            output_dir=str(tmp_path / "sections"),
+            include_raw_data=True
+        )
+        
+        generated = ReportGenerator.generate(
+            analytics_report=analytics,
+            trade_result=result.trade_result,
+            config=config
+        )
+        
+        html_content = generated.html_path.read_text(encoding="utf-8")
+        
+        # Check for required sections
+        sections = {
+            "Executive tab": '<div id="tab-executive"',
+            "Analytical tab": '<div id="tab-analytical"',
+            "Raw data tab": '<div id="tab-raw"',
+            "Grade hero": 'class="grade-hero"',
+            "KPI strip": 'class="kpi-strip"',
+            "Insights": 'class="insight-card"',
+            "Charts": '<canvas id="chart-',
+            "Footer": '<footer class="site-footer"',
+        }
+        
+        print(f"\nSection Validation:")
+        all_present = True
+        for name, marker in sections.items():
+            present = marker in html_content
+            print(f"  {name:20}: {'✅' if present else '❌'}")
+            all_present = all_present and present
+        
+        assert all_present, "Some required sections are missing"

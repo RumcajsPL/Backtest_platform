@@ -55,10 +55,17 @@ MODULES_DIR = SPECIFIC_STRATEGIES_DIR / "modules"
 FILTERS_DIR = SPECIFIC_STRATEGIES_DIR / "filters"
 
 # ---------------------------------------------------------
-# TEST SUBDIRECTORIES (NEW MIGRATION STRUCTURE)
+# TEST SUBDIRECTORIES 
 # ---------------------------------------------------------
 TESTS_DIR = PROJECT_ROOT / "tests"
-MIGRATION_TESTS_DIR = TESTS_DIR / "migration"
+STRATEGIES_TESTS_DIR = TESTS_DIR / "strategies"
+BACKTESTING_TESTS_DIR = TESTS_DIR / "backtesting"
+UNIT_TESTS_DIR = STRATEGIES_TESTS_DIR / "unit"
+CONTRACT_TEST_DIR = UNIT_TESTS_DIR / "contracts"
+FILTERS_TEST_DIR = UNIT_TESTS_DIR / "filters"
+RUNNER_TESTS_DIR = STRATEGIES_TESTS_DIR / "runners"
+REPORT_TESTS_DIR = STRATEGIES_TESTS_DIR / "reports"
+DIAG_TESTS_DIR = STRATEGIES_TESTS_DIR / "diagnostic"
 
 # ---------------------------------------------------------
 # CONFIG HELPERS
@@ -110,10 +117,6 @@ def filter_path(*parts) -> Path:
 def test_path(*parts) -> Path:
     """Return a path inside tests/."""
     return TESTS_DIR.joinpath(*parts)
-
-def migration_test_path(*parts) -> Path:
-    """Return a path inside tests/migration/."""
-    return MIGRATION_TESTS_DIR.joinpath(*parts)
 
 # ---------------------------------------------------------
 # SAFE FILE CREATION
