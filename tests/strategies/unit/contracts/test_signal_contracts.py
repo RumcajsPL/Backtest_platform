@@ -15,7 +15,6 @@ from src.strategies.contracts.signal_contracts import (
     SignalStats
 )
 
-
 class TestSignalType:
     """Tests for SignalType enum."""
 
@@ -35,14 +34,16 @@ class TestSignalType:
         assert SignalType.from_string("buy") == SignalType.BUY
         assert SignalType.from_string("SELL") == SignalType.SELL
         assert SignalType.from_string("sell") == SignalType.SELL
-        assert SignalType.from_string("LONG") == SignalType.BUY
-        assert SignalType.from_string("SHORT") == SignalType.SELL
+        # Note: "LONG" and "SHORT" are not valid SignalType values
+        # They belong to TradeDirection enum instead
 
     def test_from_string_invalid(self):
         """Test converting invalid string returns None."""
         assert SignalType.from_string("INVALID") is None
         assert SignalType.from_string("") is None
         assert SignalType.from_string(None) is None
+        assert SignalType.from_string("LONG") is None  # LONG is TradeDirection, not SignalType
+        assert SignalType.from_string("SHORT") is None  # SHORT is TradeDirection, not SignalType
 
     def test_from_code_valid(self):
         """Test converting valid codes to SignalType."""
@@ -61,7 +62,6 @@ class TestSignalType:
         assert SignalType.BUY.is_short is False
         assert SignalType.SELL.is_long is False
         assert SignalType.SELL.is_short is True
-
 
 class TestSignal:
     """Tests for Signal contract."""

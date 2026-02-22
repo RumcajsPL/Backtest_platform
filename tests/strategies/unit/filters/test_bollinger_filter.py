@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 
 from src.strategies.specific.filters.bollinger_filter import BollingerFilter
-from tests.unit.test_filters_base import TechnicalFilterTestBase
+from src.strategies.contracts.signal_contracts import SignalFrame
+from .test_filters_base import TechnicalFilterTestBase
 
 
 class TestBollingerFilter(TechnicalFilterTestBase):
@@ -80,7 +81,6 @@ class TestBollingerFilter(TechnicalFilterTestBase):
         # Manipulate bandwidth values
         bandwidth = np.ones(len(filter_test_df)) * 2.0
         bandwidth_ma = np.ones(len(filter_test_df)) * 2.0
-        threshold = bandwidth_ma * 0.5  # = 1.0
         
         # At index 10: bandwidth=3.0 > 1.0 -> pass
         # At index 20: bandwidth=0.5 < 1.0 -> reject
@@ -93,7 +93,11 @@ class TestBollingerFilter(TechnicalFilterTestBase):
         signals.iloc[10] = 1  # High bandwidth - pass
         signals.iloc[20] = 1  # Low bandwidth - reject
         
-        signal_frame = create_signal_frame(signals)
+        signal_frame = SignalFrame(
+            signals=signals,
+            indicator_data=None,
+            signal_metadata={}
+        )
         
         result = filter_instance.apply_filter(
             signal_frame=signal_frame,

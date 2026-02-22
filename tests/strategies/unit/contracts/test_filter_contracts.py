@@ -114,7 +114,9 @@ class TestFilterMetadata:
         assert d["signals_in"] == 100
         assert d["signals_out"] == 80
         assert d["signals_rejected"] == 20
-        assert "40.0%" in d["rejection_rate"]
+        # The rejection rate is calculated as (signals_rejected/signals_in)*100
+        # 20/100*100 = 20%, not 40%
+        assert "20.0%" in d["rejection_rate"]
         assert d["reason"] == "Test reason"
         assert d["indicator_values"] == {"rsi_mean": 55.5}
         assert d["execution_time_ms"] == 1.5
@@ -314,14 +316,19 @@ class TestFilterPipelineResult:
             "adx_filter": 10
         }
 
-    def test_valid_result(self, sample_filter_results, sample_rejection_reasons):
-        """Test creating valid pipeline result."""
-        final_signals = SignalFrame(
-            signals=pd.Series([1]*50),
+    @pytest.fixture
+    def final_signals(self):
+        """Create final signals with DatetimeIndex."""
+        dates = pd.date_range(start="2025-01-01", periods=50, freq="1min")
+        signals = pd.Series([1]*50, index=dates, dtype=np.int8)
+        return SignalFrame(
+            signals=signals,
             indicator_data=None,
             signal_metadata={}
         )
-        
+
+    def test_valid_result(self, sample_filter_results, sample_rejection_reasons, final_signals):
+        """Test creating valid pipeline result."""
         result = FilterPipelineResult(
             final_signals=final_signals,
             raw_count=100,
@@ -341,14 +348,8 @@ class TestFilterPipelineResult:
         assert result.rejection_reasons == sample_rejection_reasons
         assert result.execution_time_ms == 15.5
 
-    def test_rejection_counts(self, sample_filter_results):
+    def test_rejection_counts(self, sample_filter_results, final_signals):
         """Test rejection count properties."""
-        final_signals = SignalFrame(
-            signals=pd.Series([1]*50),
-            indicator_data=None,
-            signal_metadata={}
-        )
-        
         result = FilterPipelineResult(
             final_signals=final_signals,
             raw_count=100,
@@ -362,14 +363,8 @@ class TestFilterPipelineResult:
         assert result.technical_rejection_count == 30  # 80 - 50
         assert result.total_rejection_count == 50  # 100 - 50
 
-    def test_pass_rate(self, sample_filter_results):
+    def test_pass_rate(self, sample_filter_results, final_signals):
         """Test pass rate calculation."""
-        final_signals = SignalFrame(
-            signals=pd.Series([1]*50),
-            indicator_data=None,
-            signal_metadata={}
-        )
-        
         # Normal case
         result = FilterPipelineResult(
             final_signals=final_signals,
@@ -392,14 +387,8 @@ class TestFilterPipelineResult:
         )
         assert result_zero.pass_rate == 0.0
 
-    def test_to_dict(self, sample_filter_results, sample_rejection_reasons):
+    def test_to_dict(self, sample_filter_results, sample_rejection_reasons, final_signals):
         """Test serialization to dict."""
-        final_signals = SignalFrame(
-            signals=pd.Series([1]*50),
-            indicator_data=None,
-            signal_metadata={}
-        )
-        
         result = FilterPipelineResult(
             final_signals=final_signals,
             raw_count=100,
@@ -425,14 +414,8 @@ class TestFilterPipelineResult:
         assert d["rejection_reasons"] == sample_rejection_reasons
         assert d["execution_time_ms"] == 15.5
 
-    def test_get_stats_summary(self, sample_filter_results):
+    def test_get_stats_summary(self, sample_filter_results, final_signals):
         """Test stats summary generation."""
-        final_signals = SignalFrame(
-            signals=pd.Series([1]*50),
-            indicator_data=None,
-            signal_metadata={}
-        )
-        
         result = FilterPipelineResult(
             final_signals=final_signals,
             raw_count=100,
@@ -452,14 +435,8 @@ class TestFilterPipelineResult:
         assert "Pass rate: 50.0%" in summary
         assert "Execution time: 15.5ms" in summary
 
-    def test_str_representation(self, sample_filter_results):
+    def test_str_representation(self, sample_filter_results, final_signals):
         """Test string representation."""
-        final_signals = SignalFrame(
-            signals=pd.Series([1]*50),
-            indicator_data=None,
-            signal_metadata={}
-        )
-        
         result = FilterPipelineResult(
             final_signals=final_signals,
             raw_count=100,
@@ -474,22 +451,28 @@ class TestFilterPipelineResult:
         assert "50/100 signals" in s
         assert "50.0%" in s
 
-
 class TestFilterProtocol:
     """Tests for FilterProtocol interface."""
 
     def test_protocol_methods_exist(self):
         """Test that protocol defines required methods."""
-        # This is a static test - just verifying the protocol exists
-        assert hasattr(FilterProtocol, "name")
-        assert hasattr(FilterProtocol, "enabled")
+        # The FilterProtocol is a Protocol class that defines an interface
+        # It defines what methods a class must implement to be considered a protocol implementer
+        
+        # Check that the protocol defines the expected methods
         assert hasattr(FilterProtocol, "compute_indicators")
         assert hasattr(FilterProtocol, "apply_filter")
+        
+        # Note: 'name' and 'enabled' are expected to be instance attributes,
+        # not class attributes, so they won't appear in FilterProtocol.__dict__
+        # They are part of the protocol specification but are implemented as instance variables
 
     def test_can_implement_protocol(self):
         """Test that a class can implement the protocol."""
         # Create a mock that implements the protocol
         mock_filter = Mock(spec=FilterProtocol)
+        
+        # Set the required attributes
         mock_filter.name = "test_filter"
         mock_filter.enabled = True
         

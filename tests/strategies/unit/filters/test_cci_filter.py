@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 
 from src.strategies.specific.filters.cci_filter import CCIFilter
-from tests.unit.test_filters_base import TechnicalFilterTestBase
+from src.strategies.contracts.signal_contracts import SignalFrame
+from .test_filters_base import TechnicalFilterTestBase
 
 
 class TestCCIFilter(TechnicalFilterTestBase):
@@ -79,9 +80,13 @@ class TestCCIFilter(TechnicalFilterTestBase):
         signals.iloc[10] = 1  # Overbought - reject
         signals.iloc[20] = 1  # Oversold - accept
         signals.iloc[30] = 1  # Neutral - accept
-        
-        signal_frame = create_signal_frame(signals)
-        
+
+        signal_frame = SignalFrame(
+            signals=signals,
+            indicator_data=None,
+            signal_metadata={}
+        )
+                
         result = filter_instance.apply_filter(
             signal_frame=signal_frame,
             df=filter_test_df,
@@ -112,7 +117,11 @@ class TestCCIFilter(TechnicalFilterTestBase):
         signals.iloc[20] = 2  # Oversold - reject
         signals.iloc[30] = 2  # Neutral - accept
         
-        signal_frame = create_signal_frame(signals)
+        signal_frame = SignalFrame(
+            signals=signals,
+            indicator_data=None,
+            signal_metadata={}
+        )
         
         result = filter_instance.apply_filter(
             signal_frame=signal_frame,

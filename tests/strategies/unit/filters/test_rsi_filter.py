@@ -8,9 +8,10 @@ import pytest
 import numpy as np
 import pandas as pd
 
+from src.strategies.contracts.signal_contracts import SignalFrame
 from src.strategies.specific.filters.rsi_filter import RSIFilter
 from src.strategies.contracts.filter_contracts import FilterStatus
-from tests.unit.test_filters_base import TechnicalFilterTestBase
+from .test_filters_base import TechnicalFilterTestBase
 
 
 class TestRSIFilter(TechnicalFilterTestBase):

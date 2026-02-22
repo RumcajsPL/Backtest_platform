@@ -25,7 +25,7 @@ class TestMetricsCalculator:
 
     @pytest.fixture
     def sample_trades(self):
-        """Generate sample trades for testing."""
+        """Generate sample trades for testing using proper TradeExit.create() method."""
         trades = []
         base_time = pd.Timestamp("2025-01-01 10:00:00")
         
@@ -41,7 +41,7 @@ class TestMetricsCalculator:
                 take_profit=105.0,
                 position_size=1.0
             )
-            exit = TradeExit(
+            exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(minutes=15),
                 exit_price=105.0,
@@ -61,7 +61,7 @@ class TestMetricsCalculator:
                 take_profit=105.0,
                 position_size=1.0
             )
-            exit = TradeExit(
+            exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(minutes=5),
                 exit_price=99.0,
@@ -177,23 +177,31 @@ class TestMetricsCalculator:
     def test_profit_factor_edge_cases(self):
         """Test profit factor edge cases."""
         calculator = MetricsCalculator()
-        
+
         # No trades
         assert calculator._calculate_profit_factor([]) == 0.0
-        
+
         # Only winning trades
         class MockWinTrade:
             def __init__(self):
-                self.exit = type('obj', (), {'is_win': True, 'pnl_points': 10.0})
-        
+                self.exit = type('obj', (), {
+                    'is_win': True,
+                    'is_loss': False,
+                    'pnl_points': 10.0
+                })
+
         win_trades = [MockWinTrade() for _ in range(5)]
         assert calculator._calculate_profit_factor(win_trades) == float('inf')
-        
+
         # Only losing trades
         class MockLossTrade:
             def __init__(self):
-                self.exit = type('obj', (), {'is_loss': True, 'pnl_points': -5.0})
-        
+                self.exit = type('obj', (), {
+                    'is_win': False,
+                    'is_loss': True,
+                    'pnl_points': -5.0
+                })
+
         loss_trades = [MockLossTrade() for _ in range(3)]
         assert calculator._calculate_profit_factor(loss_trades) == 0.0
 
@@ -212,11 +220,20 @@ class TestMetricsCalculator:
         """Test max drawdown calculation."""
         calculator = MetricsCalculator()
         
-        # Create trades with known P&L sequence
+        # Create trades with known P&L sequence using proper TradeExit.create()
         trades = []
         base_time = pd.Timestamp("2025-01-01")
         
         # Sequence: +10, +5, -8, +3, -5, +2
+        # Let's calculate drawdown correctly:
+        # Trade 1: +10 → cumulative = 10, peak = 10, drawdown = 0
+        # Trade 2: +5 → cumulative = 15, peak = 15, drawdown = 0
+        # Trade 3: -8 → cumulative = 7, peak = 15, drawdown = -8
+        # Trade 4: +3 → cumulative = 10, peak = 15, drawdown = -5
+        # Trade 5: -5 → cumulative = 5, peak = 15, drawdown = -10 (max)
+        # Trade 6: +2 → cumulative = 7, peak = 15, drawdown = -8
+        # Maximum drawdown is -10.0
+        
         pnl_sequence = [10.0, 5.0, -8.0, 3.0, -5.0, 2.0]
         
         for i, pnl in enumerate(pnl_sequence):
@@ -228,7 +245,7 @@ class TestMetricsCalculator:
                 stop_loss=99.0,
                 take_profit=105.0
             )
-            exit = TradeExit(
+            exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(hours=1),
                 exit_price=100.0 + pnl,
@@ -238,9 +255,8 @@ class TestMetricsCalculator:
         
         max_dd = calculator._calculate_max_drawdown(trades)
         
-        # Expected max drawdown: after +10, +5 (peak 15), then -8 (7) = -8
-        # Then +3 (10), -5 (5) = -5, so worst is -8
-        assert max_dd == -8.0
+        # Expected max drawdown: after cumulative 15, then -10 = -10.0
+        assert max_dd == -10.0
 
     def test_calculate_max_drawdown_empty(self):
         """Test max drawdown with empty trades list."""
@@ -248,7 +264,7 @@ class TestMetricsCalculator:
         assert calculator._calculate_max_drawdown([]) == 0.0
 
     def test_calculate_streaks(self):
-        """Test winning/losing streak calculation."""
+        """Test winning/losing streak calculation using proper TradeExit.create()."""
         calculator = MetricsCalculator()
         
         # Create trades with pattern: W, W, L, W, L, L, L, W
@@ -265,7 +281,7 @@ class TestMetricsCalculator:
                 stop_loss=99.0,
                 take_profit=105.0
             )
-            exit = TradeExit(
+            exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(hours=1),
                 exit_price=105.0 if is_win else 99.0,
@@ -286,7 +302,7 @@ class TestMetricsCalculator:
         assert loss_streak == 0
 
     def test_calculate_frequency(self):
-        """Test trade frequency calculation."""
+        """Test trade frequency calculation using proper TradeExit.create()."""
         calculator = MetricsCalculator()
         
         # Create trades spanning 10 days
@@ -302,7 +318,7 @@ class TestMetricsCalculator:
                 stop_loss=99.0,
                 take_profit=105.0
             )
-            exit = TradeExit(
+            exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(hours=1),
                 exit_price=105.0,
@@ -317,7 +333,7 @@ class TestMetricsCalculator:
         assert trades_per_week == 2.0 * 7  # 14.0
 
     def test_calculate_frequency_single_day(self):
-        """Test frequency with all trades on same day."""
+        """Test frequency with all trades on same day using proper TradeExit.create()."""
         calculator = MetricsCalculator()
         
         trades = []
@@ -332,7 +348,7 @@ class TestMetricsCalculator:
                 stop_loss=99.0,
                 take_profit=105.0
             )
-            exit = TradeExit(
+            exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(minutes=5),
                 exit_price=105.0,
@@ -359,36 +375,47 @@ class TestMetricsCalculator:
         # Create trades that use different patterns (is_win property vs exit.is_win)
         trades = []
         base_time = pd.Timestamp("2025-01-01")
-        
-        # Trade with is_win property
+
+        # Trade with is_win property - needs entry attribute for frequency calculation
         class MockTradeWithIsWin:
             def __init__(self, is_win, pnl):
                 self.is_win = is_win
                 self.is_loss = not is_win
-                self.exit = type('obj', (), {'pnl_points': pnl, 'exit_time': base_time})
-        
-        # Trade with exit.is_win pattern
+                self.entry = type('obj', (), {
+                    'entry_time': base_time
+                })
+                self.exit = type('obj', (), {
+                    'pnl_points': pnl,
+                    'exit_time': base_time,
+                    'is_win': is_win,
+                    'is_loss': not is_win
+                })
+
+        # Trade with exit.is_win pattern - needs entry attribute for frequency calculation
         class MockTradeWithExitIsWin:
             def __init__(self, is_win, pnl):
+                self.entry = type('obj', (), {
+                    'entry_time': base_time
+                })
                 self.exit = type('obj', (), {
                     'is_win': is_win,
                     'is_loss': not is_win,
                     'pnl_points': pnl,
                     'exit_time': base_time
                 })
-        
+
         for i in range(5):
             trades.append(MockTradeWithIsWin(True, 5.0))
         for i in range(3):
             trades.append(MockTradeWithExitIsWin(False, -2.0))
-        
+
         class MockTradeResult:
             def __init__(self, trades):
                 self.trades = trades
                 self.closed_trades = trades
-        
+
         metrics = MetricsCalculator.calculate(MockTradeResult(trades))
-        
+
         assert metrics.winning_trades == 5
         assert metrics.losing_trades == 3
         assert metrics.total_pnl_points == 5*5.0 + 3*(-2.0)  # 25 - 6 = 19

@@ -223,18 +223,32 @@ class TestPosition:
             open_time=sample_timestamp
         )
         assert pos.risk_reward_ratio == 5.0
-
-        # Zero risk case
-        pos_zero = Position(
+        
+        # Zero risk case is not valid for a position because stop_loss must be < entry_price
+        # So we test with a very small risk instead
+        pos_small_risk = Position(
             position_id=2,
             direction=TradeDirection.LONG,
             entry_price=100.0,
-            stop_loss=100.0,  # No risk
+            stop_loss=99.999,  # Very small risk: 0.001
             take_profit=105.0,
             size=1.0,
             open_time=sample_timestamp
         )
-        assert pos_zero.risk_reward_ratio == 0.0
+        # Expected ratio: 5.0 / 0.001 = 5000.0
+        assert abs(pos_small_risk.risk_reward_ratio - 5000.0) < 0.1
+        
+        # Also test SHORT position
+        pos_short = Position(
+            position_id=3,
+            direction=TradeDirection.SHORT,
+            entry_price=100.0,
+            stop_loss=101.0,  # Risk: 1.0
+            take_profit=95.0,  # Reward: 5.0
+            size=1.0,
+            open_time=sample_timestamp
+        )
+        assert pos_short.risk_reward_ratio == 5.0
 
     def test_get_unrealized_pnl_long(self, sample_timestamp):
         """Test unrealized P&L for LONG position."""

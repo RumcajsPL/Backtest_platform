@@ -50,36 +50,50 @@ class TestAssetConfig:
 class TestSpreadConfig:
     """Tests for SpreadConfig validation."""
 
-    def test_valid_spread_config_with_path(self):
-        """Test valid spread configuration with path."""
+    def test_valid_spread_config_with_path(self, tmp_path):
+        """Test valid spread configuration with existing path."""
+        # Create a temporary file
+        spread_file = tmp_path / "broker_spreads.yaml"
+        spread_file.touch()
+        
         config = SpreadConfig(
             enabled=True,
-            config_path=Path("configs/spreads/broker_spreads.yaml")
+            config_path=spread_file
         )
         assert config.enabled is True
-        assert config.config_path == Path("configs/spreads/broker_spreads.yaml")
+        assert config.config_path == spread_file
 
     def test_enabled_without_path_raises_error(self):
         """Test that enabled=True without path raises error."""
         with pytest.raises(ValueError, match="config_path is required"):
             SpreadConfig(enabled=True, config_path=None)
 
-    def test_from_dict(self):
-        """Test creating SpreadConfig from dictionary."""
+    def test_from_dict_with_existing_file(self, tmp_path):
+        """Test creating SpreadConfig from dictionary with existing file."""
+        # Create a temporary file
+        spread_file = tmp_path / "test.yaml"
+        spread_file.touch()
+        
         data = {
             "enabled": True,
-            "config_path": "configs/spreads/test.yaml"
+            "config_path": str(spread_file)
         }
         config = SpreadConfig.from_dict(data)
         assert config.enabled is True
-        assert config.config_path == Path("configs/spreads/test.yaml")
+        assert config.config_path == spread_file
 
-    def test_missing_config_path_in_dict(self):
-        """Test that missing config_path in dict sets it to None."""
-        data = {"enabled": True}
-        config = SpreadConfig.from_dict(data)
-        assert config.enabled is True
-        assert config.config_path is None
+    def test_config_path_handling(self):
+        """Test config_path handling in different scenarios."""
+        # Case 1: enabled=False - path can be None
+        data1 = {"enabled": False}
+        config1 = SpreadConfig.from_dict(data1)
+        assert config1.enabled is False
+        assert config1.config_path is None
+        
+        # Case 2: enabled=True without path - should raise
+        data2 = {"enabled": True}
+        with pytest.raises(ValueError, match="config_path is required"):
+            SpreadConfig.from_dict(data2)
 
 
 class TestRiskConfig:
@@ -201,11 +215,12 @@ class TestStrategyConfig:
         assert config.trade_management.spread.enabled is True
 
     def test_missing_required_section_raises_error(self, base_config_dict):
-        """Test that missing required section raises error."""
+        """Test that missing required section raises appropriate error."""
         invalid_dict = base_config_dict.copy()
         del invalid_dict["asset"]
 
-        with pytest.raises(KeyError):  # Will be caught by from_dict
+        # Should raise ValueError from AssetConfig validation
+        with pytest.raises(ValueError, match="asset.symbol cannot be blank"):
             StrategyConfig.from_dict(invalid_dict)
 
     def test_from_yaml_file_not_found(self, tmp_path):

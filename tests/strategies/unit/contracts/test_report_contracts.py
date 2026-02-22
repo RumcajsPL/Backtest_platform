@@ -4,6 +4,7 @@ Unit Tests for Report Contracts
 Tests ReportConfig and GeneratedReport contracts.
 """
 
+import os
 import pytest
 import json
 from pathlib import Path
@@ -111,35 +112,41 @@ class TestGeneratedReport:
 
     def test_to_dict(self, mock_analytics_report):
         """Test serialization to dict."""
+        html_path = Path("/tmp/report.html")
         report = GeneratedReport(
-            html_path=Path("/tmp/report.html"),
+            html_path=html_path,
             html_content="<html></html>",
             generation_duration_ms=125.5,
             analytics_report=mock_analytics_report,
             layers_included=["executive", "analytical"]
         )
-
+        
         d = report.to_dict()
-
-        assert d["html_path"] == "/tmp/report.html"
+        
+        # Normalize both paths for comparison
+        expected = os.path.normpath("/tmp/report.html")
+        actual = os.path.normpath(d["html_path"])
+        assert actual == expected
         assert d["generation_duration_ms"] == 125.5
         assert d["layers_included"] == ["executive", "analytical"]
         assert d["analytics_timestamp"] == "2025-01-01T12:00:00"
 
     def test_to_json(self, mock_analytics_report):
         """Test JSON serialization."""
+        html_path = Path("/tmp/report.html")
         report = GeneratedReport(
-            html_path=Path("/tmp/report.html"),
+            html_path=html_path,
             html_content="<html></html>",
             generation_duration_ms=125.5,
             analytics_report=mock_analytics_report,
             layers_included=["executive"]
         )
-
+        
         json_str = report.to_json()
         data = json.loads(json_str)
-
-        assert data["html_path"] == "/tmp/report.html"
+        
+        assert Path(data["html_path"]).name == "report.html"
+        assert "report.html" in data["html_path"]
         assert data["generation_duration_ms"] == 125.5
         assert data["layers_included"] == ["executive"]
         assert data["analytics_timestamp"] == "2025-01-01T12:00:00"

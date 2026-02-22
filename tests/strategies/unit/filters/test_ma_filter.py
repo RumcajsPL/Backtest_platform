@@ -8,8 +8,9 @@ import pytest
 import numpy as np
 import pandas as pd
 
+from src.strategies.contracts.signal_contracts import SignalFrame
 from src.strategies.specific.filters.ma_filter import MAFilter
-from tests.unit.test_filters_base import TechnicalFilterTestBase
+from .test_filters_base import TechnicalFilterTestBase
 
 
 class TestMAFilter(TechnicalFilterTestBase):
@@ -97,7 +98,11 @@ class TestMAFilter(TechnicalFilterTestBase):
         signals.iloc[20] = 1  # Should reject
         signals.iloc[30] = 1  # Should reject
         
-        signal_frame = create_signal_frame(signals)
+        signal_frame = SignalFrame(
+            signals=signals,
+            indicator_data=None,
+            signal_metadata={}
+        )
         
         result = filter_instance.apply_filter(
             signal_frame=signal_frame,
@@ -138,7 +143,11 @@ class TestMAFilter(TechnicalFilterTestBase):
         signals.iloc[20] = 2  # Should reject
         signals.iloc[30] = 2  # Should reject
         
-        signal_frame = create_signal_frame(signals)
+        signal_frame = SignalFrame(
+            signals=signals,
+            indicator_data=None,
+            signal_metadata={}
+        )
         
         result = filter_instance.apply_filter(
             signal_frame=signal_frame,

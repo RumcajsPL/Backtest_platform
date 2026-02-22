@@ -64,7 +64,7 @@ def test_paths_config(project_paths):
     if not config_path.exists():
         pytest.skip(f"Test data paths config not found: {config_path}")
     
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
@@ -75,7 +75,7 @@ def test_runner_config(project_paths):
     if not config_path.exists():
         pytest.skip(f"Test runner config not found: {config_path}")
     
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
@@ -120,42 +120,54 @@ def real_data_bundle(real_data_config):
 
 
 @pytest.fixture
-def real_broker_spreads_config(project_paths, tmp_path):
-    """Load or create broker_spreads.yaml for real testing."""
-    # First try to use actual broker config
-    broker_path = config_path("spreads", "broker_spreads.yaml")
-    if broker_path.exists():
-        return broker_path
-    
-    # Otherwise create a minimal test version
-    test_config = tmp_path / "broker_spreads.yaml"
-    config_data = {
-        "settings": {
-            "apply_to_long": True,
-            "apply_to_short": True,
-            "application_method": "entry_only"
-        },
-        "spreads": {
-            "DEUIDXEUR": {
-                "spread_value": 0.015,
-                "spread_type": "percentage",
-                "display_name": "Germany 40 (Test)",
-                "asset_class": "index"
-            }
-        }
-    }
-    with open(test_config, 'w') as f:
-        yaml.dump(config_data, f)
-    
-    return test_config
-
-
-@pytest.fixture
 def real_trade_result(real_data_config):
-    """Run full strategy on real data and return trade result."""
+    """Run full strategy on real data and return trade result using orchestrator."""
     orchestrator = StrategyOrchestrator(config=real_data_config)
     result = orchestrator.run()
     return result.trade_result
+
+
+@pytest.fixture
+def real_trade_result_direct(real_data_config):
+    """
+    Load real trades directly without using orchestrator.
+    This bypasses the orchestrator's DataLoader signature issue.
+    """
+    from src.strategies.specific.modules.signal_generator import SignalGenerator
+    from src.strategies.specific.modules.filter_pipeline import FilterPipeline
+    from src.strategies.specific.modules.trade_simulator import TradeSimulator
+    
+    print(f"\n{'='*60}")
+    print("Loading real trades directly (bypassing orchestrator)")
+    print(f"{'='*60}")
+    
+    # Load data
+    loader = DataLoader(config=real_data_config, mode="core")
+    bundle = loader.load_data()
+    print(f"Data loaded: {bundle.info.strategy_bars} bars")
+    
+    # Generate signals
+    generator = SignalGenerator(config=real_data_config, mode="core")
+    signals = generator.generate_signals(bundle)
+    signal_counts = signals.count_by_type()
+    print(f"Signals generated: {signal_counts['total']} total ({signal_counts['buy']} BUY, {signal_counts['sell']} SELL)")
+    
+    # Filter signals
+    pipeline = FilterPipeline(config=real_data_config, mode="core")
+    filtered = pipeline.apply_filters(signals, bundle.strategy)
+    print(f"Filters applied: {filtered.raw_count} → {filtered.final_count} signals")
+    
+    # Simulate trades
+    simulator = TradeSimulator(config=real_data_config, df_full=bundle.full)
+    result = simulator.simulate_trades(
+        df_strategy=bundle.strategy,
+        signal_frame=filtered.final_signals,
+        df_ltf=bundle.ltf,
+    )
+    print(f"Trades simulated: {result.total_opened} opened, {result.total_closed} closed")
+    print(f"{'='*60}\n")
+    
+    return result
 
 
 @pytest.fixture
@@ -400,6 +412,107 @@ def test_config(base_config_dict) -> StrategyConfig:
 def cache_manager() -> CacheManager:
     """Create a fresh CacheManager for testing."""
     return CacheManager()
+
+
+# ============================================================================
+# Filter Test Fixtures
+# ============================================================================
+
+@pytest.fixture
+def filter_test_df() -> pd.DataFrame:
+    """Create a DataFrame specifically for filter testing with engineered values."""
+    dates = pd.date_range(start="2025-01-01 00:00:00", periods=200, freq="1min")
+    np.random.seed(42)
+    
+    # Create trending then ranging data
+    trend = np.concatenate([
+        np.linspace(100, 110, 100),  # Uptrend
+        np.linspace(110, 105, 50),    # Down trend
+        np.linspace(105, 106, 50)     # Sideways
+    ])
+    
+    df = pd.DataFrame({
+        "open": trend * 0.999,
+        "high": trend * 1.002,
+        "low": trend * 0.998,
+        "close": trend,
+        "volume": np.random.randint(100, 1000, 200)
+    }, index=dates)
+    
+    # Ensure OHLC integrity
+    df["high"] = df[["open", "high", "close"]].max(axis=1)
+    df["low"] = df[["open", "low", "close"]].min(axis=1)
+    
+    return df
+
+
+@pytest.fixture
+def sample_signal_frame_with_mixed_signals(sample_ohlcv_data) -> SignalFrame:
+    """Create SignalFrame with mix of BUY/SELL signals at specific positions."""
+    signals = pd.Series(0, index=sample_ohlcv_data.index, dtype=np.int8)
+    
+    # Add signals at various positions
+    signals.iloc[10] = 1   # BUY
+    signals.iloc[20] = 1   # BUY
+    signals.iloc[30] = 2   # SELL
+    signals.iloc[40] = 2   # SELL
+    signals.iloc[50] = 1   # BUY
+    signals.iloc[60] = 2   # SELL
+    signals.iloc[70] = 1   # BUY
+    signals.iloc[80] = 2   # SELL
+    
+    return SignalFrame(
+        signals=signals,
+        indicator_data=None,
+        signal_metadata={"source": "test"}
+    )
+
+
+@pytest.fixture
+def sample_signal_frame_all_buy(sample_ohlcv_data) -> SignalFrame:
+    """Create SignalFrame with only BUY signals."""
+    signals = pd.Series(0, index=sample_ohlcv_data.index, dtype=np.int8)
+    signals.iloc[10:20] = 1
+    return SignalFrame(
+        signals=signals,
+        indicator_data=None,
+        signal_metadata={"source": "test"}
+    )
+
+
+@pytest.fixture
+def sample_signal_frame_all_sell(sample_ohlcv_data) -> SignalFrame:
+    """Create SignalFrame with only SELL signals."""
+    signals = pd.Series(0, index=sample_ohlcv_data.index, dtype=np.int8)
+    signals.iloc[30:40] = 2
+    return SignalFrame(
+        signals=signals,
+        indicator_data=None,
+        signal_metadata={"source": "test"}
+    )
+
+
+@pytest.fixture
+def sample_signal_frame_no_signals(sample_ohlcv_data) -> SignalFrame:
+    """Create SignalFrame with no signals."""
+    signals = pd.Series(0, index=sample_ohlcv_data.index, dtype=np.int8)
+    return SignalFrame(
+        signals=signals,
+        indicator_data=None,
+        signal_metadata={"source": "test"}
+    )
+
+
+@pytest.fixture
+def indicators_dict():
+    """Empty indicators dictionary for testing."""
+    return {}
+
+
+@pytest.fixture
+def ind_np_dict():
+    """Empty numpy indicators dictionary for testing."""
+    return {}
 
 
 # ============================================================================

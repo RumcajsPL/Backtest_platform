@@ -1,7 +1,8 @@
 """
 Unit Tests for DataLoader
 ==========================
-Tests data loading, caching, validation, and StrategyConfig integration.
+Tests data loading, caching, and validation.
+DataLoader trusts the already-validated StrategyConfig - it does NOT validate config.
 """
 
 import pytest
@@ -11,13 +12,15 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pickle
 import hashlib
+from dataclasses import asdict
 
 from src.strategies.specific.modules.data_loader import DataLoader
 from src.strategies.contracts.data_contracts import (
     DataBundle,
     DataInfo,
     DataValidationResult,
-    DateRange
+    DateRange,
+    DataFileConfig
 )
 from src.config.config_schema import StrategyConfig
 
@@ -27,17 +30,25 @@ class TestDataLoader:
 
     @pytest.fixture
     def sample_csv_data(self, tmp_path):
-        """Create a sample CSV file for testing."""
-        dates = pd.date_range(start="2025-01-01", periods=100, freq="1min")
+        """Create a sample CSV file with valid OHLC data."""
+        dates = pd.date_range(start="2025-01-01 00:00:00", periods=100, freq="1min")
+        
+        # Generate realistic price movements
+        np.random.seed(42)
+        prices = 100 + np.cumsum(np.random.randn(100) * 0.1)
         
         df = pd.DataFrame({
-            "timestamp": dates,
-            "open": 100 + np.random.randn(100) * 0.5,
-            "high": 101 + np.random.randn(100) * 0.5,
-            "low": 99 + np.random.randn(100) * 0.5,
-            "close": 100 + np.random.randn(100) * 0.5,
+            "timestamp": dates.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": prices * 0.999,
+            "high": prices * 1.002,
+            "low": prices * 0.998,
+            "close": prices,
             "volume": np.random.randint(100, 1000, 100)
         })
+        
+        # Ensure OHLC integrity
+        df["high"] = df[["open", "high", "close"]].max(axis=1)
+        df["low"] = df[["open", "low", "close"]].min(axis=1)
         
         file_path = tmp_path / "test_data.csv"
         df.to_csv(file_path, index=False)
@@ -45,40 +56,74 @@ class TestDataLoader:
 
     @pytest.fixture
     def sample_parquet_data(self, tmp_path):
-        """Create a sample Parquet file for testing."""
-        dates = pd.date_range(start="2025-01-01", periods=100, freq="1min")
+        """Create a sample Parquet file with valid OHLC data."""
+        dates = pd.date_range(start="2025-01-01 00:00:00", periods=100, freq="1min")
+        
+        # Generate realistic price movements
+        np.random.seed(42)
+        prices = 100 + np.cumsum(np.random.randn(100) * 0.1)
         
         df = pd.DataFrame({
-            "open": 100 + np.random.randn(100) * 0.5,
-            "high": 101 + np.random.randn(100) * 0.5,
-            "low": 99 + np.random.randn(100) * 0.5,
-            "close": 100 + np.random.randn(100) * 0.5,
+            "open": prices * 0.999,
+            "high": prices * 1.002,
+            "low": prices * 0.998,
+            "close": prices,
             "volume": np.random.randint(100, 1000, 100)
         }, index=dates)
         df.index.name = "timestamp"
+        
+        # Ensure OHLC integrity
+        df["high"] = df[["open", "high", "close"]].max(axis=1)
+        df["low"] = df[["open", "low", "close"]].min(axis=1)
         
         file_path = tmp_path / "test_data.parquet"
         df.to_parquet(file_path)
         return file_path
 
     @pytest.fixture
-    def config_with_paths(self, base_config_dict, sample_parquet_data, tmp_path):
-        """Create StrategyConfig with valid file paths."""
+    def config_with_paths(self, base_config_dict, sample_parquet_data):
+        """Create StrategyConfig with valid file paths and date range."""
         from src.config.config_schema import StrategyConfig
         
-        # Set up paths
-        base_config_dict["data"]["paths"]["strategy_ohlcv"] = str(sample_parquet_data)
-        base_config_dict["data"]["paths"]["htf_ohlcv"] = str(sample_parquet_data)
-        base_config_dict["data"]["paths"]["ltf_ohlcv"] = str(sample_parquet_data)
-        base_config_dict["data"]["paths"]["artf_ohlcv"] = str(sample_parquet_data)
+        # Create a copy to avoid modifying the original
+        config_dict = base_config_dict.copy()
         
-        # Set date range
-        base_config_dict["data"]["date_range"] = {
+        # Set up paths
+        config_dict["data"]["paths"] = {
+            "strategy_ohlcv": str(sample_parquet_data),
+            "htf_ohlcv": str(sample_parquet_data),
+            "ltf_ohlcv": str(sample_parquet_data),
+            "artf_ohlcv": str(sample_parquet_data)
+        }
+        
+        # Set date range within the data range
+        config_dict["data"]["date_range"] = {
             "start": "2025-01-05 00:00:00",
             "end": "2025-01-25 23:59:59"
         }
         
-        return StrategyConfig.from_dict(base_config_dict)
+        return StrategyConfig.from_dict(config_dict)
+
+    @pytest.fixture
+    def config_without_date_range(self, base_config_dict, sample_parquet_data):
+        """Create StrategyConfig without date range for tests that don't need slicing."""
+        from src.config.config_schema import StrategyConfig
+        
+        # Create a copy to avoid modifying the original
+        config_dict = base_config_dict.copy()
+        
+        # Set up paths
+        config_dict["data"]["paths"] = {
+            "strategy_ohlcv": str(sample_parquet_data),
+            "htf_ohlcv": None,
+            "ltf_ohlcv": None,
+            "artf_ohlcv": None
+        }
+        
+        # Set date_range to None - this is valid in the schema
+        config_dict["data"]["date_range"] = None
+        
+        return StrategyConfig.from_dict(config_dict)
 
     def test_initialization_with_valid_config(self, config_with_paths):
         """Test initializing DataLoader with valid StrategyConfig."""
@@ -159,8 +204,6 @@ class TestDataLoader:
         
         key = loader._get_cache_key(sample_parquet_data, use_content_hash=True)
         assert key is not None
-        
-        # Should include content hash in key calculation
         assert len(key) == 32
 
     def test_cache_key_nonexistent_file(self, config_with_paths):
@@ -225,14 +268,33 @@ class TestDataLoader:
             loaded = pickle.load(f)
         assert loaded.equals(test_df)
 
-    def test_load_file_with_cache_csv(self, config_with_paths, sample_csv_data, tmp_path):
+    def test_load_file_with_cache_csv(self, config_without_date_range, tmp_path):
         """Test loading CSV file with caching."""
-        from src.strategies.contracts.data_contracts import DataFileConfig
+        # Create properly formatted CSV with timestamp column
+        dates = pd.date_range(start="2025-01-01 00:00:00", periods=100, freq="1min")
+        np.random.seed(42)
+        prices = 100 + np.cumsum(np.random.randn(100) * 0.1)
         
-        loader = DataLoader(config=config_with_paths, mode="analytics")
+        df = pd.DataFrame({
+            "timestamp": dates.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": prices * 0.999,
+            "high": prices * 1.002,
+            "low": prices * 0.998,
+            "close": prices,
+            "volume": np.random.randint(100, 1000, 100)
+        })
+        
+        # Ensure OHLC integrity
+        df["high"] = df[["open", "high", "close"]].max(axis=1)
+        df["low"] = df[["open", "low", "close"]].min(axis=1)
+        
+        csv_path = tmp_path / "test_data.csv"
+        df.to_csv(csv_path, index=False)
+        
+        loader = DataLoader(config=config_without_date_range, mode="analytics")
         
         file_config = DataFileConfig(
-            path=sample_csv_data,
+            path=csv_path,
             format="csv"
         )
         
@@ -240,7 +302,7 @@ class TestDataLoader:
         df1 = loader._load_file_with_cache(file_config, "test_csv")
         assert len(df1) == 100
         assert isinstance(df1.index, pd.DatetimeIndex)
-        assert all(col in df1.columns for col in ["open", "high", "low", "close"])
+        assert all(col in df1.columns for col in ["open", "high", "low", "close", "volume"])
         
         # Should have cache miss stats
         assert loader._cache_misses > 0
@@ -250,11 +312,9 @@ class TestDataLoader:
         assert loader._cache_hits > 0
         assert df1.equals(df2)
 
-    def test_load_file_with_cache_parquet(self, config_with_paths, sample_parquet_data):
+    def test_load_file_with_cache_parquet(self, config_without_date_range, sample_parquet_data):
         """Test loading Parquet file with caching."""
-        from src.strategies.contracts.data_contracts import DataFileConfig
-        
-        loader = DataLoader(config=config_with_paths, mode="analytics")
+        loader = DataLoader(config=config_without_date_range, mode="analytics")
         
         file_config = DataFileConfig(
             path=sample_parquet_data,
@@ -266,12 +326,10 @@ class TestDataLoader:
         assert len(df) == 100
         assert isinstance(df.index, pd.DatetimeIndex)
         assert df.index.name == "timestamp"
-        assert all(col in df.columns for col in ["open", "high", "low", "close"])
+        assert all(col in df.columns for col in ["open", "high", "low", "close", "volume"])
 
     def test_load_file_nonexistent(self, config_with_paths, tmp_path):
         """Test loading nonexistent file raises error."""
-        from src.strategies.contracts.data_contracts import DataFileConfig
-        
         loader = DataLoader(config=config_with_paths, mode="core")
         
         file_config = DataFileConfig(
@@ -283,21 +341,13 @@ class TestDataLoader:
             loader._load_file_with_cache(file_config, "test")
 
     def test_load_file_unsupported_format(self, config_with_paths, tmp_path):
-        """Test loading unsupported file format raises error."""
-        from src.strategies.contracts.data_contracts import DataFileConfig
-        
-        loader = DataLoader(config=config_with_paths, mode="core")
-        
+        """Test that unsupported format is caught by DataFileConfig validation."""
         unsupported = tmp_path / "test.txt"
         unsupported.write_text("dummy")
         
-        file_config = DataFileConfig(
-            path=unsupported,
-            format="txt"
-        )
-        
-        with pytest.raises(ValueError, match="Unsupported file format"):
-            loader._load_file_with_cache(file_config, "test")
+        # This should raise from DataFileConfig, not from _load_file_with_cache
+        with pytest.raises(ValueError, match="Unsupported format"):
+            DataFileConfig(path=unsupported, format="txt")
 
     def test_sanitize_df(self, config_with_paths):
         """Test DataFrame sanitization."""
@@ -339,10 +389,10 @@ class TestDataLoader:
         assert isinstance(result, DataValidationResult)
         assert result.is_valid is True
         assert len(result.errors) == 0
-        assert result.checks["has_data"] is True
-        assert result.checks["ohlc_columns"] is True
-        assert result.checks["positive_prices"] is True
-        assert result.checks["high_low_valid"] is True
+        assert result.checks["has_data"] == True
+        assert result.checks["ohlc_columns"] == True
+        assert result.checks["positive_prices"] == True
+        assert result.checks["high_low_valid"] == True
 
     def test_validate_dataframe_empty(self, config_with_paths):
         """Test validation with empty DataFrame."""
@@ -408,7 +458,7 @@ class TestDataLoader:
         assert not result.checks["positive_prices"]
         assert any("non-positive" in e.lower() for e in result.errors)
 
-    def test_load_data_full(self, config_with_paths, sample_parquet_data):
+    def test_load_data_full(self, config_with_paths):
         """Test full data loading with all files."""
         loader = DataLoader(config=config_with_paths, mode="analytics")
         
@@ -464,14 +514,9 @@ class TestDataLoader:
         if bundle.artf is not None:
             assert len(bundle.artf) >= len(bundle.strategy)
 
-    def test_cache_stats_property(self, config_with_paths, sample_parquet_data):
+    def test_cache_stats_property(self, config_without_date_range, sample_parquet_data):
         """Test cache statistics property."""
-        from src.strategies.contracts.data_contracts import DataFileConfig
-        
-        loader = DataLoader(config=config_with_paths, mode="analytics")
-        
-        # Initially no stats
-        assert loader.cache_stats is not None
+        loader = DataLoader(config=config_without_date_range, mode="analytics")
         
         file_config = DataFileConfig(
             path=sample_parquet_data,
@@ -503,44 +548,70 @@ class TestDataLoader:
         from src.config.config_schema import StrategyConfig
         
         # Create invalid data (missing required columns)
+        dates = pd.date_range("2025-01-01", periods=3, freq="1min")
         df = pd.DataFrame({
+            "timestamp": dates.strftime("%Y-%m-%d %H:%M:%S"),
             "wrong_col": [1, 2, 3],
             "another": [4, 5, 6]
-        }, index=pd.date_range("2025-01-01", periods=3))
+        })
         
         invalid_path = tmp_path / "invalid.parquet"
-        df.to_parquet(invalid_path)
+        df.to_parquet(invalid_path, index=False)
         
+        # Set only strategy data, set optional paths to None
         base_config_dict["data"]["paths"]["strategy_ohlcv"] = str(invalid_path)
+        base_config_dict["data"]["paths"]["htf_ohlcv"] = None
+        base_config_dict["data"]["paths"]["ltf_ohlcv"] = None
+        base_config_dict["data"]["paths"]["artf_ohlcv"] = None
         
         config = StrategyConfig.from_dict(base_config_dict)
         loader = DataLoader(config=config, mode="core")
         
-        with pytest.raises(ValueError, match="Data validation failed"):
+        # Should raise ValueError about missing columns
+        with pytest.raises(ValueError, match="missing columns|Data validation failed"):
             loader.load_data()
 
-    def test_duplicate_timestamp_handling(self, config_with_paths, tmp_path, caplog):
+    def test_duplicate_timestamp_handling(self, base_config_dict, tmp_path, caplog):
         """Test handling of duplicate timestamps."""
+        from src.config.config_schema import StrategyConfig
+        
+        # Create a new config dict
+        config_dict = base_config_dict.copy()
+        
         # Create data with duplicate timestamps
-        dates = pd.date_range("2025-01-01", periods=5, freq="1min")
+        dates = pd.date_range("2025-01-01 00:00:00", periods=5, freq="1min")
         dates = dates.append(dates[-1:])  # Duplicate last timestamp
         
+        # Generate valid OHLC data
+        np.random.seed(42)
+        prices = 100 + np.cumsum(np.random.randn(6) * 0.1)
+        
         df = pd.DataFrame({
-            "open": [100.0] * 6,
-            "high": [101.0] * 6,
-            "low": [99.0] * 6,
-            "close": [100.5] * 6
+            "open": prices * 0.999,
+            "high": prices * 1.002,
+            "low": prices * 0.998,
+            "close": prices,
+            "volume": np.random.randint(100, 1000, 6)
         }, index=dates)
         df.index.name = "timestamp"
+        
+        # Ensure OHLC integrity
+        df["high"] = df[["open", "high", "close"]].max(axis=1)
+        df["low"] = df[["open", "low", "close"]].min(axis=1)
         
         dup_path = tmp_path / "duplicates.parquet"
         df.to_parquet(dup_path)
         
-        from src.config.config_schema import StrategyConfig
-        base_config_dict = config_with_paths.dict()
-        base_config_dict["data"]["paths"]["strategy_ohlcv"] = str(dup_path)
+        # Set up config with duplicate data and no date range
+        config_dict["data"]["paths"] = {
+            "strategy_ohlcv": str(dup_path),
+            "htf_ohlcv": None,
+            "ltf_ohlcv": None,
+            "artf_ohlcv": None
+        }
+        config_dict["data"]["date_range"] = None
         
-        config = StrategyConfig.from_dict(base_config_dict)
+        config = StrategyConfig.from_dict(config_dict)
         loader = DataLoader(config=config, mode="analytics")
         
         with caplog.at_level("WARNING"):
@@ -548,4 +619,5 @@ class TestDataLoader:
         
         assert "duplicate timestamps" in caplog.text.lower()
         assert bundle.strategy is not None
+        assert len(bundle.strategy) == 5  # After removing duplicates
         assert bundle.strategy.index.is_unique

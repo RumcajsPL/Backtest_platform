@@ -67,19 +67,31 @@ class TechnicalFilterTestBase:
         """Test that execution time is always collected (DEC-027)."""
         filter_instance = self.create_filter()
         
+        # Use a subset of the signal frame that matches the filter_test_df length
+        # or ensure both DataFrames have the same length
+        signal_subset = sample_signal_frame_with_mixed_signals.signals.iloc[:len(filter_test_df)]
+        
+        # Create a new signal frame with the subset
+        from src.strategies.contracts.signal_contracts import SignalFrame
+        signal_frame_subset = SignalFrame(
+            signals=signal_subset,
+            indicator_data=None,
+            signal_metadata=sample_signal_frame_with_mixed_signals.signal_metadata
+        )
+        
         # Compute indicators
         indicators = {}
         ind_np = {}
         filter_instance.compute_indicators(filter_test_df, indicators, ind_np)
         
         result = filter_instance.apply_filter(
-            signal_frame=sample_signal_frame_with_mixed_signals,
+            signal_frame=signal_frame_subset,
             df=filter_test_df,
             indicators=indicators,
             ind_np=ind_np,
             mode="core"
         )
-        
+    
         assert result.metadata.execution_time_ms is not None
         assert result.metadata.execution_time_ms > 0
     

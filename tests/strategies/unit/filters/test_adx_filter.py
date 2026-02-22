@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 
 from src.strategies.specific.filters.adx_filter import ADXFilter
-from src.strategies.contracts.filter_contracts import FilterStatus
-from tests.unit.test_filters_base import TechnicalFilterTestBase
+from src.strategies.contracts.signal_contracts import SignalFrame
+from .test_filters_base import TechnicalFilterTestBase
 
 
 class TestADXFilter(TechnicalFilterTestBase):

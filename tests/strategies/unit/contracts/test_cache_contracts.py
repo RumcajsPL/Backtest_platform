@@ -25,6 +25,7 @@ class TestFilterPipelineCache:
     def sample_df(self):
         """Sample DataFrame for testing."""
         dates = pd.date_range(start="2025-01-01", periods=100, freq="1min")
+        np.random.seed(42)
         return pd.DataFrame({
             "open": np.random.randn(100) * 10 + 100,
             "high": np.random.randn(100) * 10 + 102,
@@ -77,9 +78,6 @@ class TestFilterPipelineCache:
 
     def test_filter_config_hash_order_stable(self, cache, sample_filter_configs):
         """Test that hash is stable regardless of dict order."""
-        # Create same config with different order
-        import json
-        
         # Hash with original order
         hash1 = cache.compute_filter_config_hash(sample_filter_configs)
         
@@ -138,13 +136,14 @@ class TestFilterPipelineCache:
         filter_hash = "abc123"
         cache_id = cache.compute_cache_id(sample_df, filter_hash)
         
+        # Create indicators with the same length as sample_df
         indicators = {
-            "rsi": pd.Series([1, 2, 3], index=sample_df.index),
-            "adx": pd.Series([4, 5, 6], index=sample_df.index)
+            "rsi": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index),
+            "adx": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)
         }
         indicators_np = {
-            "rsi": np.array([1, 2, 3]),
-            "adx": np.array([4, 5, 6])
+            "rsi": indicators["rsi"].to_numpy(),
+            "adx": indicators["adx"].to_numpy()
         }
         
         # Store
@@ -184,8 +183,8 @@ class TestFilterPipelineCache:
         assert cache._hits == 0
         
         # Store and hit
-        indicators = {"test": pd.Series([1, 2, 3])}
-        indicators_np = {"test": np.array([1, 2, 3])}
+        indicators = {"test": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)}
+        indicators_np = {"test": indicators["test"].to_numpy()}
         cache.store(cache_id, indicators, indicators_np)
         
         cache.get(cache_id)  # Hit
@@ -197,8 +196,8 @@ class TestFilterPipelineCache:
         filter_hash = "abc123"
         cache_id = cache.compute_cache_id(sample_df, filter_hash)
         
-        indicators = {"test": pd.Series([1, 2, 3])}
-        indicators_np = {"test": np.array([1, 2, 3])}
+        indicators = {"test": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)}
+        indicators_np = {"test": indicators["test"].to_numpy()}
         cache.store(cache_id, indicators, indicators_np)
         
         assert cache.size() == 1
@@ -219,8 +218,8 @@ class TestFilterPipelineCache:
         filter_hash = "abc123"
         cache_id = cache.compute_cache_id(sample_df, filter_hash)
         
-        indicators = {"test": pd.Series([1, 2, 3])}
-        indicators_np = {"test": np.array([1, 2, 3])}
+        indicators = {"test": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)}
+        indicators_np = {"test": indicators["test"].to_numpy()}
         cache.store(cache_id, indicators, indicators_np)
         
         assert cache.size() == 1
@@ -245,8 +244,8 @@ class TestFilterPipelineCache:
         assert stats["cache_ids"] == []
         
         # Add some entries and hits/misses
-        indicators = {"test": pd.Series([1, 2, 3])}
-        indicators_np = {"test": np.array([1, 2, 3])}
+        indicators = {"test": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)}
+        indicators_np = {"test": indicators["test"].to_numpy()}
         cache.store(cache_id, indicators, indicators_np)
         
         # Miss
@@ -271,8 +270,8 @@ class TestFilterPipelineCache:
             cache_id = cache.compute_cache_id(sample_df, filter_hash)
             ids.append(cache_id)
             
-            indicators = {f"indicator{i}": pd.Series([i, i+1, i+2])}
-            indicators_np = {f"indicator{i}": np.array([i, i+1, i+2])}
+            indicators = {f"indicator{i}": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)}
+            indicators_np = {f"indicator{i}": indicators[f"indicator{i}"].to_numpy()}
             cache.store(cache_id, indicators, indicators_np)
         
         assert cache.size() == 5
@@ -288,8 +287,8 @@ class TestFilterPipelineCache:
         filter_hash = "abc123"
         cache_id = cache.compute_cache_id(sample_df, filter_hash)
         
-        indicators = {"test": pd.Series([1, 2, 3])}
-        indicators_np = {"test": np.array([1, 2, 3])}
+        indicators = {"test": pd.Series(np.random.randn(len(sample_df)), index=sample_df.index)}
+        indicators_np = {"test": indicators["test"].to_numpy()}
         
         # Store
         cache.store(cache_id, indicators, indicators_np)
@@ -300,7 +299,7 @@ class TestFilterPipelineCache:
         
         assert cache.has(cache_id) is True
         retrieved = cache.get(cache_id)
-        assert retrieved["indicators"]["test"].iloc[0] == 1
+        assert retrieved["indicators"]["test"].iloc[0] == indicators["test"].iloc[0]
 
     def test_compute_cache_id_includes_filter_hash(self, cache, sample_df):
         """Test that cache ID includes filter hash (DEC-026 verification)."""

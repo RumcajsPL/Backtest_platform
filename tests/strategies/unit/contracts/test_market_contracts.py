@@ -399,8 +399,10 @@ class TestMarketFrame:
         assert d["body_size"] == 2.5
         assert d["is_bullish"] is True
         assert d["is_bearish"] is False
-        assert d["upper_wick"] == 3.0  # 105 - 102 = 3
-        assert d["lower_wick"] == 1.0  # 100 - 99 = 1
+        # For bullish bar: upper_wick = high - close = 105 - 102.5 = 2.5
+        assert d["upper_wick"] == 2.5
+        # For bullish bar: lower_wick = open - low = 100 - 99 = 1.0
+        assert d["lower_wick"] == 1.0
         assert d["has_htf"] is False
         assert d["has_ltf"] is False
 

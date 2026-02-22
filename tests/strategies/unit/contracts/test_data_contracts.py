@@ -467,7 +467,6 @@ class TestDataBundle:
         
         assert "DataBundle" in str(bundle)
 
-
 class TestCacheStats:
     """Tests for CacheStats contract."""
 
@@ -522,7 +521,7 @@ class TestCacheStats:
 
     def test_str_representation(self):
         """Test string representation."""
-        stats = CacheStats(hits=50, misses=10)
+        stats = CacheStats(hits=50, misses=10, hit_rate=83.3)
         
         s = str(stats)
         assert "Cache: 50/60 hits" in s

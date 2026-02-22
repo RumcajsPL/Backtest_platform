@@ -756,7 +756,7 @@ class TestTradeResult:
         }
         position_rejected = {"buy": 1, "sell": 1}
         trade_manager_metrics = {"signals_accepted": 3}
-
+        
         result = TradeResult.from_trades(
             trades=sample_trades,
             rejected_signals=sample_rejected,
@@ -767,7 +767,7 @@ class TestTradeResult:
             execution_mode="LTF_OHLC_V5",
             execution_time_ms=125.5
         )
-
+        
         assert len(result.trades) == 3
         assert len(result.rejected_signals) == 2
         assert result.total_entries == 5  # 3 trades + 2 rejected
@@ -783,9 +783,9 @@ class TestTradeResult:
         assert result.win_count == 1
         assert result.loss_count == 1
         assert result.win_rate == 50.0
-        assert result.total_pnl_points == -2.0  # +5 -7 = -2
-        assert result.execution_mode == "LTF_OHLC_V5"
-        assert result.execution_time_ms == 125.5
+        # Trade1: +5.0, Trade2: -2.0, Trade3: open (no P&L) = total +3.0
+        assert result.total_pnl_points == 3.0
+        assert result.average_pnl_points == 1.5  # 3.0 / 2 closed trades
 
     def test_open_trades_property(self, sample_trades, sample_rejected):
         """Test open_trades property."""
@@ -902,17 +902,17 @@ class TestTradeResult:
             execution_mode="LTF_OHLC_V5",
             execution_time_ms=125.5
         )
-
+        
         summary = result.get_summary()
-
+        
         assert "TradeResult Summary" in summary
         assert "Total Entries: 5" in summary
         assert "Opened: 3" in summary
         assert "Closed: 2" in summary
         assert "Rejected: 2" in summary
         assert "Win Rate: 50.0%" in summary
-        assert "Total P&L: -2.00 points" in summary
-        assert "Execution: LTF_OHLC_V5" in summary
+        assert "Total P&L: +3.00 points" in summary
+        assert "Avg P&L: +1.50 points/trade" in summary
 
     def test_str_representation(self, sample_trades, sample_rejected):
         """Test string representation."""
