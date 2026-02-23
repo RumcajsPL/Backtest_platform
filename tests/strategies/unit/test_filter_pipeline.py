@@ -4,6 +4,7 @@ Unit Tests for FilterPipeline
 Tests filter orchestration, time filters, technical filters, and caching.
 """
 
+import copy
 import pytest
 import pandas as pd
 import numpy as np
@@ -587,9 +588,19 @@ class TestFilterPipeline:
     def test_compute_filter_cfg_hash_changes_with_params(self, base_config_without_time_filter):
         """Test that hash changes when filter parameters change."""
         from src.config.config_schema import StrategyConfig
-        
-        # Create two configs with same filter but different parameters
-        config1_dict = base_config_without_time_filter.copy()
+
+        # [BUG-2 FIX] Use deepcopy instead of shallow .copy() to prevent shared
+        # mutation of the nested 'filters' dict.
+        #
+        # The shallow .copy() pattern:
+        #   config1_dict = base_config_without_time_filter.copy()  ← shallow
+        #   config1_dict["filters"]["technical_filters"] = {length: 14}
+        #   config2_dict = base_config_without_time_filter.copy()  ← shallow, same filters ref
+        #   config2_dict["filters"]["technical_filters"] = {length: 21}  ← overwrites config1!
+        #   config1 = StrategyConfig.from_dict(config1_dict)  ← sees length:21, not 14
+        #
+        # deepcopy gives each dict its own independent nested structure.
+        config1_dict = copy.deepcopy(base_config_without_time_filter)
         config1_dict["filters"]["filter_sequence"] = ["rsi_filter"]
         config1_dict["filters"]["technical_filters"] = {
             "rsi_filter": {
@@ -599,8 +610,8 @@ class TestFilterPipeline:
                 "oversold": 30
             }
         }
-        
-        config2_dict = base_config_without_time_filter.copy()
+
+        config2_dict = copy.deepcopy(base_config_without_time_filter)
         config2_dict["filters"]["filter_sequence"] = ["rsi_filter"]
         config2_dict["filters"]["technical_filters"] = {
             "rsi_filter": {
@@ -610,16 +621,13 @@ class TestFilterPipeline:
                 "oversold": 30
             }
         }
-        
+
         config1 = StrategyConfig.from_dict(config1_dict)
         config2 = StrategyConfig.from_dict(config2_dict)
-        
+
         pipeline1 = FilterPipeline(config=config1, mode="core")
         pipeline2 = FilterPipeline(config=config2, mode="core")
-        
-        # The hash should be different for different parameters
-        # Note: This is still failing, indicating a deeper issue in _compute_filter_cfg_hash
-        # The hash is the same despite different parameters
+
         assert pipeline1._filter_cfg_hash != pipeline2._filter_cfg_hash
 
     def test_cache_id_computation(self, test_config, sample_df):

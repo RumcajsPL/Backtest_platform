@@ -1,25 +1,24 @@
 """
 Filter Pipeline - Orchestrator for Signal Filtering
 
-Version: 2.3.0
-Session: Block 3 — Production Hardening
+Version: 2.4.0
 
-Changes from v2.2.0:
-- [H3] _load_time_filter: disabled time filter (enabled: false) is no longer
-  instantiated. self.time_filter remains None, so apply_filters() skips the
-  time-filter stage entirely and the disabled filter produces no entry in
-  filter_results. Previously, a disabled TimeFilter was always constructed
-  and its FilterStatus.SKIPPED metadata was always appended to results —
-  misleading for analytics and incorrect for cache consumers reading result counts.
-- [P6] _load_time_filter: removed try/except block that silently swallowed
-  construction errors (TimeFilterConfig or TimeFilter init failures). Config
-  construction errors are config bugs — they must propagate immediately per
-  Principle 6 (Fail Fast). StrategyConfig already validates the config before
-  FilterPipeline is constructed.
-- [P6] __init__ analytics log: simplified — self.time_filter is now always
-  either a correctly-configured enabled filter or None. The old
-  "enabled if self.time_filter and self.time_filter.enabled" guard was
-  compensating for the construction-even-when-disabled bug.
+Changes from v2.3.0:
+- [BUG-1] _load_time_filter: unwrap nested 'config' key when time_filter YAML
+  uses the structured form:
+      time_filter:
+        enabled: True
+        config:
+          session_start: {hour: 0, minute: 0}
+          session_end: {hour: 23, minute: 59}
+  FilterConfig.from_dict() correctly stores {'config': {nested}} in FilterConfig.config
+  (because 'config' is not a known_key). But _load_time_filter then spread that as
+  **{'config': {nested}} into TimeFilterConfig.from_dict(), which expects flat keys
+  (session_start, session_end, excluded_days). The nested 'config' key was silently
+  ignored and TimeFilterConfig defaulted to 08:30–20:30.
+  Fix: detect the nested 'config' key in time_filter_cfg.config and unwrap it one
+  level before passing to TimeFilterConfig.from_dict(). Flat structure (no nesting)
+  continues to work unchanged.
 """
 
 import hashlib
@@ -118,7 +117,7 @@ class FilterPipeline:
         self._load_filters()
 
         if self._mode == "analytics":
-            # [H3] self.time_filter is now either an enabled filter or None —
+            # self.time_filter is now either an enabled filter or None —
             # no need to check .enabled separately.
             time_filter_status = "enabled" if self.time_filter is not None else "disabled/not configured"
             logger.info(
@@ -163,10 +162,21 @@ class FilterPipeline:
         [P6] No try/except: construction errors are config bugs and must
         propagate immediately. StrategyConfig validates the config before
         this method is ever called.
+
+        [BUG-1] The time_filter YAML uses a nested 'config' block:
+            time_filter:
+              enabled: True
+              config:
+                session_start: {hour: 8, minute: 30}
+                session_end: {hour: 20, minute: 30}
+        FilterConfig.from_dict() stores this as FilterConfig.config = {'config': {nested}}.
+        We must unwrap that one level before passing to TimeFilterConfig.from_dict(),
+        which expects flat keys (session_start, session_end, excluded_days).
+        If the config is already flat (no nested 'config' key), it passes through unchanged.
         """
         time_filter_cfg = self.config.filters.time_filters.get("time_filter")
 
-        # [H3] Treat absent config and disabled config identically —
+        # Treat absent config and disabled config identically —
         # in both cases self.time_filter stays None.
         if time_filter_cfg is None or not time_filter_cfg.enabled:
             if self._mode == "analytics":
@@ -174,10 +184,22 @@ class FilterPipeline:
                 logger.info(f"Time filter: {reason} — skipped")
             return
 
-        # Only reached when time_filter_cfg is present AND enabled=True.
+        # [BUG-1] Unwrap nested 'config' key if present.
+        # YAML form:  time_filter: {enabled: True, config: {session_start: ...}}
+        #   → FilterConfig.config = {'config': {'session_start': ...}}   ← nested
+        # Flat form:  time_filter: {enabled: True, session_start: ...}
+        #   → FilterConfig.config = {'session_start': ...}               ← already flat
+        raw_params = time_filter_cfg.config
+        if "config" in raw_params and isinstance(raw_params.get("config"), dict):
+            # Structured YAML form: unwrap the inner dict
+            inner_params = raw_params["config"]
+        else:
+            # Flat form: use as-is
+            inner_params = raw_params
+
         typed_config = TimeFilterConfig.from_dict({
             "enabled": time_filter_cfg.enabled,
-            **time_filter_cfg.config
+            **inner_params
         })
 
         self.time_filter = TimeFilter(
@@ -281,7 +303,7 @@ class FilterPipeline:
         current_signals = signal_frame
         time_filtered_count = raw_count
 
-        # [H3] self.time_filter is None when disabled or not configured —
+        # self.time_filter is None when disabled or not configured —
         # in that case the entire stage is skipped cleanly with no results entry.
         if self.time_filter is not None:
             time_result = self.time_filter.apply_filter(
