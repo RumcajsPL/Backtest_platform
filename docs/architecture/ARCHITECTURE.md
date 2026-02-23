@@ -64,9 +64,10 @@ graph TD
     R --> S[RiskManager]
 ```
 ---
-## Architecture Principles
+## Architecture Principles to respect in each develoment, modifications, updates etc.
 ### 1. Single Responsibility
-One module, one concern. DataLoader only loads data. SignalGenerator only generates signals. MetricsCalculator only computes metrics. No module reaches into another module's domain. Each module trusts its inputs implicitly — validation happens at configuration boundaries only.
+One module, one concern. DataLoader only loads data. SignalGenerator only generates signals. MetricsCalculator only computes metrics. No module reaches into another module's domain. Each module trusts its inputs implicitly — validation happens at configuration boundaries.
+All config is created and data are validated on the level of ConfigSchema.
 ### 2. Contracts Are the Interface
 Every module accepts and returns typed, frozen dataclasses. There are no raw dicts, no shared state, no global variables passed between modules. If you need to add information that crosses a module boundary, add a field to the relevant contract — do not bypass the contract.
 ### 3. Immutability
@@ -81,6 +82,16 @@ Invalid configuration raises immediately at construction via __post_init__ valid
 Configuration flows from strategy_template.yaml → StrategyConfig → all modules. No module loads its own config. Spread values are read exclusively from broker_spreads.yaml — the strategy template contains only the path to this file.
 ### 8. Cache Lifecycle Management
 All module-level caches (ATR, annual range, spread configs) are managed by a central CacheManager. Call clear_all_caches() between backtester runs to ensure clean state.
+### 9. Code hygiene -> Test management integration
+Architecture Code delivered has no MagicMocks, no debug flags, no print statements,
+no test artifacts, no dummies, no commented-out blocks. Type hints are present and
+minimal — they document intent, not implementation. Comments explain *why*, never *what*.
+Every file is the right size: not so small it hides structure, not so large it hides complexity.
+Mockups, dummies, debug, assumptions are domain of unit test developed together with principal code.
+Ttested on real data with real conditions are integrated from early stages.
+Fail-fast principle (in Architecture Code): no assumptions, no checking different folders, no trying, no guessing.  
+If something is not there: not matching, not answering, no data — the strategy aborts
+with a clear error message. Testing can retake for detailed debgging and diagnosis
 ---
 ## Execution Modes
 The pipeline has two execution modes, selected via execution.mode in the strategy config YAML.
@@ -115,7 +126,7 @@ for params in parameter_grid:
 File: src/strategies/specific/modules/data_loader.py
 Input: StrategyConfig
 Output: DataBundle
-Loads OHLCV data for the strategy timeframe, and optionally HTF, LTF, and ARTF (monthly bars). Validates all DataFrames (DatetimeIndex, OHLC columns present). Applies Parquet optimisation sequence: timestamp floor → sort index → lazy duplicate check. Caches loaded data by file mtime + size + version string.
+Loads OHLCV data for the strategy timeframe, HTF, LTF, and ARTF (monthly bars). Validates all DataFrames (DatetimeIndex, OHLC columns present). Applies Parquet optimisation sequence: timestamp floor → sort index → lazy duplicate check. Caches loaded data by file mtime + size + version string.
 ## SignalGenerator
 File: src/strategies/specific/modules/signal_generator.py
 Input: StrategyConfig, DataBundle
@@ -442,17 +453,59 @@ project_root/
 │   └── runners/
 │       └── run_strategy.py               # CLI entry point
 └── src/
+    ├── config/                           # Core infrastructure
+    │   └── config_schema.py            # Central Config manager for all strategy modules
     └── strategies/
         ├── contracts/                     # All typed contracts
-        ├── core/                           # Core infrastructure
-        │   ├── cache_manager.py            # Central cache management
-        │   └── null_progressive_tracker.py
+        ├── core/                          
+        │   └── cache_manager.py            # Central cache management
         ├── specific/
         │   ├── modules/                     # Pipeline modules
-        │   └── filters/                      # Technical filters
+        │   └── filters/                      # Time+Technical filters
         └── utils/                            # Utilities
             ├── paths.py
-            └── structured_logger.py    
+            └── structured_logger.py
+
+## Full list of files building E2E strategy architecture. 
+    • configs\strategies\strategy_template.yaml
+    • configs\spreads\broker_spreads.yaml    
+    • scripts\runners\run_strategy.py (specific runner of strategy E2E integration)
+    • src\config\config_schema.py
+    • src\core\cache_manager.py
+    • src\utils\structured_logger.py
+    • src\utils\paths.py
+    • src\strategies\orchestrator.py
+    • src\strategies\contracts\analytics_contracts.py
+    • src\strategies\contracts\cache.py
+    • src\strategies\contracts\data_contracts.py
+    • src\strategies\contracts\filter_contracts.py
+    • src\strategies\contracts\market_contracts.py
+    • src\strategies\contracts\metrics_contracts.py
+    • src\strategies\contracts\position_contracts.py
+    • src\strategies\contracts\report_contracts.py
+    • src\strategies\contracts\signal_contracts.py
+    • src\strategies\contracts\trade_contracts.py
+    • src\strategies\specific\modules\data_loader.py
+    • src\strategies\specific\modules\filter_pipeline.py
+    • src\strategies\specific\modules\metrics_calculator.py
+    • src\strategies\specific\modules\report_generator.py
+    • src\strategies\specific\modules\risk_manager.py
+    • src\strategies\specific\modules\signal_generator.py
+    • src\strategies\specific\modules\spread_manager.py
+    • src\strategies\specific\modules\trade_analytics.py
+    • src\strategies\specific\modules\trade_manager.py
+    • src\strategies\specific\modules\trade_simulator.py
+    • src\strategies\specific\filters\adx_filter.py
+    • src\strategies\specific\filters\bollinger_filter.py
+    • src\strategies\specific\filters\cci_filter.py
+    • src\strategies\specific\filters\choppiness_filter.py
+    • src\strategies\specific\filters\dpo_filter.py
+    • src\strategies\specific\filters\ma_filter.py
+    • src\strategies\specific\filters\macd_filter.py
+    • src\strategies\specific\filters\pivot_filter.py
+    • src\strategies\specific\filters\rsi_filter.py
+    • src\strategies\specific\filters\supertrend_filter.py
+    • src\strategies\specific\filters\time_filter.py
 ---
 ## Integration Guide
 ## Complete Imports
