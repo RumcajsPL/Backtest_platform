@@ -1,16 +1,20 @@
 """Risk management: SL/TP with R:R ratio, spread adjustments, annual range validation.
 
-Version: 2.0.0 (Hardening II Final)
-Session: 21 - Final Hardening
+Version: 2.1.0
+Block 5 (R5 / L1) — Production Hardening
 
-Changes from v1.0.0 (Session 21 updates):
-- Block B: Removed all "debug" mode references - strict mode validation
-- Block C: Integrated with CacheManager for multi-run cache lifecycle
-- DEC-035: Accepts StrategyConfig instead of raw Dict
-- DEC-037: tp_mode selector ('rr_ratio' | 'atr_multiplier')
-- DEC-038: take_profit_trigger computed for SHORT TP exit spread
-- SM-1: asset_symbol blank guard before SpreadManager construction
-- DEC-036: SpreadManager apply_to_long/apply_to_short read from broker file
+Changes from v2.0.0:
+- [R5 / P9] Removed 'Session: 21 - Final Hardening' development artifact from
+  module docstring.
+- [R5 / L1] ClassVar removed from typing import — imported but never used in
+  the class body. Dead imports mislead readers about what typing constructs the
+  class relies on.
+- [R5 / L1] Any added to typing import (required for risk_config annotation).
+- [R5 / L1] config parameter annotated as 'StrategyConfig' via TYPE_CHECKING
+  guard. The docstring already stated 'StrategyConfig (typed)' but the signature
+  had no annotation. TYPE_CHECKING avoids a circular import risk.
+- [R5 / L1] self.risk_config: Dict → Dict[str, Any] — bare Dict gives type
+  checkers no information about the dict's contents.
 
 BID price model (one spread per round trip)
 -------------------------------------------
@@ -24,7 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -32,6 +36,9 @@ import pandas as pd
 from src.strategies.contracts.trade_contracts import TradeParameters
 from src.strategies.specific.modules.spread_manager import SpreadManager
 from src.strategies.core.cache_manager import CacheManager
+
+if TYPE_CHECKING:
+    from src.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +67,7 @@ class RiskManager:
 
     def __init__(
         self,
-        config,                          # StrategyConfig (typed)
+        config: "StrategyConfig",       # [L1] was untyped; TYPE_CHECKING guard avoids circular import
         ohlcv_data: pd.DataFrame,
         ohlcv_artf: Optional[pd.DataFrame] = None,
         mode: str = "core",
@@ -104,7 +111,8 @@ class RiskManager:
 
         # Annual range config
         self.max_risk_percentile: float = risk_cfg.max_risk_percentile
-        self.risk_config: Dict = {}  # For allow_exceed_limit (future)
+        # [L1] Parameterized: was Dict (bare), now Dict[str, Any]
+        self.risk_config: Dict[str, Any] = {}
 
         # ── Validate and store OHLCV data ───────────────────────────────
         self.ohlcv_data = ohlcv_data.copy()

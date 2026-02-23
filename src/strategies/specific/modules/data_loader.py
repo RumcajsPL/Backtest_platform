@@ -1,14 +1,15 @@
 """
-DataLoader v3.0 - Final Migrated Implementation
+DataLoader v3.1 - Block 1 Production Hardening
 
-Version: 3.0.0 (Phase 5 Final)
-Session: 21 - Final Hardening
+Version: 3.1.0
+Session: Block 1 — Production Hardening
 
-Changes from v2.1.0:
-- Phase 5.1: Now accepts StrategyConfig instead of config_path (DEC-033)
-- Phase 5.1: No longer loads its own config - trusts StrategyConfig
-- Phase 5.1: All validation now in config_schema.py - DataLoader only loads data
-- Performance optimizations preserved (Parquet 60-70% faster, 8-15% additional speedup)
+Changes from v3.0.0:
+- [C3] _build_data_config: guards cfg.date_range before attribute access — no
+       AttributeError when date_range is None (YAML `date_range: null`)
+- [M2] _load_file_with_cache: raises ValueError immediately when a loaded file
+       produces an empty DataFrame — eliminates silent failures from timestamp
+       parsing errors or fully out-of-range slices
 """
 
 import pandas as pd
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    DataLoader v3.0 - Fully migrated, trusts StrategyConfig.
+    DataLoader v3.1 - Fully migrated, trusts StrategyConfig.
 
     Features:
     - Accepts StrategyConfig directly (DEC-033)
@@ -51,6 +52,7 @@ class DataLoader:
     - Monthly/ARTF data support
     - Dual-mode execution (core vs analytics)
     - Intelligent caching with MD5 validation
+    - Fail-fast on empty DataFrames (M2)
 
     Performance:
     - Parquet: ~40ms (cold), ~5ms (cache) - 60-70% faster than v2.0
@@ -63,7 +65,7 @@ class DataLoader:
 
     def __init__(
         self,
-        config: StrategyConfig,  # Now accepts StrategyConfig directly
+        config: StrategyConfig,
         mode: str = "core"
     ):
         """
@@ -129,9 +131,11 @@ class DataLoader:
                 format=path.suffix.lower().lstrip("."),
             )
 
-        # Create date range if both start and end are present
+        # [C3] cfg.date_range is Optional[DateRangeConfig] — guard before access.
+        # When YAML has `date_range: null`, cfg.date_range is None and we produce
+        # no DateRange, meaning the full file is loaded without slicing.
         date_range = None
-        if cfg.date_range.start and cfg.date_range.end:
+        if cfg.date_range is not None and cfg.date_range.start and cfg.date_range.end:
             date_range = DateRange(
                 start=pd.Timestamp(cfg.date_range.start).to_pydatetime(),
                 end=pd.Timestamp(cfg.date_range.end).to_pydatetime(),
@@ -155,9 +159,7 @@ class DataLoader:
         date_range: Optional[DateRange] = None,
         use_content_hash: bool = False
     ) -> Optional[str]:
-        """
-        Generate cache key for a file.
-        """
+        """Generate cache key for a file."""
         if not file_path.exists():
             return None
 
@@ -166,7 +168,7 @@ class DataLoader:
             str(file_path.resolve()),
             f"size:{stat.st_size}",
             f"mtime:{stat.st_mtime}",
-            "v3.0",  # Cache version (invalidates on code changes)
+            "v3.1",  # Cache version — increment on format changes
         ]
 
         if use_content_hash:
@@ -232,18 +234,19 @@ class DataLoader:
             apply_date_range: Whether to apply date range slicing
 
         Returns:
-            DataFrame with DatetimeIndex
+            DataFrame with DatetimeIndex (guaranteed non-empty)
+
+        Raises:
+            FileNotFoundError: If the file does not exist
+            ValueError: If the loaded DataFrame is empty — fail-fast (M2)
         """
         file_path = file_config.path
 
-        # Validate file exists
         if not file_path.exists():
             raise FileNotFoundError(f"{data_type} file not found: {file_path}")
 
-        # Determine date range for cache key
         date_range = self.data_config.date_range if apply_date_range else None
 
-        # Try cache
         cache_key = self._get_cache_key(file_path, date_range)
         cached = self._load_cached_data(cache_key)
 
@@ -257,19 +260,16 @@ class DataLoader:
 
         suffix = file_path.suffix.lower()
 
-        # Load CSV
         if suffix == ".csv":
             df = pd.read_csv(file_path)
             df.columns = df.columns.str.lower()
             df["timestamp"] = pd.to_datetime(df["timestamp"], format=self.DATE_FORMAT)
             df = df.set_index("timestamp").sort_index()
 
-        # Load Parquet
         elif suffix == ".parquet":
             df = pd.read_parquet(file_path)
             df.columns = df.columns.str.lower()
 
-            # Case 1: timestamp is stored as index
             if df.index.name == "timestamp":
                 if hasattr(df.index, 'tz') and df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
@@ -281,7 +281,6 @@ class DataLoader:
                     self._log("warning", f"  ⚠️ Found {dup_count} duplicate timestamps in {file_path.name}, keeping last")
                     df = df[~df.index.duplicated(keep="last")]
 
-            # Case 2: timestamp is stored as a column
             elif "timestamp" in df.columns:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
                 df = df.dropna(subset=["timestamp"])
@@ -295,22 +294,41 @@ class DataLoader:
 
             else:
                 raise ValueError(
-                    f"Parquet file {file_path} has neither a timestamp column nor a timestamp index"
+                    f"Parquet file {file_path} has neither a timestamp column "
+                    f"nor a timestamp index. Verify the file was exported correctly."
                 )
 
         else:
-            raise ValueError(f"Unsupported file format: {suffix}. Must be .csv or .parquet")
+            raise ValueError(
+                f"Unsupported file format: {suffix}. Must be .csv or .parquet"
+            )
+
+        # [M2] Fail-fast on empty result — covers timestamp parsing failures,
+        # fully out-of-range slices, and corrupt files that read as zero rows.
+        if df.empty:
+            raise ValueError(
+                f"{data_type} data loaded from '{file_path}' produced an empty DataFrame. "
+                f"Possible causes: timestamp parsing failure, all rows outside the "
+                f"configured date_range, or a corrupt/empty file. "
+                f"Verify the file content and date_range configuration."
+            )
 
         df = df.copy()
 
-        # Date range slicing (skip for ARTF - we need full history)
+        # Date range slicing (skip for ARTF — we need full history)
         if apply_date_range and date_range and data_type != "artf":
             start = date_range.start
             end = date_range.end
             if start or end:
                 df = df.loc[start:end]
+                # [M2] Check again after slicing — range may exclude all rows
+                if df.empty:
+                    raise ValueError(
+                        f"{data_type} data from '{file_path}' is empty after applying "
+                        f"date_range [{date_range.start} → {date_range.end}]. "
+                        f"Verify the date_range overlaps with the file's data period."
+                    )
 
-        # Save to cache
         self._save_to_cache(cache_key, df)
         return df
 
@@ -411,30 +429,35 @@ class DataLoader:
             DataBundle: Complete data package with validation
 
         Raises:
-            ValueError: If data is invalid
             FileNotFoundError: If required files are missing
+            ValueError: If data is invalid or any file produces an empty DataFrame
         """
         self._log("info", "Loading data files...")
 
-        # Load strategy data (required)
         df_full = self._load_file_with_cache(
             self.data_config.strategy_data,
             "strategy",
-            apply_date_range=False  # Load full file first
+            apply_date_range=False
         )
         df_full = self._sanitize_df(df_full, "strategy_full")
 
-        # Slice to strategy period
         if self.data_config.date_range and self.data_config.date_range.is_bounded:
             start = self.data_config.date_range.start
             end = self.data_config.date_range.end
             df_strategy = df_full.loc[start:end].copy()
+            # [M2] Guard the post-slice result — distinct from the raw file check
+            # above because full file is loaded without range before this point.
+            if df_strategy.empty:
+                raise ValueError(
+                    f"Strategy data is empty after applying date_range "
+                    f"[{start} → {end}]. "
+                    f"Verify the date_range overlaps with the file's data period."
+                )
         else:
             df_strategy = df_full.copy()
 
         df_strategy = self._sanitize_df(df_strategy, "strategy_period")
 
-        # Load HTF data (optional)
         df_htf = None
         if self.data_config.htf_data:
             df_htf = self._load_file_with_cache(
@@ -444,7 +467,6 @@ class DataLoader:
             )
             df_htf = self._sanitize_df(df_htf, "htf")
 
-        # Load LTF data (optional)
         df_ltf = None
         ltf_timeframe = self.config.data.ltf_timeframe
         if self.data_config.ltf_data:
@@ -455,18 +477,16 @@ class DataLoader:
             )
             df_ltf = self._sanitize_df(df_ltf, "ltf")
 
-        # Load ARTF data (Annual Range Timeframe / Monthly)
         df_artf = None
         artf_timeframe = self.config.data.artf_timeframe
         if self.data_config.artf_data:
             df_artf = self._load_file_with_cache(
                 self.data_config.artf_data,
                 "artf",
-                apply_date_range=False  # Load full history
+                apply_date_range=False
             )
             df_artf = self._sanitize_df(df_artf, "artf")
 
-        # Validate strategy data
         validation = self._validate_dataframe(df_strategy, "strategy")
 
         if not validation.is_valid:
@@ -476,7 +496,6 @@ class DataLoader:
         for warning in validation.warnings:
             self._log("warning", f"  {warning}")
 
-        # Create metadata
         info = DataInfo(
             total_bars=len(df_full),
             strategy_bars=len(df_strategy),
@@ -492,7 +511,6 @@ class DataLoader:
             cache_hit=(self._cache_hits > 0)
         )
 
-        # Create DataBundle
         bundle = DataBundle(
             full=df_full,
             strategy=df_strategy,
@@ -504,7 +522,7 @@ class DataLoader:
             config=self.data_config
         )
 
-        self._log("info", f"  ✅ Data loaded successfully")
+        self._log("info", "  ✅ Data loaded successfully")
         if self._verbose:
             self._log("info", f"     {info}")
 

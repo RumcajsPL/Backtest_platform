@@ -4,17 +4,18 @@ Strategy Orchestrator
 Composes the full strategy pipeline from config load to MetricsReport.
 Single entry point callable from interactive scripts and automated parameter sweeps.
 
-Version: 2.0.0 (Hardening II Final)
-Scope: Core pipeline only — DataLoader → SignalGenerator → FilterPipeline →
-       TradeSimulator → MetricsCalculator.
-       TradeAnalytics and ReportGenerator are deferred to Phase 9.2.
+Version: 2.1.0
+Session: Block 1 — Production Hardening
 
-Changes from v1.2.0:
+Changes from v2.0.0:
+- [C4] _load_data: passes StrategyConfig and mode directly to DataLoader —
+       eliminates the config_path reconstruction hack and the TODO comment.
+       DataLoader now receives the same effective_mode as all other stages,
+       consistent with Principle 4 (Explicit Over Implicit).
 - Block A: Removed _read_htf_period() - now reads from StrategyConfig directly
 - Block A: SignalGenerator now accepts StrategyConfig
 - Block C: Signal translation moved to TradeSimulator (CF-6)
 - Block C: CacheManager integration for multi-run state management
-- All workarounds from Session 21 resolved
 """
 
 from __future__ import annotations
@@ -272,13 +273,16 @@ class StrategyOrchestrator:
     def _load_data(self, mode: str) -> DataBundle:
         """
         Stage 1: Load OHLCV data via DataLoader.
+
+        [C4] DataLoader now receives StrategyConfig directly and the effective
+        execution mode — consistent with every other pipeline stage and with
+        Principle 4 (Explicit Over Implicit). The mode governs DataLoader's
+        verbosity, LTF precomputation gating, and cache stats collection.
         """
         loader = DataLoader(
-            config_path=str(self._config.data.paths.strategy_ohlcv.parent / "config.yaml"),  # Note: This needs the actual config path
+            config=self._config,
             mode=mode,
         )
-        # TODO: DataLoader needs to be migrated to accept StrategyConfig directly
-        # For now, we use the config_path parameter as before
         bundle = loader.load_data()
 
         logger.info(
@@ -295,7 +299,7 @@ class StrategyOrchestrator:
         """
         Stage 2: Generate trading signals.
 
-        SignalGenerator now accepts StrategyConfig directly (DEC-034).
+        SignalGenerator accepts StrategyConfig directly (DEC-034).
         """
         generator = SignalGenerator(
             config=self._config,
@@ -345,19 +349,19 @@ class StrategyOrchestrator:
         """
         Stage 4: Simulate trade execution.
 
-        TradeSimulator now accepts SignalFrame directly (CF-6).
+        TradeSimulator accepts SignalFrame directly (CF-6).
         """
         simulator = TradeSimulator(
-            config=self._config,  # TradeSimulator now accepts StrategyConfig
+            config=self._config,
             df_full=data_bundle.full,
-            cache_manager=self._cache_manager,  # Pass cache manager for multi-run support
+            cache_manager=self._cache_manager,
         )
 
         verbose = (mode == "analytics")
 
         result = simulator.simulate_trades(
             df_strategy=data_bundle.strategy,
-            signal_frame=filter_result.final_signals,  # Pass SignalFrame directly
+            signal_frame=filter_result.final_signals,
             verbose=verbose,
             progressive_tracker=None,
             signal_id_map=None,

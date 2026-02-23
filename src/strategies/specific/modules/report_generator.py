@@ -8,22 +8,10 @@ Architecture:
             → ReportGenerator.generate()
                 → GeneratedReport (HTML file + in-memory content)
 
-Created:  2026-02-17  Session 17
-Updated:  2026-02-17  Session 18 — HTML polish pass
-Hardened: 2026-02-20  Session 20 Block I
-    - ``brand_name`` wired through ``ReportConfig`` to HTML header + footer
-      (was hardcoded "WBWSStrategy" in three places)
-    - ``generate()`` now raises ``ValueError`` for ``None`` analytics_report
-    - Duplicate ``logger.info`` in ``_save_html()`` removed
-    - ``__main__`` status-dump block removed (DEC-021)
-
-Session 18 fixes (Track A — HTML Polish):
-    Fix 1 — Equity curve placeholder shown when trade_result=None
-    Fix 2 — Hour table filters out zero-trade hours
-    Fix 3 — KPI strip mobile breakpoints: 6→3 cols at 900px, 3→2 cols at 480px
-    Fix 4 — First critical insight auto-opens in analytical accordion
-    Fix 5 — Chart.js CDN failure handler + <noscript> fallback
-    Fix 6 — Version string v1.1 in footer
+-Hardened: 2026-02-20  Session 20 Block I
++Hardened: 2026-02-20  Session 20 Block I
++Hardened: Block 5     — [L4] Dict → Dict[str, str] in all colour-param signatures;
++          rows: List → List[tuple] in table helper signatures.
 
 Three-layer report structure:
     Layer 1 — EXECUTIVE  : Grade badge, assessment, top insights
@@ -327,7 +315,7 @@ class ReportGenerator:
     @staticmethod
     def _build_layer1_executive(
         report: AnalyticsReport,
-        colours: Dict,
+        colours: Dict[str, str],
     ) -> str:
         """Grade badge, assessment, top insights, strengths, improvements."""
         es = report.executive_summary
@@ -444,7 +432,7 @@ class ReportGenerator:
     @staticmethod
     def _build_layer2_analytical(
         report: AnalyticsReport,
-        colours: Dict,
+        colours: Dict[str, str],
         config: ReportConfig,
         chart_data: Dict,
     ) -> str:
@@ -554,7 +542,7 @@ class ReportGenerator:
     @staticmethod
     def _build_layer3_raw(
         report: AnalyticsReport,
-        colours: Dict,
+        colours: Dict[str, str],
     ) -> str:
         """Collapsible tables: base metrics / session / hour / day."""
         tp = report.time_performance
@@ -703,7 +691,7 @@ class ReportGenerator:
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_insights_accordion(insights: List[Insight], colours: Dict) -> str:
+    def _build_insights_accordion(insights: List[Insight], colours: Dict[str, str]) -> str:
         if not insights:
             return '<div class="no-data">No insights generated.</div>'
 
@@ -752,7 +740,7 @@ class ReportGenerator:
 
     @staticmethod
     def _build_simple_table(
-        headers: List[str], rows: List, colours: Dict
+        headers: List[str], rows: List[tuple], colours: Dict[str, str]
     ) -> str:
         th  = "".join(f"<th>{h}</th>" for h in headers)
         trs = "".join(
@@ -768,7 +756,7 @@ class ReportGenerator:
 
     @staticmethod
     def _build_data_table(
-        headers: List[str], rows: List, colours: Dict
+        headers: List[str], rows: List[tuple], colours: Dict[str, str]
     ) -> str:
         return ReportGenerator._build_simple_table(headers, rows, colours)
 
@@ -777,7 +765,7 @@ class ReportGenerator:
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_css(colours: Dict, config: ReportConfig) -> str:
+    def _build_css(colours: Dict[str, str], config: ReportConfig) -> str:
         c = colours
         return f"""
 /* ── Reset & base ────────────────────────────────────────── */
@@ -1232,7 +1220,7 @@ body {{
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_js(chart_data: Dict, colours: Dict, config: ReportConfig) -> str:
+    def _build_js(chart_data: Dict, colours: Dict[str, str], config: ReportConfig) -> str:
         c  = colours
         h  = config.chart_height_px
         cd = json.dumps(chart_data)

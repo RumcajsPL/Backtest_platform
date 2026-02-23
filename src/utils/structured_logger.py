@@ -1,8 +1,7 @@
 """
 Structured Logger - Production-Grade JSON Logging
 
-Session 12 - Task 2
-Version: 1.0.1
+Version: 1.1.0
 
 Provides structured JSON logging for audit trails and analysis.
 Replaces scattered print/logger statements with consistent, parseable logs.
@@ -13,6 +12,13 @@ Design Principles:
 - Explicit Contracts: All fields typed, no hidden state
 - Type Safety: Enum-based log levels
 - Production-Ready: JSON format for log aggregation tools
+
+Changes from v1.0.1:
+- [P1 / P9] Removed __main__ demo block — demo code does not belong in a
+  production module. Use the test suite or a dedicated example script instead.
+- [P9] Removed 'Session 12 - Task 2' development artifact from docstring.
+- [P9] Removed inline '# Moved this check BEFORE the dataclass check' comment
+  from _serialize_value — internal refactoring notes are not production docs.
 """
 import json
 import logging
@@ -151,7 +157,7 @@ class StructuredLogger:
             )
         """
         log_entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),  # Fixed deprecation
+            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             "module": self.module_name,
             "stage": stage.value,
             "event": event,
@@ -276,12 +282,14 @@ class StructuredLogger:
         Serialize value for JSON output.
         
         Handles pandas Timestamps, Enums, numpy types, and other non-JSON types.
+        Enum check runs before the generic __dict__ check to ensure enum values
+        are serialised as their .value string rather than as opaque object refs.
         """
         if isinstance(value, pd.Timestamp):
             return value.isoformat()
         elif isinstance(value, (pd.Series, pd.DataFrame)):
             return f"<{type(value).__name__} shape={getattr(value, 'shape', None)}>"
-        elif isinstance(value, Enum):  # Moved this check BEFORE the dataclass check
+        elif isinstance(value, Enum):
             return value.value
         elif hasattr(value, '__dict__') and hasattr(value, '__class__'):
             # Dataclass or custom object
@@ -380,50 +388,3 @@ def log_trade_closed(
         pnl_points=pnl_points,
         **context
     )
-
-
-# Example usage
-if __name__ == "__main__":
-    # Demo logging
-    logger = StructuredLogger("DemoModule")
-    
-    # Signal generation
-    log_signal_generated(
-        logger,
-        timestamp=pd.Timestamp("2025-01-15 10:30"),
-        signal_type="BUY",
-        confidence=0.85,
-        price=1.2345
-    )
-    
-    # Filter decision
-    log_filter_decision(
-        logger,
-        filter_name="TrendFilter",
-        passed=False,
-        reason="ADX below threshold",
-        adx_value=18.5,
-        threshold=25.0
-    )
-    
-    # Risk decision
-    log_risk_decision(
-        logger,
-        approved=True,
-        reason="Risk within limits",
-        risk_percentile=1.8,
-        max_risk=3.0
-    )
-    
-    # Trade execution
-    log_trade_opened(
-        logger,
-        trade_id="E123",
-        direction="LONG",
-        entry_price=1.2345,
-        stop_loss=1.2300,
-        take_profit=1.2400
-    )
-    
-    print("\n✅ Demo logs written to outputs/logs/demomodule.log")
-    print("✅ Check console output above for human-readable format")

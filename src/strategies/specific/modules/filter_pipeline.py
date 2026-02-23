@@ -1,11 +1,25 @@
 """
 Filter Pipeline - Orchestrator for Signal Filtering
 
-Version: 2.2.0 (Phase 5 Update)
-Session: 21 - Final Hardening
+Version: 2.3.0
+Session: Block 3 — Production Hardening
 
-Changes from v2.1.0:
-- Phase 5.3: Properly instantiates TimeFilterConfig for time_filter
+Changes from v2.2.0:
+- [H3] _load_time_filter: disabled time filter (enabled: false) is no longer
+  instantiated. self.time_filter remains None, so apply_filters() skips the
+  time-filter stage entirely and the disabled filter produces no entry in
+  filter_results. Previously, a disabled TimeFilter was always constructed
+  and its FilterStatus.SKIPPED metadata was always appended to results —
+  misleading for analytics and incorrect for cache consumers reading result counts.
+- [P6] _load_time_filter: removed try/except block that silently swallowed
+  construction errors (TimeFilterConfig or TimeFilter init failures). Config
+  construction errors are config bugs — they must propagate immediately per
+  Principle 6 (Fail Fast). StrategyConfig already validates the config before
+  FilterPipeline is constructed.
+- [P6] __init__ analytics log: simplified — self.time_filter is now always
+  either a correctly-configured enabled filter or None. The old
+  "enabled if self.time_filter and self.time_filter.enabled" guard was
+  compensating for the construction-even-when-disabled bug.
 """
 
 import hashlib
@@ -104,16 +118,26 @@ class FilterPipeline:
         self._load_filters()
 
         if self._mode == "analytics":
+            # [H3] self.time_filter is now either an enabled filter or None —
+            # no need to check .enabled separately.
+            time_filter_status = "enabled" if self.time_filter is not None else "disabled/not configured"
             logger.info(
                 f"FilterPipeline initialized: "
-                f"time_filter={'enabled' if self.time_filter and self.time_filter.enabled else 'disabled'}, "
+                f"time_filter={time_filter_status}, "
                 f"technical_filters={len(self.technical_filters)}, "
                 f"cfg_hash={self._filter_cfg_hash}"
             )
 
     @staticmethod
     def _compute_filter_cfg_hash(config: StrategyConfig) -> str:
-        """Compute stable hash of active filter configuration."""
+        """Compute stable hash of active filter configuration.
+
+        Includes both filter names and their parameter dicts — a change to
+        any active filter's name or params produces a different hash.
+        filter_sequence order is not included: the sequence governs execution
+        order but the indicator computation is order-independent and the cache
+        is keyed on what is computed, not in what order.
+        """
         active = {
             name: fcfg.config
             for name, fcfg in config.filters.technical_filters.items()
@@ -129,40 +153,45 @@ class FilterPipeline:
 
     def _load_time_filter(self) -> None:
         """
-        Initialize time filter from config using typed TimeFilterConfig (Phase 5.3).
+        Initialize time filter from config using typed TimeFilterConfig.
+
+        [H3] A disabled time filter (enabled: false) is NOT instantiated.
+        self.time_filter remains None, which apply_filters() treats as
+        'no time filtering required'. This ensures disabled filters produce
+        no entries in FilterPipelineResult.filter_results.
+
+        [P6] No try/except: construction errors are config bugs and must
+        propagate immediately. StrategyConfig validates the config before
+        this method is ever called.
         """
-        try:
-            time_filter_cfg = self.config.filters.time_filters.get("time_filter")
-            if time_filter_cfg is None:
-                if self._mode == "analytics":
-                    logger.info("Time filter: not configured — skipped")
-                return
+        time_filter_cfg = self.config.filters.time_filters.get("time_filter")
 
-            # Phase 5.3: Create typed TimeFilterConfig from the raw config dict
-            typed_config = TimeFilterConfig.from_dict({
-                "enabled": time_filter_cfg.enabled,
-                **time_filter_cfg.config  # Unpack the nested config dict
-            })
-
-            self.time_filter = TimeFilter(
-                config=typed_config,
-                name="time_filter"
-            )
-
+        # [H3] Treat absent config and disabled config identically —
+        # in both cases self.time_filter stays None.
+        if time_filter_cfg is None or not time_filter_cfg.enabled:
             if self._mode == "analytics":
-                if self.time_filter.enabled:
-                    logger.info(
-                        f"Time filter: "
-                        f"{self.time_filter.session_start_hour:02d}:{self.time_filter.session_start_minute:02d}"
-                        f" – "
-                        f"{self.time_filter.session_end_hour:02d}:{self.time_filter.session_end_minute:02d}"
-                    )
-                else:
-                    logger.info("Time filter: DISABLED")
+                reason = "not configured" if time_filter_cfg is None else "disabled"
+                logger.info(f"Time filter: {reason} — skipped")
+            return
 
-        except Exception as e:
-            logger.error(f"Failed to load time filter: {e}")
-            self.time_filter = None
+        # Only reached when time_filter_cfg is present AND enabled=True.
+        typed_config = TimeFilterConfig.from_dict({
+            "enabled": time_filter_cfg.enabled,
+            **time_filter_cfg.config
+        })
+
+        self.time_filter = TimeFilter(
+            config=typed_config,
+            name="time_filter"
+        )
+
+        if self._mode == "analytics":
+            logger.info(
+                f"Time filter: "
+                f"{self.time_filter.session_start_hour:02d}:{self.time_filter.session_start_minute:02d}"
+                f" – "
+                f"{self.time_filter.session_end_hour:02d}:{self.time_filter.session_end_minute:02d}"
+            )
 
     def _load_technical_filters(self) -> None:
         """Initialize technical filters from configuration."""
@@ -203,7 +232,6 @@ class FilterPipeline:
                 )
             return
 
-        # Cache miss — compute all indicators
         self.indicators = {}
         self.ind_np = {}
 
@@ -248,11 +276,13 @@ class FilterPipeline:
             )
 
         # ----------------------------------------------------------------
-        # STAGE 1: Time Filter (always first)
+        # STAGE 1: Time Filter (always first, only if configured and enabled)
         # ----------------------------------------------------------------
         current_signals = signal_frame
         time_filtered_count = raw_count
 
+        # [H3] self.time_filter is None when disabled or not configured —
+        # in that case the entire stage is skipped cleanly with no results entry.
         if self.time_filter is not None:
             time_result = self.time_filter.apply_filter(
                 signal_frame=current_signals,

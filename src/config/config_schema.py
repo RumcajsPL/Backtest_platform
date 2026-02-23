@@ -1,13 +1,13 @@
 """
 Config Schema Validation - Type-Safe Configuration
 
-Version: 2.1.0 (Phase 5 Final)
-Session: 21 - Final Hardening
+Version: 2.2.0
+Session: Block 1 — Production Hardening
 
-Changes from v2.0.0:
-- Phase 5.4/5.5: Removed spread_type/spread_value from SpreadConfig (now in broker file only)
-- Phase 5.4: SpreadConfig now only has enabled and config_path - values come from broker file
-- Added validation that config_path is required when enabled=True
+Changes from v2.1.0:
+- [C1] DateRangeConfig.from_dict: handles None input (YAML `date_range: null`)
+- [C1] DataConfig.date_range: typed as Optional[DateRangeConfig]
+- [C1] DataConfig.from_dict: passes None through to DateRangeConfig.from_dict safely
 """
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
@@ -37,7 +37,7 @@ class ErrorStrategy(Enum):
 
 class TPMode(Enum):
     """Take profit calculation mode"""
-    RR_RATIO = "rr_ratio"          # TP = entry ± ATR × sl_mult × rr_ratio
+    RR_RATIO = "rr_ratio"              # TP = entry ± ATR × sl_mult × rr_ratio
     ATR_MULTIPLIER = "atr_multiplier"  # TP = entry ± ATR × atr_multiplier_tp
 
 
@@ -408,10 +408,21 @@ class DateRangeConfig:
             )
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> 'DateRangeConfig':
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> Optional['DateRangeConfig']:
+        """
+        Build DateRangeConfig from a dict.
+
+        Returns None if d is None — supports `date_range: null` in YAML
+        without raising. Raises ValueError if d is present but malformed.
+        """
+        # [C1] YAML `date_range: null` produces None here — return None,
+        # not a TypeError. DataConfig treats date_range as Optional.
+        if d is None:
+            return None
         if 'start' not in d or 'end' not in d:
             raise ValueError(
-                "data.date_range requires both 'start' and 'end' keys"
+                "data.date_range requires both 'start' and 'end' keys. "
+                "To disable date filtering entirely, set: date_range: null"
             )
         return cls(start=str(d['start']), end=str(d['end']))
 
@@ -420,7 +431,9 @@ class DateRangeConfig:
 class DataConfig:
     """Complete data configuration"""
     paths: DataPathsConfig
-    date_range: DateRangeConfig
+    # [C1] Optional: date_range: null in YAML is a valid configuration —
+    # it means "load the full file without date slicing".
+    date_range: Optional[DateRangeConfig]
     timezone: str = "CET"
     htf_period: str = "1H"
     ltf_timeframe: str = "1s"
@@ -449,7 +462,9 @@ class DataConfig:
     def from_dict(cls, d: Dict[str, Any]) -> 'DataConfig':
         return cls(
             paths=DataPathsConfig.from_dict(d.get('paths', {})),
-            date_range=DateRangeConfig.from_dict(d.get('date_range', {})),
+            # [C1] Pass the raw value (may be None if YAML has `date_range: null`).
+            # from_dict handles None safely and returns None.
+            date_range=DateRangeConfig.from_dict(d.get('date_range')),
             timezone=str(d.get('timezone', 'CET')),
             htf_period=str(d.get('htf_period', '1H')),
             ltf_timeframe=str(d.get('ltf_timeframe', '1s')),
@@ -562,7 +577,7 @@ class OutputConfig:
 class StrategyConfig:
     """
     Complete strategy configuration (type-safe, frozen).
-    
+
     Loaded from strategy_template.yaml via from_yaml().
     All sub-configs are validated at construction time — fail fast.
     """
@@ -626,9 +641,11 @@ class StrategyConfig:
             ) from e
 
         logger.debug(
-            f"Config loaded: {yaml_path} | "
-            f"mode={config.execution.mode} | "
-            f"range={config.data.date_range.start} → {config.data.date_range.end}"
+            "Config loaded: %s | mode=%s | range=%s",
+            yaml_path,
+            config.execution.mode,
+            f"{config.data.date_range.start} → {config.data.date_range.end}"
+            if config.data.date_range else "full file (no date range)",
         )
         return config
 

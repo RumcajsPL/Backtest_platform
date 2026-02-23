@@ -6,6 +6,13 @@ quality metrics, and risk-adjusted performance.
 Created:  2026-02-16 (Session 14)
 HARDENED: Session 20 (Block G) — TradingSessionConfig frozen (DEC-004 / P1-CH5-1);
           placeholder warning removed (P1-CH5-2); docstrings tightened.
+HARDENED: Block 4 — [H2] Insight.impact_estimate moved to last field position with
+          default=None. Previously a required field (no default) between confidence
+          and category, causing TypeError for any caller that omitted it. As an
+          optional annotation field it must be optional at construction time.
+          Moving to last preserves the frozen-dataclass rule that defaulted fields
+          follow all non-defaulted fields; all existing keyword-arg callers are
+          unaffected.
 
 Philosophy: Intelligence over speed, insights over raw data.
 """
@@ -87,20 +94,32 @@ class Insight:
         The suggested action: e.g. "Consider excluding Asia session".
     confidence:
         ``"High"`` | ``"Medium"`` | ``"Low"``
-    impact_estimate:
-        Optional projected benefit: e.g. "Potential +45 pts improvement".
     category:
         ``"time"`` | ``"quality"`` | ``"risk"`` | ``"general"``
     severity:
         ``"critical"`` | ``"warning"`` | ``"info"`` | ``"success"``
+    impact_estimate:
+        Optional projected benefit: e.g. "Potential +45 pts improvement".
+        Defaults to ``None`` — not all insights have a quantifiable impact.
+
+    Notes
+    -----
+    ``impact_estimate`` is the last field and the only one with a default
+    (``None``).  This satisfies the frozen-dataclass rule that fields with
+    defaults must follow all fields without defaults.  Callers that omit
+    ``impact_estimate`` receive ``None`` automatically; callers that pass it
+    as a keyword argument are unaffected by its position.
     """
 
     message: str
     recommendation: str
     confidence: str
-    impact_estimate: Optional[str]
     category: str
     severity: str
+    # [H2] Moved to last position so default=None is valid under frozen dataclass rules.
+    # Previously sat between confidence and category with no default, causing TypeError
+    # for any caller that omitted it.
+    impact_estimate: Optional[str] = None
 
     def __post_init__(self) -> None:
         _valid("confidence", self.confidence, {"High", "Medium", "Low"})
@@ -510,14 +529,18 @@ def create_empty_insight(
     category:       str = "general",
     severity:       str = "info",
 ) -> Insight:
-    """Minimal ``Insight`` for testing or placeholder use."""
+    """Minimal ``Insight`` for testing or placeholder use.
+
+    ``impact_estimate`` defaults to ``None`` and is intentionally omitted here
+    — callers that need it should construct ``Insight`` directly.
+    """
     return Insight(
         message=message,
         recommendation=recommendation,
         confidence=confidence,
-        impact_estimate=None,
         category=category,
         severity=severity,
+        # impact_estimate omitted — uses default None
     )
 
 
@@ -534,7 +557,6 @@ def create_empty_session_metrics(session_name: str = "Unknown") -> SessionMetric
         largest_loss=0.0,
     )
 
-
 # ============================================================
 # INTERNAL HELPERS
 # ============================================================
@@ -545,7 +567,6 @@ def _valid(field_name: str, value: str, allowed: frozenset) -> None:
         raise ValueError(
             f"Insight.{field_name} must be one of {sorted(allowed)}, got '{value}'."
         )
-
 
 # ============================================================
 # PUBLIC API

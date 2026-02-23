@@ -1,18 +1,28 @@
 """
 Trade simulation with LTF OHLC execution
 
-Version: 5.1.0 (Phase 5 Final)
-Session: 21 - Final Hardening
+Version: 5.2.0
+Block 5 — Production Hardening
 
-Changes from v5.0.0:
-- Phase 5.8: TradeManager now initialized with StrategyConfig
-- Phase 5.7: Spread settings read exclusively from SpreadManager
+Changes from v5.1.0:
+- [L3] signal_id_map parameter: Dict = None → Optional[Dict] = None.
+  Dict without Optional is misleading — mypy/pyright correctly flag a bare
+  Dict type hint as incompatible with a None default.
+- [L3 / P9] Removed 'Session: 21 - Final Hardening' development artifact
+  from module docstring.
+- [L3] analytics_cfg access: replaced double-getattr dict probe with a single
+  clean getattr on the optional analytics attribute. The previous pattern
+  (.get() on a plain dict fallback) bypassed the typed StrategyConfig contract
+  and broke if config.analytics was a typed object rather than a dict.
+- [L3] TradeSimulatorProfiler: added return type annotations to profile()
+  and print_report() for mypy/pyright compliance.
+- [L3] Callable added to typing imports (required for profiler annotation).
 """
 
 import time
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any
 
 import numpy as np
 import pandas as pd
@@ -52,12 +62,13 @@ _SIGNAL_CODE_TO_STR = {1: "BUY", 2: "SELL"}
 class TradeSimulatorProfiler:
     """Simple profiler for performance monitoring in analytics mode"""
 
-    def __init__(self):
-        self.timings = defaultdict(list)
+    def __init__(self) -> None:
+        self.timings: Dict[str, list] = defaultdict(list)
 
-    def profile(self, name):
-        def decorator(func):
-            def wrapper(*args, **kwargs):
+    def profile(self, name: str) -> Callable:
+        """Return a decorator that records execution time under ``name``."""
+        def decorator(func: Callable) -> Callable:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
                 start = time.perf_counter()
                 result = func(*args, **kwargs)
                 elapsed = time.perf_counter() - start
@@ -66,7 +77,7 @@ class TradeSimulatorProfiler:
             return wrapper
         return decorator
 
-    def print_report(self):
+    def print_report(self) -> None:
         logger.info("=" * 60)
         logger.info("TRADE SIMULATOR PROFILING REPORT")
         logger.info("=" * 60)
@@ -127,8 +138,13 @@ class TradeSimulator:
         self.df_full = df_full
         self._cache_manager = cache_manager or CacheManager()
 
-        analytics_cfg = getattr(config, "analytics", {})
-        self.profile_enabled = analytics_cfg.get("profile_simulator", False)
+        # [L3] Access analytics.profile_simulator via clean optional attribute
+        # chain rather than getattr(config, 'analytics', {}).get(...) which
+        # treated an optional typed object as a plain dict.
+        _analytics = getattr(config, "analytics", None)
+        self.profile_enabled: bool = bool(
+            getattr(_analytics, "profile_simulator", False)
+        )
 
         # ── Canonical trade store ──────────────────────────────────────── #
         self.all_trades: List[Trade] = []
@@ -441,10 +457,10 @@ class TradeSimulator:
     def simulate_trades(
         self,
         df_strategy: pd.DataFrame,
-        signal_frame: SignalFrame,  # Now accepts SignalFrame directly (CF-6)
+        signal_frame: SignalFrame,
         verbose: bool = False,
         progressive_tracker=None,
-        signal_id_map: Dict = None,
+        signal_id_map: Optional[Dict] = None,   # [L3] was: Dict = None
         df_ltf: Optional[pd.DataFrame] = None,
     ) -> TradeResult:
         """
