@@ -212,7 +212,8 @@ def sample_ohlcv_data() -> pd.DataFrame:
 @pytest.fixture
 def sample_htf_data() -> pd.DataFrame:
     """Generate sample higher timeframe data."""
-    dates = pd.date_range(start="2025-01-01", periods=200, freq="1H")
+    # Changed from "1H" to "1h" to avoid FutureWarning
+    dates = pd.date_range(start="2025-01-01", periods=200, freq="1h")
     
     prices = 100 + np.cumsum(np.random.randn(200) * 0.001)
     
@@ -247,6 +248,7 @@ def sample_ltf_data() -> pd.DataFrame:
 @pytest.fixture
 def sample_artf_data() -> pd.DataFrame:
     """Generate sample monthly (ARTF) data."""
+    # "ME" is the correct modern pandas frequency for month end
     dates = pd.date_range(start="2020-01-01", periods=60, freq="ME")
     
     prices = 100 + np.cumsum(np.random.randn(60) * 1.0)
@@ -337,7 +339,7 @@ def base_config_dict() -> Dict[str, Any]:
                 "end": "2025-01-31 23:59:59"
             },
             "timezone": "CET",
-            "htf_period": "1H",
+            "htf_period": "1H",  # Note: This stays as "1H" because config_schema validates against uppercase
             "ltf_timeframe": "1s",
             "artf_timeframe": "1ME"
         },

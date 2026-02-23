@@ -181,6 +181,12 @@ class Insight:
     impact_estimate: Optional[str] = None  # last
 ```
 ---
+## Filter Pipline 
+
+1 file changed. 3 findings confirmed pre-resolved. 1 additional P6 violation fixed.
+H3 — filter_pipeline.py v2.3.0: Single-line guard added to _load_time_filter — if time_filter_cfg is None or not time_filter_cfg.enabled: return. A disabled time filter now stays None, the apply stage skips it entirely, and filter_results contains no spurious SKIPPED entry.
+P6 bonus fix: The try/except wrapping TimeFilter construction was silently converting config bugs into a None filter and continuing — a direct violation of Fail Fast. Removed. The three try/except blocks in technical filter loading and apply are deliberately retained (those handle runtime errors, not config errors).
+H1, H4, M3: All three confirmed already resolved in v2.2.0 and adx_filter.py. The audit was written against earlier code versions. Cross-checked every filter __init__ signature against the YAML template — all parameter names align without any aliasing needed.
 ## Additional explanation for M3 "length" aliasing:
 No conflict. Here's the mental model that makes it obvious:
 length is a constructor parameter, not a key in a shared dictionary. By the time filter_cfg.config is unpacked with **, it has already done its job — it was just the vehicle for passing the value into __init__. After that, the value lives exclusively on the instance as self.length. The two filter objects are as isolated from each other as any two Python objects can be.

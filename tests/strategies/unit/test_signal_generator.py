@@ -30,6 +30,7 @@ class TestSignalGenerator:
         """Test initializing SignalGenerator with valid config."""
         generator = SignalGenerator(config=test_config, mode="core")
         assert generator.mode == "core"
+        # The config validation accepts '1H' (uppercase)
         assert generator.htf_period == "1H"
         assert generator.trigger is not None
 
@@ -53,10 +54,21 @@ class TestSignalGenerator:
     @pytest.mark.parametrize("period,should_be_valid", [
         ("", False),      # Empty - config validation catches this
         ("  ", False),    # Blank - config validation catches this
-        ("2H", True),     # Valid in pandas (2 hours)
-        ("15M", False),   # Invalid - not in allowed list
-        ("1D", True),     # Valid
-        ("1W", True),     # Valid
+        ("1H", True),     # Valid - from _VALID_HTF_PERIODS
+        ("2H", True),     # Valid - from _VALID_HTF_PERIODS
+        ("1D", True),     # Valid - from _VALID_HTF_PERIODS
+        ("1W", True),     # Valid - from _VALID_HTF_PERIODS
+        ("15min", True),  # Valid - from _VALID_HTF_PERIODS
+        ("1h", False),    # Not in _VALID_HTF_PERIODS (lowercase)
+        ("2h", False),    # Not in _VALID_HTF_PERIODS (lowercase)
+        ("1d", False),    # Not in _VALID_HTF_PERIODS (lowercase)
+        ("1w", False),    # Not in _VALID_HTF_PERIODS (lowercase)
+        ("1min", True),   # Valid - from _VALID_HTF_PERIODS
+        ("5min", True),   # Valid - from _VALID_HTF_PERIODS
+        ("30min", True),  # Valid - from _VALID_HTF_PERIODS
+        ("4H", True),     # Valid - from _VALID_HTF_PERIODS
+        ("10min", False), # Not in _VALID_HTF_PERIODS
+        ("3H", False),    # Not in _VALID_HTF_PERIODS
     ])
     def test_initialization_with_edge_periods(self, base_config_dict, period, should_be_valid):
         """
@@ -64,6 +76,7 @@ class TestSignalGenerator:
         
         Note: This documents behavior - validation happens in config_schema.py,
         not in SignalGenerator. SignalGenerator only receives validated config.
+        The valid periods are hardcoded in _VALID_HTF_PERIODS.
         """
         base_config_dict["data"]["htf_period"] = period
         
@@ -85,7 +98,7 @@ class TestSignalGenerator:
                 pytest.fail(f"Expected valid period '{period}' to be accepted by config validation, but got: {e}")
             else:
                 # Expected error - verify it's the right kind
-                assert "not a recognised period" in str(e) or "htf_period is required" in str(e)
+                assert "not a recognised period" in str(e)
 
     def test_generate_signals_with_valid_data(self, test_config, sample_data_bundle):
         """Test signal generation with valid data bundle."""

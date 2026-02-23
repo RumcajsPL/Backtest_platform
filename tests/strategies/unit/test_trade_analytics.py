@@ -721,10 +721,7 @@ class TestTradeAnalytics:
         if report.executive_summary.improvement_areas:
             print(f"\nImprovement Areas:")
             for area in report.executive_summary.improvement_areas[:3]:
-                print(f"  ⚠ {area}")
-        
-        return report
-
+                print(f"  ⚠ {area}")   
 
     def test_time_performance_on_real_data(self, real_data_config, real_trade_result_direct):
         """Test time-based performance breakdown with real trade timestamps."""

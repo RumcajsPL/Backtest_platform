@@ -76,7 +76,6 @@ class TestMetricsCalculator:
         """Create a mock TradeResult with sample trades."""
         from src.strategies.contracts.trade_contracts import TradeResult
         
-        # Create a mock TradeResult
         class MockTradeResult:
             def __init__(self, trades):
                 self.trades = trades
@@ -95,8 +94,8 @@ class TestMetricsCalculator:
         assert metrics.win_rate == round(10/15 * 100, 2)
         
         # P&L calculations
-        assert metrics.total_pnl_points == 10*5.0 + 5*(-1.0)  # 50 - 5 = 45
-        assert metrics.expectancy_points == 45.0 / 15  # 3.0
+        assert metrics.total_pnl_points == 45.0  # 10*5.0 + 5*(-1.0) = 45
+        assert metrics.expectancy_points == 3.0  # 45.0 / 15 = 3.0
         
         # Profit factor: gross profit / gross loss
         # Gross profit: 10 * 5.0 = 50
@@ -134,31 +133,27 @@ class TestMetricsCalculator:
 
     def test_calculate_win_loss_counts(self, sample_trades):
         """Test win/loss count calculation."""
-        calculator = MetricsCalculator()
-        
-        winning, losing = calculator._calculate_win_loss_counts(sample_trades)
+        winning, losing = MetricsCalculator._calculate_win_loss_counts(sample_trades)
         
         assert winning == 10
         assert losing == 5
 
     def test_calculate_win_rate(self):
         """Test win rate calculation."""
-        calculator = MetricsCalculator()
-        
         # Normal case
-        win_rate = calculator._calculate_win_rate(10, 20)
+        win_rate = MetricsCalculator._calculate_win_rate(10, 20)
         assert win_rate == 50.0
         
         # Edge cases
-        assert calculator._calculate_win_rate(0, 10) == 0.0
-        assert calculator._calculate_win_rate(10, 0) == 0.0  # Should handle division by zero
-        assert calculator._calculate_win_rate(0, 0) == 0.0
+        assert MetricsCalculator._calculate_win_rate(0, 10) == 0.0
+        assert MetricsCalculator._calculate_win_rate(10, 0) == 0.0
+        assert MetricsCalculator._calculate_win_rate(0, 0) == 0.0
 
     def test_calculate_pnl_metrics(self, sample_trades):
         """Test P&L metrics calculation."""
-        calculator = MetricsCalculator()
-        
-        total_pnl, expectancy, avg_pnl = calculator._calculate_pnl_metrics(sample_trades, 15)
+        total_pnl, expectancy, avg_pnl = MetricsCalculator._calculate_pnl_metrics(
+            sample_trades, 15
+        )
         
         assert total_pnl == 45.0
         assert expectancy == 3.0
@@ -166,9 +161,7 @@ class TestMetricsCalculator:
 
     def test_calculate_profit_factor(self, sample_trades):
         """Test profit factor calculation."""
-        calculator = MetricsCalculator()
-        
-        profit_factor = calculator._calculate_profit_factor(sample_trades)
+        profit_factor = MetricsCalculator._calculate_profit_factor(sample_trades)
         
         # 10 wins of 5.0 = 50 gross profit
         # 5 losses of 1.0 = 5 gross loss
@@ -176,64 +169,68 @@ class TestMetricsCalculator:
 
     def test_profit_factor_edge_cases(self):
         """Test profit factor edge cases."""
-        calculator = MetricsCalculator()
-
         # No trades
-        assert calculator._calculate_profit_factor([]) == 0.0
+        assert MetricsCalculator._calculate_profit_factor([]) == 0.0
 
-        # Only winning trades
-        class MockWinTrade:
-            def __init__(self):
-                self.exit = type('obj', (), {
-                    'is_win': True,
-                    'is_loss': False,
-                    'pnl_points': 10.0
-                })
-
-        win_trades = [MockWinTrade() for _ in range(5)]
-        assert calculator._calculate_profit_factor(win_trades) == float('inf')
+        # Only winning trades - need to create proper Trade objects with exit
+        trades = []
+        base_time = pd.Timestamp("2025-01-01")
+        
+        for i in range(5):
+            entry = TradeEntry(
+                entry_id=f"E{i}",
+                entry_time=base_time + timedelta(days=i),
+                direction=TradeDirection.LONG,
+                entry_price=100.0,
+                stop_loss=99.0,
+                take_profit=105.0
+            )
+            exit = TradeExit.create(
+                entry=entry,
+                exit_time=entry.entry_time + timedelta(hours=1),
+                exit_price=110.0,  # Win of 10.0
+                exit_reason=ExitReason.TAKE_PROFIT
+            )
+            trades.append(Trade(entry=entry, exit=exit))
+        
+        # All winning trades should return infinity
+        assert MetricsCalculator._calculate_profit_factor(trades) == float('inf')
 
         # Only losing trades
-        class MockLossTrade:
-            def __init__(self):
-                self.exit = type('obj', (), {
-                    'is_win': False,
-                    'is_loss': True,
-                    'pnl_points': -5.0
-                })
-
-        loss_trades = [MockLossTrade() for _ in range(3)]
-        assert calculator._calculate_profit_factor(loss_trades) == 0.0
+        trades = []
+        for i in range(3):
+            entry = TradeEntry(
+                entry_id=f"E{i}",
+                entry_time=base_time + timedelta(days=i),
+                direction=TradeDirection.LONG,
+                entry_price=100.0,
+                stop_loss=99.0,
+                take_profit=105.0
+            )
+            exit = TradeExit.create(
+                entry=entry,
+                exit_time=entry.entry_time + timedelta(hours=1),
+                exit_price=95.0,  # Loss of -5.0
+                exit_reason=ExitReason.STOP_LOSS
+            )
+            trades.append(Trade(entry=entry, exit=exit))
+        
+        assert MetricsCalculator._calculate_profit_factor(trades) == 0.0
 
     def test_calculate_extremes(self, sample_trades):
         """Test largest win/loss calculation."""
-        calculator = MetricsCalculator()
-        
-        largest_win, largest_loss = calculator._calculate_extremes(
-            sample_trades, 10, 5
-        )
+        largest_win, largest_loss = MetricsCalculator._calculate_extremes(sample_trades)
         
         assert largest_win == 5.0
         assert largest_loss == -1.0
 
     def test_calculate_max_drawdown(self):
         """Test max drawdown calculation."""
-        calculator = MetricsCalculator()
-        
         # Create trades with known P&L sequence using proper TradeExit.create()
         trades = []
         base_time = pd.Timestamp("2025-01-01")
         
         # Sequence: +10, +5, -8, +3, -5, +2
-        # Let's calculate drawdown correctly:
-        # Trade 1: +10 → cumulative = 10, peak = 10, drawdown = 0
-        # Trade 2: +5 → cumulative = 15, peak = 15, drawdown = 0
-        # Trade 3: -8 → cumulative = 7, peak = 15, drawdown = -8
-        # Trade 4: +3 → cumulative = 10, peak = 15, drawdown = -5
-        # Trade 5: -5 → cumulative = 5, peak = 15, drawdown = -10 (max)
-        # Trade 6: +2 → cumulative = 7, peak = 15, drawdown = -8
-        # Maximum drawdown is -10.0
-        
         pnl_sequence = [10.0, 5.0, -8.0, 3.0, -5.0, 2.0]
         
         for i, pnl in enumerate(pnl_sequence):
@@ -253,20 +250,17 @@ class TestMetricsCalculator:
             )
             trades.append(Trade(entry=entry, exit=exit))
         
-        max_dd = calculator._calculate_max_drawdown(trades)
+        max_dd = MetricsCalculator._calculate_max_drawdown(trades)
         
         # Expected max drawdown: after cumulative 15, then -10 = -10.0
         assert max_dd == -10.0
 
     def test_calculate_max_drawdown_empty(self):
         """Test max drawdown with empty trades list."""
-        calculator = MetricsCalculator()
-        assert calculator._calculate_max_drawdown([]) == 0.0
+        assert MetricsCalculator._calculate_max_drawdown([]) == 0.0
 
     def test_calculate_streaks(self):
         """Test winning/losing streak calculation using proper TradeExit.create()."""
-        calculator = MetricsCalculator()
-        
         # Create trades with pattern: W, W, L, W, L, L, L, W
         trades = []
         base_time = pd.Timestamp("2025-01-01")
@@ -281,30 +275,29 @@ class TestMetricsCalculator:
                 stop_loss=99.0,
                 take_profit=105.0
             )
+            exit_price = 105.0 if is_win else 99.0
+            exit_reason = ExitReason.TAKE_PROFIT if is_win else ExitReason.STOP_LOSS
             exit = TradeExit.create(
                 entry=entry,
                 exit_time=entry.entry_time + timedelta(hours=1),
-                exit_price=105.0 if is_win else 99.0,
-                exit_reason=ExitReason.TAKE_PROFIT if is_win else ExitReason.STOP_LOSS
+                exit_price=exit_price,
+                exit_reason=exit_reason
             )
             trades.append(Trade(entry=entry, exit=exit))
         
-        win_streak, loss_streak = calculator._calculate_streaks(trades)
+        win_streak, loss_streak = MetricsCalculator._calculate_streaks(trades)
         
         assert win_streak == 2  # First two wins
         assert loss_streak == 3  # Three losses in a row
 
     def test_calculate_streaks_empty(self):
         """Test streaks with empty trades."""
-        calculator = MetricsCalculator()
-        win_streak, loss_streak = calculator._calculate_streaks([])
+        win_streak, loss_streak = MetricsCalculator._calculate_streaks([])
         assert win_streak == 0
         assert loss_streak == 0
 
     def test_calculate_frequency(self):
         """Test trade frequency calculation using proper TradeExit.create()."""
-        calculator = MetricsCalculator()
-        
         # Create trades spanning 10 days
         trades = []
         base_time = pd.Timestamp("2025-01-01")
@@ -326,16 +319,13 @@ class TestMetricsCalculator:
             )
             trades.append(Trade(entry=entry, exit=exit))
         
-        # First entry: day 0, last exit: day 9.5 -> 10 calendar days
-        trades_per_day, trades_per_week = calculator._calculate_frequency(trades, 20)
+        trades_per_day, trades_per_week = MetricsCalculator._calculate_frequency(trades, 20)
         
-        assert trades_per_day == 20 / 10  # 2.0
-        assert trades_per_week == 2.0 * 7  # 14.0
+        assert trades_per_day == 2.0  # 20 trades / 10 days
+        assert trades_per_week == 14.0  # 2.0 * 7
 
     def test_calculate_frequency_single_day(self):
         """Test frequency with all trades on same day using proper TradeExit.create()."""
-        calculator = MetricsCalculator()
-        
         trades = []
         base_time = pd.Timestamp("2025-01-01 10:00:00")
         
@@ -356,58 +346,59 @@ class TestMetricsCalculator:
             )
             trades.append(Trade(entry=entry, exit=exit))
         
-        trades_per_day, trades_per_week = calculator._calculate_frequency(trades, 10)
+        trades_per_day, trades_per_week = MetricsCalculator._calculate_frequency(trades, 10)
         
         assert trades_per_day == 10.0  # 10 trades / 1 day
         assert trades_per_week == 70.0
 
     def test_calculate_frequency_no_trades(self):
         """Test frequency with no trades."""
-        calculator = MetricsCalculator()
-        
-        trades_per_day, trades_per_week = calculator._calculate_frequency([], 0)
+        trades_per_day, trades_per_week = MetricsCalculator._calculate_frequency([], 0)
         
         assert trades_per_day == 0.0
         assert trades_per_week == 0.0
 
     def test_calculate_with_mixed_trade_properties(self):
-        """Test metrics with trades that have different property access patterns."""
-        # Create trades that use different patterns (is_win property vs exit.is_win)
+        """Test metrics with real Trade objects (no mocks needed - implementation uses contract properties)."""
+        # Create real Trade objects, not mocks
         trades = []
         base_time = pd.Timestamp("2025-01-01")
 
-        # Trade with is_win property - needs entry attribute for frequency calculation
-        class MockTradeWithIsWin:
-            def __init__(self, is_win, pnl):
-                self.is_win = is_win
-                self.is_loss = not is_win
-                self.entry = type('obj', (), {
-                    'entry_time': base_time
-                })
-                self.exit = type('obj', (), {
-                    'pnl_points': pnl,
-                    'exit_time': base_time,
-                    'is_win': is_win,
-                    'is_loss': not is_win
-                })
-
-        # Trade with exit.is_win pattern - needs entry attribute for frequency calculation
-        class MockTradeWithExitIsWin:
-            def __init__(self, is_win, pnl):
-                self.entry = type('obj', (), {
-                    'entry_time': base_time
-                })
-                self.exit = type('obj', (), {
-                    'is_win': is_win,
-                    'is_loss': not is_win,
-                    'pnl_points': pnl,
-                    'exit_time': base_time
-                })
-
+        # Create winning trades
         for i in range(5):
-            trades.append(MockTradeWithIsWin(True, 5.0))
+            entry = TradeEntry(
+                entry_id=f"E{i}",
+                entry_time=base_time + timedelta(days=i),
+                direction=TradeDirection.LONG,
+                entry_price=100.0,
+                stop_loss=99.0,
+                take_profit=105.0
+            )
+            exit = TradeExit.create(
+                entry=entry,
+                exit_time=entry.entry_time + timedelta(hours=1),
+                exit_price=105.0,  # Win of 5.0
+                exit_reason=ExitReason.TAKE_PROFIT
+            )
+            trades.append(Trade(entry=entry, exit=exit))
+
+        # Create losing trades
         for i in range(3):
-            trades.append(MockTradeWithExitIsWin(False, -2.0))
+            entry = TradeEntry(
+                entry_id=f"E{i+5}",
+                entry_time=base_time + timedelta(days=i+5),
+                direction=TradeDirection.LONG,
+                entry_price=100.0,
+                stop_loss=99.0,
+                take_profit=105.0
+            )
+            exit = TradeExit.create(
+                entry=entry,
+                exit_time=entry.entry_time + timedelta(hours=1),
+                exit_price=98.0,  # Loss of -2.0
+                exit_reason=ExitReason.STOP_LOSS
+            )
+            trades.append(Trade(entry=entry, exit=exit))
 
         class MockTradeResult:
             def __init__(self, trades):

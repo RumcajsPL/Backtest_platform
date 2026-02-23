@@ -96,10 +96,11 @@ class TestDataLoader:
             "artf_ohlcv": str(sample_parquet_data)
         }
         
-        # Set date range within the data range
+        # Set date range within the data range - note: pandas slicing includes both endpoints
+        # So from 00:00 to 01:00 inclusive gives 61 minutes
         config_dict["data"]["date_range"] = {
-            "start": "2025-01-05 00:00:00",
-            "end": "2025-01-25 23:59:59"
+            "start": "2025-01-01 00:00:00",
+            "end": "2025-01-01 01:00:00"  # 61 minutes (00:00 through 01:00)
         }
         
         return StrategyConfig.from_dict(config_dict)
@@ -122,6 +123,30 @@ class TestDataLoader:
         
         # Set date_range to None - this is valid in the schema
         config_dict["data"]["date_range"] = None
+        
+        return StrategyConfig.from_dict(config_dict)
+
+    @pytest.fixture
+    def config_with_full_date_range(self, base_config_dict, sample_parquet_data):
+        """Create StrategyConfig with date range covering the entire data."""
+        from src.config.config_schema import StrategyConfig
+        
+        # Create a copy to avoid modifying the original
+        config_dict = base_config_dict.copy()
+        
+        # Set up paths
+        config_dict["data"]["paths"] = {
+            "strategy_ohlcv": str(sample_parquet_data),
+            "htf_ohlcv": str(sample_parquet_data),
+            "ltf_ohlcv": str(sample_parquet_data),
+            "artf_ohlcv": str(sample_parquet_data)
+        }
+        
+        # Set date range covering the entire data period
+        config_dict["data"]["date_range"] = {
+            "start": "2025-01-01 00:00:00",
+            "end": "2025-01-01 01:39:00"  # Last timestamp in the data
+        }
         
         return StrategyConfig.from_dict(config_dict)
 
@@ -458,9 +483,9 @@ class TestDataLoader:
         assert not result.checks["positive_prices"]
         assert any("non-positive" in e.lower() for e in result.errors)
 
-    def test_load_data_full(self, config_with_paths):
+    def test_load_data_full(self, config_with_full_date_range):
         """Test full data loading with all files."""
-        loader = DataLoader(config=config_with_paths, mode="analytics")
+        loader = DataLoader(config=config_with_full_date_range, mode="analytics")
         
         bundle = loader.load_data()
         
@@ -474,12 +499,15 @@ class TestDataLoader:
         assert bundle.validation.is_valid is True
         
         # Check date slicing
-        start_date = config_with_paths.data.date_range.start
-        end_date = config_with_paths.data.date_range.end
+        start_date = config_with_full_date_range.data.date_range.start
+        end_date = config_with_full_date_range.data.date_range.end
         
         # Strategy data should be within date range
         assert bundle.strategy.index.min() >= pd.Timestamp(start_date)
         assert bundle.strategy.index.max() <= pd.Timestamp(end_date)
+        
+        # Should have all 100 rows since date range covers full data
+        assert len(bundle.strategy) == 100
 
     def test_load_data_missing_optional(self, base_config_dict, sample_parquet_data):
         """Test loading with missing optional files."""
@@ -509,6 +537,15 @@ class TestDataLoader:
         
         # All data files should be sliced (except ARTF)
         assert len(bundle.strategy) <= len(bundle.full)
+        
+        # Strategy data should be exactly the sliced portion
+        # Note: pandas slicing includes both endpoints, so from 00:00 to 01:00 inclusive gives 61 minutes
+        expected_rows = 61  # 00:00 through 01:00 inclusive
+        assert len(bundle.strategy) == expected_rows
+        
+        # Verify the date range
+        assert bundle.strategy.index[0] == pd.Timestamp("2025-01-01 00:00:00")
+        assert bundle.strategy.index[-1] == pd.Timestamp("2025-01-01 01:00:00")
         
         # ARTF should have full history
         if bundle.artf is not None:

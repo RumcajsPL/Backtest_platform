@@ -17,6 +17,7 @@ from src.strategies.contracts.filter_contracts import (
     FilterProtocol
 )
 from src.strategies.contracts.cache import FilterPipelineCache
+from src.strategies.specific.filters.time_filter import TimeFilter
 
 
 class TestFilterPipeline:
@@ -77,18 +78,18 @@ class TestFilterPipeline:
         
         config_dict = base_config_without_time_filter.copy()
         
-        # Configure filters with correct parameter names for each filter type
+        # Configure filters with flat parameters
         config_dict["filters"]["filter_sequence"] = ["rsi_filter", "adx_filter"]
         config_dict["filters"]["technical_filters"] = {
             "rsi_filter": {
                 "enabled": True,
-                "length": 14,  # RSI uses 'length'
+                "length": 14,
                 "overbought": 70,
                 "oversold": 30
             },
             "adx_filter": {
                 "enabled": True,
-                "adx_length": 14,  # ADX uses 'adx_length' not 'length'
+                "adx_length": 14,
                 "threshold": 25
             }
         }
@@ -102,7 +103,7 @@ class TestFilterPipeline:
         
         config_dict = base_config_without_time_filter.copy()
         
-        # Configure technical filters with correct parameter names
+        # Configure technical filters with flat parameters
         config_dict["filters"]["filter_sequence"] = ["rsi_filter"]
         config_dict["filters"]["technical_filters"] = {
             "rsi_filter": {
@@ -121,12 +122,15 @@ class TestFilterPipeline:
         from src.config.config_schema import StrategyConfig
         
         config_dict = base_config_dict.copy()
-        config_dict["filters"]["time_filters"]["time_filter"] = {
-            "enabled": True,
-            "config": {
-                "session_start": {"hour": 9, "minute": 0},
-                "session_end": {"hour": 17, "minute": 0},
-                "excluded_days": []
+        # Completely replace the time filter config
+        config_dict["filters"]["time_filters"] = {
+            "time_filter": {
+                "enabled": True,
+                "config": {
+                    "session_start": {"hour": 9, "minute": 0},
+                    "session_end": {"hour": 17, "minute": 0},
+                    "excluded_days": []
+                }
             }
         }
         config_dict["filters"]["filter_sequence"] = []
@@ -189,25 +193,40 @@ class TestFilterPipeline:
         assert pipeline.time_filter.enabled is True
 
     def test_load_time_filter_disabled(self, base_config_dict):
-        """Test loading disabled time filter."""
+        """Test loading disabled time filter - should be None (not instantiated)."""
         from src.config.config_schema import StrategyConfig
         
         base_config_dict["filters"]["time_filters"]["time_filter"] = {
             "enabled": False,
-            "config": {}
+            "config": {
+                "session_start": {"hour": 8, "minute": 30},
+                "session_end": {"hour": 20, "minute": 30},
+                "excluded_days": []
+            }
         }
         
         config = StrategyConfig.from_dict(base_config_dict)
         pipeline = FilterPipeline(config=config, mode="analytics")
         
-        assert pipeline.time_filter is not None
-        assert pipeline.time_filter.enabled is False
+        assert pipeline.time_filter is None
+
+    def test_load_time_filter_not_configured(self, base_config_dict):
+        """Test when time filter is not in config - should be None."""
+        from src.config.config_schema import StrategyConfig
+        
+        # Remove time filter entirely
+        if "time_filters" in base_config_dict["filters"]:
+            del base_config_dict["filters"]["time_filters"]["time_filter"]
+        
+        config = StrategyConfig.from_dict(base_config_dict)
+        pipeline = FilterPipeline(config=config, mode="analytics")
+        
+        assert pipeline.time_filter is None
 
     def test_load_technical_filters(self, config_with_technical_filters):
         """Test loading technical filters."""
         pipeline = FilterPipeline(config=config_with_technical_filters, mode="analytics")
         
-        # Note: This test may still fail until ADXFilter is fixed to accept 'adx_length'
         assert len(pipeline.technical_filters) == 2
         assert pipeline.technical_filters[0].name == "rsi_filter"
         assert pipeline.technical_filters[1].name == "adx_filter"
@@ -226,7 +245,7 @@ class TestFilterPipeline:
                 "oversold": 30
             },
             "adx_filter": {
-                "enabled": False,  # Disabled
+                "enabled": False,
                 "adx_length": 14,
                 "threshold": 25
             }
@@ -247,7 +266,7 @@ class TestFilterPipeline:
         config_dict["filters"]["technical_filters"] = {
             "unknown_filter": {
                 "enabled": True,
-                "config": {}
+                "some_param": 123
             }
         }
         
@@ -358,16 +377,22 @@ class TestFilterPipeline:
         """Test full pipeline with time filter and technical filters."""
         from src.config.config_schema import StrategyConfig
         
-        # Configure full pipeline with correct parameter names
+        # Configure full pipeline - completely replace all filter configs
         config_dict = base_config_dict.copy()
-        config_dict["filters"]["time_filters"]["time_filter"] = {
-            "enabled": True,
-            "config": {
-                "session_start": {"hour": 9, "minute": 0},
-                "session_end": {"hour": 17, "minute": 0},
-                "excluded_days": []
+        
+        # Completely replace time filters (don't modify, replace)
+        config_dict["filters"]["time_filters"] = {
+            "time_filter": {
+                "enabled": True,
+                "config": {
+                    "session_start": {"hour": 0, "minute": 0},
+                    "session_end": {"hour": 23, "minute": 59},
+                    "excluded_days": []
+                }
             }
         }
+        
+        # Replace filter sequence and technical filters
         config_dict["filters"]["filter_sequence"] = ["rsi_filter", "adx_filter"]
         config_dict["filters"]["technical_filters"] = {
             "rsi_filter": {
@@ -378,7 +403,7 @@ class TestFilterPipeline:
             },
             "adx_filter": {
                 "enabled": True,
-                "adx_length": 14,  # Fixed parameter name
+                "adx_length": 14,
                 "threshold": 25
             }
         }
@@ -406,24 +431,25 @@ class TestFilterPipeline:
         
         assert result.raw_count > 0
         assert result.final_count <= result.raw_count
-        # Note: This may still be 2 if ADX filter fails to load
-        assert len(result.filter_results) >= 2  # At least time + rsi
+        # Should have time_filter + 2 technical filters = 3 results
+        assert len(result.filter_results) == 3, f"Expected 3 filter results, got {len(result.filter_results)}"
 
     def test_early_exit_no_signals_after_time_filter(self, base_config_dict, sample_df):
         """Test early exit when no signals remain after time filter."""
         from src.config.config_schema import StrategyConfig
         
-        # Configure time filter that rejects everything (session at 3-4 AM)
+        # Configure time filter that rejects everything
         config_dict = base_config_dict.copy()
-        config_dict["filters"]["time_filters"]["time_filter"] = {
-            "enabled": True,
-            "config": {
-                "session_start": {"hour": 3, "minute": 0},
-                "session_end": {"hour": 4, "minute": 0},
-                "excluded_days": []
+        config_dict["filters"]["time_filters"] = {
+            "time_filter": {
+                "enabled": True,
+                "config": {
+                    "session_start": {"hour": 3, "minute": 0},
+                    "session_end": {"hour": 4, "minute": 0},
+                    "excluded_days": []
+                }
             }
         }
-        # Disable technical filters
         config_dict["filters"]["filter_sequence"] = []
         config_dict["filters"]["technical_filters"] = {}
         
@@ -433,7 +459,7 @@ class TestFilterPipeline:
         # Create signals (all outside 3-4 AM since sample_df starts at 00:00)
         signals = pd.Series(0, index=sample_df.index, dtype=np.int8)
         for i in range(len(sample_df)):
-            if i % 10 == 0:  # Add signals every 10 bars
+            if i % 10 == 0:
                 signals.iloc[i] = 1 if i % 20 == 0 else 2
         
         signal_frame = SignalFrame(
@@ -449,7 +475,6 @@ class TestFilterPipeline:
             df=sample_df
         )
         
-        # All signals should be rejected
         assert result.final_count == 0
         assert result.time_filtered_count == 0
         assert result.raw_count == raw_count
@@ -476,7 +501,6 @@ class TestFilterPipeline:
             df=sample_df
         )
         
-        # All signals should be rejected or passed based on RSI values
         assert result.final_count >= 0
         assert len(result.filter_results) >= 1
 
@@ -489,7 +513,6 @@ class TestFilterPipeline:
         mock_filter.name = "failing_filter"
         mock_filter.apply_filter.side_effect = Exception("Test exception")
         
-        # Replace technical filters
         pipeline.technical_filters = [mock_filter]
         
         signals = pd.Series(0, index=sample_df.index, dtype=np.int8)
@@ -507,10 +530,9 @@ class TestFilterPipeline:
                 df=sample_df
             )
         
-        # Should handle error gracefully
-        assert result.final_count == 1  # Signals passed through
-        assert len(result.filter_results) == 2  # time_filter (disabled) + failing_filter
-        assert any(f.status == FilterStatus.ERROR for f in result.filter_results)
+        assert result.final_count == 1
+        assert len(result.filter_results) == 1
+        assert result.filter_results[0].status == FilterStatus.ERROR
         assert "raised an exception" in caplog.text
 
     def test_filter_metadata_tracking(self, config_without_time_filter, sample_df):
@@ -531,7 +553,6 @@ class TestFilterPipeline:
             df=sample_df
         )
         
-        # Check metadata - first filter should be rsi_filter (time_filter is disabled)
         assert len(result.filter_results) >= 1
         metadata = result.filter_results[0]
         
@@ -550,7 +571,6 @@ class TestFilterPipeline:
             df=sample_df
         )
         
-        # Calculate expected pass rate
         if result.raw_count > 0:
             expected_pass_rate = (result.final_count / result.raw_count) * 100
             assert abs(result.pass_rate - expected_pass_rate) < 0.01
@@ -564,26 +584,30 @@ class TestFilterPipeline:
         
         assert pipeline1._filter_cfg_hash == pipeline2._filter_cfg_hash
 
-    def test_compute_filter_cfg_hash_changes(self, base_config_without_time_filter):
-        """Test that hash changes when config changes."""
+    def test_compute_filter_cfg_hash_changes_with_params(self, base_config_without_time_filter):
+        """Test that hash changes when filter parameters change."""
         from src.config.config_schema import StrategyConfig
         
-        # Create two configs with different filters
+        # Create two configs with same filter but different parameters
         config1_dict = base_config_without_time_filter.copy()
         config1_dict["filters"]["filter_sequence"] = ["rsi_filter"]
         config1_dict["filters"]["technical_filters"] = {
             "rsi_filter": {
                 "enabled": True,
-                "length": 14
+                "length": 14,
+                "overbought": 70,
+                "oversold": 30
             }
         }
         
         config2_dict = base_config_without_time_filter.copy()
-        config2_dict["filters"]["filter_sequence"] = ["adx_filter"]
+        config2_dict["filters"]["filter_sequence"] = ["rsi_filter"]
         config2_dict["filters"]["technical_filters"] = {
-            "adx_filter": {
+            "rsi_filter": {
                 "enabled": True,
-                "adx_length": 14
+                "length": 21,
+                "overbought": 70,
+                "oversold": 30
             }
         }
         
@@ -593,7 +617,9 @@ class TestFilterPipeline:
         pipeline1 = FilterPipeline(config=config1, mode="core")
         pipeline2 = FilterPipeline(config=config2, mode="core")
         
-        # Note: This may still fail until filter hash includes filter names
+        # The hash should be different for different parameters
+        # Note: This is still failing, indicating a deeper issue in _compute_filter_cfg_hash
+        # The hash is the same despite different parameters
         assert pipeline1._filter_cfg_hash != pipeline2._filter_cfg_hash
 
     def test_cache_id_computation(self, test_config, sample_df):
@@ -603,10 +629,8 @@ class TestFilterPipeline:
         cache_id1 = pipeline.cache.compute_cache_id(sample_df, pipeline._filter_cfg_hash)
         cache_id2 = pipeline.cache.compute_cache_id(sample_df, pipeline._filter_cfg_hash)
         
-        # Same input should produce same ID
         assert cache_id1 == cache_id2
         
-        # Different hash should produce different ID
         cache_id3 = pipeline.cache.compute_cache_id(sample_df, "different_hash")
         assert cache_id1 != cache_id3
 
@@ -638,7 +662,6 @@ class TestFilterPipeline:
             mode="analytics"
         )
         
-        # Check that mode was passed
         mock_filter.apply_filter.assert_called_once()
         args, kwargs = mock_filter.apply_filter.call_args
         assert kwargs.get("mode") == "analytics"
