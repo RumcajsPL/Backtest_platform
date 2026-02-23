@@ -225,3 +225,134 @@ def _dataframe_fingerprint(df: pd.DataFrame, extra: str = "") -> str:
     data_hash = hashlib.md5(sample_data).hexdigest()[:8]
     
     return f"{len(df)}_{data_hash}_{extra}"
+
+## test_filter_pipeline.py
+(venv) PS E:\Trading\Backtest_platform> python tests/strategies/runners/strategy_unit_test.py --test test_filter_pipeline.py   
+============================================================== FAILURES ============================================================== 
+________________________________________ TestFilterPipeline.test_apply_filters_full_pipeline _________________________________________ 
+
+self = <unit.test_filter_pipeline.TestFilterPipeline object at 0x000001C116B4B110>
+base_config_dict = {'asset': {'pip_size': 0.0001, 'point_size': 1e-05, 'symbol': 'TEST'}, 'data': {'artf_timeframe': '1ME', 'date_range':...s': [], 'session_end': {'hour': 23, 'minute': 59}, 'session_start': {'hour': 0, 'minute': 0}}, 'enabled': True}}}, ...}
+sample_df =                            open        high        low       close  volume
+2025-01-01 00:00:00  100.248357  100.292315...   99.942730     168
+2025-01-01 01:39:00   99.882706  100.618908  99.314814  100.618908     645
+
+[100 rows x 5 columns]
+
+    def test_apply_filters_full_pipeline(self, base_config_dict, sample_df):
+        """Test full pipeline with time filter and technical filters."""
+        from src.config.config_schema import StrategyConfig
+
+        # Configure full pipeline - completely replace all filter configs
+        config_dict = base_config_dict.copy()
+
+        # Completely replace time filters (don't modify, replace)
+        config_dict["filters"]["time_filters"] = {
+            "time_filter": {
+                "enabled": True,
+                "config": {
+                    "session_start": {"hour": 0, "minute": 0},
+                    "session_end": {"hour": 23, "minute": 59},
+                    "excluded_days": []
+                }
+            }
+        }
+
+        # Replace filter sequence and technical filters
+        config_dict["filters"]["filter_sequence"] = ["rsi_filter", "adx_filter"]
+        config_dict["filters"]["technical_filters"] = {
+            "rsi_filter": {
+                "enabled": True,
+                "length": 14,
+                "overbought": 70,
+                "oversold": 30
+            },
+            "adx_filter": {
+                "enabled": True,
+                "adx_length": 14,
+                "threshold": 25
+            }
+        }
+
+        config = StrategyConfig.from_dict(config_dict)
+        pipeline = FilterPipeline(config=config, mode="analytics")
+
+        # Create signal frame
+        signals = pd.Series(0, index=sample_df.index, dtype=np.int8)
+        signals.iloc[10:20] = 1
+        signals.iloc[30:40] = 2
+        signals.iloc[50:60] = 1
+        signals.iloc[70:80] = 2
+
+        signal_frame = SignalFrame(
+            signals=signals,
+            indicator_data=None,
+            signal_metadata={}
+        )
+
+        result = pipeline.apply_filters(
+            signal_frame=signal_frame,
+            df=sample_df
+        )
+
+        assert result.raw_count > 0
+        assert result.final_count <= result.raw_count
+        # Should have time_filter + 2 technical filters = 3 results
+>       assert len(result.filter_results) == 3, f"Expected 3 filter results, got {len(result.filter_results)}"
+E       AssertionError: Expected 3 filter results, got 1
+E       assert 1 == 3
+E        +  where 1 = len([FilterMetadata(filter_name='time_filter', status=<FilterStatus.REJECTED: 2>, signals_in=40, signals_out=0, signals_rejected=40, reason='All signals outside trading hours', indicator_values=None, execution_time_ms=0.5694999999832362)])
+E        +    where [FilterMetadata(filter_name='time_filter', status=<FilterStatus.REJECTED: 2>, signals_in=40, signals_out=0, signals_rejected=40, reason='All signals outside trading hours', indicator_values=None, execution_time_ms=0.5694999999832362)] = FilterPipelineResult(final_signals=SignalFrame(signals=2025-01-01 00:00:00    0\n2025-01-01 00:01:00    0\n2025-01-01 00:02:00    0\n2025-01-01 00:03:00    0\n2025-01-01 00:04:00    0\n                      ..\n2025-01-01 01:35:00    0\n2025-01-01 01:36:00    0\n2025-01-01 01:37:00    0\n2025-01-01 01:38:00    0\n2025-01-01 01:39:00    0\nFreq: min, Length: 100, dtype: int8, indicator_data=None, signal_metadata={'source': 'time_filter', 'mode': 'analytics', 'session_hours': '08:30–20:30'}), raw_count=40, time_filtered_count=0, technical_filtered_count=0, final_count=0, filter_results=[FilterMetadata(filter_name='time_filter', status=<FilterStatus.REJECTED: 2>, signals_in=40, signals_out=0, signals_rejected=40, reason='All signals outside trading hours', indicator_values=None, execution_time_ms=0.5694999999832362)], rejection_reasons={'time_filter': 40}, execution_time_ms=0.6840999994892627).filter_results
+
+tests\strategies\unit\test_filter_pipeline.py:435: AssertionError
+________________________________ TestFilterPipeline.test_compute_filter_cfg_hash_changes_with_params _________________________________ 
+
+self = <unit.test_filter_pipeline.TestFilterPipeline object at 0x000001C116E30650>
+base_config_without_time_filter = {'asset': {'pip_size': 0.0001, 'point_size': 1e-05, 'symbol': 'TEST'}, 'data': {'artf_timeframe': '1ME', 'date_range':...: [], 'session_end': {'hour': 20, 'minute': 30}, 'session_start': {'hour': 8, 'minute': 30}}, 'enabled': False}}}, ...}
+
+    def test_compute_filter_cfg_hash_changes_with_params(self, base_config_without_time_filter):
+        """Test that hash changes when filter parameters change."""
+        from src.config.config_schema import StrategyConfig
+
+        # Create two configs with same filter but different parameters
+        config1_dict = base_config_without_time_filter.copy()
+        config1_dict["filters"]["filter_sequence"] = ["rsi_filter"]
+        config1_dict["filters"]["technical_filters"] = {
+            "rsi_filter": {
+                "enabled": True,
+                "length": 14,
+                "overbought": 70,
+                "oversold": 30
+            }
+        }
+
+        config2_dict = base_config_without_time_filter.copy()
+        config2_dict["filters"]["filter_sequence"] = ["rsi_filter"]
+        config2_dict["filters"]["technical_filters"] = {
+            "rsi_filter": {
+                "enabled": True,
+                "length": 21,
+                "overbought": 70,
+                "oversold": 30
+            }
+        }
+
+        config1 = StrategyConfig.from_dict(config1_dict)
+        config2 = StrategyConfig.from_dict(config2_dict)
+
+        pipeline1 = FilterPipeline(config=config1, mode="core")
+        pipeline2 = FilterPipeline(config=config2, mode="core")
+
+        # The hash should be different for different parameters
+        # Note: This is still failing, indicating a deeper issue in _compute_filter_cfg_hash
+        # The hash is the same despite different parameters
+>       assert pipeline1._filter_cfg_hash != pipeline2._filter_cfg_hash
+E       AssertionError: assert '78eaea486202' != '78eaea486202'
+E        +  where '78eaea486202' = <src.strategies.specific.modules.filter_pipeline.FilterPipeline object at 0x000001C116ECB6B0>._filter_cfg_hash
+E        +  and   '78eaea486202' = <src.strategies.specific.modules.filter_pipeline.FilterPipeline object at 0x000001C116ECAC10>._filter_cfg_hash
+
+tests\strategies\unit\test_filter_pipeline.py:623: AssertionError
+====================================================== short test summary info ======================================================= 
+FAILED tests/strategies/unit/test_filter_pipeline.py::TestFilterPipeline::test_apply_filters_full_pipeline - AssertionError: Expected 3 filter results, got 1
+FAILED tests/strategies/unit/test_filter_pipeline.py::TestFilterPipeline::test_compute_filter_cfg_hash_changes_with_params - AssertionError: assert '78eaea486202' != '78eaea486202'
+==================================================== 2 failed, 22 passed in 1.80s ====================================================
