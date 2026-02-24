@@ -1,20 +1,14 @@
 """Risk management: SL/TP with R:R ratio, spread adjustments, annual range validation.
 
-Version: 2.1.0
+Version: 2.3.0
 Block 5 (R5 / L1) — Production Hardening
 
-Changes from v2.0.0:
-- [R5 / P9] Removed 'Session: 21 - Final Hardening' development artifact from
-  module docstring.
-- [R5 / L1] ClassVar removed from typing import — imported but never used in
-  the class body. Dead imports mislead readers about what typing constructs the
-  class relies on.
-- [R5 / L1] Any added to typing import (required for risk_config annotation).
-- [R5 / L1] config parameter annotated as 'StrategyConfig' via TYPE_CHECKING
-  guard. The docstring already stated 'StrategyConfig (typed)' but the signature
-  had no annotation. TYPE_CHECKING avoids a circular import risk.
-- [R5 / L1] self.risk_config: Dict → Dict[str, Any] — bare Dict gives type
-  checkers no information about the dict's contents.
+Changes from v2.2.0:
+- [Risk Filter Intuition] max_risk_percentile now interpreted as PERCENTAGE value
+- [Risk Filter Intuition] 1.5 in config means 1.5% of annual range
+- [Risk Filter Intuition] 100.0 means 100% (effectively disables filter)
+- [Risk Filter Intuition] Clean threshold at 100.0 instead of 1.0
+- [Risk Filter Intuition] Clear logging with % symbols matching config values
 
 BID price model (one spread per round trip)
 -------------------------------------------
@@ -63,11 +57,24 @@ class RiskManager:
     ----------------
     All caches are managed by the central CacheManager for multi-run backtesting.
     Call cache_manager.clear_all_caches() between runs when OHLCV data changes.
+    
+    Risk Percentile Interpretation
+    ------------------------------
+    max_risk_percentile is interpreted as a PERCENTAGE value.
+    Examples:
+        - 0.5  → 0.5% of annual range (conservative)
+        - 1.5  → 1.5% of annual range (moderate)
+        - 3.0  → 3.0% of annual range (aggressive)
+        - 100.0 → 100% of annual range (effectively disables filter)
+        - 500.0 → 500% of annual range (effectively disables filter)
+    
+    The filter is ACTIVE when max_risk_percentile < 100.0
+    The filter is DISABLED when max_risk_percentile >= 100.0
     """
 
     def __init__(
         self,
-        config: "StrategyConfig",       # [L1] was untyped; TYPE_CHECKING guard avoids circular import
+        config: "StrategyConfig",       # TYPE_CHECKING guard avoids circular import
         ohlcv_data: pd.DataFrame,
         ohlcv_artf: Optional[pd.DataFrame] = None,
         mode: str = "core",
@@ -109,9 +116,10 @@ class RiskManager:
                 f"Valid values: {sorted(_VALID_TP_MODES)}."
             )
 
-        # Annual range config
+        # Annual range config - interpreted as PERCENTAGE
+        # Examples: 0.5 = 0.5%, 1.5 = 1.5%, 100.0 = 100% (disabled)
         self.max_risk_percentile: float = risk_cfg.max_risk_percentile
-        # [L1] Parameterized: was Dict (bare), now Dict[str, Any]
+        self.risk_filter_active = self.max_risk_percentile < 100.0
         self.risk_config: Dict[str, Any] = {}
 
         # ── Validate and store OHLCV data ───────────────────────────────
@@ -128,10 +136,30 @@ class RiskManager:
         self.atr_series: Optional[pd.Series] = None
         self.atr_series = self._get_or_compute_atr(self.atr_length)
 
-        # ── Rolling Annual Range — cached; skipped in core mode ─────────
+        # ── Rolling Annual Range — computed when filter active ──────────
+        # StrategyConfig has already validated that ARTF data exists when
+        # max_risk_percentile < 100.0. We can safely compute here.
         self.annual_range_series: Optional[pd.Series] = None
-        if mode == "analytics" and self.ohlcv_artf is not None:
+        
+        if self.risk_filter_active:
+            # Risk filter is active - annual range REQUIRED
+            if self.ohlcv_artf is None or self.ohlcv_artf.empty:
+                # This should never happen due to config validation
+                raise RuntimeError(
+                    f"Risk filter active (max_risk_percentile={self.max_risk_percentile}% < 100%) "
+                    f"but ARTF data is missing. This indicates a configuration validation "
+                    f"failure - the config should have been rejected at load time."
+                )
             self.annual_range_series = self._get_or_compute_rar()
+            logger.info(
+                f"Risk filter ACTIVE: max {self.max_risk_percentile:.3f}% "
+                f"of annual range (ARTF data loaded)"
+            )
+        else:
+            logger.info(
+                f"Risk filter DISABLED: max_risk_percentile={self.max_risk_percentile}% "
+                f"(values >= 100% disable filtering)"
+            )
 
         # ── SpreadManager ───────────────────────────────────────────────
         self.spread_manager: Optional[SpreadManager] = None
@@ -356,12 +384,13 @@ class RiskManager:
         max_risk_pct: Optional[float] = None
         risk_percentile_passed = True
 
+        # Safe access to annual_range_series - may be None if risk filter disabled
         if self.annual_range_series is not None:
             try:
                 rar = float(self.annual_range_series.loc[timestamp])
                 if not np.isnan(rar) and rar > 0:
                     annual_range_value = rar
-                    risk_percentile_calculated = risk_distance / rar
+                    risk_percentile_calculated = (risk_distance / rar) * 100.0  # ← AS PERCENTAGE
                     max_risk_pct = self.max_risk_percentile
                     risk_percentile_passed = risk_percentile_calculated <= max_risk_pct
             except (KeyError, ValueError):
@@ -412,42 +441,65 @@ class RiskManager:
         is_long: bool,
         timestamp: pd.Timestamp,
     ) -> Tuple[bool, float, str]:
-        """Validate SL against max risk percentile of annual range."""
+        """Validate SL against max risk percentile of annual range.
+        
+        Note: max_risk_percentile is interpreted as a PERCENTAGE value.
+        Examples:
+            - 0.5 means 0.5% of annual range
+            - 1.5 means 1.5% of annual range
+            - 100.0 means 100% (effectively disables filter)
+        
+        Returns:
+            Tuple[is_valid, adjusted_stop_loss, comment]
+        """
+        # If risk filter is disabled (≥ 100%), always approve
+        if not self.risk_filter_active:
+            return True, stop_loss, "Risk filter disabled"
+        
+        # If we get here, risk filter is enabled (max_risk_percentile < 100.0)
+        # annual_range_series MUST be available (guaranteed by config validation)
         if self.annual_range_series is None:
-            return True, stop_loss, "RAR not initialised"
+            # This should never happen - indicates config validation failure
+            raise RuntimeError(
+                f"Risk filter enabled (max_risk_percentile={self.max_risk_percentile}% < 100%) "
+                f"but annual_range_series is None. This is a system error - "
+                f"configuration validation should have prevented this state."
+            )
 
         try:
             current_annual_range = self.annual_range_series.loc[timestamp]
         except KeyError:
-            return True, stop_loss, "RAR missing for timestamp"
+            # If RAR missing for specific timestamp, log warning but don't block trade
+            logger.warning(f"Annual range missing for timestamp {timestamp}")
+            return True, stop_loss, f"RAR missing for timestamp"
 
         if pd.isna(current_annual_range) or current_annual_range <= 0:
-            return True, stop_loss, f"RAR unavailable ({current_annual_range})"
-
-        max_percentile = self.max_risk_percentile
-        if max_percentile >= 1.0:
-            return True, stop_loss, "No risk limit"
+            logger.warning(f"Annual range invalid at {timestamp}: {current_annual_range}")
+            return True, stop_loss, f"RAR invalid"
 
         risk_distance = abs(entry_price - stop_loss)
-        risk_percentile = risk_distance / current_annual_range
+        # Calculate risk as PERCENTAGE of annual range
+        risk_percentile = (risk_distance / current_annual_range) * 100.0
 
-        if risk_percentile <= max_percentile:
-            return True, stop_loss, f"Risk: {risk_percentile * 100:.2f}%"
+        if risk_percentile <= self.max_risk_percentile:
+            return True, stop_loss, f"Risk: {risk_percentile:.3f}%"
 
         allow_exceed = self.risk_config.get("allow_exceed_limit", False)
         if not allow_exceed:
             return (
                 False,
                 stop_loss,
-                f"Risk rejected: {risk_percentile * 100:.2f}% > {max_percentile * 100:.2f}%",
+                f"Risk rejected: {risk_percentile:.3f}% > {self.max_risk_percentile:.3f}%",
             )
 
-        adjusted_distance = max_percentile * current_annual_range
+        # Adjust SL to meet limit
+        # Convert max_risk_percentile from percentage back to decimal for distance calculation
+        adjusted_distance = (self.max_risk_percentile / 100.0) * current_annual_range
         adjusted_sl = (
             entry_price - adjusted_distance if is_long else entry_price + adjusted_distance
         )
         return (
             True,
             adjusted_sl,
-            f"SL adjusted: {risk_percentile * 100:.2f}% → {max_percentile * 100:.2f}%",
+            f"SL adjusted: {risk_percentile:.3f}% → {self.max_risk_percentile:.3f}%",
         )

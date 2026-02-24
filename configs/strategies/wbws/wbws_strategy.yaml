@@ -83,7 +83,7 @@ trade_management:
     risk_to_reward_ratio: 5.7
   risk_management:
     enabled: true
-    max_risk_percentile: 0.1 # 0.0016
+    max_risk_percentile: 0.01 # 0.0016
     allow_exceed_limit: false
   spread:
     enabled: true

@@ -1,13 +1,16 @@
 """
 Config Schema Validation - Type-Safe Configuration
 
-Version: 2.2.0
-Session: Block 1 — Production Hardening
+Version: 2.3.0
+Session: Risk Filter Validation Fix
 
-Changes from v2.1.0:
-- [C1] DateRangeConfig.from_dict: handles None input (YAML `date_range: null`)
-- [C1] DataConfig.date_range: typed as Optional[DateRangeConfig]
-- [C1] DataConfig.from_dict: passes None through to DateRangeConfig.from_dict safely
+Changes from v2.2.0:
+- Added cross-validation between RiskConfig and DataConfig in StrategyConfig
+- New method _validate_risk_data_dependency ensures ARTF data exists when max_risk_percentile < 100.0
+- RiskConfig now stores reference to DataConfig for validation (set by StrategyConfig)
+- [Risk Filter Intuition] max_risk_percentile now interpreted as PERCENTAGE value
+- [Risk Filter Intuition] Updated warning threshold to 5.0% (was 1.0%)
+- [Risk Filter Intuition] Validation threshold changed from 1.0 to 100.0
 """
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
@@ -114,13 +117,28 @@ class SpreadConfig:
 
 @dataclass(frozen=True)
 class RiskConfig:
-    """Risk management configuration"""
+    """Risk management configuration
+    
+    Note: max_risk_percentile is interpreted as a PERCENTAGE value.
+    Examples:
+        - 0.5  → 0.5% of annual range (conservative)
+        - 1.5  → 1.5% of annual range (moderate)
+        - 3.0  → 3.0% of annual range (aggressive)
+        - 100.0 → 100% of annual range (effectively disables filter)
+        - 500.0 → 500% of annual range (effectively disables filter)
+    
+    The filter is ACTIVE when max_risk_percentile < 100.0
+    The filter is DISABLED when max_risk_percentile >= 100.0
+    """
     atr_length: int
     atr_multiplier_sl: float
     atr_multiplier_tp: float
     max_risk_percentile: float
     tp_mode: str = "rr_ratio"
     risk_to_reward_ratio: float = 5.7
+    
+    # Reference to DataConfig for cross-validation (set by StrategyConfig)
+    _data_config: Optional['DataConfig'] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         """Validate risk configuration"""
@@ -139,16 +157,22 @@ class RiskConfig:
                 f"atr_multiplier_tp must be positive, got {self.atr_multiplier_tp}"
             )
 
-        if not (0 < self.max_risk_percentile <= 5.0):
+        if not (0 < self.max_risk_percentile <= 500.0):
             raise ValueError(
-                f"max_risk_percentile must be between 0 and 5.0 (% of annual range), "
+                f"max_risk_percentile must be between 0 and 500.0 (% of annual range), "
                 f"got {self.max_risk_percentile}"
             )
 
-        if self.max_risk_percentile > 1.0:
+        # Warning for unusually high values (but still valid)
+        if self.max_risk_percentile > 5.0 and self.max_risk_percentile < 100.0:
             logger.warning(
-                f"max_risk_percentile={self.max_risk_percentile} is unusually high "
-                f"(>1.0% of annual range). Verify this is intentional."
+                f"max_risk_percentile={self.max_risk_percentile}% is unusually high "
+                f"(>5.0% of annual range). Verify this is intentional."
+            )
+        elif self.max_risk_percentile >= 100.0:
+            logger.info(
+                f"Risk filter DISABLED: max_risk_percentile={self.max_risk_percentile}% "
+                f"(values >= 100% disable filtering)"
             )
 
         try:
@@ -415,8 +439,6 @@ class DateRangeConfig:
         Returns None if d is None — supports `date_range: null` in YAML
         without raising. Raises ValueError if d is present but malformed.
         """
-        # [C1] YAML `date_range: null` produces None here — return None,
-        # not a TypeError. DataConfig treats date_range as Optional.
         if d is None:
             return None
         if 'start' not in d or 'end' not in d:
@@ -431,8 +453,6 @@ class DateRangeConfig:
 class DataConfig:
     """Complete data configuration"""
     paths: DataPathsConfig
-    # [C1] Optional: date_range: null in YAML is a valid configuration —
-    # it means "load the full file without date slicing".
     date_range: Optional[DateRangeConfig]
     timezone: str = "CET"
     htf_period: str = "1H"
@@ -462,8 +482,6 @@ class DataConfig:
     def from_dict(cls, d: Dict[str, Any]) -> 'DataConfig':
         return cls(
             paths=DataPathsConfig.from_dict(d.get('paths', {})),
-            # [C1] Pass the raw value (may be None if YAML has `date_range: null`).
-            # from_dict handles None safely and returns None.
             date_range=DateRangeConfig.from_dict(d.get('date_range')),
             timezone=str(d.get('timezone', 'CET')),
             htf_period=str(d.get('htf_period', '1H')),
@@ -591,16 +609,80 @@ class StrategyConfig:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'StrategyConfig':
         """Create from dict with full validation"""
-        return cls(
-            asset=AssetConfig.from_dict(d.get('asset', {})),
-            data=DataConfig.from_dict(d.get('data', {})),
-            execution=ExecutionConfig.from_dict(d.get('execution', {})),
-            trade_management=TradeManagementConfig.from_dict(
-                d.get('trade_management', {})
-            ),
-            filters=FilterPipelineConfig.from_dict(d.get('filters', {})),
-            output=OutputConfig.from_dict(d.get('output', {}))
+        # First construct all sub-configs independently
+        asset = AssetConfig.from_dict(d.get('asset', {}))
+        data = DataConfig.from_dict(d.get('data', {}))
+        execution = ExecutionConfig.from_dict(d.get('execution', {}))
+        trade_mgmt = TradeManagementConfig.from_dict(d.get('trade_management', {}))
+        filters = FilterPipelineConfig.from_dict(d.get('filters', {}))
+        output = OutputConfig.from_dict(d.get('output', {}))
+        
+        # Then perform cross-validation between config sections
+        cls._validate_risk_data_dependency(trade_mgmt.risk, data)
+        
+        # Link RiskConfig to DataConfig for potential future use
+        # This is done via object.__setattr__ because the dataclass is frozen
+        risk_with_data = RiskConfig(
+            atr_length=trade_mgmt.risk.atr_length,
+            atr_multiplier_sl=trade_mgmt.risk.atr_multiplier_sl,
+            atr_multiplier_tp=trade_mgmt.risk.atr_multiplier_tp,
+            max_risk_percentile=trade_mgmt.risk.max_risk_percentile,
+            tp_mode=trade_mgmt.risk.tp_mode,
+            risk_to_reward_ratio=trade_mgmt.risk.risk_to_reward_ratio,
+            _data_config=data
         )
+        
+        # Reconstruct trade_management with linked risk config
+        trade_mgmt_with_link = TradeManagementConfig(
+            spread=trade_mgmt.spread,
+            risk=risk_with_data,
+            position_control=trade_mgmt.position_control
+        )
+        
+        return cls(
+            asset=asset,
+            data=data,
+            execution=execution,
+            trade_management=trade_mgmt_with_link,
+            filters=filters,
+            output=output
+        )
+
+    @classmethod
+    def _validate_risk_data_dependency(cls, risk: RiskConfig, data: DataConfig) -> None:
+        """
+        Validate that ARTF data is available when risk percentile filtering is enabled.
+        
+        Fail Fast Principle: If risk filter is enabled (<100.0%) but ARTF data is missing,
+        abort immediately with clear error message.
+        
+        Note: max_risk_percentile is interpreted as a PERCENTAGE value.
+        Filter is ACTIVE when < 100.0, DISABLED when >= 100.0
+        """
+        if risk.max_risk_percentile >= 100.0:
+            # Risk filter disabled - no ARTF data needed
+            return
+        
+        # Risk filter enabled (max_risk_percentile < 100.0) - ARTF data REQUIRED
+        if data.paths.artf_ohlcv is None:
+            raise ValueError(
+                f"Risk filter ENABLED (max_risk_percentile={risk.max_risk_percentile}% < 100%) "
+                f"but ARTF monthly data path is not configured.\n\n"
+                f"To use risk percentile filtering, you MUST provide monthly ARTF data:\n"
+                f"  data.paths.artf_ohlcv: 'data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet'\n\n"
+                f"To disable risk filtering, set max_risk_percentile >= 100% "
+                f"(e.g., 100.0 for 100% of annual range, or 500.0 for 500%)."
+            )
+        
+        # Check that the file exists (optional but helpful fail-fast)
+        if not data.paths.artf_ohlcv.exists():
+            raise FileNotFoundError(
+                f"ARTF monthly data file configured but not found:\n"
+                f"  {data.paths.artf_ohlcv}\n\n"
+                f"Risk filter enabled (max_risk_percentile={risk.max_risk_percentile}%) "
+                f"requires this file to exist.\n"
+                f"Please verify the file path or generate the monthly data first."
+            )
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> 'StrategyConfig':

@@ -148,7 +148,7 @@ trade_management:
     tp_mode: "rr_ratio"
     risk_to_reward_ratio: 5.7
     atr_multiplier_tp: 7.98
-    max_risk_percentile: 0.1
+    max_risk_percentile: 1.5 #In % 1.5 stands for 1.5% | 100 stands for 100% => max risk percentile disabled
 
   position_control:
     pyramiding_enabled: false

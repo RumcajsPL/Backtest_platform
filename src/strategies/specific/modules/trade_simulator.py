@@ -124,6 +124,7 @@ class TradeSimulator:
         self,
         config: StrategyConfig,
         df_full: pd.DataFrame,
+        df_artf: Optional[pd.DataFrame] = None,
         cache_manager: Optional[CacheManager] = None,
     ):
         """
@@ -132,10 +133,12 @@ class TradeSimulator:
         Args:
             config: StrategyConfig instance
             df_full: Full OHLCV DataFrame
+            df_artf: Monthly ARTF DataFrame (required when risk filter enabled)
             cache_manager: Optional cache manager for multi-run state
         """
         self.config = config
         self.df_full = df_full
+        self.df_artf = df_artf        
         self._cache_manager = cache_manager or CacheManager()
 
         # [L3] Access analytics.profile_simulator via clean optional attribute
@@ -169,7 +172,7 @@ class TradeSimulator:
         self.risk_manager = RiskManager(
             config=self.config,
             ohlcv_data=df_full,
-            ohlcv_artf=None,
+            ohlcv_artf=df_artf,
             mode="core",
             cache_manager=self._cache_manager,
         )

@@ -354,6 +354,7 @@ class StrategyOrchestrator:
         simulator = TradeSimulator(
             config=self._config,
             df_full=data_bundle.full,
+            df_artf=data_bundle.artf,  # ← ADD THIS LINE
             cache_manager=self._cache_manager,
         )
 
