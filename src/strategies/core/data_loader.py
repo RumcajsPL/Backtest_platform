@@ -1,3 +1,11 @@
+"""
+DataLoader v2.4 - Fixed ARTF loading
+Changes:
+- ARTF data now loaded WITHOUT date slicing (needs full history for annual range)
+- Added explicit parameter to control date slicing per file type
+- Better logging to show when ARTF is loaded with full history
+"""
+
 import pandas as pd
 import yaml
 import numpy as np
@@ -14,12 +22,13 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    Modernized DataLoader v2.3:
+    Modernized DataLoader v2.4:
     - Supports CSV + Parquet
     - Unified loader with caching
     - Sanitization (inf → nan → ffill/bfill)
     - Fast timestamp parsing
     - Downcasting for memory efficiency
+    - ARTF loaded with full history (no date slicing)
     """
 
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -65,7 +74,16 @@ class DataLoader:
     # ---------------------------------------------------------
     # CACHE HELPERS
     # ---------------------------------------------------------
-    def _get_cache_key(self, file_path: Path, start_date=None, end_date=None) -> Optional[str]:
+    def _get_cache_key(self, file_path: Path, start_date=None, end_date=None, include_dates=True) -> Optional[str]:
+        """
+        Generate cache key with optional date inclusion.
+        
+        Args:
+            file_path: Path to data file
+            start_date: Optional start date for slicing
+            end_date: Optional end date for slicing
+            include_dates: Whether to include dates in cache key (False for ARTF)
+        """
         if not file_path.exists():
             return None
 
@@ -83,13 +101,15 @@ class DataLoader:
         except Exception as e:
             logger.warning(f"Failed to compute content hash for {file_path.name}: {e}")
 
-        if start_date:
-            start_norm = pd.to_datetime(start_date, format=self.DATE_FORMAT)
-            key_parts.append(f"start:{start_norm.isoformat()}")
+        # Only include dates if requested (for ARTF, we exclude them)
+        if include_dates:
+            if start_date:
+                start_norm = pd.to_datetime(start_date, format=self.DATE_FORMAT)
+                key_parts.append(f"start:{start_norm.isoformat()}")
 
-        if end_date:
-            end_norm = pd.to_datetime(end_date, format=self.DATE_FORMAT)
-            key_parts.append(f"end:{end_norm.isoformat()}")
+            if end_date:
+                end_norm = pd.to_datetime(end_date, format=self.DATE_FORMAT)
+                key_parts.append(f"end:{end_norm.isoformat()}")
 
         return hashlib.md5("|".join(key_parts).encode()).hexdigest()
 
@@ -122,11 +142,37 @@ class DataLoader:
     # ---------------------------------------------------------
     # UNIFIED CSV/PARQUET LOADER WITH CACHE
     # ---------------------------------------------------------
-    def _load_file_with_cache(self, file_path: Path, data_type: str, start_date=None, end_date=None) -> pd.DataFrame:
+    def _load_file_with_cache(
+        self, 
+        file_path: Path, 
+        data_type: str, 
+        start_date=None, 
+        end_date=None,
+        apply_date_slice: bool = True  # New parameter to control date slicing
+    ) -> pd.DataFrame:
+        """
+        Load file with optional date slicing.
+        
+        Args:
+            file_path: Path to data file
+            data_type: Type of data (for logging)
+            start_date: Start date for slicing
+            end_date: End date for slicing
+            apply_date_slice: If True, apply date slicing; if False, load full file
+        """
         self._validate_date_format(start_date, "start_date")
         self._validate_date_format(end_date, "end_date")
 
-        cache_key = self._get_cache_key(file_path, start_date, end_date)
+        # Only include dates in cache key if we're actually using them
+        include_dates_in_key = apply_date_slice and (start_date or end_date)
+        
+        cache_key = self._get_cache_key(
+            file_path, 
+            start_date if apply_date_slice else None,
+            end_date if apply_date_slice else None,
+            include_dates=include_dates_in_key
+        )
+        
         cached = self._load_cached_data(cache_key)
 
         if cached is not None:
@@ -135,7 +181,8 @@ class DataLoader:
             return cached
 
         self.cache_misses += 1
-        logger.info(f"Loading fresh {data_type}: {file_path.name}")
+        slice_info = f" (sliced {start_date} to {end_date})" if apply_date_slice and (start_date or end_date) else " (full file)"
+        logger.info(f"Loading fresh {data_type}: {file_path.name}{slice_info}")
 
         suffix = file_path.suffix.lower()
 
@@ -184,11 +231,12 @@ class DataLoader:
 
         df = df.copy()
 
-        # Date slicing
-        if start_date or end_date:
+        # Date slicing - only if requested
+        if apply_date_slice and (start_date or end_date):
             start = pd.to_datetime(start_date, format=self.DATE_FORMAT) if start_date else None
             end = pd.to_datetime(end_date, format=self.DATE_FORMAT) if end_date else None
             df = df.loc[start:end]
+            logger.info(f"  Sliced {data_type} to {len(df)} rows ({start_date} to {end_date})")
 
         self._save_to_cache(cache_key, df)
         return df
@@ -204,7 +252,7 @@ class DataLoader:
     # ---------------------------------------------------------
     # MAIN DATA LOADING
     # ---------------------------------------------------------
-    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
         data_cfg = self.config.get("data", {})
 
         dr = data_cfg.get("date_range", {})
@@ -214,55 +262,70 @@ class DataLoader:
         self._validate_date_format(start_date, "start_date")
         self._validate_date_format(end_date, "end_date")
 
+        logger.info(f"Date range for strategy: {start_date} to {end_date}")
+
         # Resolve main file
         data_file = Path(data_cfg["file"])
         if not data_file.is_absolute():
             data_file = PROJECT_ROOT / data_file
 
-        # FULL DATA
-        self.df_full = self._load_file_with_cache(data_file, "full")
+        # FULL DATA (always load full file)
+        logger.info("Loading full dataset (no date slicing)...")
+        self.df_full = self._load_file_with_cache(data_file, "full", apply_date_slice=False)
         self.df_full = self._sanitize_df(self.df_full)
+        logger.info(f"Full dataset: {len(self.df_full):,} bars")
 
-        # STRATEGY SLICE
+        # STRATEGY SLICE (apply date range)
         if start_date or end_date:
             start = pd.to_datetime(start_date, format=self.DATE_FORMAT) if start_date else None
             end = pd.to_datetime(end_date, format=self.DATE_FORMAT) if end_date else None
             self.df_strategy = self.df_full.loc[start:end].copy()
+            logger.info(f"Strategy slice: {len(self.df_strategy):,} bars ({start_date} to {end_date})")
         else:
             self.df_strategy = self.df_full.copy()
+            logger.info(f"Strategy slice: full dataset ({len(self.df_strategy):,} bars)")
 
         self.df_strategy = self._sanitize_df(self.df_strategy)
 
-        # HTF
+        # HTF (apply date range)
         self.df_htf = None
         if "file_htf" in data_cfg:
             htf_file = Path(data_cfg["file_htf"])
             if not htf_file.is_absolute():
                 htf_file = PROJECT_ROOT / htf_file
 
-            self.df_htf = self._load_file_with_cache(htf_file, "htf", start_date, end_date)
+            self.df_htf = self._load_file_with_cache(
+                htf_file, "htf", start_date, end_date, apply_date_slice=True
+            )
             self.df_htf = self._sanitize_df(self.df_htf)
+            logger.info(f"HTF data: {len(self.df_htf):,} bars")
 
-        # LTF
+        # LTF (apply date range)
         self.df_ltf = None
         if "file_ltf" in data_cfg:
             ltf_file = Path(data_cfg["file_ltf"])
             if not ltf_file.is_absolute():
                 ltf_file = PROJECT_ROOT / ltf_file
 
-            self.df_ltf = self._load_file_with_cache(ltf_file, "ltf", start_date, end_date)
+            self.df_ltf = self._load_file_with_cache(
+                ltf_file, "ltf", start_date, end_date, apply_date_slice=True
+            )
             self.df_ltf = self._sanitize_df(self.df_ltf)
+            logger.info(f"LTF data: {len(self.df_ltf):,} bars")
         
-        # ARTF (monthly bars)
+        # ARTF (monthly bars) - CRITICAL: NO DATE SLICING!
         self.df_artf = None
         if "file_artf" in data_cfg:
             artf_file = Path(data_cfg["file_artf"])
             if not artf_file.is_absolute():
                 artf_file = PROJECT_ROOT / artf_file
 
-            self.df_artf = self._load_file_with_cache(artf_file, "artf", start_date, end_date)
+            logger.info("Loading ARTF data with FULL HISTORY (no date slicing) for annual range calculation...")
+            self.df_artf = self._load_file_with_cache(
+                artf_file, "artf", apply_date_slice=False  # ← CRITICAL: No date slicing!
+            )
             self.df_artf = self._sanitize_df(self.df_artf)
-
+            logger.info(f"ARTF data: {len(self.df_artf):,} monthly bars from {self.df_artf.index.min()} to {self.df_artf.index.max()}")
 
         return self.df_full, self.df_strategy, self.df_htf, self.df_ltf, self.df_artf
 
@@ -275,6 +338,7 @@ class DataLoader:
             "strategy_bars": len(self.df_strategy) if self.df_strategy is not None else 0,
             "htf_bars": len(self.df_htf) if self.df_htf is not None else 0,
             "ltf_bars": len(self.df_ltf) if self.df_ltf is not None else 0,
+            "artf_bars": len(self.df_artf) if self.df_artf is not None else 0,
             "date_range": (
                 self.df_strategy.index.min().strftime(self.DATE_FORMAT)
                 if self.df_strategy is not None and not self.df_strategy.empty else None,
@@ -285,6 +349,9 @@ class DataLoader:
 
         if self.df_ltf is not None:
             info["ltf_tf"] = self.config.get("data", {}).get("ltf_timeframe", "1s")
+        
+        if self.df_artf is not None:
+            info["artf_tf"] = self.config.get("data", {}).get("artf_timeframe", "1ME")
 
         return info
 

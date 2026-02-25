@@ -1,12 +1,7 @@
 """Trade position management: handles position opening/closing logic and pyramiding
 
-Version: 2.0.0 (Phase 5 Final)
-Session: 21 - Final Hardening
-
-Changes from v1.0.0:
-- Phase 5.2: Now accepts StrategyConfig instead of raw Dict (DEC-035)
-- Phase 5.2: Reads position control settings from typed config
-- All legacy methods removed (DEC-021)
+Version: 2.1.0
+Changes: Added position-only signal handling to match Legacy order
 """
 import logging
 from typing import Dict, Optional, List, Any
@@ -31,7 +26,7 @@ class TradeManager:
     - position_id: Sequential position identifier used for tracking and closing
     """
 
-    def __init__(self, config: StrategyConfig):  # Phase 5.2: Now accepts StrategyConfig
+    def __init__(self, config: StrategyConfig):
         """
         Initialize TradeManager with StrategyConfig.
 
@@ -70,27 +65,20 @@ class TradeManager:
         """Returns current position direction or None if no positions."""
         return self.current_positions[0].direction if self.current_positions else None
 
-    def handle_signal(
+    def handle_signal_position_only(
         self,
         timestamp: pd.Timestamp,
         signal_type: str,
-        entry_price: float,
-        stop_loss: float,
-        take_profit: float,
-        position_size: float = 1.0,
-        meta: Optional[Dict[str, Any]] = None
     ) -> TradeDecision:
         """
-        Handle incoming signal and return trading decision.
+        Handle incoming signal based ONLY on position rules (Legacy order).
+        
+        This is called FIRST in the sequence to decide if we can even consider
+        opening a position, before calculating risk parameters.
 
         Args:
             timestamp: Signal timestamp (pandas Timestamp)
             signal_type: 'BUY' or 'SELL'
-            entry_price: Execution price from RiskManager
-            stop_loss: SL price from RiskManager
-            take_profit: TP price from RiskManager
-            position_size: Position size (default 1.0)
-            meta: Optional metadata dict for Position contract
 
         Returns:
             TradeDecision contract with decision type, reason, and action details
@@ -98,16 +86,14 @@ class TradeManager:
         self.metrics['total_signals_received'] += 1
         direction = TradeDirection.from_string(signal_type)
 
-        # Case 1: No positions — open new
+        # Case 1: No positions — can open new
         if not self.current_positions:
-            return self._create_open_decision(
-                direction=direction,
-                timestamp=timestamp,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                position_size=position_size,
-                meta=meta
+            self.metrics['signals_accepted'] += 1
+            return TradeDecision(
+                decision_type=DecisionType.OPEN,
+                reason=f'Opening {direction.to_string()} position (no positions open)',
+                close_trade_ids=None,
+                new_trade_id=self.trade_counter + 1,
             )
 
         is_same_direction = direction == self.current_direction
@@ -126,14 +112,12 @@ class TradeManager:
                 )
 
             if self.pyramiding_enabled:
-                return self._create_open_decision(
-                    direction=direction,
-                    timestamp=timestamp,
-                    entry_price=entry_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    position_size=position_size,
-                    meta=meta
+                self.metrics['signals_accepted'] += 1
+                return TradeDecision(
+                    decision_type=DecisionType.OPEN,
+                    reason=f'Pyramiding: adding to {direction.to_string()} position',
+                    close_trade_ids=None,
+                    new_trade_id=self.trade_counter + 1,
                 )
             else:
                 self.metrics['signals_rejected'] += 1
@@ -172,25 +156,44 @@ class TradeManager:
                     new_trade_id=None,
                 )
 
-    def _create_open_decision(
+    def handle_signal(
         self,
-        direction: TradeDirection,
         timestamp: pd.Timestamp,
+        signal_type: str,
         entry_price: float,
         stop_loss: float,
         take_profit: float,
-        position_size: float,
-        meta: Optional[Dict[str, Any]]
+        position_size: float = 1.0,
+        meta: Optional[Dict[str, Any]] = None
     ) -> TradeDecision:
-        """Create decision for opening new position."""
-        new_trade_id = self.trade_counter + 1
-        self.metrics['signals_accepted'] += 1
+        """
+        Handle incoming signal with full trade parameters (for when we already know we're opening).
+        
+        This is called AFTER risk parameters are calculated, when we know we're opening a position.
 
+        Args:
+            timestamp: Signal timestamp (pandas Timestamp)
+            signal_type: 'BUY' or 'SELL'
+            entry_price: Execution price from RiskManager
+            stop_loss: SL price from RiskManager
+            take_profit: TP price from RiskManager
+            position_size: Position size (default 1.0)
+            meta: Optional metadata dict for Position contract
+
+        Returns:
+            TradeDecision contract with decision type, reason, and action details
+        """
+        self.metrics['total_signals_received'] += 1
+        direction = TradeDirection.from_string(signal_type)
+
+        # By the time this is called, we've already passed position checks
+        # So we should always be able to open
+        self.metrics['signals_accepted'] += 1
         return TradeDecision(
             decision_type=DecisionType.OPEN,
-            reason=f'Opening {direction.to_string()} position',
+            reason=f'Opening {direction.to_string()} position with risk parameters',
             close_trade_ids=None,
-            new_trade_id=new_trade_id,
+            new_trade_id=self.trade_counter + 1,
         )
 
     def open_position(

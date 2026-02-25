@@ -1,10 +1,6 @@
-
----
-## UPDATED ARCHITECTURE.md
-```markdown
 # WBWSStrategy System Architecture
-**Version**: 3.0.0 (Production Ready)
-**Date**: 2026-02-21
+**Version**: 3.1.0 (Production Ready)
+**Date**: 2026-02-24
 ---
 ## Table of Contents
 1. [Who Should Read This](#who-should-read-this)
@@ -77,7 +73,7 @@ No hidden defaults buried in logic. Mode-gated behaviour (core vs analytics) is 
 ### 5. Vectorisation First
 Hot paths use numpy/pandas vectorised operations. Python loops appear only where the logic cannot be vectorised (e.g. stateful trade management). ATR computation and spread config loading are cached via the central CacheManager.
 ### 6. Fail Fast
-Invalid configuration raises immediately at construction via __post_init__ validation. There are no silent fallbacks, no auto-corrections of bad input. If a value is wrong, the system tells you before any computation begins.
+Invalid configuration raises immediately at construction via __post_init__ validation. There are no silent fallbacks, no auto-corrections of bad input. If a value is wrong, the system tells you before any computation begins. Missing data at runtime (e.g. RAR unavailable for a timestamp) rejects the trade — it never silently approves it.
 ### 7. Single Source of Truth
 Configuration flows from strategy_template.yaml → StrategyConfig → all modules. No module loads its own config. Spread values are read exclusively from broker_spreads.yaml — the strategy template contains only the path to this file.
 ### 8. Cache Lifecycle Management
@@ -126,7 +122,7 @@ for params in parameter_grid:
 File: src/strategies/specific/modules/data_loader.py
 Input: StrategyConfig
 Output: DataBundle
-Loads OHLCV data for the strategy timeframe, HTF, LTF, and ARTF (monthly bars). Validates all DataFrames (DatetimeIndex, OHLC columns present). Applies Parquet optimisation sequence: timestamp floor → sort index → lazy duplicate check. Caches loaded data by file mtime + size + version string.
+Loads OHLCV data for the strategy timeframe, HTF, LTF, and ARTF (monthly bars). Validates all DataFrames (DatetimeIndex, OHLC columns present). Applies Parquet optimisation sequence: timestamp floor → sort index → lazy duplicate check. Caches loaded data by file mtime + size + version string. ARTF is always loaded without date slicing (apply_date_range=False) — the full file history is required for the 12-month rolling annual range window.
 ## SignalGenerator
 File: src/strategies/specific/modules/signal_generator.py
 Input: StrategyConfig, DataBundle
@@ -148,15 +144,43 @@ Numba-accelerated exit detection
 Accepts SignalFrame directly (CF-6)
 LTF tick data precomputation gated to analytics mode
 Central cache management via CacheManager
+In analytics mode, emits a risk filter summary log line at end of simulation
+via RiskManager.get_risk_summary() — shows checked/approved/rejected counts
+and rejection rate.
 ## RiskManager
 File: src/strategies/specific/modules/risk_manager.py
-Input: StrategyConfig, OHLCV data
-Output: TradeParameters
+Input: StrategyConfig, OHLCV data (df_full), ARTF monthly data
+Output: TradeParameters (or None for rejected signals)
 Computes ATR-based stop-loss and take-profit with R:R ratio or direct ATR multiple modes. Features:
 ATR arrays cached via CacheManager
-Annual range validation
+Annual range validation via 12-month rolling window on ARTF monthly bars
 Spread-aware SL/TP triggers
 Reads spread settings from SpreadManager
+Risk filter diagnostic counters (_risk_checked, _risk_approved, _risk_rejected)
+accessible via get_risk_summary() public method
+Fail-safe on missing RAR: unknown timestamp or NaN annual range rejects the trade
+(never silently approves) — consistent with Architecture Principle 6 (Fail Fast)
+Warm-up window guard: RAR computation requires exactly 12 months of ARTF history;
+partial windows during the first 12 months of the ARTF file produce NaN
+_allow_exceed_limit (bool, default False): replaces the dead risk_config dict
+from v2.3.0; wire to StrategyConfig when SL-capping feature is needed
+
+### max_risk_percentile calibration
+max_risk_percentile is a **percentage of the 12-month rolling annual range**.
+It is timeframe-sensitive: the same percentage permits very different absolute
+SL distances depending on the strategy bar frequency.
+
+| Timeframe | Typical ATR×1.4 | Recommended range | Notes |
+|-----------|-----------------|-------------------|-------|
+| 1-min DAX | 20–70 pts       | 0.10 – 0.50 %     | Annual range ~6 000 pts → 0.5% = 30 pts ceiling |
+| 5-min DAX | 50–150 pts      | 0.30 – 1.00 %     |       |
+| 1-hour DAX| 150–400 pts     | 1.00 – 5.00 %     |       |
+| Daily DAX | 400–1 000 pts   | 5.00 – 20.0 %     |       |
+
+A value of 100.0 % or above disables the filter entirely (no rejections).
+Values calibrated for a daily chart will pass virtually all signals on a
+1-minute chart — this was the cause of the "filter appears inactive" observation
+when max_risk_percentile was set to 1.5% on 1-min DAX.
 ## SpreadManager
 File: src/strategies/specific/modules/spread_manager.py
 Input: Asset symbol, path to broker_spreads.yaml
@@ -332,6 +356,55 @@ spreads:
     spread_type: "percentage"
     # ...
 ```
+---
+## Risk Filter Calibration
+`max_risk_percentile` expresses the maximum permitted SL distance as a
+**percentage of the 12-month rolling annual range** (computed from ARTF monthly
+bars). Because it normalises by annual range, the same numeric value has
+very different practical effects depending on the strategy timeframe.
+
+```yaml
+trade_management:
+  risk:
+    max_risk_percentile: 0.20   # 0.20% of annual range
+```
+
+**How to read the value**
+
+With an annual range of 6 000 points (typical DAX), `0.20%` permits a maximum
+SL distance of 12 points. Any signal whose `ATR × atr_multiplier_sl` exceeds
+12 points is rejected. A value of `100.0` or above disables the filter.
+
+**Calibration by timeframe (DAX, annual range ~6 000 pts)**
+
+| Timeframe | Typical SL (ATR×1.4) | Recommended range | 0.20% ceiling |
+|-----------|----------------------|-------------------|---------------|
+| 1-min     | 20 – 70 pts          | 0.10 – 0.50 %     | 12 pts        |
+| 5-min     | 50 – 150 pts         | 0.30 – 1.00 %     | 12 pts        |
+| 1-hour    | 150 – 400 pts        | 1.00 – 5.00 %     | 12 pts        |
+| Daily     | 400 – 1 000 pts      | 5.00 – 20.0 %     | 12 pts        |
+
+**Common miscalibration symptom**: setting a value appropriate for a daily
+chart (e.g. 1.5 %) on a 1-minute chart passes ~99 % of signals because the
+1-minute ATR almost never produces an SL large enough to exceed the ceiling.
+The filter runs and produces the correct result — the threshold simply admits
+nearly everything. Reduce `max_risk_percentile` until the rejection rate in
+analytics mode matches the intended filtering behaviour.
+
+**Diagnostic output** (analytics mode)
+
+RiskManager accumulates per-run counters. TradeSimulator emits one INFO log
+line at end of simulation:
+
+```
+Risk filter summary | filter=ACTIVE | threshold=0.2000% |
+checked=1847 | approved=1203 | rejected=644 | rejection_rate=34.9%
+```
+
+Per-trade DEBUG lines are also emitted in analytics mode showing ATR, SL
+distance, computed %, threshold, and PASS/REJECT verdict for every signal.
+Set `output.logging.level: DEBUG` in the strategy YAML to see them.
+
 ---
 ## Validation Flow
 YAML → StrategyConfig.from_yaml() → validation in __post_init__
@@ -525,7 +598,7 @@ from src.config.config_schema import StrategyConfig
 ```python
 config = StrategyConfig.from_yaml(Path("configs/strategies/my_strategy.yaml"))
 ```
-The config template at configs/strategies/strategy_template.yaml documents every available key. Note that spread values must be defined in broker_spreads.yaml — the template only contains the path.
+The config template at configs/strategies/strategy_template.yaml documents every available key. Note that spread values must be defined in broker_spreads.yaml — the template only contains the path. See [Risk Filter Calibration](#risk-filter-calibration) for guidance on setting max_risk_percentile correctly for your timeframe.
 ---
 ## Cache Management in Backtester
 ```python
@@ -589,5 +662,5 @@ class RiskManager:
 ### Extending the Report
 ReportGenerator builds HTML through four internal methods. Add a new section by adding a method that returns an HTML string and inserting its output in _build_html.
 ---
-The codebase is now **production-ready** and fully compliant with all architectural principles. No further hardening is required before deployment.
-*Last updated: 2026-02-21 | Version 3.0.0 (Production Ready)*
+The codebase is **production-ready** and fully compliant with all architectural principles.
+*Last updated: 2026-02-24 | Version 3.1.0 (Production Ready)*

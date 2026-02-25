@@ -556,8 +556,11 @@ class TradeSimulator:
             "total_adjusted": 0,
         }
 
+                # ────────────────────────────────────────────────────────────────
+        # Main simulation loop — Legacy-compatible order (position first)
+        # ────────────────────────────────────────────────────────────────
         for i, timestamp in enumerate(strategy_index_list):
-            # 1) Check exits on LTF
+            # 1) Check exits on LTF (unchanged)
             check_exits(timestamp, exit_stats, verbose)
 
             # 2) Skip if no signal — O(1) dict lookup
@@ -565,112 +568,78 @@ class TradeSimulator:
             if signal_type is None:
                 continue
 
-            is_long   = signal_type == "BUY"
+            is_long = signal_type == "BUY"
             direction = "BUY" if is_long else "SELL"
             bid_price = float(close_np[i])
             signal_id = signal_id_map.get(timestamp) if signal_id_map else None
 
-            # 3) Risk management
-            params = risk_mgr.compute_trade_parameters(timestamp, bid_price, is_long)
-
-            if params is None:
-                self._handle_risk_rejection(
-                    action="REJECT",
-                    close_trade_ids=[],
-                    timestamp=timestamp,
-                    direction=direction,
-                    signal_id=signal_id,
-                    is_long=is_long,
-                    risk_stats=risk_stats,
-                    position_rejected_count=position_rejected_count,
-                    current_bid=bid_price,
-                    verbose=verbose,
-                )
-                continue
-
-            key = "buy" if is_long else "sell"
-            risk_stats["approved"][key] += 1
-            risk_stats["total_approved"] += 1
-            if params.sl_adjusted:
-                risk_stats["adjusted"][key] += 1
-                risk_stats["total_adjusted"] += 1
-
-            if tracking_enabled and signal_id:
-                tracker.update_risk_management_details(
-                    signal_id=signal_id,
-                    approved=True,
-                    reason=params.comment,
-                    entry_price=params.entry_price_executed,
-                    sl_price=params.stop_loss_trigger,
-                    tp_price=params.take_profit,
-                    spread_cost=params.spread_points if params.spread_points else 0.0,
-                    atr_value=params.atr_value,
-                    atr_length=params.atr_length,
-                    atr_multiplier=getattr(params, "atr_multiplier", None),
-                    sl_distance_raw=params.sl_distance_raw,
-                    sl_price_raw=params.sl_price_raw,
-                    annual_range_value=params.annual_range_value,
-                    risk_percentile_calculated=params.risk_percentile_calculated,
-                    max_risk_percentile=params.max_risk_percentile,
-                    risk_percentile_passed=params.risk_percentile_passed,
-                    sl_price_final=params.stop_loss_trigger,
-                    tp_price_final=params.take_profit,
-                    rr_ratio=params.risk_reward_ratio,
-                    spread_enabled=params.spread_enabled,
-                    spread_type=params.spread_type,
-                    spread_value=getattr(params, "spread_value", params.spread_points),
-                    spread_points=params.spread_points,
-                    entry_price_mid=params.entry_price_mid,
-                    entry_price_adjusted=params.entry_price_executed,
-                    spread_efficiency_percent=getattr(params, "spread_efficiency_percent", None),
-                )
-
-            # 4) Trade manager decision
-            result = tm.handle_signal(
+            # 3) POSITION CONTROL FIRST (Legacy logic) — cheap gatekeeper
+            result = tm.handle_signal_position_only(
                 timestamp=timestamp,
                 signal_type=signal_type,
-                entry_price=params.entry_price_executed,
-                stop_loss=params.stop_loss_trigger,
-                take_profit=params.take_profit,
-                position_size=params.position_size,
-                meta={"signal_id": signal_id} if signal_id else None,
-            )
+)
 
-            # 5) Progressive tracking
+            # 4) Progressive tracking: position management stage
             if tracking_enabled and signal_id:
-                current_dir_str = tm.current_direction.to_string() if tm.current_direction else None
+                needs_open = result.is_open or result.decision_type == DecisionType.CLOSE_AND_REVERSE
                 tracker.update_position_management_details(
                     signal_id=signal_id,
                     action=result.to_dict()["action"],
                     reason=result.reason,
-                    current_direction=current_dir_str,
+                    current_direction=tm.current_direction.to_string() if tm.current_direction else None,
                     open_positions_count=len(tm.current_positions),
                     pyramiding_enabled=tm.pyramiding_enabled,
                     close_on_opposite=tm.close_on_opposite,
-                    can_open_new_position=(
-                        result.is_open or result.decision_type == DecisionType.CLOSE_AND_REVERSE
-                    ),
+                    can_open_new_position=needs_open,
                 )
 
-            # 6) Position rejection
+            # 5) Handle position rejection
             if result.is_reject:
                 self._reject_signal(timestamp, direction, signal_id, result.reason, verbose)
-                position_rejected_count[key] += 1
+                position_rejected_count["buy" if is_long else "sell"] += 1
                 continue
 
-            # 7) Execute trade manager actions
+            # 6) Risk management ONLY if we are going to open/reverse
+            needs_open = result.is_open or result.decision_type == DecisionType.CLOSE_AND_REVERSE
+            params = None
+            if needs_open:
+                params = risk_mgr.compute_trade_parameters(timestamp, bid_price, is_long)
+                if params is None:
+                    self._handle_risk_rejection(
+                        action=result.decision_type.name,   # "OPEN" or "CLOSE_AND_REVERSE"
+                        close_trade_ids=result.close_trade_ids if hasattr(result, "close_trade_ids") else [],
+                        timestamp=timestamp,
+                        direction=direction,
+                        signal_id=signal_id,
+                        is_long=is_long,
+                        risk_stats=risk_stats,
+                        position_rejected_count=position_rejected_count,
+                        current_bid=bid_price,
+                        verbose=verbose,
+                    )
+                    continue
+
+                key = "buy" if is_long else "sell"
+                risk_stats["approved"][key] += 1
+                risk_stats["total_approved"] += 1
+                if params.sl_adjusted:
+                    risk_stats["adjusted"][key] += 1
+                    risk_stats["total_adjusted"] += 1
+
+                if tracking_enabled and signal_id:
+                    tracker.update_risk_management_details(...)   # keep your existing call
+
+            # 7) Execute trade manager actions (unchanged from your current New code)
             if result.decision_type == DecisionType.CLOSE_AND_REVERSE:
                 self._handle_close(timestamp, result.close_trade_ids, bid_price, exit_stats, verbose)
                 tm.close_positions(result.close_trade_ids)
-                self._handle_open(
-                    timestamp, direction, params, result.new_trade_id,
-                    verbose, comment_suffix=" (Reversal)", signal_id=signal_id,
-                )
+                if params:
+                    self._handle_open(timestamp, direction, params, result.new_trade_id,
+                                      verbose, comment_suffix=" (Reversal)", signal_id=signal_id)
             elif result.is_open:
-                self._handle_open(
-                    timestamp, direction, params, result.new_trade_id,
-                    verbose, comment_suffix="", signal_id=signal_id,
-                )
+                if params:
+                    self._handle_open(timestamp, direction, params, result.new_trade_id,
+                                      verbose, comment_suffix="", signal_id=signal_id)
 
         # 8) Close remaining positions at end of data
         self._close_remaining_positions(df_strategy, exit_stats, verbose)

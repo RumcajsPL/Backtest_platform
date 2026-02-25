@@ -17,12 +17,12 @@ data:
   file_artf: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet #csv | parquet
   format: parquet #csv | parquet
   date_range:
-    start: '2025-09-14 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
-    end: '2025-12-17 21:00:00' 
-  validation:
-    check_ohlc: true
-    check_gaps: false
-    max_price_move: 0.1
+    start: '2025-12-12 18:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
+    end: '2025-12-12 21:00:00' 
+  #validation:
+  #  check_ohlc: true
+  #  check_gaps: false
+  #  max_price_move: 0.1
 indicator:
   name: WBWS_Trigger
   htf_period: 1H
@@ -83,7 +83,7 @@ trade_management:
     risk_to_reward_ratio: 5.7
   risk_management:
     enabled: true
-    max_risk_percentile: 0.01 # 0.0016
+    max_risk_percentile: 0.001
     allow_exceed_limit: false
   spread:
     enabled: true
@@ -95,7 +95,7 @@ trade_management:
 # EXECUTION MODE CONFIGURATION (NEW)
 # =============================================================================
 execution:
-  mode: "core"  # Options: "core" | "debug"
+  mode: "debug"  # Options: "core" | "debug"
   # 
   # "core"  - Optimized for pipeline orchestrator (45-65% faster)
   #           - Skips progressive tracking

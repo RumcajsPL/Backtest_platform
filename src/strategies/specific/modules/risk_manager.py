@@ -1,14 +1,29 @@
 """Risk management: SL/TP with R:R ratio, spread adjustments, annual range validation.
 
-Version: 2.3.0
-Block 5 (R5 / L1) — Production Hardening
+Version: 2.4.0
+Session: Risk Filter Diagnostic & Hardening
 
-Changes from v2.2.0:
-- [Risk Filter Intuition] max_risk_percentile now interpreted as PERCENTAGE value
-- [Risk Filter Intuition] 1.5 in config means 1.5% of annual range
-- [Risk Filter Intuition] 100.0 means 100% (effectively disables filter)
-- [Risk Filter Intuition] Clean threshold at 100.0 instead of 1.0
-- [Risk Filter Intuition] Clear logging with % symbols matching config values
+Changes from v2.3.0:
+- [FIX-1] validate_risk_percentile: removed KeyError → return True (silent fail-open).
+  Missing RAR at a timestamp now rejects the trade (fail-safe), consistent with
+  Architecture Principle #6 (Fail Fast). Uses explicit index membership check
+  instead of bare .loc[] inside try/except.
+- [FIX-2] _calculate_rolling_annual_range_internal: warm-up window now requires
+  exactly 12 months of ARTF history. Partial windows (<12 months) produce NaN,
+  preventing artificially low RAR from over-rejecting trades during the first
+  12 months of the ARTF file.
+- [FIX-3] risk_config dead dict removed. Replaced with explicit
+  self._allow_exceed_limit: bool = False. The SL-capping branch is now
+  reachable in principle; the flag will be wired to StrategyConfig when
+  that config field is added.
+- [DIAG] Per-run risk filter counters added: _risk_checked, _risk_approved,
+  _risk_rejected. Incremented in compute_trade_parameters on every call.
+- [DIAG] get_risk_summary() public method: returns checked/approved/rejected
+  counts and rejection rate. Called by TradeSimulator in analytics mode to
+  emit a single summary log line at end of simulation.
+- [DIAG] Analytics-mode per-trade DEBUG log in compute_trade_parameters showing
+  timestamp, direction, ATR, SL distance, RAR, computed %, threshold, verdict.
+  Gated to analytics mode to keep core-mode hot path clean.
 
 BID price model (one spread per round trip)
 -------------------------------------------
@@ -22,7 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -57,24 +72,32 @@ class RiskManager:
     ----------------
     All caches are managed by the central CacheManager for multi-run backtesting.
     Call cache_manager.clear_all_caches() between runs when OHLCV data changes.
-    
+
     Risk Percentile Interpretation
     ------------------------------
-    max_risk_percentile is interpreted as a PERCENTAGE value.
-    Examples:
-        - 0.5  → 0.5% of annual range (conservative)
-        - 1.5  → 1.5% of annual range (moderate)
-        - 3.0  → 3.0% of annual range (aggressive)
-        - 100.0 → 100% of annual range (effectively disables filter)
-        - 500.0 → 500% of annual range (effectively disables filter)
-    
-    The filter is ACTIVE when max_risk_percentile < 100.0
+    max_risk_percentile is a PERCENTAGE of the rolling 12-month annual range.
+    It is timeframe-sensitive: the same percentage admits very different SL
+    distances depending on the strategy bar frequency.
+
+    Examples (DAX, annual range ~6 000 pts):
+        0.20% → max SL ~12 pts  (tight — rejects most high-volatility 1-min bars)
+        0.50% → max SL ~30 pts  (moderate for 1-min)
+        1.50% → max SL ~90 pts  (passes virtually all 1-min ATR(14) signals)
+       100.0% → filter disabled (no rejection)
+
+    Calibration guidance by timeframe:
+        1-min  DAX: 0.10–0.50 %
+        5-min  DAX: 0.30–1.00 %
+        1-hour DAX: 1.00–5.00 %
+        Daily  DAX: 5.00–20.0 %
+
+    The filter is ACTIVE  when max_risk_percentile <  100.0
     The filter is DISABLED when max_risk_percentile >= 100.0
     """
 
     def __init__(
         self,
-        config: "StrategyConfig",       # TYPE_CHECKING guard avoids circular import
+        config: "StrategyConfig",
         ohlcv_data: pd.DataFrame,
         ohlcv_artf: Optional[pd.DataFrame] = None,
         mode: str = "core",
@@ -83,13 +106,14 @@ class RiskManager:
         """
         Parameters
         ----------
-        config: StrategyConfig instance
-        ohlcv_data: Strategy-timeframe OHLCV with DatetimeIndex
-        ohlcv_artf: Monthly ARTF bars (optional)
-        mode: "core" or "analytics". "debug" raises ValueError.
-        cache_manager: Central cache manager for multi-run state
+        config        : StrategyConfig instance
+        ohlcv_data    : Strategy-timeframe OHLCV — MUST be the exact DataFrame
+                        iterated by TradeSimulator (df_full). DatetimeIndex required.
+        ohlcv_artf    : Monthly ARTF bars (required when max_risk_percentile < 100.0)
+        mode          : "core" or "analytics". "debug" raises ValueError.
+        cache_manager : Central cache manager for multi-run state.
         """
-        # ── Mode validation (no "debug") ─────────────────────────────────
+        # ── Mode validation ──────────────────────────────────────────────
         if mode not in {"core", "analytics"}:
             raise ValueError(
                 f"Invalid mode '{mode}'. Must be 'core' or 'analytics'. "
@@ -105,7 +129,6 @@ class RiskManager:
         self.atr_length: int = risk_cfg.atr_length
         self.sl_multiplier: float = risk_cfg.atr_multiplier_sl
 
-        # TP mode (DEC-037)
         self.tp_mode: str = risk_cfg.tp_mode
         self.rr_ratio: float = risk_cfg.risk_to_reward_ratio
         self.atr_multiplier_tp: float = risk_cfg.atr_multiplier_tp
@@ -116,11 +139,20 @@ class RiskManager:
                 f"Valid values: {sorted(_VALID_TP_MODES)}."
             )
 
-        # Annual range config - interpreted as PERCENTAGE
-        # Examples: 0.5 = 0.5%, 1.5 = 1.5%, 100.0 = 100% (disabled)
+        # Annual range config — interpreted as PERCENTAGE.
+        # [FIX-3] Replaced dead self.risk_config dict with explicit bool.
+        # The allow_exceed_limit feature is dormant until the field is added
+        # to StrategyConfig. Set to False here; wire to config when ready.
         self.max_risk_percentile: float = risk_cfg.max_risk_percentile
-        self.risk_filter_active = self.max_risk_percentile < 100.0
-        self.risk_config: Dict[str, Any] = {}
+        self.risk_filter_active: bool = self.max_risk_percentile < 100.0
+        self._allow_exceed_limit: bool = False  # not yet in StrategyConfig
+
+        # ── Risk filter diagnostic counters ─────────────────────────────
+        # Incremented in compute_trade_parameters on every call.
+        # Read via get_risk_summary() at end of simulation.
+        self._risk_checked: int = 0
+        self._risk_approved: int = 0
+        self._risk_rejected: int = 0
 
         # ── Validate and store OHLCV data ───────────────────────────────
         self.ohlcv_data = ohlcv_data.copy()
@@ -136,37 +168,41 @@ class RiskManager:
         self.atr_series: Optional[pd.Series] = None
         self.atr_series = self._get_or_compute_atr(self.atr_length)
 
-        # ── Rolling Annual Range — computed when filter active ──────────
+        # ── Rolling Annual Range ─────────────────────────────────────────
         # StrategyConfig has already validated that ARTF data exists when
-        # max_risk_percentile < 100.0. We can safely compute here.
+        # max_risk_percentile < 100.0. Safe to compute here.
         self.annual_range_series: Optional[pd.Series] = None
-        
+
         if self.risk_filter_active:
-            # Risk filter is active - annual range REQUIRED
             if self.ohlcv_artf is None or self.ohlcv_artf.empty:
-                # This should never happen due to config validation
-                raise RuntimeError(
-                    f"Risk filter active (max_risk_percentile={self.max_risk_percentile}% < 100%) "
-                    f"but ARTF data is missing. This indicates a configuration validation "
-                    f"failure - the config should have been rejected at load time."
+                # Should never happen — config validation prevents this state.
+                raise ValueError(
+                    f"Risk filter ACTIVE (max_risk_percentile={self.max_risk_percentile}% < 100%) "
+                    f"but ARTF DataFrame is None or empty.\n"
+                    f"Configured path: {config.data.paths.artf_ohlcv}\n"
+                    f"Verify that DataLoader.load_data() populates bundle.artf "
+                    f"and that the ARTF file covers the full strategy date range."
                 )
             self.annual_range_series = self._get_or_compute_rar()
             logger.info(
-                f"Risk filter ACTIVE: max {self.max_risk_percentile:.3f}% "
-                f"of annual range (ARTF data loaded)"
+                "Risk filter ACTIVE: max %.4f%% of annual range | "
+                "ARTF bars=%d | RAR series non-null=%d",
+                self.max_risk_percentile,
+                len(self.ohlcv_artf),
+                int(self.annual_range_series.notna().sum())
+                if self.annual_range_series is not None else 0,
             )
         else:
             logger.info(
-                f"Risk filter DISABLED: max_risk_percentile={self.max_risk_percentile}% "
-                f"(values >= 100% disable filtering)"
+                "Risk filter DISABLED: max_risk_percentile=%.1f%% (>= 100%%)",
+                self.max_risk_percentile,
             )
 
-        # ── SpreadManager ───────────────────────────────────────────────
+        # ── SpreadManager ────────────────────────────────────────────────
         self.spread_manager: Optional[SpreadManager] = None
         self._spread_cfg = spread_cfg
 
         if spread_cfg.enabled:
-            # SM-1: Fail-fast on blank symbol
             asset_symbol = getattr(config.asset, "symbol", "")
             if not asset_symbol or not asset_symbol.strip():
                 raise ValueError(
@@ -183,13 +219,49 @@ class RiskManager:
             )
             if mode == "analytics":
                 logger.info(
-                    f"SpreadManager initialised for {asset_symbol}. "
-                    f"Spread info: {self.spread_manager.get_spread_info()}"
+                    "SpreadManager initialised for %s. Spread info: %s",
+                    asset_symbol,
+                    self.spread_manager.get_spread_info(),
                 )
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # Public diagnostic API
+    # ──────────────────────────────────────────────────────────────────────
+
+    def get_risk_summary(self) -> Dict[str, Any]:
+        """Return risk filter statistics accumulated during simulation.
+
+        Called by TradeSimulator in analytics mode to emit a summary log line
+        at the end of simulate_trades(). Safe to call in core mode — returns
+        counts without logging.
+
+        Returns
+        -------
+        dict with keys:
+            checked         int   — total compute_trade_parameters calls
+            approved        int   — trades that passed all checks
+            rejected        int   — trades rejected (ATR missing, RAR fail-safe,
+                                    or risk_percentile exceeded threshold)
+            rejection_rate  float — rejected / checked * 100 (0.0 if checked == 0)
+            filter_active   bool  — whether max_risk_percentile < 100.0
+            threshold_pct   float — configured max_risk_percentile value
+        """
+        rejection_rate = (
+            (self._risk_rejected / self._risk_checked * 100.0)
+            if self._risk_checked > 0 else 0.0
+        )
+        return {
+            "checked":        self._risk_checked,
+            "approved":       self._risk_approved,
+            "rejected":       self._risk_rejected,
+            "rejection_rate": round(rejection_rate, 2),
+            "filter_active":  self.risk_filter_active,
+            "threshold_pct":  self.max_risk_percentile,
+        }
+
+    # ──────────────────────────────────────────────────────────────────────
     # Cache helpers (via CacheManager)
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _get_or_compute_atr(self, length: int) -> pd.Series:
         """Get ATR from cache or compute and store."""
@@ -199,7 +271,7 @@ class RiskManager:
             cached = self._cache_manager.get_atr(key)
             if cached is not None:
                 if self._mode == "analytics":
-                    logger.debug(f"ATR cache hit (key={key[:8]}…).")
+                    logger.debug("ATR cache hit (key=%s…).", key[:8])
                 return cached
 
         series = self._calculate_atr_wilders(length)
@@ -207,7 +279,8 @@ class RiskManager:
             self._cache_manager.set_atr(key, series)
             if self._mode == "analytics":
                 logger.info(
-                    f"ATR computed and cached (Wilder RMA, length={length}, key={key[:8]}…)."
+                    "ATR computed and cached (Wilder RMA, length=%d, key=%s…).",
+                    length, key[:8],
                 )
         return series
 
@@ -224,19 +297,25 @@ class RiskManager:
             cached = self._cache_manager.get_annual_range(key)
             if cached is not None:
                 if self._mode == "analytics":
-                    logger.debug(f"Annual range cache hit (key={key[:8]}…).")
+                    logger.debug("Annual range cache hit (key=%s…).", key[:8])
                 return cached
 
         series = self._calculate_rolling_annual_range_internal()
         if series is not None and self._cache_manager:
             self._cache_manager.set_annual_range(key, series)
             if self._mode == "analytics":
-                logger.info(f"Annual range computed and cached (key={key[:8]}…).")
+                logger.info(
+                    "Annual range computed and cached (key=%s…). "
+                    "Non-null bars: %d / %d (NaN in warm-up period is expected).",
+                    key[:8],
+                    int(series.notna().sum()),
+                    len(series),
+                )
         return series
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # Computation internals
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _calculate_atr_wilders(self, length: int = 14) -> pd.Series:
         """ATR using Wilder's Smoothing (RMA) — matches TradingView."""
@@ -250,34 +329,49 @@ class RiskManager:
         return tr.ewm(alpha=1 / length, adjust=False).mean().astype("float32")
 
     def _calculate_rolling_annual_range_internal(self) -> Optional[pd.Series]:
-        """12-month RAR using monthly ARTF bars — no lookahead."""
+        """12-month RAR using monthly ARTF bars — no lookahead.
+
+        [FIX-2] Window now requires exactly 12 months of ARTF history.
+        Partial windows during the first 12 months of the ARTF file produce
+        NaN, preventing artificially low RAR from over-rejecting trades during
+        the warm-up period. Strategy date ranges well within the ARTF file are
+        unaffected (all their windows are full).
+        """
         if self.ohlcv_artf is None or self.ohlcv_artf.empty:
             logger.warning("Monthly ARTF data missing — annual range disabled.")
             return None
+
         monthly = self.ohlcv_artf.copy()
         if not isinstance(monthly.index, pd.DatetimeIndex):
             raise ValueError("ARTF monthly data must have DatetimeIndex.")
+
         monthly = monthly.sort_index()
         monthly.index = monthly.index.normalize()
         monthly["ym"] = monthly.index.to_period("M")
         monthly_by_ym = monthly.set_index("ym")[["high", "low"]]
+
         yms = monthly_by_ym.index.unique().sort_values()
         rar_per_month: Dict = {}
         for ym in yms:
             prev_ym = ym - 1
             start_ym = prev_ym - 11
             window = monthly_by_ym.loc[start_ym:prev_ym]
+            # [FIX-2] Require full 12-month window. Partial warm-up windows
+            # produce NaN — validate_risk_percentile treats NaN as fail-safe reject.
             rar_per_month[ym] = (
-                float(window["high"].max() - window["low"].min()) if len(window) else np.nan
+                float(window["high"].max() - window["low"].min())
+                if len(window) >= 12
+                else np.nan
             )
+
         rar_monthly_series = pd.Series(rar_per_month, dtype="float32")
         strategy_prev_ym = self.ohlcv_data.index.to_period("M") - 1
         rar_strategy = strategy_prev_ym.map(rar_monthly_series)
         return pd.Series(rar_strategy.values, index=self.ohlcv_data.index, dtype="float32")
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # Public API
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def compute_trade_parameters(
         self,
@@ -289,20 +383,25 @@ class RiskManager:
 
         Returns None when:
         - ATR is unavailable or zero at timestamp
-        - Risk percentile check fails (when enabled and allow_exceed_limit=False)
+        - Risk percentile check rejects the trade (when filter is active)
         """
-        # ---- ATR ----------------------------------------------------------------
+        self._risk_checked += 1
+
+        # ── ATR ──────────────────────────────────────────────────────────
         if self.atr_series is None:
+            self._risk_rejected += 1
             return None
         try:
             atr_val = float(self.atr_series.loc[timestamp])
         except KeyError:
-            logger.warning(f"ATR not available for {timestamp}.")
+            logger.warning("ATR not available for %s.", timestamp)
+            self._risk_rejected += 1
             return None
         if atr_val <= 0 or np.isnan(atr_val):
+            self._risk_rejected += 1
             return None
 
-        # ---- Spread -------------------------------------------------------------
+        # ── Spread ───────────────────────────────────────────────────────
         spread = 0.0
         spread_type: Optional[str] = None
         spread_value_config: Optional[float] = None
@@ -313,7 +412,6 @@ class RiskManager:
             spread_type = spread_info.get("spread_type")
             spread_value_config = spread_info.get("spread_value")
 
-        # DEC-036: Read apply_to_long/apply_to_short from SpreadManager
         if self.spread_manager:
             apply_to_long = self.spread_manager.apply_to_long
             apply_to_short = self.spread_manager.apply_to_short
@@ -328,11 +426,9 @@ class RiskManager:
 
         spread_for_this = spread if apply_spread else 0.0
 
-        # LONG: execute at Ask = Bid + spread
-        # SHORT: execute at Bid (no spread at open; paid at close)
         executed_entry = bid_price + spread_for_this if is_long else bid_price
 
-        # ---- SL -----------------------------------------------------------------
+        # ── SL ───────────────────────────────────────────────────────────
         risk_distance = atr_val * self.sl_multiplier
         raw_sl = (
             executed_entry - risk_distance if is_long else executed_entry + risk_distance
@@ -341,8 +437,27 @@ class RiskManager:
         is_valid, adjusted_sl, comment = self.validate_risk_percentile(
             executed_entry, raw_sl, is_long, timestamp
         )
+
+        # ── [DIAG] Analytics-mode per-trade risk log ─────────────────────
+        if self._mode == "analytics":
+            direction_str = "LONG" if is_long else "SHORT"
+            logger.debug(
+                "RISK | %s | %s | ATR=%.2f | SL_dist=%.2f | pct=%.4f%% | "
+                "threshold=%.4f%% | verdict=%s",
+                timestamp,
+                direction_str,
+                atr_val,
+                risk_distance,
+                float(comment.split(":")[1].rstrip("%")) if ":" in comment and "%" in comment else 0.0,
+                self.max_risk_percentile,
+                "PASS" if is_valid else "REJECT",
+            )
+
         if not is_valid:
+            self._risk_rejected += 1
             return None
+
+        self._risk_approved += 1
 
         sl_adjusted = adjusted_sl != raw_sl
         sl_price_raw = raw_sl if not sl_adjusted else None
@@ -350,16 +465,15 @@ class RiskManager:
         final_sl = adjusted_sl
         risk_distance = abs(executed_entry - final_sl)
 
-        # SL trigger: accounts for spread at SL close
         trigger_sl = (
             final_sl if is_long
             else final_sl + spread_for_this
         )
 
-        # ---- TP (DEC-037: tp_mode branch) ----------------------------------------
+        # ── TP ───────────────────────────────────────────────────────────
         if self.tp_mode == "rr_ratio":
             tp_distance = risk_distance * self.rr_ratio
-        else:  # "atr_multiplier"
+        else:
             tp_distance = atr_val * self.atr_multiplier_tp
 
         tp = (
@@ -367,36 +481,33 @@ class RiskManager:
             else executed_entry - tp_distance
         )
 
-        # ---- TP trigger (DEC-038: SHORT TP exit spread) -------------------------
         take_profit_trigger = (
             tp if is_long
             else tp + spread_for_this
         )
 
-        # Spread cost at TP exit (for analytics)
         spread_at_tp_exit: Optional[float] = (
             None if is_long else (spread_for_this if apply_spread else 0.0)
         )
 
-        # ---- Annual range -------------------------------------------------------
+        # ── Annual range metadata ────────────────────────────────────────
         annual_range_value: Optional[float] = None
         risk_percentile_calculated: Optional[float] = None
         max_risk_pct: Optional[float] = None
         risk_percentile_passed = True
 
-        # Safe access to annual_range_series - may be None if risk filter disabled
         if self.annual_range_series is not None:
             try:
                 rar = float(self.annual_range_series.loc[timestamp])
                 if not np.isnan(rar) and rar > 0:
                     annual_range_value = rar
-                    risk_percentile_calculated = (risk_distance / rar) * 100.0  # ← AS PERCENTAGE
+                    risk_percentile_calculated = (risk_distance / rar) * 100.0
                     max_risk_pct = self.max_risk_percentile
                     risk_percentile_passed = risk_percentile_calculated <= max_risk_pct
             except (KeyError, ValueError):
                 pass
 
-        # ---- Spread efficiency --------------------------------------------------
+        # ── Spread efficiency ────────────────────────────────────────────
         spread_efficiency_percent: Optional[float] = None
         if apply_spread and spread > 0:
             spread_efficiency_percent = (spread / executed_entry) * 100
@@ -441,59 +552,70 @@ class RiskManager:
         is_long: bool,
         timestamp: pd.Timestamp,
     ) -> Tuple[bool, float, str]:
-        """Validate SL against max risk percentile of annual range.
-        
-        Note: max_risk_percentile is interpreted as a PERCENTAGE value.
-        Examples:
-            - 0.5 means 0.5% of annual range
-            - 1.5 means 1.5% of annual range
-            - 100.0 means 100% (effectively disables filter)
-        
-        Returns:
-            Tuple[is_valid, adjusted_stop_loss, comment]
+        """Validate SL distance against max_risk_percentile of annual range.
+
+        max_risk_percentile is a PERCENTAGE value (e.g., 0.20 means 0.20%).
+        The filter is active when max_risk_percentile < 100.0.
+
+        [FIX-1] Replaced bare try/except KeyError → return True (silent fail-open)
+        with an explicit index membership check. A missing or NaN RAR value now
+        rejects the trade (fail-safe), consistent with the fail-fast principle.
+        An unknown timestamp indicates a data alignment problem that should surface
+        as a rejection, not a silent approval.
+
+        Returns
+        -------
+        Tuple[is_valid, adjusted_stop_loss, comment]
         """
-        # If risk filter is disabled (≥ 100%), always approve
         if not self.risk_filter_active:
             return True, stop_loss, "Risk filter disabled"
-        
-        # If we get here, risk filter is enabled (max_risk_percentile < 100.0)
-        # annual_range_series MUST be available (guaranteed by config validation)
-        if self.annual_range_series is None:
-            # This should never happen - indicates config validation failure
-            raise RuntimeError(
-                f"Risk filter enabled (max_risk_percentile={self.max_risk_percentile}% < 100%) "
-                f"but annual_range_series is None. This is a system error - "
-                f"configuration validation should have prevented this state."
+
+        # annual_range_series is guaranteed non-None when risk_filter_active is True
+        # (enforced in __init__). The assertion makes this contract explicit.
+        assert self.annual_range_series is not None, (
+            "annual_range_series is None with risk_filter_active=True — "
+            "this is a constructor invariant violation."
+        )
+
+        # [FIX-1] Explicit membership check instead of try/except KeyError.
+        # Missing timestamp → fail-safe rejection, not silent approval.
+        if timestamp not in self.annual_range_series.index:
+            logger.warning(
+                "RAR index miss at %s — trade rejected (fail-safe). "
+                "Check that ohlcv_data passed to RiskManager matches the "
+                "DataFrame iterated by TradeSimulator.",
+                timestamp,
             )
+            return False, stop_loss, f"RAR index miss at {timestamp}"
 
-        try:
-            current_annual_range = self.annual_range_series.loc[timestamp]
-        except KeyError:
-            # If RAR missing for specific timestamp, log warning but don't block trade
-            logger.warning(f"Annual range missing for timestamp {timestamp}")
-            return True, stop_loss, f"RAR missing for timestamp"
+        current_annual_range = float(self.annual_range_series.loc[timestamp])
 
+        # NaN means ARTF warm-up period has < 12 months of history.
+        # Reject the trade — cannot assess risk without a valid RAR.
         if pd.isna(current_annual_range) or current_annual_range <= 0:
-            logger.warning(f"Annual range invalid at {timestamp}: {current_annual_range}")
-            return True, stop_loss, f"RAR invalid"
+            logger.warning(
+                "RAR is NaN/zero at %s (ARTF warm-up or data gap) — "
+                "trade rejected (fail-safe).",
+                timestamp,
+            )
+            return False, stop_loss, f"RAR unavailable at {timestamp}"
 
         risk_distance = abs(entry_price - stop_loss)
-        # Calculate risk as PERCENTAGE of annual range
         risk_percentile = (risk_distance / current_annual_range) * 100.0
 
         if risk_percentile <= self.max_risk_percentile:
-            return True, stop_loss, f"Risk: {risk_percentile:.3f}%"
+            return True, stop_loss, f"Risk: {risk_percentile:.4f}%"
 
-        allow_exceed = self.risk_config.get("allow_exceed_limit", False)
-        if not allow_exceed:
+        # Trade exceeds threshold.
+        if not self._allow_exceed_limit:
             return (
                 False,
                 stop_loss,
-                f"Risk rejected: {risk_percentile:.3f}% > {self.max_risk_percentile:.3f}%",
+                f"Risk rejected: {risk_percentile:.4f}% > {self.max_risk_percentile:.4f}%",
             )
 
-        # Adjust SL to meet limit
-        # Convert max_risk_percentile from percentage back to decimal for distance calculation
+        # SL capping — only reached when _allow_exceed_limit is True.
+        # (Currently always False until wired to StrategyConfig.)
         adjusted_distance = (self.max_risk_percentile / 100.0) * current_annual_range
         adjusted_sl = (
             entry_price - adjusted_distance if is_long else entry_price + adjusted_distance
@@ -501,5 +623,5 @@ class RiskManager:
         return (
             True,
             adjusted_sl,
-            f"SL adjusted: {risk_percentile:.3f}% → {self.max_risk_percentile:.3f}%",
+            f"SL adjusted: {risk_percentile:.4f}% → {self.max_risk_percentile:.4f}%",
         )
