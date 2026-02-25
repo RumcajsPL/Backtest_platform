@@ -1,10 +1,24 @@
 """
-DataLoader v3.1 - Block 1 Production Hardening
+DataLoader v3.2 - LTF Coverage Warning
 
-Version: 3.1.0
-Session: Block 1 — Production Hardening
+Version: 3.2.0
+Session: LTF Coverage Guard
 
-Changes from v3.0.0:
+Changes from v3.1.0:
+- [GUARD-2] load_data: LTF date-range coverage check added after df_ltf is
+  loaded and sanitized. Compares df_ltf.index boundaries against the
+  configured date_range and emits a logger.warning when the LTF file does
+  not fully cover the strategy window (head gap, tail gap, or both).
+  DataLoader's responsibility is loading — it does not abort on partial
+  coverage because that decision belongs to the operator. The warning fires
+  before any computation (signal generation, simulation) so the operator
+  sees the problem at the earliest possible moment, not after several seconds
+  of pipeline work. The definitive bar-level count is reported later by
+  TradeSimulator [GUARD-1] after _precompute_ltf_windows completes.
+  Warning is unconditional on mode (core and analytics) because partial LTF
+  coverage is always operationally significant regardless of mode.
+
+Changes from v3.0.0 (carried from v3.1.0):
 - [C3] _build_data_config: guards cfg.date_range before attribute access — no
        AttributeError when date_range is None (YAML `date_range: null`)
 - [M2] _load_file_with_cache: raises ValueError immediately when a loaded file
@@ -42,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    DataLoader v3.1 - Fully migrated, trusts StrategyConfig.
+    DataLoader v3.2 - Fully migrated, trusts StrategyConfig.
 
     Features:
     - Accepts StrategyConfig directly (DEC-033)
@@ -53,6 +67,7 @@ class DataLoader:
     - Dual-mode execution (core vs analytics)
     - Intelligent caching with MD5 validation
     - Fail-fast on empty DataFrames (M2)
+    - LTF date-range coverage warning (GUARD-2)
 
     Performance:
     - Parquet: ~40ms (cold), ~5ms (cache) - 60-70% faster than v2.0
@@ -476,6 +491,54 @@ class DataLoader:
                 apply_date_range=True
             )
             df_ltf = self._sanitize_df(df_ltf, "ltf")
+
+        # [GUARD-2] LTF date-range coverage check.
+        #
+        # Responsibility boundary: DataLoader loads and slices — it does not
+        # decide whether partial coverage is acceptable. That decision belongs
+        # to the operator. This warning fires unconditionally (core and
+        # analytics) because partial LTF coverage is always operationally
+        # significant: trades in uncovered bars will close at end-of-data
+        # price rather than at their actual SL/TP tick.
+        #
+        # Two timestamp comparisons — negligible cost relative to file I/O.
+        #
+        # The definitive bar-level count is reported later by TradeSimulator
+        # [GUARD-1] once _precompute_ltf_windows has run. This early warning
+        # exists so the operator sees the problem before any computation
+        # (signal generation, filter pipeline, simulation) has taken place.
+        if df_ltf is not None and self.data_config.date_range:
+            dr = self.data_config.date_range
+            ltf_start = df_ltf.index[0]
+            ltf_end   = df_ltf.index[-1]
+            dr_start  = pd.Timestamp(dr.start)
+            dr_end    = pd.Timestamp(dr.end)
+
+            head_gap = ltf_start > dr_start   # LTF file starts after strategy window
+            tail_gap = ltf_end   < dr_end     # LTF file ends before strategy window
+
+            if head_gap or tail_gap:
+                gaps = []
+                if head_gap:
+                    gaps.append(
+                        f"head gap [{dr_start} → {ltf_start}] "
+                        f"({(ltf_start - dr_start).days}d uncovered at start)"
+                    )
+                if tail_gap:
+                    gaps.append(
+                        f"tail gap [{ltf_end} → {dr_end}] "
+                        f"({(dr_end - ltf_end).days}d uncovered at end)"
+                    )
+                logger.warning(
+                    "LTF file does not fully cover the strategy date_range — %s. "
+                    "LTF file: [%s → %s]. Strategy window: [%s → %s]. "
+                    "Trades in uncovered bars will close at end-of-data price. "
+                    "Extend the LTF file to eliminate this gap. "
+                    "TradeSimulator [GUARD-1] will report the exact bar count.",
+                    " | ".join(gaps),
+                    ltf_start, ltf_end,
+                    dr_start, dr_end,
+                )
 
         df_artf = None
         artf_timeframe = self.config.data.artf_timeframe
