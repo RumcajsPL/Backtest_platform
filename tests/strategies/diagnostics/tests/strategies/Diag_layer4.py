@@ -437,7 +437,7 @@ try:
 
     # Compute ATR on full dataset (as RiskManager does)
     try:
-        import pandas-ta-classic as ta
+        import pandas_ta_classic as ta
         atr_length = new_config.trade_management.risk.atr_length
         new_atr = ta.atr(
             new_bundle.full["high"],
@@ -528,7 +528,7 @@ try:
 
     # Compute ATR on legacy full dataset
     try:
-        import pandas-ta-classic as ta
+        import pandas_ta_classic as ta
         leg_atr = ta.atr(leg_full["high"], leg_full["low"], leg_full["close"], length=leg_atr_length)
         log.info(f"  [LEGACY] ATR computed (pandas_ta, length={leg_atr_length})")
     except ImportError:
