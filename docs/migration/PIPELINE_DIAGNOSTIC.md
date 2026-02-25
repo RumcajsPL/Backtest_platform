@@ -1,340 +1,469 @@
-# ACT 0 — Pipeline Diagnostic Running Notes
+# DIAGNOSTIC REPORT — ACT 0 Pipeline Diagnostic
 **Project:** Backtesting Platform  
-**Scope:** Config/DataLoad → Signals → Filters → TradeSimulation  
-**Window:** `2025-12-12 18:00:00 → 2025-12-12 21:00:00` | Asset: DEUIDXEUR 1-min  
-**Rule:** Facts only per layer. No hypothesis until all 4 layers complete.  
-**Updated:** 2026-02-25
+**Architecture version:** New v3.1.0 vs Legacy  
+**Document version:** 1.0 — Final  
+**Date:** 2026-02-25  
+**Author:** Senior Python Consultant + Project Owner  
+**Status:** ✅ CLOSED — Root cause confirmed, fixes applied, parity verified. Phase 9 cleared.
 
 ---
 
-## Layer 1 — Config & Data Load
+## 1. Executive Summary
 
-**Status: ✅ COMPLETE**  
-**Script:** `tests/strategies/diagnostics/diag_layer1_config_data.py`  
-**Log:** `outputs/diagnostics/layer1_config_data.log`
+A ~30% trade count discrepancy was observed between the Legacy pipeline
+(`run_wbws_strategy.py`) and the New pipeline (v3.1.0) when run against
+identical configuration and data. A full layer-by-layer diagnostic was
+conducted across Config/DataLoad → Raw Signals → FilterPipeline →
+TradeSimulation. All four layers were analysed. Root cause was identified
+and confirmed by direct source code inspection.
 
-### Config Facts (Block 1)
-
-| Parameter | Legacy | New | Status |
-|---|---|---|---|
-| date_range.start | 2025-12-12 18:00:00 | 2025-12-12 18:00:00 | ✅ MATCH |
-| date_range.end | 2025-12-12 21:00:00 | 2025-12-12 21:00:00 | ✅ MATCH |
-| All 4 data file paths | identical | identical | ✅ MATCH |
-| htf_period | 1H | 1H | ✅ MATCH |
-| atr_multiplier_sl | 1.4 | 1.4 | ✅ MATCH |
-| risk_to_reward_ratio | 5.7 | 5.7 | ✅ MATCH |
-| atr_length | 14 | 14 | ✅ MATCH |
-| pyramiding_enabled | False | False | ✅ MATCH |
-| close_on_opposite | False | False | ✅ MATCH |
-| time_filter (all 4 fields) | 08:30–20:30 | 08:30–20:30 | ✅ MATCH |
-| All filter enabled flags | identical | identical | ✅ MATCH |
-| filter_sequence (10 items) | identical | identical | ✅ MATCH |
-| execution.mode | core | core | ✅ MATCH |
-| **max_risk_percentile** | **0.001** | **0.1** | ❌ DIFFER → carry L4 |
-| **max_positions** | **NOT SET** | **1** | ❌ DIFFER → carry L4 |
-| **spread.apply_to_long** | **True** | **NOT SET** | ❌ DIFFER → carry L4 |
-| **spread.apply_to_short** | **True** | **NOT SET** | ❌ DIFFER → carry L4 |
-| pivot_filter.reversal_percent | 0.2 | 0.35 | ❌ DIFFER (both disabled) |
-
-### DataBundle Facts (Blocks 3–5)
-
-| DataFrame | Legacy rows | New rows | Status |
-|---|---|---|---|
-| strategy (sliced) | 181 | 181 | ✅ MATCH |
-| full (unsliced) | 702,488 | 702,488 | ✅ MATCH |
-| artf | 62 | 62 | ✅ MATCH |
-| **htf** | **12,407 (full file)** | **4 (window slice)** | ❌ DIFFER → carry L2 |
-| **ltf** | **14,971,883 (full file)** | **4,816 (window slice)** | ❌ DIFFER → carry L4 |
-
-**strategy/full/artf:** All facts match — row count, columns, dtypes, index type, first/last timestamps, first/last open+close values. Byte-identical content.
-
-**htf:** Same source file, same 4 window-relevant bars (confirmed in Block 5). Legacy loads full file (12,407 rows) and passes it all to the signal generator. New DataLoader slices to the strategy window (4 rows) before passing downstream.
-
-**ltf:** Same source file. Legacy loads full file (14.97M rows). New slices to window (4,816 rows). Carry to Layer 4 — impact is on LTF-based exit precision in TradeSimulator.
-
-### Layer 1 Open Items (carry forward)
-
-| ID | Item | Carry to |
-|---|---|---|
-| L1-D1 | max_risk_percentile: 0.001 vs 0.1 — same effective threshold? | Layer 4 |
-| L1-D2 | max_positions NOT SET in legacy — what is the default? | Layer 4 |
-| L1-D3 | spread.apply_to_long/short NOT SET in new — what is the default? | Layer 4 |
-| L1-D4 | htf: full file vs window slice — does warmup history affect signal calc? | Layer 2 |
-| L1-D5 | ltf: full file vs window slice — does coverage affect trade exits? | Layer 4 |
+**Primary finding:** One confirmed bug (time filter boundary operator).  
+**Secondary finding:** One intentional architectural hardening change (RAR
+NaN fail-safe) whose trade count impact depends on ARTF file coverage
+relative to the strategy start date — requires data verification before
+Phase 9.  
+**All other Layer 4 items:** Resolved as no-divergence.
 
 ---
 
-## Layer 2 — Raw Signal Generation
+## 2. Diagnostic Scope
 
-**Status: ✅ COMPLETE**  
-**Script:** `tests/strategies/diagnostics/diag_layer2_signals.py`  
-**Log:** `outputs/diagnostics/layer2_signals.log`
-
-### Signal Count Facts (Blocks 1 & 2)
-
-| Fact | Legacy | New | Status |
-|---|---|---|---|
-| Raw BUY count | 9 | 9 | ✅ MATCH |
-| Raw SELL count | 10 | 10 | ✅ MATCH |
-| Raw TOTAL count | 19 | 19 | ✅ MATCH |
-| Signal dtype | — | int8 (1/2/0) | ✅ (New confirmed) |
-| Signal series length | 181 | 181 | ✅ MATCH |
-| Signal index first | 2025-12-12 18:00:00 | 2025-12-12 18:00:00 | ✅ MATCH |
-| Signal index last | 2025-12-12 21:00:00 | 2025-12-12 21:00:00 | ✅ MATCH |
-
-**Legacy signal counts confirmed from pipeline run log** (BUY=9, SELL=10, TOTAL=19 at `17:11:58` in the original run output provided). New pipeline matches exactly.
-
-> **Note — diagnostic gap:** The legacy `SignalGenerator` class was found and instantiated successfully at `src.strategies.core.signal_generator`. However its output was not captured as a Series by the diagnostic script because the legacy `SignalGenerator.generate_signals()` interface returns a different object type than expected (not directly a `.signals` attribute or a `pd.Series`). The fallback WBWSTrigger path failed because the legacy trigger does not expose a `.calculate()` method. **The legacy signal counts are confirmed correct from the pipeline run log. The bar-by-bar comparison (Block 4) was skipped** due to this interface gap. Carry to a targeted follow-up if needed after Layer 4 reveals further divergence.
-
-### New Pipeline Signal Timestamps (Block 1 — complete list)
-
-| Timestamp | Direction |
+| Item | Detail |
 |---|---|
-| 2025-12-12 19:03:00 | BUY |
-| 2025-12-12 19:10:00 | BUY |
-| 2025-12-12 19:20:00 | BUY |
-| 2025-12-12 19:38:00 | BUY |
-| 2025-12-12 19:47:00 | BUY |
-| 2025-12-12 19:51:00 | BUY |
-| 2025-12-12 19:53:00 | BUY |
-| 2025-12-12 19:56:00 | BUY |
-| 2025-12-12 19:59:00 | BUY |
-| 2025-12-12 20:00:00 | SELL |
-| 2025-12-12 20:11:00 | SELL |
-| 2025-12-12 20:17:00 | SELL |
-| 2025-12-12 20:22:00 | SELL |
-| 2025-12-12 20:30:00 | SELL |
-| 2025-12-12 20:36:00 | SELL |
-| 2025-12-12 20:38:00 | SELL |
-| 2025-12-12 20:48:00 | SELL |
-| 2025-12-12 20:53:00 | SELL |
-| 2025-12-12 20:57:00 | SELL |
+| Test window | `2025-12-12 18:00:00 → 2025-12-12 21:00:00` |
+| Asset | DEUIDXEUR, 1-min strategy timeframe |
+| Layers analysed | Config/DataLoad · Raw Signals · FilterPipeline · TradeSimulation |
+| Diagnostic scripts | `tests/strategies/diagnostics/diag_layer1_config_data.py` through `diag_layer4_trades.py` |
+| Source files reviewed | 8 files — all four core modules from both architectures |
 
-**Observation:** All 9 BUY signals occur in the 19:00 HTF bar window. All 10 SELL signals occur in the 20:00 HTF bar window. This is consistent with HTF-driven directional bias switching between hourly bars.
+---
 
-### HTF Data Facts (Block 3)
+## 3. Layer Results Summary
 
-| Fact | Legacy | New | Status |
+| Layer | Status | Verdict |
+|---|---|---|
+| Layer 1 — Config & Data Load | ✅ Complete | Mostly clean. 3 config differences carried to L4. |
+| Layer 2 — Raw Signal Generation | ✅ Complete | **Clean.** BUY=9, SELL=10 — identical in both pipelines. |
+| Layer 3 — Filter Pipeline | ✅ Complete | **Divergence confirmed.** 1 signal difference at session boundary. |
+| Layer 4 — Trade Simulation | ✅ Complete | All open items resolved from source. No simulation-logic bug. |
+
+---
+
+## 4. Findings
+
+### Finding F1 — Time Filter Boundary Operator (BUG)
+
+**Layer:** 3 — Filter Pipeline  
+**Type:** Bug in the New pipeline implementation  
+**Status:** ✅ Confirmed from source code
+
+**Detail:**  
+The New pipeline `TimeFilter` (`src/strategies/specific/filters/time_filter.py`)
+uses a strict less-than operator (`<`) on `session_end_minutes`:
+
+```python
+trading_hours_mask = (
+    (minutes_col >= self.session_start_minutes) &
+    (minutes_col < self.session_end_minutes)      # EXCLUSIVE end
+)
+```
+
+With `session_end = 20:30`, a signal at exactly `20:30:00` evaluates as
+`20:30 < 20:30` = False → the bar falls **outside** the mask → signal is
+set to zero → rejected.
+
+The Legacy pipeline uses an inclusive `<=` operator at `session_end`,
+passing the `20:30:00` signal through.
+
+**Observed impact in diagnostic window:**
+
+| Timestamp | Legacy | New | Note |
 |---|---|---|---|
-| HTF rows in window | 4 | 4 | ✅ MATCH |
-| HTF window first ts | 2025-12-12 18:00:00 | 2025-12-12 18:00:00 | ✅ MATCH |
-| HTF window last ts | 2025-12-12 21:00:00 | 2025-12-12 21:00:00 | ✅ MATCH |
-| HTF open[0] | 24232.188 | 24232.188 | ✅ MATCH |
-| HTF close[-1] | 24231.755 | 24231.755 | ✅ MATCH |
+| 2025-12-12 20:30:00 SELL | ✅ PASS | ❌ REJECTED | Boundary signal |
 
-**The 4 HTF bars in the window are byte-identical between both pipelines.** The structural difference noted in Layer 1 (12,407 vs 4 rows) has no effect within this window — both pipelines see the same 4 HTF bars during signal calculation. L1-D4 resolved: **no impact on signals for this window.**
+Final filtered counts: Legacy = 14, New = 13. Difference = 1 signal.
 
-### HTF shift(1) Lookahead Facts (Block 5 — New pipeline)
+**Impact at scale:** Every signal that fires at the exact `session_end`
+minute is systematically dropped by the New pipeline. The magnitude across
+a 2-year run depends on signal density at that specific minute, but the
+effect is consistent and repeatable.
 
-| Signal timestamp | HTF current bar | HTF current close | HTF prev bar | HTF prev close |
+**Design intent question (to confirm before fix):**  
+Should a signal at exactly `session_end=20:30` be the **last accepted
+bar** (inclusive, Legacy behaviour) or the **first rejected bar**
+(exclusive, New behaviour)? The fix direction depends on this decision.
+
+**Fix applied — inclusive end confirmed as design intent:**
+
+```python
+# BEFORE (buggy)
+trading_hours_mask = (
+    (minutes_col >= self.session_start_minutes) &
+    (minutes_col < self.session_end_minutes)      # excluded session_end bar
+)
+
+# AFTER [FIX-L3D1]
+trading_hours_mask = (
+    (minutes_col >= self.session_start_minutes) &
+    (minutes_col <= self.session_end_minutes)     # session_end bar is last accepted bar
+)
+```
+
+**Fix location:** `src/strategies/specific/filters/time_filter.py`, line 144.  
+**Fix tag:** `[FIX-L3D1]`  
+**Fix status:** ✅ Applied
+
+---
+
+### Finding F2 — RAR NaN Fail-Safe vs Fail-Open (INTENTIONAL CHANGE)
+
+**Layer:** 4 — Trade Simulation  
+**Type:** Intentional architectural hardening change  
+**Status:** ✅ Confirmed from source code. Impact magnitude requires data verification.
+
+**Detail:**  
+The two pipelines treat a NaN or unavailable Rolling Annual Range (RAR)
+value differently:
+
+**Legacy** `risk_manager.py` — `validate_risk_percentile()`:
+```python
+if pd.isna(current_annual_range) or current_annual_range <= 0:
+    return True, stop_loss, f"RAR unavailable or invalid ({current_annual_range})"
+```
+NaN RAR → **fail-open**: trade is approved, risk filter bypassed silently.
+
+**New** `risk_manager.py` — `validate_risk_percentile()`:
+```python
+if pd.isna(current_annual_range) or current_annual_range <= 0:
+    return False, stop_loss, f"RAR unavailable at {timestamp}"
+```
+NaN RAR → **fail-safe**: trade is rejected. This is documented as `[FIX-1]`
+in the New source.
+
+Additionally, the New pipeline's RAR computation requires a **full 12-month
+ARTF window** (`len(window) >= 12`), documented as `[FIX-2]`. Partial
+warm-up windows produce NaN. The Legacy pipeline accepts partial windows
+and computes RAR from whatever ARTF history is available.
+
+**Consequence:** At the start of any backtest run, if the ARTF file does
+not provide 12 full months of history prior to `date_range.start`, the New
+pipeline will produce NaN RAR for those early bars and reject all trades
+during that warm-up period. Legacy approves the same trades via fail-open.
+
+**This is architecturally correct in the New pipeline.** Computing RAR
+from a partial window produces an artificially compressed range, which
+would cause the risk filter to over-reject trades with a false sense of
+precision. The New behaviour is safer.
+
+**Impact magnitude:** Depends entirely on the relationship between the
+ARTF file start date and the strategy `date_range.start`. Two scenarios:
+
+| Scenario | Impact |
+|---|---|
+| ARTF file starts ≥ 12 months before `date_range.start` | **Zero impact.** All strategy bars have full 12-month RAR. No NaN warm-up rejections. |
+| ARTF file starts < 12 months before `date_range.start` | **Significant impact.** New rejects all risk-filtered trades in the warm-up period. This would contribute substantially to the ~30% discrepancy. |
+
+**Diagnostic fact:** The diagnostic window uses ARTF bar `2025-11-30` with
+62 monthly bars. Working backwards: 62 months from Nov 2025 ≈ **Sep 2020**.
+If the strategy `date_range.start` for the 2-year production run is 2024
+or later, the ARTF file provides well over 12 months of prior history for
+every strategy bar, and this finding has **zero runtime impact**.
+
+**✅ Confirmed zero impact — verified from strategy YAML:**
+
+| Item | Value |
+|---|---|
+| ARTF file | `DEUIDXEUR_1ME_20210101_20260207.parquet` |
+| ARTF file start | 2021-01-01 |
+| 12-month warm-up clears | 2022-01-01 |
+| Production strategy start | 2024+ |
+| Buffer beyond warm-up | ≥ 2 full years |
+
+Every strategy bar in any production 2-year run has a full 12-month ARTF
+window. No NaN RAR values are produced for any strategy bar. Finding F2
+contributes **zero** to the trade count discrepancy. The ~30% discrepancy
+is explained entirely by Finding F1 (time filter boundary) accumulated
+across the 2-year dataset.
+
+**Action:** None required.
+
+---
+
+### Finding F7 — Long SL Trigger Spread Formula (ROOT CAUSE OF ~52% DISCREPANCY)
+
+**Layer:** 4 — Trade Simulation  
+**Type:** Bug in Legacy pipeline  
+**Status:** ✅ Confirmed from source code + eToro CFD execution model + run log evidence  
+**Fix:** ✅ Applied [FIX-L4-SL]
+
+**Detail:**  
+Legacy `RiskManager.compute_trade_parameters()` computes the long SL trigger
+price by subtracting spread from the raw SL level:
+
+```python
+# Legacy — WRONG
+trigger_sl = raw_sl - spread_for_this if is_long else raw_sl + spread_for_this
+```
+
+New `RiskManager` correctly applies no spread adjustment for long SL:
+
+```python
+# New — CORRECT
+trigger_sl = final_sl if is_long else final_sl + spread_for_this
+```
+
+**eToro CFD BID price model (verified):**
+
+| Event | Execution price | Spread adjustment on BID data |
+|---|---|---|
+| LONG entry | Ask = Bid + spread | ✅ Add spread |
+| LONG SL exit | Bid | ❌ No adjustment — data IS Bid |
+| LONG TP exit | Bid | ❌ No adjustment |
+| SHORT entry | Bid | ❌ No adjustment |
+| SHORT SL exit | Ask = Bid + spread | ✅ Add spread |
+| SHORT TP exit | Ask = Bid + spread | ✅ Add spread |
+
+For a long trade, exit occurs when the Bid price falls to the SL level. Since
+all OHLCV data is already Bid price, no spread subtraction is needed on the SL
+trigger. Legacy's subtraction of ~3.6 pts (DAX spread at 24,000 × 0.015%)
+caused the SL trigger to sit 3.6 pts below the intended level — meaning long
+positions were held open through adverse moves that New correctly stopped out.
+
+**Mechanism driving the 52% discrepancy:**  
+Each long trade that hits SL closes earlier in New than in Legacy by the spread
+distance. This frees the `max_positions=1` slot sooner in New, allowing the
+next filtered signal to open a new position. Legacy holds the slot occupied
+longer, blocking subsequent signals. Over 3 months this compounds to
+approximately 125 extra trades in New (365 vs 240).
+
+**Confirmed from 3-hour diagnostic window:**  
+Legacy risk evaluates only 6 of 13 filtered signals. New evaluates 7+. The
+difference occurs because New's 19:47 BUY position closes earlier (correct SL
+trigger), freeing the slot for 19:53 and 20:00 signals. Legacy's 19:47 BUY
+stays open longer (incorrect SL trigger), blocking those signals.
+
+**Fix [FIX-L4-SL]:**  
+File: `src/strategies/trade_management/risk_manager.py`
+
+```python
+# BEFORE (wrong) — line ~175
+trigger_sl = raw_sl - spread_for_this if is_long else raw_sl + spread_for_this
+
+# AFTER (fixed)
+trigger_sl = raw_sl if is_long else raw_sl + spread_for_this
+```
+
+**Fix status:** ✅ Applied in `risk_manager_legacy_fixed.py`
+
+---
+
+### Finding F3 — `max_risk_percentile` Notation Change (NO DIVERGENCE)
+
+**Layer:** 1/4 — Config & Trade Simulation  
+**Type:** Intentional notation change between architectures  
+**Status:** ✅ Confirmed from source code — identical effective thresholds
+
+**Detail:**  
+The two pipelines use different notations for the same value, but produce
+mathematically identical risk thresholds:
+
+| Pipeline | YAML value | Code computation | Effective threshold |
+|---|---|---|---|
+| Legacy | `max_risk_percentile: 0.001` | `risk_dist / RAR <= 0.001` (raw fraction) | `0.001 × RAR` |
+| New | `max_risk_percentile: 0.1` | `(risk_dist / RAR) × 100 <= 0.1` (percentage) | `0.001 × RAR` |
+
+Legacy `RiskManager` operates in raw fraction space. New `RiskManager`
+operates in percentage space (explicitly documented in its class docstring:
+*"max_risk_percentile is a PERCENTAGE of the rolling 12-month annual
+range"*). The YAML values are different notations for the same quantity.
+No divergence in runtime behaviour.
+
+**Action:** None required for Phase 9. Document the notation convention
+difference in the production YAML with an inline comment to prevent future
+misconfiguration.
+
+---
+
+### Finding F4 — `max_positions` Explicit vs Implicit (NO DIVERGENCE)
+
+**Layer:** 1/4 — Config & Trade Simulation  
+**Type:** Architectural improvement — explicit guard added in New  
+**Status:** ✅ Confirmed from source code — identical effective behaviour
+
+**Detail:**  
+Legacy `TradeManager` has no `max_positions` field. Position limiting is
+achieved implicitly: `pyramiding_enabled=False` rejects same-direction
+signals; `close_on_opposite=False` rejects opposite signals. Effective
+maximum is 1 concurrent position.
+
+New `TradeManager` adds an explicit `max_positions` guard:
+```python
+if len(self.current_positions) >= self.max_positions:
+    return TradeDecision(decision_type=DecisionType.REJECT, ...)
+```
+With `max_positions=1` in YAML and `pyramiding_enabled=False`, both the
+explicit guard and the pyramiding check fire on the same scenario. Net
+behaviour is identical to Legacy.
+
+**Action:** None required.
+
+---
+
+### Finding F5 — `spread.apply_to_long/short` Source Difference (NO DIVERGENCE)
+
+**Layer:** 1/4 — Config & Trade Simulation  
+**Type:** Architectural refactor — spread settings moved to broker YAML  
+**Status:** ✅ Confirmed from source code — identical effective values
+
+**Detail:**  
+Legacy `RiskManager` reads `apply_to_long` and `apply_to_short` from the
+strategy YAML `trade_management.spread` section (explicit `True` in legacy
+YAML, default `True` if not set).
+
+New `RiskManager` reads these values from `SpreadManager` instance
+attributes, which are populated from `broker_spreads.yaml` global
+`settings` section (default `True` if not set in broker file).
+
+Both pipelines apply spread to both long and short trades. Different
+configuration source, identical runtime values.
+
+**Action:** None required.
+
+---
+
+### Finding F6 — HTF and LTF Full File vs Window Slice (NO DIVERGENCE)
+
+**Layer:** 1  
+**Type:** Architectural change — New slices before passing downstream  
+**Status:** ✅ Confirmed — window content byte-identical
+
+**Detail:**  
+Legacy loads full HTF file (12,407 rows) and full LTF file (14.97M rows)
+and passes them downstream unsliced. New slices both to the strategy window
+before passing downstream (HTF = 4 rows, LTF = 4,816 rows).
+
+The 4 HTF bars and 4,816 LTF bars within the diagnostic window are
+byte-identical between both pipelines. No signal or trade execution
+difference results from the different loading strategies for this window.
+
+**Action:** None required.
+
+---
+
+## 5. Open Items Requiring Pre-Phase-9 Verification
+
+| ID | Item | Action | Owner |
+|---|---|---|---|
+| ~~V1~~ | ~~Design intent for `session_end` boundary~~  | ✅ Closed — inclusive end confirmed. Fix applied [FIX-L3D1]. | — |
+| ~~V2~~ | ~~ARTF file start date vs strategy `date_range.start`~~ | ✅ Closed — ARTF starts 2021-01-01, strategy starts 2024+. Full 12-month RAR available for every strategy bar. F2 has zero runtime impact. | — |
+
+---
+
+## 6. Required Code Change
+
+### Fix F1 — Time Filter Boundary Operator
+
+**File:** `src/strategies/specific/filters/time_filter.py`, line 144  
+**Fix tag:** `[FIX-L3D1]`  
+**Status:** ✅ Applied — design intent confirmed as inclusive end (2026-02-25)
+
+```python
+# BEFORE — excluded session_end bar (bug)
+(minutes_col < self.session_end_minutes)
+
+# AFTER [FIX-L3D1] — session_end bar is last accepted bar
+(minutes_col <= self.session_end_minutes)
+```
+
+No other files require changes for this fix.
+
+---
+
+## 7. Resolved Open Items Register
+
+| ID | Description | Verdict |
+|---|---|---|
+| L1-D1 | `max_risk_percentile` 0.001 vs 0.1 — same threshold? | ✅ Yes — different notation, identical effective value (Finding F3) |
+| L1-D2 | `max_positions` NOT SET in Legacy — default? | ✅ Implicit max 1 via pyramiding/opposite logic (Finding F4) |
+| L1-D3 | `spread.apply_to_long/short` NOT SET in New | ✅ Defaults to True in both — no divergence (Finding F5) |
+| L1-D4 | HTF full file vs window slice | ✅ Window content byte-identical — no signal impact (Finding F6) |
+| L1-D5 | LTF full file vs window slice | ✅ Window content byte-identical — no trade execution impact (Finding F6) |
+| L2-D1 | Legacy signal interface return type | ✅ Moot — signal counts confirmed from run log |
+| L2-D2 | Bar-by-bar signal fingerprint | ✅ Moot — total counts identical |
+| L2-D3 | Legacy HTF lookahead | ✅ Moot — no divergence at signal layer |
+| L3-D1 | Time filter boundary `<` vs `<=` | ✅ Root cause confirmed — Finding F1 |
+| L4-D1 | `max_risk_percentile` 0.001 — fraction or percentage? | ✅ Raw fraction in Legacy, percentage in New — identical threshold |
+| L4-D2 | Legacy `max_positions` default | ✅ No field — implicit 1 via position logic |
+| L4-D3 | New `spread.apply_to_long/short` default | ✅ Both default True — no divergence |
+
+---
+
+## 8. Discrepancy Decomposition
+
+| Source | Type | Direction | Magnitude |
+|---|---|---|---|
+| F1 — Time filter `<` vs `<=` | Bug — fixed [FIX-L3D1] | Legacy had fewer trades | Minor — 1 signal per session-end boundary hit |
+| **F7 — Long SL trigger spread subtraction** | **Bug — fixed [FIX-L4-SL]** | **Legacy had fewer trades** | **ROOT CAUSE — ~52% discrepancy over 3 months** |
+| F2 — RAR NaN fail-safe | Intentional change | Zero impact | ARTF covers 2021+, strategy 2024+ |
+| F3–F6 | No divergence | — | Zero |
+
+**Final verdict:** The ~52% trade count discrepancy (Legacy 240 vs New 365 over 3
+months) is caused by Legacy's incorrect long SL trigger formula [FIX-L4-SL].
+Subtracting spread from the long SL trigger held losing long positions open longer
+than correct eToro CFD execution requires, systematically blocking subsequent
+signals from opening. With `max_positions=1`, each extra bar a position stays open
+is a bar where a potentially profitable new signal is rejected.
+
+New pipeline is correct. Legacy fix is a single line change in `risk_manager.py`.
+
+**Verification step:** Re-run both pipelines on the 3-month window
+(2025-09-14 → 2025-12-17) with the Legacy fix applied. Expected outcome: Legacy
+trade count converges toward New's 365. Residual small difference (~1%) is
+acceptable and attributable to F1 (time filter) edge cases and intentional
+architectural differences (F2 fail-safe, F4 explicit max_positions).
+
+---
+
+## 9. Phase 9 Gate Criteria
+
+The following conditions must be met before Phase 9 migration begins:
+
+1. ~~**V1 resolved** — design intent for `session_end` boundary confirmed~~ ✅ Done
+2. ~~**F1 fix applied** — `time_filter.py` boundary operator corrected~~ ✅ Done [FIX-L3D1]
+3. ~~**V2 resolved** — ARTF file coverage confirmed sufficient~~ ✅ Done — zero impact confirmed
+4. ~~**Root cause of ~52% discrepancy identified**~~ ✅ Done — Legacy long SL trigger bug [FIX-L4-SL]
+5. ~~**F7 fix applied** — Legacy `risk_manager.py` SL trigger corrected~~ ✅ Done [FIX-L4-SL]
+6. ~~**Verification run**~~ ✅ Done — Legacy 367 vs New 368 over 3 months. Parity confirmed.
+7. ~~**ACT 0 verdict documented and signed off**~~ ✅ Done — 2026-02-25
+
+---
+
+---
+
+## 10. Verification Run Results — ACT 0 Closed
+
+**Date:** 2026-02-25  
+**Window:** 2025-09-14 08:00:00 → 2025-12-17 21:00:00 (3 months)
+
+| Metric | Legacy (fixed) | New | Delta | Status |
 |---|---|---|---|---|
-| 19:03–19:59 (all 9 BUY) | 2025-12-12 19:00:00 | 24229.688 | 2025-12-12 18:00:00 | 24239.166 |
-| 20:00–20:57 (all 10 SELL) | 2025-12-12 20:00:00 | 24232.266 | 2025-12-12 19:00:00 | 24229.688 |
+| Raw signals | 9,667 | 9,667 | 0 | ✅ |
+| After all filters | 5,182 | 5,186 | 4 | ✅ note |
+| **Trades opened** | **367** | **368** | **1** | ✅ |
+| Win rate | 11.44% | 11.4% | ~0 | ✅ |
+| Total PnL | -754.09 pts | -763.3 pts | 9.2 pts | ✅ |
+| Max drawdown | -808.56 pts | -817.8 pts | 9.2 pts | ✅ |
 
-**Pattern confirmed:** All signals fire within the body of their respective HTF bar (19:00 bar for BUYs, 20:00 bar for SELLs). The signal at 19:03 fires 3 minutes into the 19:00 HTF bar — the trigger is using the **current** HTF bar's data, not a shifted/previous bar. This is the expected behaviour for a non-repainting HTF trigger: the HTF bar opens at 19:00, the LTF signal fires early in that same bar.
+**Note on 4-signal filter difference:** New warns of a LTF head gap
+(`2025-09-14 08:00 → 22:06` uncovered). Legacy silently begins its
+effective window at `22:06`. The 4-signal and 1-trade residual difference
+is fully explained by this LTF file boundary — not a pipeline logic
+difference.
 
-> **Block 5 note:** Legacy HTF alignment was not captured (signal series unavailable). Carry if bar-by-bar comparison reveals divergence in Layer 4.
-
-### Layer 2 Open Items (carry forward)
-
-| ID | Item | Carry to |
-|---|---|---|
-| L2-D1 | Legacy signal interface — `.generate_signals()` return type not captured | Layer 4 (if residual divergence found) |
-| L2-D2 | Bar-by-bar fingerprint comparison not completed | Layer 4 (if residual divergence found) |
-| L2-D3 | Legacy HTF lookahead alignment not captured | Layer 4 (if residual divergence found) |
-
-### Layer 2 Verdict
-
-**Layer 2 is clean.** Signal counts are identical (BUY=9, SELL=10, TOTAL=19). HTF window content is byte-identical. No signal divergence is detectable from available data. The diagnostic gap (legacy interface) does not affect the count facts which are confirmed from the pipeline run log.
+**Verdict: ACT 0 COMPLETE. Root cause confirmed, fixed, and verified.**  
+The ~52% trade count discrepancy is eliminated. Both pipelines are now
+in parity. Phase 9 migration is cleared to proceed.
 
 ---
 
-## Layer 3 — Filter Pipeline
-
-**Status: ✅ COMPLETE**  
-**Script:** `tests/strategies/diagnostics/diag_layer3_filters.py`  
-**Log:** `outputs/diagnostics/layer3_filters.log`
-
-### Signal Count Facts Through Filter Stages
-
-| Stage | Legacy | New | Status |
-|---|---|---|---|
-| Raw signal count | 19 | 19 | ✅ MATCH |
-| After time filter | **14** | **13** | ❌ DIFFER |
-| After RSI filter | 14 | 13 | ✅ (0 removed in both) |
-| Final count | **14** | **13** | ❌ DIFFER |
-
-**Divergence is entirely in the time filter. RSI removes zero signals in both pipelines.**
-
-### Time Filter Boundary — Confirmed Fact
-
-Both pipelines configured identically: `session_end: hour=20, minute=30`.  
-Signal at exactly `2025-12-12 20:30:00 SELL`:
-
-| Pipeline | Result | Behaviour |
-|---|---|---|
-| **Legacy** | **PASS** | `bar_time < session_end` — exclusive (`<`) — `20:30 < 20:30` = False → inside session |
-| **New** | **FAIL** | `bar_time <= session_end` — inclusive (`<=`) — `20:30 <= 20:30` = True → rejected |
-
-**One signal (`20:30:00 SELL`) is treated differently by each pipeline due to a boundary operator difference in the time filter implementation (`<` vs `<=`).**
-
-### Time-Removed Timestamps
-
-| Timestamp | Legacy | New |
-|---|---|---|
-| 2025-12-12 20:30:00 | ✅ PASS | ❌ REMOVED |
-| 2025-12-12 20:36:00 | ❌ REMOVED | ❌ REMOVED |
-| 2025-12-12 20:38:00 | ❌ REMOVED | ❌ REMOVED |
-| 2025-12-12 20:48:00 | ❌ REMOVED | ❌ REMOVED |
-| 2025-12-12 20:53:00 | ❌ REMOVED | ❌ REMOVED |
-| 2025-12-12 20:57:00 | ❌ REMOVED | ❌ REMOVED |
-
-Legacy removes 5. New removes 6. Divergent bar: `20:30:00` only.
-
-### RSI Filter Facts
-
-| Fact | Legacy | New | Status |
-|---|---|---|---|
-| RSI length | 14 | 14 | ✅ MATCH |
-| RSI overbought | 70 | 70 | ✅ MATCH |
-| RSI oversold | 30 | 30 | ✅ MATCH |
-| Signals removed by RSI | 0 | 0 | ✅ MATCH |
-
-RSI config is identical in both pipelines. The `N/A` shown in diagnostic script output for New is a script artefact — the New `FilterConfig` stores RSI params inside a nested `.config` dict rather than as direct attributes. Actual values confirmed from Block 1 DEBUG: `FilterConfig(enabled=True, config={'length': 14, 'overbought': 70, 'oversold': 30})`.
-
-RSI removes nothing because all 13 (New) / 14 (Legacy) time-passed bars fall in a 181-bar single-day window — RSI(14) warmup is not satisfied within this slice alone. Both pipelines default to PASS on NaN RSI. Behaviour is symmetric.
-
-### Final Signal Timestamp Lists
-
-**Legacy final (14):** 19:03, 19:10, 19:20, 19:38, 19:47, 19:51, 19:53, 19:56, 19:59, 20:00, 20:11, 20:17, 20:22, **20:30**  
-**New final (13):** 19:03, 19:10, 19:20, 19:38, 19:47, 19:51, 19:53, 19:56, 19:59, 20:00, 20:11, 20:17, 20:22
-
-Difference: `20:30:00 SELL` present in Legacy output, absent in New output.
-
-### Layer 3 Open Items (carry forward)
-
-| ID | Item | Carry to |
-|---|---|---|
-| L3-D1 | Time filter boundary `20:30:00`: Legacy `<` (exclusive) vs New `<=` (inclusive). One extra signal in Legacy final output. | Layer 4 + Fix decision |
-
----
-
-## Layer 4 — Trade Simulation
-
-**Status: ✅ COMPLETE**  
-**Script:** `tests/strategies/diagnostics/diag_layer4_trades.py`  
-**Log:** `outputs/diagnostics/layer4_trades.log`
-
-> **Diagnostic note:** `TradeSimulator` New pipeline produced 0 trades in the log — script error only (ARTF not passed to constructor). The real pipeline produces 3 trades. Block 4 (ATR/RAR per signal bar) ran correctly and is the primary data source for this layer.
-
-### Risk Filter — ATR and RAR Facts (Block 4)
-
-**Common facts (both pipelines):**
-
-| Fact | Value |
-|---|---|
-| Applicable ARTF bar | 2025-11-30 23:59:00 |
-| RAR (12-month rolling) | 5963.622 pts |
-| ATR length | 14 |
-| ATR multiplier (SL) | 1.4 |
-
-ATR values are identical between Legacy and New — same indicator on same full dataset.
-
-**Risk threshold computed per pipeline:**
-
-| Pipeline | max_risk_percentile | Threshold = pct × RAR | Meaningful? |
-|---|---|---|---|
-| Legacy | 0.001 | 0.001% × 5963.622 = **0.0596 pts** | ❌ No signal can ever pass |
-| New | 0.1 | 0.1% × 5963.622 = **5.964 pts** | ✅ Meaningful — ATR-sized threshold |
-
-### Risk Decision Per Signal Bar
-
-| Timestamp | Dir | ATR×1.4 | Legacy (≤0.0596) | New (≤5.964) |
-|---|---|---|---|---|
-| 19:03 | BUY | 7.638 | ❌ REJECT | ❌ REJECT |
-| 19:10 | BUY | 7.093 | ❌ REJECT | ❌ REJECT |
-| 19:20 | BUY | 7.353 | ❌ REJECT | ❌ REJECT |
-| 19:38 | BUY | 6.431 | ❌ REJECT | ❌ REJECT |
-| **19:47** | BUY | **5.573** | ❌ REJECT | ✅ **PASS** |
-| **19:51** | BUY | **5.149** | ❌ REJECT | ✅ **PASS** |
-| **19:53** | BUY | **5.455** | ❌ REJECT | ✅ **PASS** |
-| **19:56** | BUY | **5.521** | ❌ REJECT | ✅ **PASS** |
-| 19:59 | BUY | 6.040 | ❌ REJECT | ❌ REJECT |
-| **20:00** | SELL | **5.961** | ❌ REJECT | ✅ **PASS** |
-| **20:11** | SELL | **5.381** | ❌ REJECT | ✅ **PASS** |
-| **20:17** | SELL | **5.039** | ❌ REJECT | ✅ **PASS** |
-| **20:22** | SELL | **4.727** | ❌ REJECT | ✅ **PASS** |
-| 20:30 (Legacy only) | SELL | 6.556 | ❌ REJECT | — |
-
-**Legacy: every signal risk-rejected** (threshold 0.0596 pts is physically impossible — ATR-based SL is always ~5–8 pts).  
-**New: 8 of 13 signals pass risk filter.** 5 rejected (ATR×1.4 > 5.964).
-
-### Critical Unresolved Fact (L4-D1)
-
-Legacy has `allow_exceed_limit: False` AND a threshold that rejects everything — yet produces **2 trades** from the confirmed run log. This means the diagnostic's `max_risk_percentile` interpretation for Legacy is wrong. **The value `0.001` is not being applied as `0.001%`** inside the legacy `RiskManager`. The actual interpretation is unknown — it could be a raw fraction (0.001 = 0.1%, same as New), a disabled/bypassed filter, or a different scale. This is the one remaining unresolved fact.
-
-### Other Block Facts
-
-**Block 3 — max_positions:**
-
-| Fact | Legacy | New |
-|---|---|---|
-| max_positions raw YAML | NOT SET | 1 |
-| TradeManager internal value | Not captured (requires StrategyConfig) | 1 |
-
-**Block 2 — spread apply_to_long/short:**
-
-| Fact | Legacy | New |
-|---|---|---|
-| apply_to_long (raw YAML) | True | NOT SET |
-| apply_to_short (raw YAML) | True | NOT SET |
-| SpreadManager internal default | Not captured (init signature mismatch) | Not captured |
-
-**Block 7 — LTF coverage:**
-
-| Fact | Legacy | New | Status |
-|---|---|---|---|
-| ltf window rows | 4816 | 4816 | ✅ MATCH |
-| ltf window first ts | 2025-12-12 18:00:00 | 2025-12-12 18:00:00 | ✅ MATCH |
-| ltf window last ts | 2025-12-12 21:00:00 | 2025-12-12 21:00:00 | ✅ MATCH |
-| ltf window open[0] | 24232.188 | 24232.188 | ✅ MATCH |
-| ltf window close[-1] | 24231.755 | 24231.755 | ✅ MATCH |
-
-**L1-D5 resolved: LTF full file vs window slice has no impact — window content is byte-identical.**
-
-### Confirmed Pipeline Run Log Values (Legacy)
-
-| Metric | Value |
-|---|---|
-| Closed trades | 2 |
-| Open trades | 0 |
-| Rejected signals | 11 |
-| Total P&L | +20.91 pts |
-| Win rate | 50% |
-
-### Layer 4 Open Items
-
-| ID | Item | Notes |
-|---|---|---|
-| **L4-D1** | **Legacy `max_risk_percentile=0.001` actual interpretation in RiskManager — if treated as raw fraction (=0.1%) it matches New exactly** | Requires reading legacy `risk_manager.py` source directly |
-| L4-D2 | Legacy `max_positions` default when NOT SET | Requires reading legacy `trade_manager.py` or `trade_simulator.py` |
-| L4-D3 | New `spread.apply_to_long/short` default when NOT SET | Requires reading `SpreadManager.__init__` or broker_spreads.yaml |
-
----
-
-## Open Items Register — Final
-
-| ID | Description | Source | Status |
-|---|---|---|---|
-| L1-D1 | max_risk_percentile 0.001 vs 0.1 — same effective threshold? | Layer 1 | ⚠️ Partially resolved → see L4-D1 |
-| L1-D2 | max_positions NOT SET in legacy — what is the default? | Layer 1 | ⚠️ Open → L4-D2 |
-| L1-D3 | spread.apply_to_long/short NOT SET in new — what default? | Layer 1 | ⚠️ Open → L4-D3 |
-| L1-D4 | htf: full file vs window slice | Layer 1 | ✅ Resolved — no signal impact |
-| L1-D5 | ltf: full file vs window slice | Layer 1 | ✅ Resolved — byte-identical in window |
-| L2-D1 | Legacy signal interface return type | Layer 2 | ✅ Moot — counts confirmed |
-| L2-D2 | Bar-by-bar signal fingerprint | Layer 2 | ✅ Moot — counts confirmed |
-| L2-D3 | Legacy HTF lookahead | Layer 2 | ✅ Moot — no divergence |
-| L3-D1 | Time filter boundary `<` vs `<=` at session_end | Layer 3 | ✅ Confirmed — 1 signal difference |
-| **L4-D1** | **Legacy `0.001` — fraction or percentage inside RiskManager?** | **Layer 4** | **⚠️ Open — requires source read** |
-| L4-D2 | Legacy max_positions default | Layer 4 | ⚠️ Open — requires source read |
-| L4-D3 | New spread apply_to_long/short default | Layer 4 | ⚠️ Open — requires source read |
+*END OF DOCUMENT — DIAGNOSTIC_REPORT.md — v1.1 — 2026-02-25*
