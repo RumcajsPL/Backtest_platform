@@ -4,7 +4,7 @@ pandas==2.3.3
 numpy==2.3.5
 matplotlib==3.10.7
 seaborn==0.12.2
-ta-lib==0.4.24
+ta-lib==0.6.8  
 pandas-ta-classic==0.3.59
 
 # Backtesting and visualization libraries
