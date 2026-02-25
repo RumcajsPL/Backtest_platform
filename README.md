@@ -1,38 +1,12 @@
 📘 Backtesting Platform (BT)
 📌 Overview
-This project provides a high‑precision, data‑driven backtesting environment designed to complement TradingView rather than replace it.
-
-TradingView is good for:
-      - Live trading
-      - Charting
-      - Alerts
-      - Visual strategy development
-…but its Strategy Tester has limitations:
-      - Limited historical depth (5k–40k bars)
-      - Bar‑based execution instead of tick‑accurate simulation
-      - No realistic spread/slippage modeling
-      - No multi‑timeframe execution with true LTF fills
-
-Conclusion: TradingView is ideal for high‑level validation, but insufficient for designing a professional trading system intended for live deployment.
-
-This BT fills that gap by providing:
+This project provides a high‑precision, data‑driven backtesting environment designed to complement the very limited native broker's backtesters. It is not live trading platfor.
+This BT provides:
       - Real tick data ingestion
       - High‑quality real tick based OHLCV generation
       - All Time Frames supported - including 1 second etc.
-      - Modular strategy translation from Pine Script to Python
+      - Modular resuable, strategy builder
       - Automated backtesting, optimization, and evaluation
-BT is not intended for publication or commercial use. 
-It exists to support and improve a personal trading workflow.
-
-🧱 Design Principles
-Single Responsibility — each module does one thing well
-Separation of Concerns — data, logic, and presentation are isolated
-Reusability — modules can be reused across strategies
-Testability — each component is independently testable
-Maintainability — clear folder structure, consistent imports
-Automation Ready — scripts compatible with batch execution
-Performance First — caching, vectorization, batch and optimized data loading
-
 📊 Supported Assets (Dukascopy Naming Convention & eToro CFD Spreads)
 | Asset            | Dukascopy Datafeed Name | Spread / Fee (eToro CFD) | Unit   |
 | ---------------- | ----------------------- | ------------------------ | ------ |
@@ -50,7 +24,6 @@ Performance First — caching, vectorization, batch and optimized data loading
 | USDCAD           | usdcad                  | 1.5                      | pips   |
 | USDCHF           | usdchf                  | 1.5                      | pips   |
 | USDJPY           | usdjpy                  | 1                        | pip    |
-
 📂 Repository Structure
 Code
 project_root/
@@ -118,7 +91,6 @@ project_root/
 ├── notebooks/
 ├── tests/
 └── venv/
-
 ▶️ Core tools/packages/libraries for data analysis and backtesting
 python==3.13.9
 pandas==2.3.3
@@ -138,7 +110,6 @@ Additional packages for trade management modules
 pytz==2025.2
 Additional packages for for resource monitoring
 psutil==7.2.1
-
 🔗 Dependency Diagram
                           +----------------------+
                           |      scripts/        |
@@ -186,7 +157,6 @@ psutil==7.2.1
                           |       data/          |
                           | raw/ processed/ etc. |
                           +----------------------+
-
 🔗 Strategy python classes dependencies diagram
                                           +----------------------+
                                           |    config .yaml      |
@@ -226,7 +196,6 @@ psutil==7.2.1
                                           +----------------------+
                                           |      Backtester      |
                                           +----------------------+
-
 🧭 BT Path Resolution Model 
 All scripts and modules use a centralized path resolver: src/utils/paths.py
 This module defines:
@@ -240,7 +209,6 @@ Example:
 python from src.utils.paths import PROJECT_ROOT, LOGS_DIR, data_path
 file = data_path("processed", "ohlcv", "DEUIDXEUR_1min_20240101_20260104.csv")
 log_file = LOGS_DIR / "wbws_strategy.log"
-
 ▶️ Usage of BT tools
 1. Activate virtual environment: .\venv\Scripts\Activate.ps1
 2. Download raw tick data (.bi5, hourly, UTC): python scripts/data/download_raw_ticks.py (donwload config inside script)
@@ -251,8 +219,3 @@ log_file = LOGS_DIR / "wbws_strategy.log"
       2025-12-22 14:49:00,24252.788000,24254.777000,24249.777000,24251.799000,80305408680.000000
       2025-12-22 14:50:00,24250.755000,24252.299000,24249.255000,24249.755000,43976771420.000000
 5. Run WBWS strategy (in stand‑alone): python scripts/runners/run_wbws_strategy.py configs/strategies/wbws/wbws_strategy.yaml
-6. Run the Backtesting Orchestrator: src\backtesting\orchestrator_fixed.py configs/backtesting/wbws_backtest.yaml
-
-🔄 Development/Evolution Roadmap 
-* Migrate WBWSStrategy
-* Go with automated, parameter‑driven backtesting pipelines and algoritms (no file‑based but in‑memory execution IPC with classes)
