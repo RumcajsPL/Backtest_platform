@@ -1,4 +1,28 @@
-"""Risk management: SL/TP with R:R ratio, spread adjustments, annual range validation"""
+"""Risk management: SL/TP with R:R ratio, spread adjustments, annual range validation
+
+[FIX-L4-SL] 2026-02-25
+Corrected long SL trigger price calculation to match eToro CFD BID price model.
+
+eToro execution model (all OHLCV data is BID price):
+  LONG  entry:      Ask = Bid + spread  → add spread                (unchanged)
+  LONG  SL exit:    Bid                 → NO spread adjustment      (FIXED)
+  LONG  TP exit:    Bid                 → no spread adjustment      (unchanged)
+  SHORT entry:      Bid                 → no spread adjustment      (unchanged)
+  SHORT SL exit:    Ask = Bid + spread  → add spread                (unchanged)
+  SHORT TP exit:    Ask = Bid + spread  → add spread                (unchanged)
+
+Previous (wrong):
+    trigger_sl = raw_sl - spread_for_this if is_long else raw_sl + spread_for_this
+
+Fixed:
+    trigger_sl = raw_sl if is_long else raw_sl + spread_for_this
+
+Root cause of discrepancy: the incorrect subtraction of spread from the long SL
+trigger caused long positions to be held open longer than correct broker execution
+requires (SL needed to fall an extra ~3.6 pts beyond the intended level). This
+systematically blocked subsequent signals from opening new positions, producing
+~52% fewer trades than the New pipeline over a 3-month window.
+"""
 import pandas as pd
 import numpy as np
 import logging
@@ -75,10 +99,9 @@ class RiskManager:
     # -------------------------------------------------------------------------
     def _calculate_rolling_annual_range(self):
         """
-        Fast 12‑month RAR using monthly ARTF bars.
+        Fast 12-month RAR using monthly ARTF bars.
         Precompute RAR per month, then map to strategy timestamps.
         """
-
         if self.ohlcv_artf is None or self.ohlcv_artf.empty:
             logger.warning("Monthly ARTF data missing — annual range disabled")
             self.annual_range_series = None
@@ -92,7 +115,7 @@ class RiskManager:
         monthly = monthly.sort_index()
         monthly.index = monthly.index.normalize()
 
-        # Year‑month key
+        # Year-month key
         monthly["ym"] = monthly.index.to_period("M")
         monthly_by_ym = monthly.set_index("ym")[["high", "low"]]
 
@@ -130,9 +153,8 @@ class RiskManager:
             dtype="float32"
         )
 
-
     # -------------------------------------------------------------------------
-    # Trade parameter computation (unchanged)
+    # Trade parameter computation
     # -------------------------------------------------------------------------
     def compute_trade_parameters(self, 
                                  timestamp: pd.Timestamp,
@@ -195,8 +217,13 @@ class RiskManager:
         # Calculate TP based on R:R ratio
         tp = executed_entry + (risk_distance * rr_ratio) if is_long else executed_entry - (risk_distance * rr_ratio)
         
-        # Calculate trigger SL (chart price that triggers exit)
-        trigger_sl = raw_sl - spread_for_this if is_long else raw_sl + spread_for_this
+        # [FIX-L4-SL] Correct SL trigger per eToro BID price model:
+        #   LONG  SL: exit when Bid falls to SL level — data IS Bid, no adjustment needed
+        #   SHORT SL: exit when Bid rises to SL level, but execution at Ask = Bid + spread
+        #
+        # BEFORE (wrong): trigger_sl = raw_sl - spread_for_this if is_long else raw_sl + spread_for_this
+        # AFTER  (fixed): trigger_sl = raw_sl if is_long else raw_sl + spread_for_this
+        trigger_sl = raw_sl if is_long else raw_sl + spread_for_this
         
         return {
             'executed_entry': executed_entry,
@@ -210,7 +237,7 @@ class RiskManager:
         }
 
     # -------------------------------------------------------------------------
-    # Risk percentile validation
+    # Risk percentile validation (unchanged)
     # -------------------------------------------------------------------------
     def validate_risk_percentile(self,
                                  entry_price: float,
@@ -226,14 +253,12 @@ class RiskManager:
         
         # Fail-fast: annual range must be initialized
         if self.annual_range_series is None:
-            # If RAR not available at all, behave as "no limit"
             return True, stop_loss, "RAR not initialized"
 
         # Get current RAR
         try:
             current_annual_range = self.annual_range_series.loc[timestamp]
         except KeyError:
-            # If no RAR for this timestamp, behave as "no limit"
             return True, stop_loss, "RAR missing for timestamp"
 
         # If RAR is invalid/NaN or non-positive, do NOT block the trade

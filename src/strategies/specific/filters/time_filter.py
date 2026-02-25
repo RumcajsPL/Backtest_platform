@@ -141,7 +141,12 @@ class TimeFilter:
 
         trading_hours_mask = (
             (minutes_col >= self.session_start_minutes) &
-            (minutes_col < self.session_end_minutes)
+            (minutes_col <= self.session_end_minutes)   # [FIX-L3D1] inclusive end:
+                                                        # session_end bar is the last
+                                                        # accepted bar, not first rejected.
+                                                        # Changed from < to <= to match
+                                                        # Legacy pipeline behaviour and
+                                                        # design intent (ACT 0 / F1).
         )
 
         # Operate on numpy values — avoids pandas copy overhead
