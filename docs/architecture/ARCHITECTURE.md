@@ -1,6 +1,6 @@
 # WBWSStrategy System Architecture
-**Version**: 3.1.0 (Production Ready)
-**Date**: 2026-02-24
+**Version**: 3.2.0 (Production Ready — Analytics Integration Complete)
+**Date**: 2026-02-26
 ---
 ## Table of Contents
 1. [Who Should Read This](#who-should-read-this)
@@ -32,7 +32,7 @@ WBWSStrategy is a **contract-based backtesting engine** with **analytics** and *
 - **Dual execution modes**: `core` for maximum throughput in multi-run backtesting; `analytics` for full insight and reporting pipeline.
 - **Performance**: Vectorised hot paths throughout. LTF tick processing is gated to `analytics` mode only. O(1) data structures for trade management.
 - **Type safe**: 100% type hints, strict mypy.
-- **Modular**: Each module has exactly one responsibility. The pipeline is: data → signals → filters → trades → analytics → reports.
+- **Modular**: Each module has exactly one responsibility. The pipeline is: data → signals → filters → trades → metrics → analytics → report.
 - **Fail-fast**: All validation happens at module construction. Invalid inputs raise immediately with clear error messages.
 - **Cache-managed**: Central `CacheManager` handles all module-level caches for clean multi-run state.
 ### Pipeline at a Glance
@@ -48,34 +48,41 @@ graph TD
     H --> I[TradeSimulator]
     I --> J[TradeResult]
     J --> K[MetricsCalculator]
-    J --> L[TradeAnalytics]
-    L --> M[AnalyticsReport]
-    M --> N[ReportGenerator]
-    N --> O[HTML Report]
-    
-    P[broker_spreads.yaml] --> Q[SpreadManager]
-    Q --> I
-    R[CacheManager] --> I
-    R --> Q
-    R --> S[RiskManager]
+    K --> L[MetricsReport]
+    J --> M[TradeAnalytics]
+    L --> M
+    M --> N[AnalyticsReport]
+    N --> O[ReportGenerator]
+    O --> P[GeneratedReport / HTML]
+    Q[broker_spreads.yaml] --> R[SpreadManager]
+    R --> I
+    S[CacheManager] --> I
+    S --> R
+    S --> T[RiskManager]
+    style M fill:#1c2128,stroke:#58a6ff
+    style N fill:#1c2128,stroke:#58a6ff
+    style O fill:#1c2128,stroke:#58a6ff
+    style P fill:#1c2128,stroke:#3fb950
 ```
+**Stages 6–7 (TradeAnalytics, ReportGenerator) run only in `analytics` mode.**
+**Stage 7 is additionally gated by `output.reports.enabled: true` in the YAML.**
 ---
-## Architecture Principles to respect in each develoment, modifications, updates etc.
+## Architecture Principles to respect in each development, modification, updates etc.
 ### 1. Single Responsibility
-One module, one concern. DataLoader only loads data. SignalGenerator only generates signals. MetricsCalculator only computes metrics. No module reaches into another module's domain. Each module trusts its inputs implicitly — validation happens at configuration boundaries.
+One module, one concern. DataLoader only loads data. SignalGenerator only generates signals. MetricsCalculator only computes metrics. TradeAnalytics only generates insights. ReportGenerator only produces HTML. No module reaches into another module's domain. Each module trusts its inputs implicitly — validation happens at configuration boundaries.
 All config is created and data are validated on the level of ConfigSchema.
 ### 2. Contracts Are the Interface
 Every module accepts and returns typed, frozen dataclasses. There are no raw dicts, no shared state, no global variables passed between modules. If you need to add information that crosses a module boundary, add a field to the relevant contract — do not bypass the contract.
 ### 3. Immutability
 All contracts use frozen=True. Any module that needs to derive a field at construction time uses object.__setattr__ in __post_init__ — that is the only acceptable use. After construction, contracts are read-only.
 ### 4. Explicit Over Implicit
-No hidden defaults buried in logic. Mode-gated behaviour (core vs analytics) is explicit at every call site. Expensive operations (LTF precomputation, progressive tracking, signal ID lookups) run only when the mode requires them.
+No hidden defaults buried in logic. Mode-gated behaviour (core vs analytics) is explicit at every call site. Expensive operations (LTF precomputation, progressive tracking, signal ID lookups, analytics, report generation) run only when the mode requires them.
 ### 5. Vectorisation First
 Hot paths use numpy/pandas vectorised operations. Python loops appear only where the logic cannot be vectorised (e.g. stateful trade management). ATR computation and spread config loading are cached via the central CacheManager.
 ### 6. Fail Fast
 Invalid configuration raises immediately at construction via __post_init__ validation. There are no silent fallbacks, no auto-corrections of bad input. If a value is wrong, the system tells you before any computation begins. Missing data at runtime (e.g. RAR unavailable for a timestamp) rejects the trade — it never silently approves it.
 ### 7. Single Source of Truth
-Configuration flows from strategy_template.yaml → StrategyConfig → all modules. No module loads its own config. Spread values are read exclusively from broker_spreads.yaml — the strategy template contains only the path to this file.
+Configuration flows from strategy_template.yaml → StrategyConfig → all modules. No module loads its own config. Spread values are read exclusively from broker_spreads.yaml — the strategy template contains only the path to this file. ReportConfig is built entirely from StrategyConfig.output.reports inside the orchestrator — no report configuration exists outside the strategy YAML.
 ### 8. Cache Lifecycle Management
 All module-level caches (ATR, annual range, spread configs) are managed by a central CacheManager. Call clear_all_caches() between backtester runs to ensure clean state.
 ### 9. Code hygiene -> Test management integration
@@ -84,17 +91,17 @@ no test artifacts, no dummies, no commented-out blocks. Type hints are present a
 minimal — they document intent, not implementation. Comments explain *why*, never *what*.
 Every file is the right size: not so small it hides structure, not so large it hides complexity.
 Mockups, dummies, debug, assumptions are domain of unit test developed together with principal code.
-Ttested on real data with real conditions are integrated from early stages.
-Fail-fast principle (in Architecture Code): no assumptions, no checking different folders, no trying, no guessing.  
+Tested on real data with real conditions are integrated from early stages.
+Fail-fast principle (in Architecture Code): no assumptions, no checking different folders, no trying, no guessing.
 If something is not there: not matching, not answering, no data — the strategy aborts
-with a clear error message. Testing can retake for detailed debgging and diagnosis
+with a clear error message. Testing can retake for detailed debugging and diagnosis.
 ---
 ## Execution Modes
 The pipeline has two execution modes, selected via execution.mode in the strategy config YAML.
-| Mode       | Purpose              | What Runs                        | Typical Use        |
-|------------|----------------------|----------------------------------|--------------------|
-| core       | Maximum throughput   | Data → Signals → Filter → Trade  | Multi-run sweep    |
-| analytics  | Full pipeline        | Everything + Analytics + Report  | Single-run analysis|
+| Mode       | Purpose              | What Runs                                         | Typical Use        |
+|------------|----------------------|---------------------------------------------------|--------------------|
+| core       | Maximum throughput   | Data → Signals → Filters → Trades → Metrics       | Multi-run sweep    |
+| analytics  | Full pipeline        | Everything + TradeAnalytics + ReportGenerator     | Single-run analysis|
 ---
 ## Mode in Config YAML
 ```yaml
@@ -117,23 +124,23 @@ for params in parameter_grid:
     cache_manager.clear_all_caches()  # Clean state between runs
 ```
 ---
-### Module Responsibilities
-## DataLoader
+## Module Responsibilities
+### DataLoader
 File: src/strategies/specific/modules/data_loader.py
 Input: StrategyConfig
 Output: DataBundle
 Loads OHLCV data for the strategy timeframe, HTF, LTF, and ARTF (monthly bars). Validates all DataFrames (DatetimeIndex, OHLC columns present). Applies Parquet optimisation sequence: timestamp floor → sort index → lazy duplicate check. Caches loaded data by file mtime + size + version string. ARTF is always loaded without date slicing (apply_date_range=False) — the full file history is required for the 12-month rolling annual range window.
-## SignalGenerator
+### SignalGenerator
 File: src/strategies/specific/modules/signal_generator.py
 Input: StrategyConfig, DataBundle
 Output: SignalFrame
 Generates BUY/SELL signals by delegating to a strategy-specific indicator (e.g. WBWSTrigger). Signals are stored as int8 (1=BUY, 2=SELL, 0=none) for memory efficiency. HTF alignment uses shift(1) — no lookahead. Validates htf_period format against known pandas offset aliases.
-## FilterPipeline
+### FilterPipeline
 File: src/strategies/specific/modules/filter_pipeline.py
 Input: StrategyConfig, SignalFrame, DataFrame
 Output: FilterPipelineResult
 Runs signals through a two-stage filter: time filters first (session, day-of-week), then technical filters. Uses typed TimeFilterConfig for time filter parameters. Filter results are cached by a key that includes the data fingerprint and a hash of the filter configuration.
-## TradeSimulator
+### TradeSimulator
 File: src/strategies/specific/modules/trade_simulator.py
 Sub-modules: SpreadManager, RiskManager, TradeManager
 Input: StrategyConfig, SignalFrame, DataBundle
@@ -147,7 +154,7 @@ Central cache management via CacheManager
 In analytics mode, emits a risk filter summary log line at end of simulation
 via RiskManager.get_risk_summary() — shows checked/approved/rejected counts
 and rejection rate.
-## RiskManager
+### RiskManager
 File: src/strategies/specific/modules/risk_manager.py
 Input: StrategyConfig, OHLCV data (df_full), ARTF monthly data
 Output: TradeParameters (or None for rejected signals)
@@ -164,24 +171,21 @@ Warm-up window guard: RAR computation requires exactly 12 months of ARTF history
 partial windows during the first 12 months of the ARTF file produce NaN
 _allow_exceed_limit (bool, default False): replaces the dead risk_config dict
 from v2.3.0; wire to StrategyConfig when SL-capping feature is needed
-
 ### max_risk_percentile calibration
 max_risk_percentile is a **percentage of the 12-month rolling annual range**.
 It is timeframe-sensitive: the same percentage permits very different absolute
 SL distances depending on the strategy bar frequency.
-
 | Timeframe | Typical ATR×1.4 | Recommended range | Notes |
 |-----------|-----------------|-------------------|-------|
 | 1-min DAX | 20–70 pts       | 0.10 – 0.50 %     | Annual range ~6 000 pts → 0.5% = 30 pts ceiling |
 | 5-min DAX | 50–150 pts      | 0.30 – 1.00 %     |       |
 | 1-hour DAX| 150–400 pts     | 1.00 – 5.00 %     |       |
 | Daily DAX | 400–1 000 pts   | 5.00 – 20.0 %     |       |
-
 A value of 100.0 % or above disables the filter entirely (no rejections).
 Values calibrated for a daily chart will pass virtually all signals on a
 1-minute chart — this was the cause of the "filter appears inactive" observation
 when max_risk_percentile was set to 1.5% on 1-min DAX.
-## SpreadManager
+### SpreadManager
 File: src/strategies/specific/modules/spread_manager.py
 Input: Asset symbol, path to broker_spreads.yaml
 Output: Spread calculations in points
@@ -190,41 +194,64 @@ Single source of truth: reads exclusively from broker_spreads.yaml
 Class-level config cache via CacheManager
 Fail-fast path resolution (no hardcoded defaults)
 Exposes global broker settings (apply_to_long, apply_to_short)
-## TradeManager
+### TradeManager
 File: src/strategies/specific/modules/trade_manager.py
 Input: StrategyConfig
 Output: TradeDecision
 Manages open positions, handles entry/exit logic, enforces max concurrent trades and pyramiding rules.
 Key change (Phase 5): Now accepts StrategyConfig directly — no dict-based config.
-## MetricsCalculator
+### MetricsCalculator
 File: src/strategies/specific/modules/metrics_calculator.py
 Input: TradeResult
 Output: MetricsReport
 Computes 17 core performance metrics (win rate, profit factor, expectancy, drawdown, streaks, trades per week/day, etc.). Runs in both modes.
-## TradeAnalytics
+### TradeAnalytics
 File: src/strategies/specific/modules/trade_analytics.py
-Input: TradeResult, StrategyConfig (+ optional MetricsReport)
+Input: TradeResult, StrategyConfig, MetricsReport (optional — auto-calculates if not provided)
 Output: AnalyticsReport
-Mode: analytics only
-Generates AI-like insights across four dimensions: time performance, trade quality, risk-adjusted metrics, and executive summary with performance grade.
-## ReportGenerator
+**Mode: analytics only**
+Generates AI-like insights across four dimensions: time performance, trade quality, risk-adjusted metrics, and executive summary with performance grade (A+ to F). Metrics computed in Stage 5 are passed explicitly by the orchestrator to avoid redundant calculation.
+**Call signature:**
+```python
+analytics = TradeAnalytics.analyze(
+    trade_result=result,
+    config=config,
+    metrics=metrics,   # pre-computed MetricsReport — recommended
+)
+```
+**Key insight categories:**
+- `time` — session/hour/day performance breakdown with 6 insight rules
+- `quality` — win/loss distribution, duration patterns, exit discipline (5 rules)
+- `risk` — risk-adjusted metrics, consistency score, recovery factor (7 rules)
+- `general` — executive summary synthesis
+**Performance grade** is computed from a 4-component score (win rate, profit factor, drawdown management, consistency) → letter grade A+ to F.
+### ReportGenerator
 File: src/strategies/specific/modules/report_generator.py
 Input: AnalyticsReport, optional TradeResult, ReportConfig
 Output: GeneratedReport (HTML file + content string)
-Mode: analytics only
-Produces a single self-contained HTML file (~32KB). Features: three tabs, four Chart.js charts, dark/light theme, mobile-responsive layout.
-## CacheManager
+**Mode: analytics only (additionally gated by output.reports.enabled)**
+Produces a single self-contained HTML file (~32KB). Features: three tabs (Executive / Analytical / Raw Data), four Chart.js charts, dark/light theme, mobile-responsive layout. `ReportConfig` is always constructed from `StrategyConfig.output.reports` inside the orchestrator — it is never constructed manually by callers.
+**Call signature:**
+```python
+generated = ReportGenerator.generate(
+    analytics_report=analytics,
+    trade_result=trade_result,   # required for equity curve
+    config=report_config,        # built from StrategyConfig by orchestrator
+)
+```
+**Report location:** `output.reports.output_dir` / `report_{timestamp}.html`
+### CacheManager
 File: src/strategies/core/cache_manager.py
 Purpose: Centralised cache management for multi-run backtesting
 Manages all module-level caches:
-ATR series (RiskManager) 
+ATR series (RiskManager)
 Annual range series (RiskManager)
 Spread configs (SpreadManager)
 Provides clear_all_caches() for clean state between backtester runs.
 ---
-### Contract Reference
-## Data Layer
-## DataBundle
+## Contract Reference
+### Data Layer
+### DataBundle
 ```python
 @dataclass(frozen=True)
 class DataBundle:
@@ -238,7 +265,7 @@ class DataBundle:
     config: Optional[DataConfig]
 ```
 ---
-## DataConfig
+### DataConfig
 ```python
 @dataclass(frozen=True)
 class DataConfig:
@@ -250,22 +277,22 @@ class DataConfig:
     validation_rules: Dict[str, Any]
 ```
 ---
-## Signal Layer
-## SignalFrame
+### Signal Layer
+### SignalFrame
 ```python
 @dataclass(frozen=True)
 class SignalFrame:
     signals: pd.Series           # int8: 1=BUY, 2=SELL, 0=none
     indicator_data: Optional[pd.DataFrame]
     signal_metadata: Dict[str, Any]
-Key methods:
-count_by_type() → vectorised counts
-iter_raw() → fast iterator for core mode
-__iter__ → raises in core mode (requires indicator_data)
+# Key methods:
+# count_by_type() → vectorised counts
+# iter_raw()      → fast iterator for core mode
+# __iter__        → raises in core mode (requires indicator_data)
 ```
 ---
-## Filter Layer
-## FilterPipelineResult
+### Filter Layer
+### FilterPipelineResult
 ```python
 @dataclass(frozen=True)
 class FilterPipelineResult:
@@ -279,8 +306,8 @@ class FilterPipelineResult:
     execution_time_ms: Optional[float]
 ```
 ---
-## Trade Layer
-## TradeResult
+### Trade Layer
+### TradeResult
 ```python
 @dataclass(frozen=True)
 class TradeResult:
@@ -304,7 +331,7 @@ class TradeResult:
     execution_time_ms: Optional[float]
 ```
 ---
-## TradeParameters
+### TradeParameters
 ```python
 @dataclass(frozen=True)
 class TradeParameters:
@@ -313,51 +340,119 @@ class TradeParameters:
     stop_loss_raw: float
     stop_loss_trigger: float
     take_profit: float
-    take_profit_trigger: float  # DEC-038
-    tp_mode: str                 # DEC-037
+    take_profit_trigger: Optional[float]  # DEC-038
+    tp_mode: Optional[str]               # DEC-037
     # ... additional fields
 ```
 ---
-## Analytics Layer
-## AnalyticsReport
+### Analytics Layer
+### AnalyticsReport
 ```python
 @dataclass(frozen=True)
 class AnalyticsReport:
-    executive_summary: ExecutiveSummary
-    time_performance: TimePerformanceBreakdown
-    trade_quality: TradeQualityAnalysis
-    risk_adjusted: RiskAdjustedMetrics
-    comparative: Optional[ComparativeContext]
-    input_metrics: MetricsReport
+    executive_summary: ExecutiveSummary      # Grade + top insights + assessment
+    time_performance:  TimePerformanceBreakdown  # Session / hour / day
+    trade_quality:     TradeQualityAnalysis  # Distributions + duration
+    risk_adjusted:     RiskAdjustedMetrics   # Risk-normalised metrics
+    comparative:       Optional[ComparativeContext]
+    input_metrics:     MetricsReport
     analysis_timestamp: str
     analysis_duration_ms: float
+# Key methods:
+# get_all_insights()          → flat list of all Insight objects
+# get_critical_insights_only() → severity == "critical" only
+# get_insights_by_category(c) → filter by time/quality/risk/general
+# to_dict() / to_json()       → serialisation
+```
+---
+### ReportConfig
+```python
+@dataclass(frozen=True)
+class ReportConfig:
+    title: str = "Strategy Performance Report"
+    brand_name: str = "WBWSStrategy"
+    output_dir: Path = Path("outputs/reports")
+    include_raw_data: bool = True
+    theme: str = "dark"        # "dark" | "light"
+    chart_height_px: int = 300
+    subtitle: Optional[str] = None
+# Built by orchestrator._run_report() from StrategyConfig.output.reports.
+# Never constructed directly by callers.
+```
+---
+### GeneratedReport
+```python
+@dataclass(frozen=True)
+class GeneratedReport:
+    html_path: Path                # Where file was saved
+    html_content: str              # Full HTML string (for tests)
+    generation_duration_ms: float
+    analytics_report: AnalyticsReport
+    layers_included: List[str]     # ["executive", "analytical", "raw"]
+```
+---
+### OrchestratorResult
+```python
+@dataclass(frozen=True)
+class OrchestratorResult:
+    config: StrategyConfig
+    mode: str                      # "core" | "analytics"
+    # Always populated
+    data_bundle:   DataBundle
+    signal_frame:  SignalFrame
+    filter_result: FilterPipelineResult
+    trade_result:  TradeResult
+    metrics:       MetricsReport
+    # Analytics mode only (None in core mode)
+    analytics: Optional[AnalyticsReport]
+    report:    Optional[GeneratedReport]
+    # Timing
+    stage_durations_ms: dict
+    total_duration_ms:  float
+# Key properties:
+# total_trades, win_rate, total_pnl_points — from MetricsReport
+# report_path → Optional[Path]             — HTML file path or None
 ```
 ---
 ## Configuration Management
-## StrategyConfig (Single Source of Truth)
+### StrategyConfig (Single Source of Truth)
 All configuration flows through StrategyConfig, built from strategy_template.yaml:
 ```python
 config = StrategyConfig.from_yaml(Path("configs/strategies/my_strategy.yaml"))
 ```
 ---
-## Spread Configuration (Broker File Only)
+### Spread Configuration (Broker File Only)
 Spread values are never stored in the strategy template. Only the path to the broker file is configured:
 ```yaml
 trade_management:
   spread:
     enabled: true
     config_path: "configs/spreads/broker_spreads.yaml"  # Single source
-The broker file contains all spread definitions:
 ```
+The broker file contains all spread definitions:
 ```yaml
 spreads:
   DEUIDXEUR:
     spread_value: 0.015
     spread_type: "percentage"
-    # ...
 ```
 ---
-## Risk Filter Calibration
+### Analytics and Report Configuration
+Analytics runs automatically in analytics mode. Report generation is controlled by:
+```yaml
+output:
+  reports:
+    enabled: true              # Set false to skip HTML generation
+    output_dir: "outputs/strategies/reports/wbws"
+    theme: "dark"              # "dark" | "light"
+    chart_height_px: 300       # 100–800
+    brand_name: "WBWSStrategy" # Appears in report header + footer
+    include_raw_data: true     # Enables Raw Data tab (Layer 3)
+```
+`ReportConfig` is built from these values inside `StrategyOrchestrator._run_report()`. No report configuration exists outside the strategy YAML.
+
+---
+### Risk Filter Calibration
 `max_risk_percentile` expresses the maximum permitted SL distance as a
 **percentage of the 12-month rolling annual range** (computed from ARTF monthly
 bars). Because it normalises by annual range, the same numeric value has
@@ -368,43 +463,33 @@ trade_management:
   risk:
     max_risk_percentile: 0.20   # 0.20% of annual range
 ```
-
 **How to read the value**
-
 With an annual range of 6 000 points (typical DAX), `0.20%` permits a maximum
 SL distance of 12 points. Any signal whose `ATR × atr_multiplier_sl` exceeds
 12 points is rejected. A value of `100.0` or above disables the filter.
-
 **Calibration by timeframe (DAX, annual range ~6 000 pts)**
-
 | Timeframe | Typical SL (ATR×1.4) | Recommended range | 0.20% ceiling |
 |-----------|----------------------|-------------------|---------------|
 | 1-min     | 20 – 70 pts          | 0.10 – 0.50 %     | 12 pts        |
 | 5-min     | 50 – 150 pts         | 0.30 – 1.00 %     | 12 pts        |
 | 1-hour    | 150 – 400 pts        | 1.00 – 5.00 %     | 12 pts        |
 | Daily     | 400 – 1 000 pts      | 5.00 – 20.0 %     | 12 pts        |
-
 **Common miscalibration symptom**: setting a value appropriate for a daily
 chart (e.g. 1.5 %) on a 1-minute chart passes ~99 % of signals because the
 1-minute ATR almost never produces an SL large enough to exceed the ceiling.
 The filter runs and produces the correct result — the threshold simply admits
 nearly everything. Reduce `max_risk_percentile` until the rejection rate in
 analytics mode matches the intended filtering behaviour.
-
 **Diagnostic output** (analytics mode)
-
 RiskManager accumulates per-run counters. TradeSimulator emits one INFO log
 line at end of simulation:
-
 ```
 Risk filter summary | filter=ACTIVE | threshold=0.2000% |
 checked=1847 | approved=1203 | rejected=644 | rejection_rate=34.9%
 ```
-
 Per-trade DEBUG lines are also emitted in analytics mode showing ATR, SL
 distance, computed %, threshold, and PASS/REJECT verdict for every signal.
 Set `output.logging.level: DEBUG` in the strategy YAML to see them.
-
 ---
 ## Validation Flow
 YAML → StrategyConfig.from_yaml() → validation in __post_init__
@@ -413,7 +498,7 @@ Modules trust the config — no additional validation
 Spread values loaded by SpreadManager from broker file
 ---
 ## Cache Management
-## CacheManager
+### CacheManager
 The CacheManager provides centralized cache management:
 ```python
 class CacheManager:
@@ -421,19 +506,19 @@ class CacheManager:
         self._atr_cache: Dict[str, pd.Series] = {}
         self._annual_range_cache: Dict[str, pd.Series] = {}
         self._spread_config_cache: Dict[str, Dict] = {}
-    
+
     def clear_all_caches(self) -> None:
         """Call between backtester runs"""
         self._atr_cache.clear()
         self._annual_range_cache.clear()
         self._spread_config_cache.clear()
-    
+
     def get_atr(self, key: str) -> Optional[pd.Series]
     def set_atr(self, key: str, series: pd.Series) -> None
     # ... similar methods for other caches
 ```
 ---
-## Cache Usage Pattern
+### Cache Usage Pattern
 ```python
 # In RiskManager
 atr = self._cache_manager.get_atr(key)
@@ -443,19 +528,23 @@ if atr is None:
 ```
 ---
 ## Data Flow
-## Complete Analytics Run
+### Complete Analytics Run
 ```python
 # 1. Load config
 config = StrategyConfig.from_yaml(config_path)
+
 # 2. Load data
 loader = DataLoader(config)
 bundle = loader.load_data()
+
 # 3. Generate signals
 generator = SignalGenerator(config)
 signals = generator.generate_signals(bundle)
+
 # 4. Filter signals
 pipeline = FilterPipeline(config)
 filtered = pipeline.apply_filters(signals, bundle.strategy)
+
 # 5. Simulate trades
 simulator = TradeSimulator(config, bundle.full)
 result = simulator.simulate_trades(
@@ -465,50 +554,61 @@ result = simulator.simulate_trades(
 )
 # 6. Compute metrics
 metrics = calculate_metrics(result)
+
 # 7. Generate insights
-analytics = TradeAnalytics.analyze(result, config, metrics=metrics)
-# 8. Generate HTML report
-report = ReportGenerator.generate(
-    analytics,
+analytics = TradeAnalytics.analyze(
     trade_result=result,
-    config=ReportConfig(
-        title="Strategy Report",
-        brand_name=config.output.reports.brand_name,
-        output_dir=config.output.reports.output_dir,
-    ),
+    config=config,
+    metrics=metrics,      # pass pre-computed to avoid redundant calculation
 )
+# 8. Generate HTML report
+report_config = ReportConfig(
+    title=f"{config.output.reports.brand_name} — Performance Report",
+    brand_name=config.output.reports.brand_name,
+    output_dir=config.output.reports.output_dir,
+    include_raw_data=config.output.reports.include_raw_data,
+    theme=config.output.reports.theme,
+    chart_height_px=config.output.reports.chart_height_px,
+)
+report = ReportGenerator.generate(
+    analytics_report=analytics,
+    trade_result=result,
+    config=report_config,
+)
+print(f"Report saved: {report.html_path}")
 ```
+**Note:** In normal operation, all wiring above is handled by `StrategyOrchestrator`. Call the orchestrator directly; do not replicate this wiring in application code.
 ---
-## Multi-Run Backtester Loop
+### Multi-Run Backtester Loop
 ```python
 cache_manager = CacheManager()
 results = []
 for params in parameter_grid:
     config = build_config(params)
-    
+
     loader = DataLoader(config)
     bundle = loader.load_data()
-    
+
     generator = SignalGenerator(config)
     signals = generator.generate_signals(bundle)
-    
+
     pipeline = FilterPipeline(config)
     filtered = pipeline.apply_filters(signals, bundle.strategy)
-    
+
     simulator = TradeSimulator(config, bundle.full, cache_manager=cache_manager)
     result = simulator.simulate_trades(
         df_strategy=bundle.strategy,
         signal_frame=filtered.final_signals,
         df_ltf=bundle.ltf,
     )
-    
     metrics = calculate_metrics(result)
     results.append((params, metrics))
-    
     cache_manager.clear_all_caches()  # Reset between runs
+    # Note: analytics + report are NOT run in core/backtester mode
 ```
 ---
 ## Folder structure
+```
 project_root/
 ├── configs/
 │   ├── spreads/
@@ -518,30 +618,35 @@ project_root/
 ├── data/
 │   ├── raw/                              # Tick data (.bi5)
 │   └── processed/                        # OHLCV parquet files
+├── docs/
+│   ├── architecture/
+│   │   └── ARCHITECTURE.md              # This file
+│   └── migration/
+│       └── STRAT_RUN_GUIDE.md           # E2E validation guide
 ├── outputs/
-│   └── strategies/                       
+│   └── strategies/
 │       ├── logs/
-│       └── reports/
+│       └── reports/                      # Generated HTML reports
 ├── scripts/
 │   └── runners/
 │       └── run_strategy.py               # CLI entry point
 └── src/
     ├── config/                           # Core infrastructure
-    │   └── config_schema.py            # Central Config manager for all strategy modules
+    │   └── config_schema.py             # Central Config manager for all strategy modules
     └── strategies/
-        ├── contracts/                     # All typed contracts
-        ├── core/                          
-        │   └── cache_manager.py            # Central cache management
+        ├── contracts/                    # All typed contracts
+        ├── core/
+        │   └── cache_manager.py         # Central cache management
         ├── specific/
-        │   ├── modules/                     # Pipeline modules
-        │   └── filters/                      # Time+Technical filters
-        └── utils/                            # Utilities
+        │   ├── modules/                  # Pipeline modules
+        │   └── filters/                  # Time+Technical filters
+        └── utils/                        # Utilities
             ├── paths.py
             └── structured_logger.py
-
-## Full list of files building E2E strategy architecture. 
+```
+## Full list of files building E2E strategy architecture.
     • configs\strategies\strategy_template.yaml
-    • configs\spreads\broker_spreads.yaml    
+    • configs\spreads\broker_spreads.yaml
     • scripts\runners\run_strategy.py (specific runner of strategy E2E integration)
     • src\config\config_schema.py
     • src\core\cache_manager.py
@@ -581,7 +686,7 @@ project_root/
     • src\strategies\specific\filters\time_filter.py
 ---
 ## Integration Guide
-## Complete Imports
+### Complete Imports
 ```python
 from src.strategies.specific.modules.data_loader import DataLoader
 from src.strategies.specific.modules.signal_generator import SignalGenerator
@@ -592,15 +697,16 @@ from src.strategies.specific.modules.trade_analytics import TradeAnalytics
 from src.strategies.specific.modules.report_generator import ReportGenerator
 from src.strategies.core.cache_manager import CacheManager
 from src.config.config_schema import StrategyConfig
+from src.strategies.contracts.report_contracts import ReportConfig
 ```
 ---
-## Loading Config
+### Loading Config
 ```python
 config = StrategyConfig.from_yaml(Path("configs/strategies/my_strategy.yaml"))
 ```
 The config template at configs/strategies/strategy_template.yaml documents every available key. Note that spread values must be defined in broker_spreads.yaml — the template only contains the path. See [Risk Filter Calibration](#risk-filter-calibration) for guidance on setting max_risk_percentile correctly for your timeframe.
 ---
-## Cache Management in Backtester
+### Cache Management in Backtester
 ```python
 cache_manager = CacheManager()
 
@@ -610,29 +716,32 @@ for params in parameter_grid:
 ```
 ---
 ### Design Patterns
-## Immutable Contracts
+### Immutable Contracts
 All contracts are frozen=True dataclasses. Derived fields computed at construction use object.__setattr__ in __post_init__.
-Optional Parameters
+### Optional Parameters
 ```python
-analytics = TradeAnalytics.analyze(trade_result, config)  # auto-metrics
-analytics = TradeAnalytics.analyze(trade_result, config, metrics=pre_computed)
+analytics = TradeAnalytics.analyze(trade_result, config)               # auto-metrics
+analytics = TradeAnalytics.analyze(trade_result, config, metrics=pre_computed)  # explicit
 ```
+The orchestrator always uses the explicit form — metrics are pre-computed in Stage 5.
 ---
-## Validation in __post_init__
+### Validation in __post_init__
 All validation happens at construction. If a contract is in memory, it is valid.
-## Mode-Gated Behaviour
-``` python
-if mode == "analytics":
-    ltf_data = self._preprocess_ltf(data_bundle.ltf)
-    logger.info("LTF precomputed: %d ticks", len(ltf_data))
+### Mode-Gated Behaviour
+```python
+if effective_mode == "analytics":
+    analytics = self._run_analytics(trade_result, metrics, effective_mode)
+    if self._config.output.reports.enabled:
+        report = self._run_report(analytics, trade_result)
 ```
+Both guards must be true for the HTML report to be generated. Analytics always runs in analytics mode regardless of `output.reports.enabled`.
 ---
-## Centralised Cache Management
+### Centralised Cache Management
 ```python
 class RiskManager:
     def __init__(self, config, ..., cache_manager=None):
         self._cache_manager = cache_manager or CacheManager()
-    
+
     def _get_atr(self, prices, length):
         key = self._make_key(prices, length)
         cached = self._cache_manager.get_atr(key)
@@ -654,13 +763,19 @@ class RiskManager:
 2. Create SignalGenerator subclass or replace indicator reference
 3. Copy strategy_template.yaml and fill in strategy-specific parameters
 4. Select which technical filters to enable
-5. Extending the Analytics Layer
-6. Add new dataclass contract to analytics_contracts.py
-7. Add field to AnalyticsReport
-8. Implement analysis method in trade_analytics.py
-9. Add insights to get_all_insights()
+### Extending the Analytics Layer
+1. Add new dataclass contract to analytics_contracts.py
+2. Add field to AnalyticsReport
+3. Implement analysis method in trade_analytics.py
+4. Add insights to get_all_insights()
 ### Extending the Report
 ReportGenerator builds HTML through four internal methods. Add a new section by adding a method that returns an HTML string and inserting its output in _build_html.
+### Adding a New Analytics Dimension
+1. Define contracts in analytics_contracts.py (frozen dataclass + to_dict())
+2. Implement _analyze_*() staticmethod in TradeAnalytics
+3. Add field to AnalyticsReport
+4. Wire call in TradeAnalytics.analyze() and pass result to AnalyticsReport constructor
+5. Add rendering in ReportGenerator._build_layer2_analytical() or _build_layer3_raw()
 ---
 The codebase is **production-ready** and fully compliant with all architectural principles.
-*Last updated: 2026-02-24 | Version 3.1.0 (Production Ready)*
+*Last updated: 2026-02-26 | Version 3.2.0 (Production Ready — Analytics Integration Complete)*

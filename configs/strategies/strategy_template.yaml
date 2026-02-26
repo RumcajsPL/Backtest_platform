@@ -32,8 +32,8 @@ data:
     artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
 
   date_range:
-    start: "2025-09-14 08:00:00"   # Format: YYYY-MM-DD HH:MM:SS 
-    end:   "2025-12-17 21:00:00"
+    start: "2025-09-15 08:30:00"   # Format: YYYY-MM-DD HH:MM:SS 
+    end:   "2025-12-17 20:30:00"
 
   timezone: "CET"
 
@@ -46,7 +46,7 @@ data:
 # [GENERIC] EXECUTION
 # -----------------------------------------------------------------------------
 execution:
-  mode: "analytics"  # "core" | "analytics"
+  mode: "core"  # "core" | "analytics"
 
 
 # -----------------------------------------------------------------------------
@@ -146,7 +146,7 @@ trade_management:
     atr_length: 14
     atr_multiplier_sl: 1.4
     tp_mode: "rr_ratio"
-    risk_to_reward_ratio: 6.7
+    risk_to_reward_ratio: 7
     atr_multiplier_tp: 7.98
     max_risk_percentile: 0.23 #In % => 0.15 stands for 0.15% | 100 stands for 100% => max risk percentile disabled
 
@@ -161,7 +161,7 @@ trade_management:
 # -----------------------------------------------------------------------------
 output:
   reports:
-    enabled: true
+    enabled: false
     output_dir: "outputs/strategies/reports/wbws"
     theme: "dark"           # "dark" | "light"
     chart_height_px: 300    # Valid range: 100–800

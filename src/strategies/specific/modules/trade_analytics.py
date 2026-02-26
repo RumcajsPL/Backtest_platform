@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.strategies.contracts.trade_contracts import TradeResult, Trade
     from src.strategies.contracts.metrics_contracts import MetricsReport
-    from configs.config_schema import StrategyConfig
+    from src.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1082,7 +1082,7 @@ class TradeAnalytics:
         metrics: "MetricsReport",
     ) -> Optional[ComparativeContext]:
         """Placeholder — implemented in Session 16."""
-        logger.warning("_analyze_comparative_context: NOT IMPLEMENTED (Session 16)")
+        logger.debug("_analyze_comparative_context: NOT IMPLEMENTED (Session 16)")
         return ComparativeContext(
             vs_baseline=None,
             statistical_flags=[],

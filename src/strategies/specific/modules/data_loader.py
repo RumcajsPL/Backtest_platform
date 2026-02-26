@@ -529,7 +529,7 @@ class DataLoader:
                         f"tail gap [{ltf_end} → {dr_end}] "
                         f"({(dr_end - ltf_end).days}d uncovered at end)"
                     )
-                logger.warning(
+                logger.info(
                     "LTF file does not fully cover the strategy date_range — %s. "
                     "LTF file: [%s → %s]. Strategy window: [%s → %s]. "
                     "Trades in uncovered bars will close at end-of-data price. "

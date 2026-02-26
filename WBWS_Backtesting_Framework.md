@@ -1,15 +1,15 @@
-# 📊 WBWS Backtesting & Optimization Framework  
-**Systematic Strategy Evaluation, Optimization & Robustness Testing**
+# 📊 Backtesting & Optimization Framework Project 
+**Systematic Strategy Evaluation, Optimization & Robustness Automatic Testing**
 # Environement OS = Microsoft Windows [version 10.0.22621.4317]
 ---
 ## 1. General Description
-The **WBWS Backtesting & Optimization Framework** is designed to go beyond simple strategy testing.  
+The **Backtesting & Optimization Framework** is designed to go beyond simple strategy testing.  
 Its goal is to **systematically evaluate, optimize, and validate trading strategies** under realistic market conditions while controlling:
 - Risk exposure  
 - Overfitting  
 - Execution bias  
 - Random performance effects  
-The framework focuses on **robustness and long-term stability**, not just short-term profitability.
+The framework focuses on **automatation, robustness and long-term stability**
 ---
 ## 2. Core Philosophy
 The framework is built around the following principles:
@@ -19,7 +19,35 @@ The framework is built around the following principles:
 - **No curve-fitting** – Validation across time and randomness  
 - **Modular architecture** – Easy to extend with new filters and logic  
 ---
-## 3. High-Level Backtest Flow
+## Architecture Principles to respect in each develoment, modifications, updates etc.
+### 1. Single Responsibility
+One module, one concern. No module reaches into another module's domain. Each module trusts its inputs implicitly — validation happens at configuration boundaries.
+All config is created and data are validated on the 
+### 2. Contracts Are the Interface
+Every module accepts and returns typed, frozen dataclasses. There are no raw dicts, no shared state, no global variables passed between modules. If you need to add information that crosses a module boundary, add a field to the relevant contract — do not bypass the contract.
+### 3. Immutability
+All contracts use frozen=True. Any module that needs to derive a field at construction time uses object.__setattr__ in __post_init__ — that is the only acceptable use. After construction, contracts are read-only.
+### 4. Explicit Over Implicit
+No hidden defaults buried in logic. Mode-gated behaviour (core vs analytics) is explicit at every call site. Expensive operations (LTF precomputation, progressive tracking, signal ID lookups) run only when the mode requires them.
+### 5. Vectorisation First
+Hot paths use numpy/pandas vectorised operations. Python loops appear only where the logic cannot be vectorised (e.g. stateful trade management). ATR computation and spread config loading are cached via the central CacheManager.
+### 6. Fail Fast
+Invalid configuration raises immediately at construction via __post_init__ validation. There are no silent fallbacks, no auto-corrections of bad input. If a value is wrong, the system tells you before any computation begins. Missing data at runtime (e.g. RAR unavailable for a timestamp) rejects the trade — it never silently approves it.
+### 7. Single Source of Truth
+Configuration flows from strategy_template.yaml → StrategyConfig → all modules. No module loads its own config. Spread values are read exclusively from broker_spreads.yaml — the strategy template contains only the path to this file.
+### 8. Cache Lifecycle Management
+All module-level caches (ATR, annual range, spread configs) are managed by a central CacheManager. Call clear_all_caches() between backtester runs to ensure clean state.
+### 9. Code hygiene -> Test management integration
+Architecture Code delivered has no MagicMocks, no debug flags, no print statements,
+no test artifacts, no dummies, no commented-out blocks. Type hints are present and
+minimal — they document intent, not implementation. Comments explain *why*, never *what*.
+Every file is the right size: not so small it hides structure, not so large it hides complexity.
+Mockups, dummies, debug, assumptions are domain of unit test developed together with principal code.
+Ttested on real data with real conditions are integrated from early stages.
+Fail-fast principle (in Architecture Code): no assumptions, no checking different folders, no trying, no guessing.  
+If something is not there: not matching, not answering, no data — the strategy aborts
+with a clear error message. Testing can retake for detailed debgging and diagnosis
+## 3. High-Level Backtest Flow (example only not design decision)
 ```
 [Random Search]
       ↓
@@ -29,7 +57,7 @@ The framework is built around the following principles:
       ↓
 [Monte Carlo]
       ↓
-[Final Report]
+[Final Report and Analytics]
 ```
 ### Detailed Pipeline Flow
 ```

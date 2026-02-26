@@ -8,10 +8,19 @@ Architecture:
             → ReportGenerator.generate()
                 → GeneratedReport (HTML file + in-memory content)
 
--Hardened: 2026-02-20  Session 20 Block I
-+Hardened: 2026-02-20  Session 20 Block I
-+Hardened: Block 5     — [L4] Dict → Dict[str, str] in all colour-param signatures;
-+          rows: List → List[tuple] in table helper signatures.
+Hardened: 2026-02-20  Session 20 Block I
+Hardened: Block 5     — [L4] Dict → Dict[str, str] in all colour-param signatures;
+          rows: List → List[tuple] in table helper signatures.
+Fixed:    2026-02-26  — [C1] Analytical tab infinite expand bug resolved.
+          Root cause: Chart.js responsive resize loop triggered when tab becomes
+          visible. canvas had no height constraint so container grew on every
+          redraw cycle. Two-part fix:
+            CSS: .chart-card canvas gets explicit height:{h}px + max-height cap
+                 on .chart-card so the container cannot grow beyond its initial size.
+            JS:  animation: {duration: 0} on all Chart constructors prevents the
+                 animation frame from triggering a second layout pass that
+                 restarts the loop. maintainAspectRatio forced false on all charts
+                 (was already set but now explicit at the plugin level too).
 
 Three-layer report structure:
     Layer 1 — EXECUTIVE  : Grade badge, assessment, top insights
@@ -125,29 +134,7 @@ class ReportGenerator:
         trade_result: Optional["TradeResult"] = None,
         config: Optional[ReportConfig] = None,
     ) -> GeneratedReport:
-        """Build HTML report and save to disk.
-
-        Parameters
-        ----------
-        analytics_report:
-            Complete ``AnalyticsReport`` from ``TradeAnalytics.analyze()``.
-            Must not be ``None``.
-        trade_result:
-            Raw trades required for the equity curve.  If ``None``, the equity
-            curve section shows an informative placeholder (Fix 1).
-        config:
-            Visual + output configuration.  Defaults applied when ``None``.
-
-        Returns
-        -------
-        GeneratedReport
-            Contains ``html_path`` (saved file) and ``html_content`` (string).
-
-        Raises
-        ------
-        ValueError
-            If ``analytics_report`` is ``None``.
-        """
+        """Build HTML report and save to disk."""
         if analytics_report is None:
             raise ValueError(
                 "analytics_report must not be None — "
@@ -192,7 +179,6 @@ class ReportGenerator:
         trade_result: Optional["TradeResult"],
         config: ReportConfig,
     ) -> str:
-        """Assemble the full, self-contained HTML document."""
         colours    = DARK_THEME if config.theme == "dark" else LIGHT_THEME
         chart_data = ReportGenerator._build_chart_data(trade_result, analytics_report)
 
@@ -231,7 +217,6 @@ class ReportGenerator:
             else ""
         )
 
-        # brand_name wired from config (Block I)
         brand = config.brand_name
 
         return f"""<!DOCTYPE html>
@@ -299,7 +284,7 @@ class ReportGenerator:
   <span class="meta-sep">·</span>
   <span>Analysis took {analytics_report.analysis_duration_ms:.1f}ms</span>
   <span class="meta-sep">·</span>
-  <span>{brand} ReportGenerator v1.1</span>
+  <span>{brand} ReportGenerator v1.2</span>
 </footer>
 
 <script>
@@ -317,14 +302,12 @@ class ReportGenerator:
         report: AnalyticsReport,
         colours: Dict[str, str],
     ) -> str:
-        """Grade badge, assessment, top insights, strengths, improvements."""
         es = report.executive_summary
         m  = report.input_metrics
         ra = report.risk_adjusted
 
         grade_colour = GRADE_COLOURS_DARK.get(es.performance_grade, colours["accent"])
 
-        # ── KPI strip ─────────────────────────────────────────────────────────
         pnl_colour = colours["green"] if m.total_pnl_points >= 0 else colours["red"]
         pf_colour  = (
             colours["green"]  if m.profit_factor >= 1.5 else
@@ -348,7 +331,6 @@ class ReportGenerator:
             for lbl, v, c in kpis
         )
 
-        # ── Critical insights ──────────────────────────────────────────────────
         insights_html = ""
         for insight in es.critical_insights:
             icon      = SEVERITY_ICON.get(insight.severity, "•")
@@ -377,7 +359,6 @@ class ReportGenerator:
         if not insights_html:
             insights_html = '<div class="no-data">No critical insights generated.</div>'
 
-        # ── Strengths & improvements ───────────────────────────────────────────
         strengths_html = "".join(
             f'<li class="strength-item"><span class="str-icon">✓</span>{s}</li>'
             for s in (es.key_strengths or ["No clear strengths identified"])
@@ -390,7 +371,6 @@ class ReportGenerator:
         return f"""    <!-- LAYER 1: EXECUTIVE -->
     <section class="exec-section">
 
-      <!-- Grade hero -->
       <div class="grade-hero">
         <div class="grade-ring" style="border-color:{grade_colour}; box-shadow:0 0 40px {grade_colour}30">
           <div class="grade-letter" style="color:{grade_colour}">{es.performance_grade}</div>
@@ -402,16 +382,13 @@ class ReportGenerator:
         </div>
       </div>
 
-      <!-- KPI strip -->
       <div class="kpi-strip">{kpi_html}</div>
 
-      <!-- Top insights -->
       <div class="section-block">
         <h2 class="section-heading">🎯 Key Insights</h2>
         <div class="insights-grid">{insights_html}</div>
       </div>
 
-      <!-- Strengths + Improvements 2-col -->
       <div class="two-col">
         <div class="card">
           <h3 class="card-heading green-head">📈 Strengths</h3>
@@ -436,35 +413,33 @@ class ReportGenerator:
         config: ReportConfig,
         chart_data: Dict,
     ) -> str:
-        """Charts + full insight detail with confidence badges."""
         tp = report.time_performance
         tq = report.trade_quality
         ra = report.risk_adjusted
         h  = config.chart_height_px
 
-        # ── Equity chart card (Fix 1: always render — placeholder when no data) ─
         if chart_data.get("equity_labels"):
             equity_section = f"""
       <div class="card chart-card">
         <h3 class="card-heading">Equity Curve</h3>
-        <canvas id="chart-equity" height="{h}"></canvas>
+        <div class="chart-wrap" style="height:{h}px">
+          <canvas id="chart-equity"></canvas>
+        </div>
       </div>"""
         else:
             equity_section = f"""
       <div class="card chart-card chart-placeholder">
         <h3 class="card-heading">Equity Curve</h3>
-        <div class="placeholder-body">
+        <div class="placeholder-body" style="height:{h}px">
           <span class="placeholder-icon">📈</span>
           <p class="placeholder-msg">Pass <code>trade_result</code> to
           <code>ReportGenerator.generate()</code> to enable the equity curve.</p>
         </div>
       </div>"""
 
-        # ── All-insights accordion ─────────────────────────────────────────────
         all_insights = list(tp.insights) + list(tq.insights) + list(ra.insights)
         insights_detail = ReportGenerator._build_insights_accordion(all_insights, colours)
 
-        # ── Risk metrics table ─────────────────────────────────────────────────
         risk_rows = [
             ("Return / Max DD",    f"{ra.return_over_max_dd:.2f}"),
             ("Avg Win / Avg Loss", f"{ra.avg_win_over_avg_loss:.2f}"),
@@ -476,7 +451,6 @@ class ReportGenerator:
             ["Metric", "Value"], risk_rows, colours
         )
 
-        # ── Duration breakdown ─────────────────────────────────────────────────
         dur = tq.duration_analysis
         dur_rows: List = [
             ("Average",            f"{dur.avg_bars:.1f} bars"),
@@ -497,24 +471,28 @@ class ReportGenerator:
         return f"""    <!-- LAYER 2: ANALYTICAL -->
     <section class="analytical-section">
 
-      <!-- Charts row -->
       <div class="charts-grid">
         {equity_section}
         <div class="card chart-card">
           <h3 class="card-heading">Session Performance</h3>
-          <canvas id="chart-sessions" height="{h}"></canvas>
+          <div class="chart-wrap" style="height:{h}px">
+            <canvas id="chart-sessions"></canvas>
+          </div>
         </div>
         <div class="card chart-card">
           <h3 class="card-heading">Win / Loss Distribution</h3>
-          <canvas id="chart-winloss" height="{h}"></canvas>
+          <div class="chart-wrap" style="height:{h}px">
+            <canvas id="chart-winloss"></canvas>
+          </div>
         </div>
         <div class="card chart-card">
           <h3 class="card-heading">Trade Duration</h3>
-          <canvas id="chart-duration" height="{h}"></canvas>
+          <div class="chart-wrap" style="height:{h}px">
+            <canvas id="chart-duration"></canvas>
+          </div>
         </div>
       </div>
 
-      <!-- Risk metrics + Duration -->
       <div class="two-col">
         <div class="card">
           <h3 class="card-heading">Risk-Adjusted Metrics</h3>
@@ -527,7 +505,6 @@ class ReportGenerator:
         </div>
       </div>
 
-      <!-- Full insights -->
       <div class="section-block">
         <h2 class="section-heading">All Insights ({len(all_insights)})</h2>
         {insights_detail}
@@ -544,12 +521,10 @@ class ReportGenerator:
         report: AnalyticsReport,
         colours: Dict[str, str],
     ) -> str:
-        """Collapsible tables: base metrics / session / hour / day."""
         tp = report.time_performance
         ra = report.risk_adjusted
         m  = report.input_metrics
 
-        # ── Session table ──────────────────────────────────────────────────────
         session_rows = [
             (
                 sm.session_name, str(sm.trades),
@@ -566,7 +541,6 @@ class ReportGenerator:
             session_rows, colours,
         )
 
-        # ── Hour table — only hours with at least 1 trade (Fix 2) ─────────────
         hour_rows = [
             (f"{h:02d}:00", str(sm.trades), f"{sm.win_rate:.1f}%",
              f"{sm.total_pnl:+.1f}", f"{sm.avg_pnl:+.2f}")
@@ -578,7 +552,6 @@ class ReportGenerator:
             hour_rows, colours,
         )
 
-        # ── Day table ──────────────────────────────────────────────────────────
         day_order = [
             "Monday", "Tuesday", "Wednesday", "Thursday",
             "Friday", "Saturday", "Sunday",
@@ -598,7 +571,6 @@ class ReportGenerator:
             day_rows, colours,
         )
 
-        # ── Base metrics table ─────────────────────────────────────────────────
         base_rows = [
             ("Total Trades",  str(m.total_trades)),
             ("Win Rate",      f"{m.win_rate:.2f}%"),
@@ -639,10 +611,8 @@ class ReportGenerator:
         trade_result: Optional["TradeResult"],
         report: AnalyticsReport,
     ) -> Dict:
-        """Prepare all Chart.js datasets from analytics + optional trade_result."""
         data: Dict = {}
 
-        # ── Equity curve ───────────────────────────────────────────────────────
         if trade_result is not None:
             closed = sorted(
                 [t for t in trade_result.trades if t.exit is not None],
@@ -661,21 +631,18 @@ class ReportGenerator:
             data["equity_labels"] = []
             data["equity_values"] = []
 
-        # ── Session bar chart ──────────────────────────────────────────────────
         tp = report.time_performance
         session_names = list(tp.by_session.keys())
         data["session_labels"] = session_names
         data["session_pnl"]    = [tp.by_session[s].total_pnl  for s in session_names]
         data["session_wr"]     = [tp.by_session[s].win_rate   for s in session_names]
 
-        # ── Win/loss distribution ──────────────────────────────────────────────
         wd = report.trade_quality.win_distribution
         ld = report.trade_quality.loss_distribution
         data["dist_labels"] = ["Small (<3 pts)", "Medium (3–7 pts)", "Large (>7 pts)"]
         data["win_dist"]    = [wd.small_count, wd.medium_count, wd.large_count]
         data["loss_dist"]   = [ld.small_count, ld.medium_count, ld.large_count]
 
-        # ── Duration distribution ──────────────────────────────────────────────
         dur = report.trade_quality.duration_analysis
         data["dur_labels"] = ["Fast (<3 bars)", "Normal (3–10)", "Prolonged (>10)"]
         data["dur_values"] = [
@@ -695,7 +662,6 @@ class ReportGenerator:
         if not insights:
             return '<div class="no-data">No insights generated.</div>'
 
-        # Fix 4: auto-open the first critical insight
         first_critical_opened = False
         items = ""
         for ins in insights:
@@ -761,12 +727,13 @@ class ReportGenerator:
         return ReportGenerator._build_simple_table(headers, rows, colours)
 
     # ──────────────────────────────────────────────────────────
-    # CSS
+    # CSS  [C1 fix: chart-wrap + canvas height constraint]
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
     def _build_css(colours: Dict[str, str], config: ReportConfig) -> str:
         c = colours
+        h = config.chart_height_px
         return f"""
 /* ── Reset & base ────────────────────────────────────────── */
 *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -1068,10 +1035,26 @@ body {{
   margin-bottom: 16px;
 }}
 @media (max-width: 900px) {{ .charts-grid {{ grid-template-columns: 1fr; }} }}
-.chart-card canvas {{ width: 100% !important; }}
+
+/* [C1] chart-wrap: hard height container — Chart.js sizes to this, not to
+   the card. Without a fixed-height wrapper the canvas has no height anchor
+   and Chart.js's ResizeObserver triggers an infinite grow loop when the
+   Analytical tab becomes visible. overflow:hidden prevents any bleed. */
+.chart-wrap {{
+  position: relative;
+  width: 100%;
+  height: {h}px;        /* fixed height — must not be auto or % */
+  overflow: hidden;
+}}
+.chart-wrap canvas {{
+  position: absolute;
+  top: 0; left: 0;
+  width: 100% !important;
+  height: 100% !important;  /* fills wrap exactly — no resize loop */
+}}
+
 .chart-placeholder {{ display: flex; flex-direction: column; }}
 .placeholder-body {{
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1080,7 +1063,7 @@ body {{
   padding: 24px 16px;
   border: 1px dashed {c["border"]};
   border-radius: 8px;
-  min-height: 140px;
+  overflow: hidden;
 }}
 .placeholder-icon {{ font-size: 28px; opacity: 0.4; }}
 .placeholder-msg  {{
@@ -1216,24 +1199,24 @@ body {{
 """
 
     # ──────────────────────────────────────────────────────────
-    # JAVASCRIPT
+    # JAVASCRIPT  [C1 fix: animation disabled, explicit sizing]
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
     def _build_js(chart_data: Dict, colours: Dict[str, str], config: ReportConfig) -> str:
         c  = colours
-        h  = config.chart_height_px
         cd = json.dumps(chart_data)
         return f"""
-// ── Fix 5: Chart.js CDN failure handler ───────────────────
+// ── CDN failure handler ────────────────────────────────────
 (function() {{
   function showChartFallback() {{
-    document.querySelectorAll('.chart-card canvas').forEach(canvas => {{
-      const card = canvas.closest('.chart-card');
+    document.querySelectorAll('.chart-wrap').forEach(wrap => {{
+      const card = wrap.closest('.chart-card');
       if (!card) return;
-      canvas.style.display = 'none';
+      wrap.style.display = 'none';
       const fb = document.createElement('div');
       fb.className = 'placeholder-body';
+      fb.style.height = wrap.style.height || '300px';
       fb.innerHTML = '<span class="placeholder-icon">⚠️</span><p class="placeholder-msg">Charts unavailable — Chart.js CDN could not be loaded.<br>Check your internet connection or view the Raw Data tab.</p>';
       card.appendChild(fb);
     }});
@@ -1260,7 +1243,22 @@ const COLOURS = {{
 Chart.defaults.color       = '{c["muted"]}';
 Chart.defaults.font.family = "{c['font']}";
 Chart.defaults.font.size   = 11;
+
+// [C1] Global animation off — prevents the post-render layout recalculation
+// that triggers Chart.js ResizeObserver to fire again and grow the container.
+Chart.defaults.animation = false;
+
 const gridOpts = {{ color: '{c["border"]}', drawBorder: false }};
+
+// [C1] Shared options applied to every chart instance.
+// maintainAspectRatio: false is required so Chart.js respects the .chart-wrap
+// height rather than computing height from width. Without this the chart ignores
+// the container height and falls back to its default 300px-in-a-growing-div loop.
+const BASE_OPTS = {{
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+}};
 
 // ── Tab switching ──────────────────────────────────────────
 function showTab(name) {{
@@ -1284,6 +1282,7 @@ function toggleAcc(header) {{
 
 // ── Chart initialisation ───────────────────────────────────
 function initCharts() {{
+
   // Equity curve
   if (CD.equity_labels && CD.equity_labels.length > 0) {{
     const ctx = document.getElementById('chart-equity');
@@ -1303,8 +1302,7 @@ function initCharts() {{
         }}]
       }},
       options: {{
-        responsive: true,
-        maintainAspectRatio: false,
+        ...BASE_OPTS,
         plugins: {{ legend: {{ display: false }}, tooltip: {{ mode: 'index', intersect: false }} }},
         scales: {{
           x: {{ grid: gridOpts, ticks: {{ maxTicksLimit: 8, maxRotation: 0 }} }},
@@ -1339,8 +1337,7 @@ function initCharts() {{
         }}]
       }},
       options: {{
-        responsive: true,
-        maintainAspectRatio: false,
+        ...BASE_OPTS,
         plugins: {{ legend: {{ position: 'bottom' }} }},
         scales: {{
           x:  {{ grid: gridOpts }},
@@ -1376,8 +1373,7 @@ function initCharts() {{
         }}]
       }},
       options: {{
-        responsive: true,
-        maintainAspectRatio: false,
+        ...BASE_OPTS,
         plugins: {{ legend: {{ position: 'bottom' }} }},
         scales: {{
           x: {{ grid: gridOpts }},
@@ -1405,8 +1401,7 @@ function initCharts() {{
         }}]
       }},
       options: {{
-        responsive: true,
-        maintainAspectRatio: false,
+        ...BASE_OPTS,
         plugins: {{
           legend: {{ position: 'bottom' }},
           tooltip: {{ callbacks: {{ label: ctx => ctx.label + ': ' + ctx.parsed + ' trades' }} }}
@@ -1416,7 +1411,7 @@ function initCharts() {{
   }}
 }}
 
-// ── Init ───────────────────────────────────────────────────
+// ── KPI entrance animation ─────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {{
   document.querySelectorAll('.kpi-card').forEach((el, i) => {{
     el.style.opacity   = '0';
@@ -1436,7 +1431,6 @@ document.addEventListener('DOMContentLoaded', () => {{
 
     @staticmethod
     def _save_html(html: str, config: ReportConfig) -> Path:
-        """Write HTML to disk and return the path."""
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
