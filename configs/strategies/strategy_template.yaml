@@ -32,7 +32,7 @@ data:
     artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
 
   date_range:
-    start: "2025-06-14 08:00:00"   # Format: YYYY-MM-DD HH:MM:SS 
+    start: "2025-09-14 08:00:00"   # Format: YYYY-MM-DD HH:MM:SS 
     end:   "2025-12-17 21:00:00"
 
   timezone: "CET"
@@ -46,7 +46,7 @@ data:
 # [GENERIC] EXECUTION
 # -----------------------------------------------------------------------------
 execution:
-  mode: "core"  # "core" | "analytics"
+  mode: "analytics"  # "core" | "analytics"
 
 
 # -----------------------------------------------------------------------------
@@ -56,9 +56,9 @@ filters:
   time_filters:
     time_filter:
       enabled: true
-      session_start: {hour: 8, minute: 30}
+      session_start: {hour: 08, minute: 30}
       session_end:   {hour: 20, minute: 30}
-      excluded_days: []   # e.g. ["Saturday", "Sunday"]
+    #  excluded_days: ["Saturday", "Sunday"]   # e.g. ["Saturday", "Sunday"] -> placeholder for evolution
 
   filter_sequence:
     - rsi_filter
@@ -86,7 +86,7 @@ filters:
       threshold: 0.2
 
     bollinger_filter:
-      enabled: false
+      enabled: true
       length: 14
       width_ma_length: 30
       filter_multiplier: 0.5
@@ -146,9 +146,9 @@ trade_management:
     atr_length: 14
     atr_multiplier_sl: 1.4
     tp_mode: "rr_ratio"
-    risk_to_reward_ratio: 5.7
+    risk_to_reward_ratio: 6.7
     atr_multiplier_tp: 7.98
-    max_risk_percentile: 0.1 #In % => 0.15 stands for 0.15% | 100 stands for 100% => max risk percentile disabled
+    max_risk_percentile: 0.23 #In % => 0.15 stands for 0.15% | 100 stands for 100% => max risk percentile disabled
 
   position_control:
     pyramiding_enabled: false
