@@ -1,76 +1,230 @@
-"""MACD Filter (Classic only) using pandas_ta"""
+"""MACD Filter — momentum directional filter using histogram.
+
+Migrated:  Session 5  v3.0.1  (EXACT legacy computation restored)
+Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
+           collect timing); P1-CH3-3 (count_by_type removed from hot path).
+
+EXACT legacy logic
+------------------
+* Only histogram used for filtering
+* BUY:  histogram > 0  (strict)
+* SELL: histogram < 0  (strict)
+* NaN → False (numpy comparison with NaN returns False natively)
+"""
+from __future__ import annotations
+
+import logging
+from time import perf_counter
+from typing import Dict
+
+import numpy as np
 import pandas as pd
 import pandas_ta_classic as pta
-import logging
-import numpy as np
+
+from src.strategies.contracts.filter_contracts import (
+    FilterMetadata,
+    FilterResult,
+    FilterStatus,
+)
+from src.strategies.contracts.signal_contracts import SignalFrame
 
 logger = logging.getLogger(__name__)
 
+
 class MACDFilter:
-    """MACD filter - classic histogram direction for trend/momentum confirmation"""
-    
-    def __init__(self, fast_length: int = 12, slow_length: int = 26, 
-                 signal_length: int = 9, enabled: bool = True):
-        self.fast_length = int(fast_length)
-        self.slow_length = int(slow_length)
+    """MACD filter — histogram-based directional momentum gate.
+
+    Implements ``FilterProtocol`` for integration with ``FilterPipeline``.
+    """
+
+    def __init__(
+        self,
+        fast_length: int = 12,
+        slow_length: int = 26,
+        signal_length: int = 9,
+        enabled: bool = True,
+        name: str = "macd_filter",
+    ) -> None:
+        self.name = name
+        self.fast_length   = int(fast_length)
+        self.slow_length   = int(slow_length)
         self.signal_length = int(signal_length)
         self.enabled = enabled
-        
-        if self.fast_length >= self.slow_length:
-            raise ValueError(f"Fast length ({self.fast_length}) must be < Slow length ({self.slow_length})")
-    
-    def _calculate_macd(self, series: pd.Series) -> pd.DataFrame:
+
+        # Aliases used by pandas_ta call
+        self.fast   = self.fast_length
+        self.slow   = self.slow_length
+        self.signal = self.signal_length
+
+        if self.fast >= self.slow:
+            raise ValueError(
+                f"fast_length ({self.fast}) must be < slow_length ({self.slow})"
+            )
+
+    # ------------------------------------------------------------------
+    # Indicator computation
+    # ------------------------------------------------------------------
+
+    def _calculate_macd(self, series: pd.Series) -> pd.Series:
+        """Return MACD histogram only — exact legacy implementation."""
         if len(series) < self.slow_length:
-            empty = pd.Series(np.nan, index=series.index)
-            return pd.DataFrame({
-                'macd': empty, 'signal': empty, 'histogram': empty
-            })
-        
-        macd_df = pta.macd(series, fast=self.fast_length, slow=self.slow_length, 
-                           signal=self.signal_length)
-        
-        if macd_df.empty:
-            return pd.DataFrame({
-                'macd': pd.Series(np.nan, index=series.index),
-                'signal': pd.Series(np.nan, index=series.index),
-                'histogram': pd.Series(np.nan, index=series.index)
-            })
-        
-        # Build the exact column names pandas_ta uses
-        histogram_col = f"MACDh_{self.fast_length}_{self.slow_length}_{self.signal_length}"
-        
-        # Check if histogram column exists
-        if histogram_col not in macd_df.columns:
-            error_msg = f"MACD histogram column '{histogram_col}' not found. "
-            error_msg += f"Available columns: {list(macd_df.columns)}"
-            raise KeyError(error_msg)
-        
-        # Return with standard column names
-        return pd.DataFrame({
-            'histogram': macd_df[histogram_col]
-        })
-    
-    def apply_filter(self, df: pd.DataFrame, is_long: bool = True) -> pd.Series:
+            return pd.Series(np.nan, index=series.index, dtype="float32")
+
+        macd_df = pta.macd(series, fast=self.fast, slow=self.slow, signal=self.signal)
+        if macd_df is None or macd_df.empty:
+            return pd.Series(np.nan, index=series.index, dtype="float32")
+
+        hist_col = f"MACDh_{self.fast}_{self.slow}_{self.signal}"
+        if hist_col not in macd_df.columns:
+            raise KeyError(f"MACD histogram column '{hist_col}' not found in pandas_ta output.")
+
+        return macd_df[hist_col].astype("float32")
+
+    def compute_indicators(
+        self,
+        df: pd.DataFrame,
+        indicators: Dict[str, pd.Series],
+        ind_np: Dict[str, np.ndarray],
+    ) -> None:
+        """Compute MACD histogram — NaN retained for short history bars."""
+        min_length = self.slow + self.signal
+        if len(df) < min_length:
+            empty = pd.Series(np.nan, index=df.index, dtype="float32")
+            indicators["macd_histogram"] = empty
+            ind_np["macd_histogram"]     = empty.to_numpy()
+            return
+
+        hist = self._calculate_macd(df["close"])
+        indicators["macd_histogram"] = hist
+        ind_np["macd_histogram"]     = hist.to_numpy()
+
+    # ------------------------------------------------------------------
+    # Signal filtering
+    # ------------------------------------------------------------------
+
+    def apply_filter(
+        self,
+        signal_frame: SignalFrame,
+        df: pd.DataFrame,
+        indicators: Dict[str, pd.Series],
+        ind_np: Dict[str, np.ndarray],
+        mode: str = "core",
+    ) -> FilterResult:
+        """Filter signals based on MACD histogram — vectorised.
+
+        * BUY:  ``histogram > 0``  (strict; NaN → False)
+        * SELL: ``histogram < 0``  (strict; NaN → False)
+
+        Parameters
+        ----------
+        mode:
+            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+        """
+        start_time = perf_counter()
+
+        # ---- disabled fast-path ----------------------------------------
         if not self.enabled:
-            return pd.Series(True, index=df.index)
-        
-        if 'close' not in df.columns:
-            logger.warning("MACD filter requires 'close' column")
-            return pd.Series(False, index=df.index)
-        
-        try:
-            macd_df = self._calculate_macd(df['close'])
-            histogram = macd_df['histogram']
-            
-            # Classic mode: histogram direction
-            condition = histogram > 0 if is_long else histogram < 0
-            
-            # Handle NaN as False (no confirmation)
-            return condition.fillna(False)
-            
-        except KeyError as e:
-            logger.error(f"MACD calculation error: {e}")
-            return pd.Series(False, index=df.index)
-        except Exception as e:
-            logger.error(f"MACD filter failed: {e}")
-            return pd.Series(False, index=df.index)
+            n = int(np.sum(signal_frame.signals.values != 0))
+            return FilterResult(
+                passed=True,
+                signal_frame=signal_frame,
+                metadata=FilterMetadata(
+                    filter_name=self.name,
+                    status=FilterStatus.SKIPPED,
+                    signals_in=n,
+                    signals_out=n,
+                    signals_rejected=0,
+                    reason="Filter disabled",
+                    execution_time_ms=(perf_counter() - start_time) * 1000,
+                ),
+            )
+
+        signal_values = signal_frame.signals.values
+        signals_in = int(np.sum(signal_values != 0))
+
+        if signals_in == 0:
+            return FilterResult(
+                passed=False,
+                signal_frame=signal_frame,
+                metadata=FilterMetadata(
+                    filter_name=self.name,
+                    status=FilterStatus.SKIPPED,
+                    signals_in=0,
+                    signals_out=0,
+                    reason="No input signals",
+                    execution_time_ms=(perf_counter() - start_time) * 1000,
+                ),
+            )
+
+        # ---- indicator guard -------------------------------------------
+        macd_histogram = ind_np.get("macd_histogram")
+        if macd_histogram is None:
+            logger.error("%s: MACD histogram not found in cache.", self.name)
+            return FilterResult(
+                passed=False,
+                signal_frame=SignalFrame(
+                    signals=pd.Series(0, index=signal_frame.signals.index, dtype="int8"),
+                    indicator_data=None,
+                    signal_metadata={"error": "indicator_missing"},
+                ),
+                metadata=FilterMetadata(
+                    filter_name=self.name,
+                    status=FilterStatus.ERROR,
+                    signals_in=signals_in,
+                    signals_out=0,
+                    reason="MACD histogram not computed",
+                    execution_time_ms=(perf_counter() - start_time) * 1000,
+                ),
+            )
+
+        # ---- vectorised filter -----------------------------------------
+        hist_values = macd_histogram.astype(np.float32)
+
+        # Default False (NaN comparisons naturally return False)
+        mask      = np.zeros(len(signal_values), dtype=bool)
+        buy_mask  = signal_values == 1
+        sell_mask = signal_values == 2
+
+        mask[buy_mask]  = hist_values[buy_mask]  > 0
+        mask[sell_mask] = hist_values[sell_mask] < 0
+
+        filtered_signals = signal_values.copy()
+        filtered_signals[~mask] = 0
+
+        signals_out      = int(np.sum(filtered_signals != 0))
+        signals_rejected = signals_in - signals_out
+
+        filtered_frame = SignalFrame(
+            signals=pd.Series(filtered_signals, index=signal_frame.signals.index, dtype="int8"),
+            indicator_data=signal_frame.indicator_data if mode == "analytics" else None,
+            signal_metadata={
+                "source": self.name,
+                "mode": mode,
+                "macd_params": {
+                    "fast_length":   self.fast_length,
+                    "slow_length":   self.slow_length,
+                    "signal_length": self.signal_length,
+                },
+            },
+        )
+
+        if signals_out == 0:
+            status, reason = FilterStatus.REJECTED, "All signals rejected (MACD histogram)"
+        elif signals_rejected == 0:
+            status, reason = FilterStatus.PASSED, "All signals passed (MACD aligned)"
+        else:
+            status, reason = FilterStatus.PASSED, f"{signals_rejected} signals rejected (MACD)"
+
+        return FilterResult(
+            passed=(signals_out > 0),
+            signal_frame=filtered_frame,
+            metadata=FilterMetadata(
+                filter_name=self.name,
+                status=status,
+                signals_in=signals_in,
+                signals_out=signals_out,
+                signals_rejected=signals_rejected,
+                reason=reason,
+                execution_time_ms=(perf_counter() - start_time) * 1000,
+            ),
+        )

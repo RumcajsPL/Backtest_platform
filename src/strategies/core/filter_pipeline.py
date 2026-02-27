@@ -1,565 +1,421 @@
+"""
+Filter Pipeline - Orchestrator for Signal Filtering
+
+Version: 2.4.0
+
+Changes from v2.3.0:
+- [BUG-1] _load_time_filter: unwrap nested 'config' key when time_filter YAML
+  uses the structured form:
+      time_filter:
+        enabled: True
+        config:
+          session_start: {hour: 0, minute: 0}
+          session_end: {hour: 23, minute: 59}
+  FilterConfig.from_dict() correctly stores {'config': {nested}} in FilterConfig.config
+  (because 'config' is not a known_key). But _load_time_filter then spread that as
+  **{'config': {nested}} into TimeFilterConfig.from_dict(), which expects flat keys
+  (session_start, session_end, excluded_days). The nested 'config' key was silently
+  ignored and TimeFilterConfig defaulted to 08:30–20:30.
+  Fix: detect the nested 'config' key in time_filter_cfg.config and unwrap it one
+  level before passing to TimeFilterConfig.from_dict(). Flat structure (no nesting)
+  continues to work unchanged.
+"""
+
+import hashlib
+import json
 import logging
-import importlib
-from typing import Dict, List, Tuple
+from typing import Dict, List, Any, Optional
+from time import perf_counter
 
 import pandas as pd
 import numpy as np
-import pandas_ta_classic as pta
 
-from src.backtesting.tools.filter_pipeline_cache import FilterPipelineCache
+from src.strategies.contracts.signal_contracts import SignalFrame
+from src.strategies.contracts.filter_contracts import (
+    FilterResult,
+    FilterMetadata,
+    FilterPipelineResult,
+    FilterStatus,
+    FilterProtocol,
+)
+from src.strategies.contracts.cache import FilterPipelineCache
+from src.config.config_schema import StrategyConfig, TimeFilterConfig
+
+# Import all filter implementations
+from src.strategies.specific.filters.time_filter import TimeFilter
+from src.strategies.specific.filters.rsi_filter import RSIFilter
+from src.strategies.specific.filters.cci_filter import CCIFilter
+from src.strategies.specific.filters.adx_filter import ADXFilter
+from src.strategies.specific.filters.bollinger_filter import BollingerFilter
+from src.strategies.specific.filters.choppiness_filter import ChoppinessFilter
+from src.strategies.specific.filters.dpo_filter import DPOFilter
+from src.strategies.specific.filters.ma_filter import MAFilter
+from src.strategies.specific.filters.macd_filter import MACDFilter
+from src.strategies.specific.filters.pivot_filter import PivotFilter
+from src.strategies.specific.filters.supertrend_filter import SupertrendFilter
 
 logger = logging.getLogger(__name__)
 
-ACRONYMS = {"rsi", "macd", "cci", "adx", "dpo", "ma"}
 
-
-def key_to_classname(key: str) -> str:
-    parts = key.split("_")
-    class_name = ""
-    for part in parts:
-        class_name += part.upper() if part in ACRONYMS else part.capitalize()
-    return class_name
-
-
-# ======================================================================
-# Base filter interface
-# ======================================================================
-class BaseFilter:
-    """
-    Unified filter interface:
-    - compute_indicators(df, indicators, ind_np)
-    - apply_filter(df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx)
-    """
-
-    def __init__(self, name: str, cfg: Dict):
-        self.name = name
-        self.cfg = cfg
-
-    def compute_indicators(
-        self,
-        df: pd.DataFrame,
-        indicators: Dict[str, pd.Series],
-        ind_np: Dict[str, np.ndarray],
-    ) -> None:
-        """Optional: compute and store indicators into indicators / ind_np."""
-        return
-
-    def apply_filter(
-        self,
-        df: pd.DataFrame,
-        raw_signals: pd.Series,
-        indicators: Dict[str, pd.Series],
-        ind_np: Dict[str, np.ndarray],
-        current_mask: np.ndarray,
-        long_idx: np.ndarray,
-        short_idx: np.ndarray,
-    ) -> np.ndarray:
-        """Must return updated mask (np.int8 array)."""
-        return current_mask
-
-
-# ======================================================================
-# Concrete filters (using existing numpy logic)
-# ======================================================================
-class RsiFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("length", 14)
-        rsi = pta.rsi(df["close"], length=length).astype("float32").fillna(50)
-        indicators["rsi"] = rsi
-        ind_np["rsi"] = rsi.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        rsi = ind_np.get("rsi")
-        if rsi is None:
-            return current_mask
-
-        ob = np.float32(self.cfg["overbought"])
-        os = np.float32(self.cfg["oversold"])
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            mask[long_idx] = (rsi[long_idx] < ob).astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = (rsi[short_idx] > os).astype(np.int8)
-
-        return mask
-
-
-class ChoppinessFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("length", 14)
-        ci = pta.chop(df["high"], df["low"], df["close"], length=length)
-        ci = ci.astype("float32").fillna(50)
-        indicators["choppiness"] = ci
-        ind_np["choppiness"] = ci.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        ci = ind_np.get("choppiness")
-        if ci is None:
-            return current_mask
-
-        thr = np.float32(self.cfg["threshold"])
-        cond = ci < thr
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            mask[long_idx] = cond[long_idx].astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = cond[short_idx].astype(np.int8)
-
-        return mask
-
-
-class BollingerFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("length", 14)
-        std = self.cfg.get("std_dev", 2.0)
-        bb = pta.bbands(df["close"], length=length, std=std)
-        if bb.empty:
-            return
-
-        basis = bb[f"BBM_{length}_{std}"]
-        upper = bb[f"BBU_{length}_{std}"]
-        lower = bb[f"BBL_{length}_{std}"]
-        bw = ((upper - lower) / basis * 100).astype("float32")
-        indicators["bbw"] = bw
-        ind_np["bbw"] = bw.to_numpy()
-
-        ma_len = self.cfg.get("width_ma_length", 30)
-        bbw_ma = bw.rolling(ma_len).mean().astype("float32")
-        indicators["bbw_ma"] = bbw_ma
-        ind_np["bbw_ma"] = bbw_ma.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        bw = ind_np.get("bbw")
-        bbw_ma = ind_np.get("bbw_ma")
-        if bw is None or bbw_ma is None:
-            return current_mask
-
-        mult = np.float32(self.cfg["filter_multiplier"])
-        cond = bw > (bbw_ma * mult)
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            mask[long_idx] = cond[long_idx].astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = cond[short_idx].astype(np.int8)
-
-        return mask
-
-
-class AdxFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("adx_length", 14)
-        adx_df = pta.adx(df["high"], df["low"], df["close"], length=length)
-        adx = adx_df[f"ADX_{length}"].astype("float32").fillna(0)
-        indicators["adx"] = adx
-        ind_np["adx"] = adx.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        adx = ind_np.get("adx")
-        if adx is None:
-            return current_mask
-
-        thr = np.float32(self.cfg["threshold"])
-        cond = adx > thr
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            mask[long_idx] = cond[long_idx].astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = cond[short_idx].astype(np.int8)
-
-        return mask
-
-
-class SupertrendFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("atr_length", 10)
-        mult = self.cfg.get("factor", 3.0)
-        st = pta.supertrend(df["high"], df["low"], df["close"], length, mult)
-        st_price = st[f"SUPERT_{length}_{mult}"].astype("float32")
-        st_dir = st[f"SUPERTd_{length}_{mult}"].astype("float32")
-        indicators["supertrend"] = st
-        ind_np["supertrend_price"] = st_price.to_numpy()
-        ind_np["supertrend_dir"] = st_dir.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        st_price = ind_np.get("supertrend_price")
-        st_dir = ind_np.get("supertrend_dir")
-        if st_price is None or st_dir is None:
-            return current_mask
-
-        close_np = df["close"].to_numpy(np.float32)
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            cond = (st_dir[long_idx] == 1) & (close_np[long_idx] > st_price[long_idx])
-            mask[long_idx] = cond.astype(np.int8)
-        if short_idx.size:
-            cond = (st_dir[short_idx] == -1) & (close_np[short_idx] < st_price[short_idx])
-            mask[short_idx] = cond.astype(np.int8)
-
-        return mask
-
-
-class MaFilter(BaseFilter):
-    def __init__(self, name: str, cfg: Dict, external_filter=None):
-        super().__init__(name, cfg)
-        self.external_filter = external_filter  # existing MA filter class if available
-
-    def compute_indicators(self, df, indicators, ind_np):
-        if self.external_filter is not None:
-            ma = self.external_filter._calculate_ma(df["close"]).astype("float32")
-        else:
-            length = self.cfg.get("length", 50)
-            ma = df["close"].rolling(length).mean().astype("float32")
-        indicators["ma"] = ma
-        ind_np["ma"] = ma.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        ma = ind_np.get("ma")
-        if ma is None:
-            return current_mask
-
-        sl = int(self.cfg.get("slope_length", 10))
-        ma_ago = np.empty_like(ma)
-        ma_ago[:] = np.nan
-        if sl < len(ma):
-            ma_ago[sl:] = ma[:-sl]
-
-        mask = np.ones_like(current_mask, dtype=np.int8)
-        if long_idx.size:
-            mask[long_idx] = (ma[long_idx] > ma_ago[long_idx]).astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = (ma[short_idx] < ma_ago[short_idx]).astype(np.int8)
-
-        return mask
-
-
-class CciFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("length", 20)
-        cci = pta.cci(df["high"], df["low"], df["close"], length).astype("float32")
-        indicators["cci"] = cci
-        ind_np["cci"] = cci.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        cci = ind_np.get("cci")
-        if cci is None:
-            return current_mask
-
-        ob = np.float32(self.cfg["overbought"])
-        os = np.float32(self.cfg["oversold"])
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            mask[long_idx] = (cci[long_idx] < ob).astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = (cci[short_idx] > os).astype(np.int8)
-
-        return mask
-
-
-class MacdFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        fast = self.cfg.get("fast_length", 12)
-        slow = self.cfg.get("slow_length", 26)
-        sig = self.cfg.get("signal_length", 9)
-        macd_df = pta.macd(df["close"], fast, slow, sig)
-        hist = macd_df[f"MACDh_{fast}_{slow}_{sig}"].astype("float32")
-        indicators["macd_hist"] = hist
-        ind_np["macd_hist"] = hist.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        hist = ind_np.get("macd_hist")
-        if hist is None:
-            return current_mask
-
-        mask = np.ones_like(current_mask, dtype=np.int8)
-        if long_idx.size:
-            mask[long_idx] = (hist[long_idx] > 0).astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = (hist[short_idx] < 0).astype(np.int8)
-        return mask
-
-
-class DpoFilter(BaseFilter):
-    def compute_indicators(self, df, indicators, ind_np):
-        length = self.cfg.get("length", 20)
-        dpo = pta.dpo(df["close"], length)
-        dpo = (dpo / df["close"] * 100).astype("float32")
-        indicators["dpo"] = dpo
-        ind_np["dpo"] = dpo.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        dpo = ind_np.get("dpo")
-        if dpo is None:
-            return current_mask
-
-        t = np.float32(self.cfg["threshold"])
-        mask = np.ones_like(current_mask, dtype=np.int8)
-
-        if long_idx.size:
-            cond = (dpo[long_idx] < 0) & (dpo[long_idx] > -t)
-            mask[long_idx] = cond.astype(np.int8)
-        if short_idx.size:
-            cond = (dpo[short_idx] > 0) & (dpo[short_idx] < t)
-            mask[short_idx] = cond.astype(np.int8)
-
-        return mask
-
-
-class PivotFilter(BaseFilter):
-    def __init__(self, name: str, cfg: Dict, external_filter=None):
-        super().__init__(name, cfg)
-        self.external_filter = external_filter
-
-    def compute_indicators(self, df, indicators, ind_np):
-        if self.external_filter is None:
-            return
-        bias = self.external_filter._calculate_pivot_structure(df).astype("int8")
-        indicators["pivot_bias"] = bias
-        ind_np["pivot_bias"] = bias.to_numpy()
-
-    def apply_filter(self, df, raw_signals, indicators, ind_np, current_mask, long_idx, short_idx):
-        bias = ind_np.get("pivot_bias")
-        if bias is None:
-            return current_mask
-
-        mask = np.ones_like(current_mask, dtype=np.int8)
-        if long_idx.size:
-            mask[long_idx] = (bias[long_idx] == 1).astype(np.int8)
-        if short_idx.size:
-            mask[short_idx] = (bias[short_idx] == -1).astype(np.int8)
-        return mask
-
-
-# ======================================================================
-# FilterPipeline v4
-# ======================================================================
 class FilterPipeline:
     """
-    FilterPipeline v4:
-    - Unified filter architecture (BaseFilter subclasses)
-    - Indicator caching
-    - Numpy-optimized core
-    - Time filter + technical filters
+    Orchestrates signal filtering through time and technical filters.
     """
 
-    def __init__(self, config: Dict, cache: FilterPipelineCache = None):
-        self.config = config
-        self.filters_cfg: Dict = config.get("filters", {})
-        self.filter_sequence: List[str] = config.get(
-            "filter_sequence",
-            [
-                "rsi_filter",
-                "choppiness_filter",
-                "bollinger_filter",
-                "adx_filter",
-                "supertrend_filter",
-                "ma_filter",
-                "pivot_filter",
-                "cci_filter",
-                "macd_filter",
-                "dpo_filter",
-            ],
-        )
+    # Filter class mapping for auto-instantiation
+    FILTER_CLASSES = {
+        "rsi_filter": RSIFilter,
+        "cci_filter": CCIFilter,
+        "adx_filter": ADXFilter,
+        "bollinger_filter": BollingerFilter,
+        "choppiness_filter": ChoppinessFilter,
+        "dpo_filter": DPOFilter,
+        "ma_filter": MAFilter,
+        "macd_filter": MACDFilter,
+        "pivot_filter": PivotFilter,
+        "supertrend_filter": SupertrendFilter,
+    }
 
-        self.filters: Dict[str, BaseFilter] = {}
-        self.indicators: Dict[str, pd.Series] = {}
-        self.ind_np: Dict[str, np.ndarray] = {}
+    def __init__(
+        self,
+        config: StrategyConfig,
+        mode: str = "core",
+        cache: Optional[FilterPipelineCache] = None,
+    ):
+        """
+        Initialize FilterPipeline with typed configuration.
+
+        Args:
+            config: Validated StrategyConfig
+            mode: Execution mode — "core" or "analytics"
+            cache: Optional cache instance (creates new if not provided)
+
+        Raises:
+            ValueError: If mode is invalid
+        """
+        valid_modes = {"core", "analytics"}
+        if mode not in valid_modes:
+            raise ValueError(
+                f"Invalid mode '{mode}'. Must be one of: {valid_modes}"
+            )
+
+        self._mode = mode
+        self.config = config
+
+        self.filter_sequence: List[str] = list(config.filters.filter_sequence)
+
+        self._filter_cfg_hash = self._compute_filter_cfg_hash(config)
 
         self.cache = cache or FilterPipelineCache()
 
+        self.indicators: Dict[str, pd.Series] = {}
+        self.ind_np: Dict[str, np.ndarray] = {}
+
+        self.time_filter: Optional[TimeFilter] = None
+        self.technical_filters: List[FilterProtocol] = []
+
+        self._load_filters()
+
+        if self._mode == "analytics":
+            # self.time_filter is now either an enabled filter or None —
+            # no need to check .enabled separately.
+            time_filter_status = "enabled" if self.time_filter is not None else "disabled/not configured"
+            logger.info(
+                f"FilterPipeline initialized: "
+                f"time_filter={time_filter_status}, "
+                f"technical_filters={len(self.technical_filters)}, "
+                f"cfg_hash={self._filter_cfg_hash}"
+            )
+
+    @staticmethod
+    def _compute_filter_cfg_hash(config: StrategyConfig) -> str:
+        """Compute stable hash of active filter configuration.
+
+        Includes both filter names and their parameter dicts — a change to
+        any active filter's name or params produces a different hash.
+        filter_sequence order is not included: the sequence governs execution
+        order but the indicator computation is order-independent and the cache
+        is keyed on what is computed, not in what order.
+        """
+        active = {
+            name: fcfg.config
+            for name, fcfg in config.filters.technical_filters.items()
+            if fcfg.enabled
+        }
+        serialized = json.dumps(active, sort_keys=True, default=str)
+        return hashlib.md5(serialized.encode()).hexdigest()[:12]
+
+    def _load_filters(self) -> None:
+        """Load and instantiate all filters from configuration."""
         self._load_time_filter()
         self._load_technical_filters()
 
-    # ------------------------------------------------------------------ #
-    # Load filters
-    # ------------------------------------------------------------------ #
-    def _load_time_filter(self):
-        from src.strategies.filters.time_filter import TimeManager
-        self.time_manager = TimeManager(self.config.get("trade_management", {}))
+    def _load_time_filter(self) -> None:
+        """
+        Initialize time filter from config using typed TimeFilterConfig.
 
-    def _load_technical_filters(self):
+        [H3] A disabled time filter (enabled: false) is NOT instantiated.
+        self.time_filter remains None, which apply_filters() treats as
+        'no time filtering required'. This ensures disabled filters produce
+        no entries in FilterPipelineResult.filter_results.
+
+        [P6] No try/except: construction errors are config bugs and must
+        propagate immediately. StrategyConfig validates the config before
+        this method is ever called.
+
+        [BUG-1] The time_filter YAML uses a nested 'config' block:
+            time_filter:
+              enabled: True
+              config:
+                session_start: {hour: 8, minute: 30}
+                session_end: {hour: 20, minute: 30}
+        FilterConfig.from_dict() stores this as FilterConfig.config = {'config': {nested}}.
+        We must unwrap that one level before passing to TimeFilterConfig.from_dict(),
+        which expects flat keys (session_start, session_end, excluded_days).
+        If the config is already flat (no nested 'config' key), it passes through unchanged.
         """
-        Build unified filter objects.
-        If external filter classes exist (ma_filter, pivot_filter), we pass them in.
-        """
-        for key, cfg in self.filters_cfg.items():
-            if not cfg.get("enabled", False):
+        time_filter_cfg = self.config.filters.time_filters.get("time_filter")
+
+        # Treat absent config and disabled config identically —
+        # in both cases self.time_filter stays None.
+        if time_filter_cfg is None or not time_filter_cfg.enabled:
+            if self._mode == "analytics":
+                reason = "not configured" if time_filter_cfg is None else "disabled"
+                logger.info(f"Time filter: {reason} — skipped")
+            return
+
+        # [BUG-1] Unwrap nested 'config' key if present.
+        # YAML form:  time_filter: {enabled: True, config: {session_start: ...}}
+        #   → FilterConfig.config = {'config': {'session_start': ...}}   ← nested
+        # Flat form:  time_filter: {enabled: True, session_start: ...}
+        #   → FilterConfig.config = {'session_start': ...}               ← already flat
+        raw_params = time_filter_cfg.config
+        if "config" in raw_params and isinstance(raw_params.get("config"), dict):
+            # Structured YAML form: unwrap the inner dict
+            inner_params = raw_params["config"]
+        else:
+            # Flat form: use as-is
+            inner_params = raw_params
+
+        typed_config = TimeFilterConfig.from_dict({
+            "enabled": time_filter_cfg.enabled,
+            **inner_params
+        })
+
+        self.time_filter = TimeFilter(
+            config=typed_config,
+            name="time_filter"
+        )
+
+        if self._mode == "analytics":
+            logger.info(
+                f"Time filter: "
+                f"{self.time_filter.session_start_hour:02d}:{self.time_filter.session_start_minute:02d}"
+                f" – "
+                f"{self.time_filter.session_end_hour:02d}:{self.time_filter.session_end_minute:02d}"
+            )
+
+    def _load_technical_filters(self) -> None:
+        """Initialize technical filters from configuration."""
+        for filter_name in self.filter_sequence:
+            filter_cfg = self.config.filters.technical_filters.get(filter_name)
+
+            if filter_cfg is None or not filter_cfg.enabled:
                 continue
 
-            if key == "rsi_filter":
-                self.filters[key] = RsiFilter(key, cfg)
-            elif key == "choppiness_filter":
-                self.filters[key] = ChoppinessFilter(key, cfg)
-            elif key == "bollinger_filter":
-                self.filters[key] = BollingerFilter(key, cfg)
-            elif key == "adx_filter":
-                self.filters[key] = AdxFilter(key, cfg)
-            elif key == "supertrend_filter":
-                self.filters[key] = SupertrendFilter(key, cfg)
-            elif key == "ma_filter":
-                external = None
-                try:
-                    module = importlib.import_module("src.strategies.filters.ma_filter")
-                    cls = getattr(module, key_to_classname("ma_filter"))
-                    external = cls(**cfg)
-                except Exception:
-                    external = None
-                self.filters[key] = MaFilter(key, cfg, external_filter=external)
-            elif key == "pivot_filter":
-                external = None
-                try:
-                    module = importlib.import_module("src.strategies.filters.pivot_filter")
-                    cls = getattr(module, key_to_classname("pivot_filter"))
-                    external = cls(**cfg)
-                except Exception:
-                    external = None
-                self.filters[key] = PivotFilter(key, cfg, external_filter=external)
-            elif key == "cci_filter":
-                self.filters[key] = CciFilter(key, cfg)
-            elif key == "macd_filter":
-                self.filters[key] = MacdFilter(key, cfg)
-            elif key == "dpo_filter":
-                self.filters[key] = DpoFilter(key, cfg)
-            else:
-                logger.warning(f"Unknown filter key in config: {key}")
+            filter_class = self.FILTER_CLASSES.get(filter_name)
+            if filter_class is None:
+                logger.warning(f"Unknown filter in sequence: '{filter_name}' — skipped")
+                continue
 
-    # ------------------------------------------------------------------ #
-    # Indicator computation with caching
-    # ------------------------------------------------------------------ #
-    def compute_indicators(self, df: pd.DataFrame):
-        """
-        Compute indicators OR load them from cache.
-        """
-        cache_id = self.cache.compute_cache_id(df)
+            try:
+                filter_instance = filter_class(
+                    name=filter_name,
+                    **filter_cfg.config
+                )
+                self.technical_filters.append(filter_instance)
+                if self._mode == "analytics":
+                    logger.info(f"Loaded filter: {filter_name}")
+            except Exception as e:
+                logger.error(f"Failed to load filter '{filter_name}': {e}")
+
+    def compute_indicators(self, df: pd.DataFrame) -> None:
+        """Compute indicators for all technical filters, or load from cache."""
+        cache_id = self.cache.compute_cache_id(df, self._filter_cfg_hash)
 
         if self.cache.has(cache_id):
             cached = self.cache.get(cache_id)
             self.indicators = cached["indicators"]
             self.ind_np = cached["indicators_np"]
-            logger.info("Loaded indicators from cache")
+            if self._mode == "analytics":
+                logger.info(
+                    f"Indicators: loaded {len(self.indicators)} from cache "
+                    f"(id={cache_id[:8]})"
+                )
             return
 
         self.indicators = {}
         self.ind_np = {}
 
-        df = df.astype("float32")
+        df_f32 = df.astype("float32")
+        compute_start = perf_counter()
 
-        for f_name in self.filter_sequence:
-            filt = self.filters.get(f_name)
-            if filt is None:
-                continue
+        for filt in self.technical_filters:
             try:
-                filt.compute_indicators(df, self.indicators, self.ind_np)
+                filt.compute_indicators(df_f32, self.indicators, self.ind_np)
             except Exception as e:
-                logger.warning(f"Failed to compute indicators for {f_name}: {e}")
+                logger.warning(
+                    f"Failed to compute indicators for '{filt.name}': {e}"
+                )
 
+        elapsed_ms = (perf_counter() - compute_start) * 1000
         self.cache.store(cache_id, self.indicators, self.ind_np)
-        logger.info("Indicators computed and cached")
 
-    # ------------------------------------------------------------------ #
-    # Time filter
-    # ------------------------------------------------------------------ #
-    def apply_time_filter(self, raw_signals: pd.Series) -> pd.Series:
-        tm = self.time_manager
-        if tm is None or not getattr(tm, "enabled", True):
-            return raw_signals.copy()
+        if self._mode == "analytics":
+            logger.info(
+                f"Indicators: computed {len(self.indicators)} in {elapsed_ms:.1f}ms "
+                f"(cached as {cache_id[:8]})"
+            )
 
-        df = pd.DataFrame({"timestamp": raw_signals.index, "signal": raw_signals.values})
-        df = df.dropna(subset=["signal"])
+    def apply_filters(
+        self,
+        signal_frame: SignalFrame,
+        df: pd.DataFrame,
+        mode: Optional[str] = None,
+    ) -> FilterPipelineResult:
+        """Apply all filters to signals (time filter first, then technical)."""
+        effective_mode = mode if mode is not None else self._mode
+        pipeline_start = perf_counter()
 
-        filtered = tm.filter_signals_by_time(df, "timestamp")
+        raw_count = int(np.sum(signal_frame.signals.values != 0))
 
-        out = pd.Series(index=raw_signals.index, dtype=object)
-        if not filtered.empty:
-            out.loc[filtered["timestamp"].values] = filtered["signal"].values
-        return out
+        filter_results: List[FilterMetadata] = []
+        rejection_reasons: Dict[str, int] = {}
 
-    # ------------------------------------------------------------------ #
-    # Full filter chain
-    # ------------------------------------------------------------------ #
-    def apply_filters(self, df: pd.DataFrame, raw_signals: pd.Series) -> Tuple[pd.Series, Dict]:
-        """
-        Apply time filter + technical filters.
-        Returns:
-            final_signals (pd.Series)
-            stats (Dict)
-        """
-        stats = {
-            "raw": {
-                "buy": int((raw_signals == "BUY").sum()),
-                "sell": int((raw_signals == "SELL").sum()),
-                "total": int(raw_signals.notna().sum()),
-            },
-            "time_filtered": {"buy": 0, "sell": 0, "total": 0, "rejected": 0},
-            "technical": {"buy": 0, "sell": 0, "total": 0, "rejected": 0},
-            "final": {"buy": 0, "sell": 0, "total": 0},
-        }
+        if effective_mode == "analytics":
+            logger.info(
+                f"FilterPipeline starting: {raw_count} raw signals"
+            )
 
-        # Time filter
-        time_filtered = self.apply_time_filter(raw_signals)
-        current = time_filtered.notna().to_numpy(np.int8)
+        # ----------------------------------------------------------------
+        # STAGE 1: Time Filter (always first, only if configured and enabled)
+        # ----------------------------------------------------------------
+        current_signals = signal_frame
+        time_filtered_count = raw_count
 
-        stats["time_filtered"]["buy"] = int((time_filtered == "BUY").sum())
-        stats["time_filtered"]["sell"] = int((time_filtered == "SELL").sum())
-        stats["time_filtered"]["total"] = int(time_filtered.notna().sum())
-        stats["time_filtered"]["rejected"] = (
-            stats["raw"]["total"] - stats["time_filtered"]["total"]
-        )
+        # self.time_filter is None when disabled or not configured —
+        # in that case the entire stage is skipped cleanly with no results entry.
+        if self.time_filter is not None:
+            time_result = self.time_filter.apply_filter(
+                signal_frame=current_signals,
+                df=df,
+                indicators=self.indicators,
+                ind_np=self.ind_np,
+                mode=effective_mode,
+            )
 
-        if current.sum() == 0:
-            return pd.Series(pd.NA, index=df.index), stats
+            current_signals = time_result.signal_frame
+            time_filtered_count = int(
+                np.sum(current_signals.signals.values != 0)
+            )
 
-        n = len(df)
-        ind = self.ind_np
-        is_long = (raw_signals == "BUY").to_numpy(bool)
-        is_short = (raw_signals == "SELL").to_numpy(bool)
-        long_idx = np.where(is_long)[0]
-        short_idx = np.where(is_short)[0]
+            filter_results.append(time_result.metadata)
 
-        # Ensure indicators are ready
-        if not self.indicators and not self.ind_np:
+            if time_result.metadata.signals_rejected > 0:
+                rejection_reasons["time_filter"] = time_result.metadata.signals_rejected
+
+            if effective_mode == "analytics":
+                logger.info(
+                    f"Time filter: {raw_count} → {time_filtered_count} "
+                    f"({time_result.metadata.signals_rejected} rejected)"
+                )
+
+            if time_filtered_count == 0:
+                pipeline_time_ms = (perf_counter() - pipeline_start) * 1000
+                if effective_mode == "analytics":
+                    logger.info("Pipeline early exit: no signals after time filter")
+                return FilterPipelineResult(
+                    final_signals=current_signals,
+                    raw_count=raw_count,
+                    time_filtered_count=0,
+                    technical_filtered_count=0,
+                    final_count=0,
+                    filter_results=filter_results,
+                    rejection_reasons=rejection_reasons,
+                    execution_time_ms=pipeline_time_ms,
+                )
+
+        # ----------------------------------------------------------------
+        # STAGE 2: Technical Filters
+        # ----------------------------------------------------------------
+        if self.technical_filters:
             self.compute_indicators(df)
 
-        for f_name in self.filter_sequence:
-            filt = self.filters.get(f_name)
-            if filt is None:
-                continue
-
+        for filt in self.technical_filters:
             try:
-                mask = filt.apply_filter(
+                result = filt.apply_filter(
+                    signal_frame=current_signals,
                     df=df,
-                    raw_signals=raw_signals,
                     indicators=self.indicators,
                     ind_np=self.ind_np,
-                    current_mask=current,
-                    long_idx=long_idx,
-                    short_idx=short_idx,
+                    mode=effective_mode,
                 )
             except Exception as e:
-                logger.warning(f"Filter {f_name} failed: {e}")
-                continue
+                logger.error(f"Filter '{filt.name}' raised an exception: {e}")
+                signals_n = int(np.sum(current_signals.signals.values != 0))
+                result = FilterResult(
+                    passed=True,
+                    signal_frame=current_signals,
+                    metadata=FilterMetadata(
+                        filter_name=filt.name,
+                        status=FilterStatus.ERROR,
+                        signals_in=signals_n,
+                        signals_out=signals_n,
+                        signals_rejected=0,
+                        reason=str(e),
+                        execution_time_ms=None,
+                    ),
+                )
 
-            if mask is None:
-                continue
+            current_signals = result.signal_frame
+            filter_results.append(result.metadata)
 
-            np.bitwise_and(current, mask, out=current)
+            if result.metadata.signals_rejected > 0:
+                rejection_reasons[filt.name] = result.metadata.signals_rejected
 
-            if current.sum() == 0:
+            if effective_mode == "analytics":
+                logger.info(
+                    f"{filt.name}: {result.metadata.signals_in} → "
+                    f"{result.metadata.signals_out} "
+                    f"({result.metadata.signals_rejected} rejected)"
+                )
+
+            if int(np.sum(current_signals.signals.values != 0)) == 0:
+                if effective_mode == "analytics":
+                    logger.info(
+                        f"Pipeline early exit: no signals after {filt.name}"
+                    )
                 break
 
-        final = raw_signals.where(pd.Series(current.astype(bool), index=df.index), pd.NA)
+        final_count = int(np.sum(current_signals.signals.values != 0))
+        pipeline_time_ms = (perf_counter() - pipeline_start) * 1000
 
-        stats["technical"]["buy"] = int((final == "BUY").sum())
-        stats["technical"]["sell"] = int((final == "SELL").sum())
-        stats["technical"]["total"] = int(final.notna().sum())
-        stats["technical"]["rejected"] = (
-            stats["time_filtered"]["total"] - stats["technical"]["total"]
+        pipeline_result = FilterPipelineResult(
+            final_signals=current_signals,
+            raw_count=raw_count,
+            time_filtered_count=time_filtered_count,
+            technical_filtered_count=final_count,
+            final_count=final_count,
+            filter_results=filter_results,
+            rejection_reasons=rejection_reasons,
+            execution_time_ms=pipeline_time_ms,
         )
-        stats["final"] = stats["technical"].copy()
 
-        return final, stats
+        if effective_mode == "analytics":
+            logger.info(
+                f"FilterPipeline complete: {raw_count} → {final_count} signals "
+                f"({pipeline_result.pass_rate:.1f}% pass rate, "
+                f"{pipeline_time_ms:.1f}ms)"
+            )
+
+        return pipeline_result
