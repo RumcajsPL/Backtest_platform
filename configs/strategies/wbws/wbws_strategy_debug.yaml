@@ -1,15 +1,10 @@
 strategy:
-  name: WBWS strategy with RSI Filter
-  description: We Buy/We Sell Trigger combined with RSI signal validation
+  name: WBWS
+  description: We Buy/We Sell Trigger based strategy
   version: 1.2.0
-  author: Backtest Platform
-  created: '2025-12-17'
-  updated: '2025-12-30'
 asset:
   symbol: DEUIDXEUR
   name: DAX 40 Index
-  exchange: EUREX
-  currency: EUR
 data:
   file: data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet #csv | parquet
   file_htf: data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet #csv | parquet
@@ -17,12 +12,8 @@ data:
   file_artf: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet #csv | parquet
   format: parquet #csv | parquet
   date_range:
-    start: '2025-09-14 08:00:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
-    end: '2025-12-17 21:00:00' 
-  validation:
-    check_ohlc: true
-    check_gaps: false
-    max_price_move: 0.1
+    start: '2025-09-12 08:30:00'   #'2025-09-14 08:00:00' '2025-12-15 08:35:39' '2025-11-16 8:35:39'
+    end: '2025-10-10 20:30:00' 
 indicator:
   name: WBWS_Trigger
   htf_period: 1H
@@ -80,14 +71,14 @@ trade_management:
     enabled: true
     atr_length: 14
     sl_multiplier: 1.4
-    risk_to_reward_ratio: 5.7
+    risk_to_reward_ratio: 7
   risk_management:
     enabled: true
-    max_risk_percentile: 0.1 # 0.0016
+    max_risk_percentile: 0.0023 # 0.0016
     allow_exceed_limit: false
   spread:
     enabled: true
-    required: false
+    required: true
     apply_to_long: true
     apply_to_short: true
     log_spread_impact: true

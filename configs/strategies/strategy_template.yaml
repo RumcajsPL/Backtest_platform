@@ -41,13 +41,11 @@ data:
   ltf_timeframe: "1s"      # LTF bar frequency — must match ltf_ohlcv file content
   artf_timeframe: "1ME"    # ARTF bar frequency — must match artf_ohlcv file content
 
-
 # -----------------------------------------------------------------------------
 # [GENERIC] EXECUTION
 # -----------------------------------------------------------------------------
 execution:
   mode: "core"  # "core" | "analytics"
-
 
 # -----------------------------------------------------------------------------
 # [GENERIC] FILTERS

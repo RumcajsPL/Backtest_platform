@@ -11,13 +11,14 @@ Its goal is to **systematically evaluate, optimize, and validate trading strateg
 - Random performance effects  
 The framework focuses on **automatation, robustness and long-term stability**
 ---
-## 2. Core Philosophy
+## 2. Core Philosophy and Architecture Principles
 The framework is built around the following principles:
-- **Automation first** – Minimal manual tuning  
+- **Automation first** – all backest pipline to run automatically with auto-optimization.   
 - **Risk awareness** – Drawdown, streaks, and ruin probability matter  
 - **Robustness over raw profit** – Stability beats lucky results  
 - **No curve-fitting** – Validation across time and randomness  
-- **Modular architecture** – Easy to extend with new filters and logic  
+- **Modular architecture** – See architecture principles for more details  
+- **Inteligent analytics** – End of backtesting pipline is 1 step. Rich analytics and statistics from backtesting help for "what if", optimization structured and adhoc data analysis. Having all   
 ---
 ## Architecture Principles to respect in each develoment, modifications, updates etc.
 ### 1. Single Responsibility
@@ -28,25 +29,25 @@ Every module accepts and returns typed, frozen dataclasses. There are no raw dic
 ### 3. Immutability
 All contracts use frozen=True. Any module that needs to derive a field at construction time uses object.__setattr__ in __post_init__ — that is the only acceptable use. After construction, contracts are read-only.
 ### 4. Explicit Over Implicit
-No hidden defaults buried in logic. Mode-gated behaviour (core vs analytics) is explicit at every call site. Expensive operations (LTF precomputation, progressive tracking, signal ID lookups) run only when the mode requires them.
+No hidden defaults buried in logic. Mode-gated behaviour (core vs analytics) is explicit at every call site. Expensive operations run when the mode requires them.
 ### 5. Vectorisation First
-Hot paths use numpy/pandas vectorised operations. Python loops appear only where the logic cannot be vectorised (e.g. stateful trade management). ATR computation and spread config loading are cached via the central CacheManager.
+Hot paths use can numpy/pandas vectorised operations. Python loops appear only where the logic cannot be vectorised. Computations and config loading are cached via the central CacheManager.
 ### 6. Fail Fast
-Invalid configuration raises immediately at construction via __post_init__ validation. There are no silent fallbacks, no auto-corrections of bad input. If a value is wrong, the system tells you before any computation begins. Missing data at runtime (e.g. RAR unavailable for a timestamp) rejects the trade — it never silently approves it.
+Invalid configuration raises immediately at construction via __post_init__ validation. There are no silent fallbacks, no auto-corrections of bad input. If a value is wrong, the system tells you before any computation begins. Missing data at runtime the backesting — it never silently approves it.
 ### 7. Single Source of Truth
-Configuration flows from strategy_template.yaml → StrategyConfig → all modules. No module loads its own config. Spread values are read exclusively from broker_spreads.yaml — the strategy template contains only the path to this file.
+Configuration flows from config file to all modules. No module loads its own config. Config file controls backtester work with defined setting and boanderies.
 ### 8. Cache Lifecycle Management
-All module-level caches (ATR, annual range, spread configs) are managed by a central CacheManager. Call clear_all_caches() between backtester runs to ensure clean state.
+All module-level caches and are managed by a central CacheManager. Call clear_all_caches() between backtester runs to ensure clean state.
 ### 9. Code hygiene -> Test management integration
-Architecture Code delivered has no MagicMocks, no debug flags, no print statements,
+Code delivered has no MagicMocks, no debug flags, no print statements,
 no test artifacts, no dummies, no commented-out blocks. Type hints are present and
 minimal — they document intent, not implementation. Comments explain *why*, never *what*.
 Every file is the right size: not so small it hides structure, not so large it hides complexity.
 Mockups, dummies, debug, assumptions are domain of unit test developed together with principal code.
-Ttested on real data with real conditions are integrated from early stages.
+Ttesting on real data with real conditions are integrated from early stages.
 Fail-fast principle (in Architecture Code): no assumptions, no checking different folders, no trying, no guessing.  
-If something is not there: not matching, not answering, no data — the strategy aborts
-with a clear error message. Testing can retake for detailed debgging and diagnosis
+If something is not there: not matching, not answering, no data — backtester aborts
+with a clear error message. Testing can retake for detailed debgging and diagnosis.
 ## 3. High-Level Backtest Flow (example only not design decision)
 ```
 [Random Search]
@@ -59,7 +60,7 @@ with a clear error message. Testing can retake for detailed debgging and diagnos
       ↓
 [Final Report and Analytics]
 ```
-### Detailed Pipeline Flow
+### Detailed Pipeline Flow (example only not design decision)
 ```
 Sampler
   ↓
@@ -79,11 +80,12 @@ Monte-Carlo
   ↓
 Robust Ranking
 ```
-## 4. Project Folder Structure
+## 4. Project Folder Structure (example only not design decision)
 From `<project root>`:
-```
+---
 script/
-└── run_wbws_strategy.py (strategy runner script uses .yaml as its config)
+└── runners/
+    └──backtest_runner.py (strategy runner script uses .yaml as its config)
 src/
 ├── backtesting/
     ├── __init__.py
@@ -112,39 +114,31 @@ src/
     │   ├── wfo_evaluator.py
     │   └── window_generator.py
 └── config/
-    └── WBWS/
-        ├── wbws_backtest.yaml (orchestrator.py yaml config)
-        └── wbws_rsi_strategy.yaml (strategy yaml config)
-```
-### Outputs
-```
+    └── backtesting/
+        └── backtest_template.yaml (backtesting orchestrator.py yaml config)
+---
+### Outputs (example only not design decision)
 outputs/
 └── backtests/
-    ├── safe/yyyymmdd_hhss/
-    |   ├── candidates.json
-    |   ├── top_candidates.json
-    |   └── strategy_report_001.json
-    ├── exploration/
-    ├── discovery/
-    └── comparison_report.json
-```
-## 5. Usage
-`python src/backtesting/orchestrator.py configs/wbws_backtest.yaml`
+    ├── reports/
+    └── logs/ 
+---
+# IMPORTANT => All below represent exemples only, the real structure and architecture will be defined during design phase
 
-## 6. The Orchestrator - `orchestrator.py`
+## 5. The Orchestrator - `orchestrator.py`
 The orchestrator is the **central control unit** of the system.
-- Loads `wbws_backtest.yaml`
+- Loads `backtest_template.yaml`
 - Generates parameter sets
 - Creates temporary strategy YAMLs
-- Calls `run_wbws_strategy.py`
-- Reads JSON / CSV outputs
+- Calls `run_strategy.py`
+- Catches strategy outputs
 - Computes fitness
 - Selects best configs
 - (Runs Walk-Forward Optimization)
 - (Runs Monte Carlo simulations)
 - Saves and compares results
 ---
-## 7. Configuration File – `wbws_backtest.yaml`
+## 6. Configuration File – `backtest_template.yaml`
 ### Optimization Zones
 | Zone | Purpose |
 |------|--------|
@@ -166,8 +160,8 @@ The orchestrator is the **central control unit** of the system.
 - min_trades_per_day: 4
 - min_expectancy: 0.2
 ---
-## 8. Main Modules
-### 8.1 Parameter Sampler
+## 7. Main Modules
+### 7.1 Parameter Sampler
 `parameter_space.py` (Expands YAML ranges into parameter grids)
 `sampler.py` (Selects smart subsets (Random / LHS))
 - Reads wbws_backtest.yaml
@@ -176,7 +170,7 @@ The orchestrator is the **central control unit** of the system.
 - Samples parameter sets (Random or Latin Hypercube)
 - Outputs ready-to-run strategy YAML configs
 - Keeps everything compatible with existing runner
-### 8.2 Fitness Evaluator
+### 7.2 Fitness Evaluator
 `metrics.py` (Extracts required metrics from JSON)
 - Total trades
 - Wins (TP)
@@ -188,7 +182,7 @@ The orchestrator is the **central control unit** of the system.
 - Profit factor
 - Trades per day
 `fitness.py` (Applies constraints + computes fitness)                      
-### 8.3 Candidate Storage & Ranking
+### 7.3 Candidate Storage & Ranking
 `candidate_store.py`
 - Appends candidates to a JSON file
 - Keeps everything structured
@@ -197,7 +191,7 @@ The orchestrator is the **central control unit** of the system.
 - Sort by fitness
 - Extract Top-N
 - Optionally filter by robustness metrics
-### 8.4 Genetic Algorithm (GA)
+### 7.4 Genetic Algorithm (GA)
 - Uses fitness (not in-sample luck)
 - Evolves parameter sets
 - Respects your parameter zones
@@ -209,7 +203,7 @@ The orchestrator is the **central control unit** of the system.
 `crossover.py`
 `mutation.py`
 `ga_engine.py`
-### 8.5 Walk-Forward Optimization (WFO)
+### 7.5 Walk-Forward Optimization (WFO)
 - Train on in-sample window
 - Test on out-of-sample window
 - Roll forward
@@ -218,7 +212,7 @@ The orchestrator is the **central control unit** of the system.
 `window_generator.py` (Defines rolling train/test splits)
 `wfo_evaluator.py` (Runs strategy per window and scores robustness)
 `wfo_engine.py` (Orchestrates rolling evaluation)
-### 8.6 Monte Carlo Testing
+### 7.6 Monte Carlo Testing
 - Trade shuffling - Order dependency
 - Return resampling - Distribution robustness
 - Spread noise - Execution realism
@@ -228,7 +222,7 @@ The orchestrator is the **central control unit** of the system.
 `perturbation.py`
 `mc_metrics.py`
 `mc_engine.py`
-## 9. Metrics Summary
+## 8. Metrics Summary
 ### Fitness Metrics
 - Trades  
 - Win rate  
@@ -244,59 +238,4 @@ The orchestrator is the **central control unit** of the system.
 - mc_avg_final  
 - mc_worst_dd  
 - mc_ruin_prob  
-------------------------------------------
-# 10. Concerns & Configuration Issues Log  
-## 10.1 Orchestrator Troubleshooting
-### Fixed Issues / Concern points
-- Yaml configuration file cleaned and unified
-- orchestrator_fixed.py created as troubleshooting copy of orchestrator.py
-- orchestrator_fixed.py troubleshooted succesfully optimization, evaluation, strategy integration
-- integration of GA in orchestrator_fixed.py
-- GA population.py reintegrated
-- Perf improvment 
-    - cache integration
-    - parallel execution
-- Better Random Search + GA Integration
-  - GA starts with ALL best random candidates
-  - No dilution with random individuals
-  - Focused search around promising regions
-- Strategy => Core vs Debug mode implemented (Core limited computation and outputs to required by orchestrator)
-Strategy perf
-      - Cache indicator calculations (to check if worth of doing)  
-      - Vectorize signal generation (to check if worth of doing - if using loops)
-      - Cache trade simulation results (to check if worth of doing - if deterministic)    
-### Remaining Issues / Concern points
-### 10.1.1 Non critical issues / concern points
-- Rest of perf optimizations:
-  - Strategy
-      - Parallelize multi-timeframe processing (maybe: to check if worth of doing)
-      - Batch indicator calculations (maybe: to check if worth of doing)
-  - Reduced I/O (batch file operations)
-- Analyze if update required for Strategy core mode in orchestrator
-- Implement Core vs Debug mode to orchestrator
-- Recovery mechanism (continue from last good state)
-- Inconsistencies in Data Handling and Dates
-- Floating-point precision and type handling could introduce subtle inconsistencie in some scripts
-- Subprocess and file handling lacks full error resilience in some scripts GA
-- Error handling for rest pending edge cases
-- Metrics Extraction Assumptions
-- Add Deduplication (analyze 1st as might be no issue with bigger populations)
-- latin_hypercube in config unused—sampler is random
-- Final updates of orchestrator_fixed.py
-### 10.1.2 Future evolutions
-- Re-integration of WFO in orchestrator_fixed.py 
-- Re-integration of Monte Carlo in orchestrator_fixed.py
----
-## 10.2 Dependency Requirements
-| Module | Required Methods |
-|--------|------------------|
-| ParameterSpace | build() |
-| ParameterSampler | random_sample() |
-| OptimizationMetrics | get() |
-| FitnessEvaluator | score() |
-| CandidateStore | add(), save() |
-| CandidateRanker | top_n() |
-| WalkForwardEngine | run() |
-| GeneticOptimizer | run() |
-| MonteCarloEngine | run() |
----
+-----------------------------

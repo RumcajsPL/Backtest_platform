@@ -1,22 +1,17 @@
 """
 Trade Contracts - Phase 4 Migration
-Version: 1.3.0
-Date: 2026-02-23
-Session: Block 2 — Production Hardening
+Version: 1.4.0
+Date: 2026-02-27
 
-Changes from v1.2.0:
-- [C2] TradeParameters: added three fields that RiskManager computes and passes
-  but that were absent from the contract, causing TypeError across 35+ tests:
-    · take_profit_trigger (Optional[float]): TP exit trigger for SHORT trades
-      adjusted for spread (DEC-038). Equals take_profit for LONG.
-    · tp_mode (Optional[str]): records which TP mode was used at computation
-      time ('rr_ratio' | 'atr_multiplier'). Carries RiskManager's tp_mode
-      value through to analytics and reporting (DEC-037).
-    · spread_at_tp_exit (Optional[float]): spread cost applied at TP exit for
-      SHORT trades. None for LONG (spread paid at open). Analytics only.
-- [C2] TradeParameters.to_dict(): extended to include all three new fields
-- [C2] TradeParameters.from_risk_manager_output(): reads all three new fields
-  from the risk_output dict when present (backward-compatible: defaults None)
+Changes from v1.3.0:
+- [C3] TradeExit.create(): added duration_bars parameter (int, default 0).
+  Previously duration_bars was declared on the dataclass with default 0 but was
+  never passed by any call site — every trade silently reported 0 bars duration,
+  causing trade_analytics._analyze_duration_patterns() to classify 100% of trades
+  as fast exits (< 3 bars). The value is now computed in TradeSimulator (where
+  df_strategy is available) and passed explicitly into this factory method.
+  duration_minutes is unchanged — it continues to be computed here from wall-clock
+  timestamps and serves a complementary purpose (absolute time, not bar count).
 """
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -417,13 +412,22 @@ class TradeExit:
         exit_time: pd.Timestamp,
         exit_price: float,
         exit_reason: ExitReason,
+        duration_bars: int = 0,          # [C3] computed by TradeSimulator, passed explicitly
         exit_bar_high: Optional[float] = None,
         exit_bar_low: Optional[float] = None,
         ltf_execution: bool = False,
         ltf_execution_mode: Optional[str] = None,
         **kwargs
     ) -> 'TradeExit':
-        """Create TradeExit from TradeEntry and exit details."""
+        """
+        Create TradeExit from TradeEntry and exit details.
+
+        duration_bars must be supplied by the caller (TradeSimulator) as a
+        count of strategy-TF bars elapsed between entry and exit.  It cannot
+        be computed here because this factory has no access to df_strategy.
+        duration_minutes is still derived from wall-clock timestamps and
+        remains a complementary field (absolute elapsed time).
+        """
         if entry.is_long:
             pnl_points = exit_price - entry.entry_price
         else:
@@ -443,6 +447,7 @@ class TradeExit:
             pnl_percent=pnl_percent,
             is_win=pnl_points > 0,
             is_loss=pnl_points < 0,
+            duration_bars=duration_bars,         # [C3] passed through from TradeSimulator
             duration_minutes=duration_minutes,
             exit_bar_high=exit_bar_high,
             exit_bar_low=exit_bar_low,
