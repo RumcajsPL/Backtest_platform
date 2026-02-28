@@ -49,7 +49,6 @@ RUNNERS_DIR = SCRIPTS_DIR / "runners"
 # BACKTESTER SUBDIRECTORIES => under construction
 # ---------------------------------------------------------
 BACKTEST_DIR = SRC_DIR / "backtesting"
-CONTRACTS_DIR = BACKTEST_DIR / "contracts"
 # ---------------------------------------------------------
 # UTILS SUBDIRECTORIES
 # ---------------------------------------------------------
@@ -66,6 +65,9 @@ FILTERS_TEST_DIR = UNIT_TESTS_DIR / "filters"
 RUNNER_TESTS_DIR = STRATEGIES_TESTS_DIR / "runners"
 REPORT_TESTS_DIR = STRATEGIES_TESTS_DIR / "reports"
 DIAG_TESTS_DIR = STRATEGIES_TESTS_DIR / "diagnostic"
+BCST_BENCH_TEST_DIR = BACKTESTING_TESTS_DIR / "benchmarks"
+BCST_INEGR_TEST_DIR = BACKTESTING_TESTS_DIR / "integration"
+BCST_UNIT_TEST_DIR = BACKTESTING_TESTS_DIR / "unit"
 # ---------------------------------------------------------
 # CONFIG HELPERS
 # ---------------------------------------------------------

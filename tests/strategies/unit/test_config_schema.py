@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime
 import yaml
 
-from src.config.config_schema import (
+from src.strategies.config.config_schema import (
     StrategyConfig, AssetConfig, DataConfig, SpreadConfig,
     RiskConfig, TPMode, ExecutionConfig
 )

@@ -1,7 +1,7 @@
 # PROJECT_REPORT.md
 ## Backtesting & Optimization Framework — Progress Report
 
-**Last updated**: 2026-02-27 | **Current phase**: Phase 2 — Core Infrastructure (ready to start)
+**Last updated**: 2026-02-28 | **Current phase**: Phase 3 — Optimization Engines (ready to start)
 **Overall status**: 🟡 On Track
 
 ---
@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | 0 | Planning & Requirements | ✅ Complete | 1 | `BACKTESTER_PLAN.md` v1.1 |
 | 1 | Design | ✅ Complete | 1 | Contracts, SQLite schema, YAML spec, all decisions resolved |
-| 2 | Core Infrastructure | ⬜ Not started | — | CandidateStore, StrategyRunner, Orchestrator skeleton |
+| 2 | Core Infrastructure | ✅ Complete | 1 | CandidateStore, StrategyRunner, Orchestrator skeleton |
 | 3 | Optimization Engines | ⬜ Not started | — | GA, WFO (both modes), MC pre-filter |
 | 4 | Monte Carlo Deep & Verdict | ⬜ Not started | — | MC deep, Sensitivity map, Verdict engine |
 | 5 | Output Layer | ⬜ Not started | — | HTML report, SQLite exports, trading YAML |
@@ -100,25 +100,26 @@
 
 ---
 
-## Phase 2 — Core Infrastructure ⬜
+## Phase 2 — Core Infrastructure ✅
 
 **Objective**: Build the backbone. Everything else depends on CandidateStore and StrategyRunner.
 **Prerequisite**: Read `TECHNICAL_SPEC.md` and `SQLITE_SCHEMA.md` before writing any code.
+**Completed**: 2026-02-28 | **Sessions**: 1
 
-### Planned Deliverables
+### Deliverables
 | Deliverable | Status | Notes |
 |---|---|---|
-| D-01 benchmark: 50 candidates, direct-call mode | ⬜ | Must complete before full StrategyRunner implementation |
-| D-02 benchmark: 500 writes, 6-worker load | ⬜ | Must complete before full CandidateStore implementation |
-| `candidate_store.py` | ⬜ | SQLite WAL + writer queue. First module — everything depends on it. |
-| `parameter_space.py` | ⬜ | Zone expansion, boundary validation |
-| `sampler.py` | ⬜ | LHS + random sampling |
-| `scenario.py` | ⬜ | ScenarioProfile loader and validator |
-| `strategy_runner.py` | ⬜ | Single candidate evaluation, significance guard, never raises |
-| `fitness.py` | ⬜ | Stateless constraint check + weighted score |
-| `ranker.py` | ⬜ | Stateless query → ranked list |
-| `orchestrator.py` (skeleton) | ⬜ | 8 stage stubs + checkpoint/resume logic |
-| Integration test | ⬜ | Single candidate full round-trip → stored in SQLite with correct stage label |
+| D-01 benchmark: 50 candidates, direct-call mode | ✅ | Passed: Avg 4.687s/candidate (PASS ✓), 6-worker projection 39s |
+| D-02 benchmark: 500 writes, 6-worker load | ✅ | Passed: 500 rows, zero errors, no corruption |
+| `candidate_store.py` | ✅ | SQLite WAL + writer queue. First module — everything depends on it. |
+| `parameter_space.py` | ✅ | Zone expansion, boundary validation |
+| `sampler.py` | ✅ | LHS + random sampling |
+| `scenario.py` | ✅ | ScenarioProfile loader and validator |
+| `strategy_runner.py` | ✅ | Single candidate evaluation, significance guard, never raises |
+| `fitness.py` | ✅ | Stateless constraint check + weighted score |
+| `ranker.py` | ✅ | Stateless query → ranked list |
+| `orchestrator.py` (skeleton) | ✅ | 8 stage stubs + checkpoint/resume logic |
+| Integration test | ✅ | Single candidate full round-trip → stored in SQLite with correct stage label |
 
 ### Implementation Order
 1. `candidate_store.py` + D-02 benchmark
@@ -129,6 +130,13 @@
 6. `ranker.py`
 7. `orchestrator.py` skeleton
 8. Integration test
+
+### Key Notes
+- All unit tests passed successfully.
+- Delivered modules: src\backtesting\candidate_store.py, contracts.py, fitness.py, orchestrator.py, parameter_space.py, ranker.py, sampler.py, scenario.py, strategy_runner.py
+- Benchmarks: tests\backtesting\benchmarks\bench_d01_strategy_speed.py (passed on 3-month data sample), bench_d02_sqlite_wal.py (passed)
+- Unit tests: tests\backtesting\unit\test_candidate_store.py, test_fitness.py, test_orchestrator.py, test_parameter_space_and_sampler.py, test_ranker.py, test_scenario.py, test_strategy_runner.py
+- Integration test: tests\backtesting\unit\test_single_candidate_roundtrip.py (passed)
 
 ---
 
@@ -215,8 +223,8 @@
 
 | ID | Risk | Status | Notes |
 |---|---|---|---|
-| R-01 | Integration mode too slow | 🟡 Benchmark pending | Decision made (direct call). Benchmark in Phase 2. |
-| R-02 | SQLite write contention | 🟡 Benchmark pending | Decision made (WAL + queue). Benchmark in Phase 2. |
+| R-01 | Integration mode too slow | ✅ Resolved | Benchmark passed: Avg 4.687s/candidate, well under 20s criterion |
+| R-02 | SQLite write contention | ✅ Resolved | Benchmark passed: 500 writes, zero errors, no corruption |
 | R-03 | ProcessPoolExecutor spawn overhead | 🟡 Open | Measure in Phase 2 |
 | R-04 | GA invalid strategy runs | 🟡 Open | strategy_runner.py isolation — Phase 3 |
 | R-05 | GA WFO-aware fitness over 4hr budget | 🔴 Watch | **Highest risk.** Profile in Phase 3. Random window sampling mitigates vs. fixed pair. |

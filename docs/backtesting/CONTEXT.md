@@ -5,8 +5,8 @@
 ## Identity
 **Project**: Backtesting & Optimization Framework for WBWSStrategy
 **Operator**: Single quantitative retail trader, Windows 10, eToro broker
-**Stage**: Phase 1 — Design | Session 2
-**Last session ended**: 2026-02-27 — Produced FUNCTIONAL_SPEC.md, TECHNICAL_SPEC.md, SQLITE_SCHEMA.md. Resolved all 12 open decisions. Defined all 11 contracts. Designed full SQLite schema. Defined 3 scenario profiles with concrete values. Specified backtest_template.yaml schema.
+**Stage**: Phase 3 — Optimization Engines | Session 1
+**Last session ended**: 2026-02-28 — Completed Phase 2: All core infrastructure modules implemented, benchmarks passed, integration test successful.
 ---
 ## Non-Negotiables (Architecture — never override these)
 1. **Contracts are the interface** — frozen dataclasses between every module. No raw dicts.
@@ -17,7 +17,7 @@
 6. **Windows compatibility** — `pathlib.Path`, `ProcessPoolExecutor` spawn mode, explicit `utf-8` encoding.
 7. **Code hygiene** — no print statements, no debug flags, no MagicMocks, no commented-out blocks.
 8. **CacheManager** — reuse existing `CacheManager` from strategy architecture. `clear_all_caches()` between runs.
-9. **Immutable run artifacts** — config hash, all seeds, perturbation profile name written at run start. Post-run config changes create a new run — never overwrite.
+9. **Immutable run artifacts** — config hash, all seeds, perturbation profile name stored immutably.
 ---
 ## Project Reference Files
 | File | Purpose | Location |
@@ -62,22 +62,43 @@ All three built-in scenarios fully specified in TECHNICAL_SPEC.md Section 5 and 
 ---
 ## Current Phase Status
 ```
-PHASE:        Phase 1 — Design
-COMPLETED:    - Independent opinion reviewed and decisions made (all accepted/rejected/modified)
-              - BACKTESTER_PLAN.md updated to v1.2 (all accepted changes incorporated)
-              - All 12 open decisions resolved (D-01 through D-12)
-              - All 11 inter-module contracts defined as frozen dataclasses (TECHNICAL_SPEC.md)
-              - SQLite schema: all 9 tables with CREATE TABLE statements and indexes (SQLITE_SCHEMA.md)
-              - backtest_template.yaml full schema specified (TECHNICAL_SPEC.md Section 5)
-              - All 3 scenario profiles defined with concrete values (TECHNICAL_SPEC.md Section 5)
-              - FUNCTIONAL_SPEC.md: all 8 stages in plain language
-IN PROGRESS:  - CHANGE_LOG.md SESSION 2 block (to be written at end of session)
-              - PROJECT_REPORT.md update
-              - CONTEXT.md update (this file)
-BLOCKED ON:   Nothing — all decisions resolved
-NEXT TASK:    Phase 2 — Core Infrastructure
-              Start with: candidate_store.py (CandidateStore implementation)
-              Then: parameter_space.py, sampler.py, scenario.py, strategy_runner.py, fitness.py
+PHASE:        Phase 3 — Optimization Engines
+COMPLETED:    - Phase 2: Both benchmarks passed, all 8 core modules implemented (candidate_store, parameter_space, sampler, scenario, strategy_runner, fitness, ranker, orchestrator skeleton), contracts defined, all unit tests passed, integration test passed
+--- Strategy speed benchmark
+(venv) PS E:\Trading\Backtest_platform> python tests/backtesting/benchmarks/bench_d01_strategy_speed.py --config configs/strategies/strategy_template.yaml
+
+============================================================
+D-01 Benchmark: Strategy Integration Speed
+Mode: direct Python call | Candidates: 50 | Sequential
+Config: E:\Trading\Backtest_platform\configs\strategies\strategy_template.yaml
+Pass criterion: avg ≤ 20.0s per candidate
+============================================================
+  [ 10/50] last=4.09s  running_avg=5.74s
+  [ 20/50] last=4.12s  running_avg=5.29s
+  [ 30/50] last=3.90s  running_avg=4.89s
+  [ 40/50] last=6.97s  running_avg=4.80s
+  [ 50/50] last=4.43s  running_avg=4.69s
+
+============================================================
+Results:
+  Candidates evaluated : 50
+  Errors               : 0
+  Avg time/candidate   : 4.687s  (PASS ✓)
+  Median               : 4.175s
+  P95                  : 6.974s
+  Total                : 234.4s
+  6-worker projection  : 39s  (0.7 min)
+
+VERDICT: PASS ✓
+============================================================
+
+   * Phase 1: All specs produced, decisions resolved, contracts defined, schema designed
+      IN PROGRESS:  - CHANGE_LOG.md SESSION 3 block (to be written at end of session)
+   * PROJECT_REPORT.md update
+   * CONTEXT.md update (this file)
+      BLOCKED ON:   Nothing — all Phase 2 deliverables complete
+      NEXT TASK:    Phase 3 — Optimization Engines
+      Start with: wfo/wfo_evaluator.py (required by GA)
 ```
 ---
 ## Open Decisions — ALL RESOLVED
@@ -135,10 +156,79 @@ NEXT TASK:    Phase 2 — Core Infrastructure
 - Do not implement regime-aware MC perturbation profiles — v2 scope
 - Do not implement true global parameter sensitivity random-walk — v2 scope
 ---
-## Phase 2 Starting Point
-When Phase 2 begins, the first implementation task is `candidate_store.py`. Read TECHNICAL_SPEC.md
-and SQLITE_SCHEMA.md before writing any code. The store is the foundation — everything else depends on it.
-Key Phase 2 benchmarks (must complete before full implementation):
-1. Strategy integration benchmark: 50 candidates in direct-call mode — confirm fits Stage 1 time budget
-2. SQLite WAL + writer queue benchmark: 500 concurrent writes from 6 workers — confirm no corruption
+## Phase 3 Starting Point
+When Phase 3 begins, the first implementation task is `wfo/wfo_evaluator.py`. Read TECHNICAL_SPEC.md and FUNCTIONAL_SPEC.md before writing any code. WFO evaluator is required by GA — build it first.
+Key Phase 3 validations: GA window sampling independence, diversity penalty effectiveness, R-05 profiling (GA runtime).
+## To take into account: file location and path resolution to be always solved by src\utils\paths.py
+### path.py content
+```python
+# ---------------------------------------------------------
+# ROOT RESOLUTION
+# ---------------------------------------------------------
+# This resolves the project root no matter where the code is executed from:
+# - configs/
+# - data/
+# - outputs/
+# - scripts/
+# - tests/
+# - src/
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# ---------------------------------------------------------
+# TOP-LEVEL DIRECTORIES
+# ---------------------------------------------------------
+CONFIGS_DIR = PROJECT_ROOT / "configs"
+DATA_DIR = PROJECT_ROOT / "data"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+SRC_DIR = PROJECT_ROOT / "src"
+# ---------------------------------------------------------
+# DATA SUBDIRECTORIES
+# ---------------------------------------------------------
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+# ---------------------------------------------------------
+# OUTPUT SUBDIRECTORIES
+# ---------------------------------------------------------
+BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests"
+LOGS_DIR = OUTPUTS_DIR / "logs"
+REPORTS_DIR = OUTPUTS_DIR / "reports"
+STRATEGIES_OUTPUTS_DIR = OUTPUTS_DIR / "strategies" 
+STRATEGIES_LOGS_DIR = STRATEGIES_OUTPUTS_DIR / "logs"
+STRATEGIES_REPORTS_DIR = STRATEGIES_OUTPUTS_DIR / "reports"
+# ---------------------------------------------------------
+# SCRIPT RUNNERS
+# ---------------------------------------------------------
+RUNNERS_DIR = SCRIPTS_DIR / "runners"
+# ---------------------------------------------------------
+# STRATEGY SUBDIRECTORIES
+# ---------------------------------------------------------
+STRATEGIES_DIR = SRC_DIR / "strategies"
+CONTRACTS_DIR = STRATEGIES_DIR / "contracts"
+CORE_STRATEGIES_ = STRATEGIES_DIR / "core"
+FILTERS_DIR = STRATEGIES_DIR / "filters"
+RUNNERS_DIR = SCRIPTS_DIR / "runners"
+# ---------------------------------------------------------
+# BACKTESTER SUBDIRECTORIES => under construction
+# ---------------------------------------------------------
+BACKTEST_DIR = SRC_DIR / "backtesting"
+# ---------------------------------------------------------
+# UTILS SUBDIRECTORIES
+# ---------------------------------------------------------
+UTILS_DIR = SRC_DIR / "utils"
+# ---------------------------------------------------------
+# TEST SUBDIRECTORIES 
+# ---------------------------------------------------------
+TESTS_DIR = PROJECT_ROOT / "tests"
+STRATEGIES_TESTS_DIR = TESTS_DIR / "strategies"
+BACKTESTING_TESTS_DIR = TESTS_DIR / "backtesting"
+UNIT_TESTS_DIR = STRATEGIES_TESTS_DIR / "unit"
+CONTRACT_TEST_DIR = UNIT_TESTS_DIR / "contracts"
+FILTERS_TEST_DIR = UNIT_TESTS_DIR / "filters"
+RUNNER_TESTS_DIR = STRATEGIES_TESTS_DIR / "runners"
+REPORT_TESTS_DIR = STRATEGIES_TESTS_DIR / "reports"
+DIAG_TESTS_DIR = STRATEGIES_TESTS_DIR / "diagnostic"
+BCST_BENCH_TEST_DIR = BACKTESTING_TESTS_DIR / "benchmarks"
+BCST_INEGR_TEST_DIR = BACKTESTING_TESTS_DIR / "integration"
+BCST_UNIT_TEST_DIR = BACKTESTING_TESTS_DIR / "unit"
+```
 <!-- END OF CONTEXT.md -->

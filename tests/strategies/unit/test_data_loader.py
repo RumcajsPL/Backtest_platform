@@ -14,7 +14,7 @@ import pickle
 import hashlib
 from dataclasses import asdict
 
-from src.strategies.specific.modules.data_loader import DataLoader
+from src.strategies.core.data_loader import DataLoader
 from src.strategies.contracts.data_contracts import (
     DataBundle,
     DataInfo,
@@ -22,7 +22,7 @@ from src.strategies.contracts.data_contracts import (
     DateRange,
     DataFileConfig
 )
-from src.config.config_schema import StrategyConfig
+from src.strategies.config.config_schema import StrategyConfig
 
 
 class TestDataLoader:
@@ -83,7 +83,7 @@ class TestDataLoader:
     @pytest.fixture
     def config_with_paths(self, base_config_dict, sample_parquet_data):
         """Create StrategyConfig with valid file paths and date range."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Create a copy to avoid modifying the original
         config_dict = base_config_dict.copy()
@@ -108,7 +108,7 @@ class TestDataLoader:
     @pytest.fixture
     def config_without_date_range(self, base_config_dict, sample_parquet_data):
         """Create StrategyConfig without date range for tests that don't need slicing."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Create a copy to avoid modifying the original
         config_dict = base_config_dict.copy()
@@ -129,7 +129,7 @@ class TestDataLoader:
     @pytest.fixture
     def config_with_full_date_range(self, base_config_dict, sample_parquet_data):
         """Create StrategyConfig with date range covering the entire data."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Create a copy to avoid modifying the original
         config_dict = base_config_dict.copy()
@@ -186,7 +186,7 @@ class TestDataLoader:
 
     def test_build_data_config_missing_paths(self, base_config_dict):
         """Test building DataConfig with missing optional paths."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Remove optional paths
         base_config_dict["data"]["paths"]["htf_ohlcv"] = None
@@ -511,7 +511,7 @@ class TestDataLoader:
 
     def test_load_data_missing_optional(self, base_config_dict, sample_parquet_data):
         """Test loading with missing optional files."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Set only strategy data
         base_config_dict["data"]["paths"]["strategy_ohlcv"] = str(sample_parquet_data)
@@ -582,7 +582,7 @@ class TestDataLoader:
 
     def test_load_data_validation_failure(self, base_config_dict, tmp_path):
         """Test handling of data validation failure."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Create invalid data (missing required columns)
         dates = pd.date_range("2025-01-01", periods=3, freq="1min")
@@ -610,7 +610,7 @@ class TestDataLoader:
 
     def test_duplicate_timestamp_handling(self, base_config_dict, tmp_path, caplog):
         """Test handling of duplicate timestamps."""
-        from src.config.config_schema import StrategyConfig
+        from src.strategies.config.config_schema import StrategyConfig
         
         # Create a new config dict
         config_dict = base_config_dict.copy()
