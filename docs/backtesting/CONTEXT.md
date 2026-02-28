@@ -28,7 +28,7 @@
 | `SQLITE_SCHEMA.md` | All 9 tables with CREATE TABLE, indexes, query examples | `docs/backtesting/` |
 | `CHANGE_LOG.md` | All changes + session handoff blocks | `docs/backtesting/` |
 | `PROJECT_REPORT.md` | Phase progress tracker | `docs/backtesting/` |
-| `ARCHITECTURE.md` | Strategy architecture (fixed input, do not modify) | `docs/architecture/` |
+| `ARCHITECTURE.md` | Strategy architecture (fixed input, do not modify) | `docs/strategies/architecture/` |
 | `backtest_template.yaml` | Backtester config template | `configs/backtesting/` |
 ---
 ## Pipeline (DO NOT REORDER without explicit instruction)

@@ -15,7 +15,7 @@
 **Critical pre-coding reads for Claude:**
 - `docs/backtesting/TECHNICAL_SPEC.md` — all contracts and module signatures
 - `docs/backtesting/SQLITE_SCHEMA.md` — full schema before any store code
-- `docs/architecture/ARCHITECTURE.md` — strategy architecture integration points
+- `docs/strategies/architecture/ARCHITECTURE.md` — strategy architecture integration points
 
 ---
 
