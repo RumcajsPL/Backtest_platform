@@ -1,10 +1,5 @@
 """ADX Filter — trend strength (direction-agnostic).
-
-Migrated:  Session 4  v3.0.0
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
-Rejects signals when ADX < threshold (weak / choppy trend).
+Version: 3.0.0
 """
 from __future__ import annotations
 
@@ -24,7 +19,6 @@ from src.strategies.contracts.filter_contracts import (
 from src.strategies.contracts.signal_contracts import SignalFrame
 
 logger = logging.getLogger(__name__)
-
 
 class ADXFilter:
     """ADX filter — measures trend strength (direction-agnostic).
@@ -95,7 +89,7 @@ class ADXFilter:
         ----------
         mode:
             ``"core"`` or ``"analytics"``.  Timing is always collected
-            (DEC-027); ``indicator_data`` and ``indicator_values`` are only
+            ``indicator_data`` and ``indicator_values`` are only
             populated in analytics mode.
         """
         start_time = perf_counter()

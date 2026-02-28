@@ -1,24 +1,6 @@
 """
 Structured Logger - Production-Grade JSON Logging
-
 Version: 1.1.0
-
-Provides structured JSON logging for audit trails and analysis.
-Replaces scattered print/logger statements with consistent, parseable logs.
-
-Design Principles:
-- Single Responsibility: Only logging, no business logic
-- Performance-Driven: Minimal overhead, optional analytics detail
-- Explicit Contracts: All fields typed, no hidden state
-- Type Safety: Enum-based log levels
-- Production-Ready: JSON format for log aggregation tools
-
-Changes from v1.0.1:
-- [P1 / P9] Removed __main__ demo block — demo code does not belong in a
-  production module. Use the test suite or a dedicated example script instead.
-- [P9] Removed 'Session 12 - Task 2' development artifact from docstring.
-- [P9] Removed inline '# Moved this check BEFORE the dataclass check' comment
-  from _serialize_value — internal refactoring notes are not production docs.
 """
 import json
 import logging
@@ -29,7 +11,6 @@ from pathlib import Path
 
 import pandas as pd
 
-
 class LogLevel(Enum):
     """Log level enumeration"""
     DEBUG = "DEBUG"
@@ -37,7 +18,6 @@ class LogLevel(Enum):
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
-
 
 class LogStage(Enum):
     """Pipeline stage enumeration"""
@@ -48,7 +28,6 @@ class LogStage(Enum):
     RISK_MANAGEMENT = "risk_management"
     POSITION_MANAGEMENT = "position_management"
     TRADE_EXECUTION = "trade_execution"
-
 
 class StructuredLogger:
     """
@@ -302,9 +281,7 @@ class StructuredLogger:
             except (TypeError, ValueError):
                 return str(value)
 
-
 # Convenience functions for common logging patterns
-
 def log_signal_generated(
     logger: StructuredLogger,
     timestamp: pd.Timestamp,
@@ -319,7 +296,6 @@ def log_signal_generated(
         signal_type=signal_type,
         **context
     )
-
 
 def log_filter_decision(
     logger: StructuredLogger,
@@ -338,7 +314,6 @@ def log_filter_decision(
         **context
     )
 
-
 def log_risk_decision(
     logger: StructuredLogger,
     approved: bool,
@@ -352,7 +327,6 @@ def log_risk_decision(
         reason=reason,
         **context
     )
-
 
 def log_trade_opened(
     logger: StructuredLogger,
@@ -370,7 +344,6 @@ def log_trade_opened(
         entry_price=entry_price,
         **context
     )
-
 
 def log_trade_closed(
     logger: StructuredLogger,

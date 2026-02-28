@@ -1,10 +1,6 @@
 """Report Contracts — ReportGenerator input/output types.
-
-Created:  2026-02-17  Session 17
-Hardened: 2026-02-20  Session 20 Block I
-    - Added ``brand_name`` to ``ReportConfig`` (wires to HTML header + footer)
-    - Removed unused ``datetime`` import
-    - No other changes: both dataclasses already ``frozen=True`` ✅
+Version: 1.0.0
+Defines the data structures used for configuring report generation and representing the generated report output.
 """
 from __future__ import annotations
 
@@ -15,7 +11,6 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
     from src.strategies.contracts.analytics_contracts import AnalyticsReport
-
 
 # ============================================================
 # REPORT CONFIGURATION
@@ -30,7 +25,7 @@ class ReportConfig:
     """
 
     title: str = "Strategy Performance Report"
-    brand_name: str = "WBWSStrategy"        # Appears in header + footer
+    brand_name: str = "Strategy Builder"        # Appears in header + footer
     output_dir: Path = Path("outputs/reports")
     include_raw_data: bool = True           # Layer 3 toggle
     theme: str = "dark"                     # "dark" | "light"
@@ -48,11 +43,9 @@ class ReportConfig:
         if not self.brand_name.strip():
             raise ValueError("brand_name must not be blank")
 
-
 # ============================================================
 # GENERATED REPORT OUTPUT
 # ============================================================
-
 @dataclass(frozen=True)
 class GeneratedReport:
     """Output of ``ReportGenerator.generate()``.
@@ -77,7 +70,6 @@ class GeneratedReport:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
-
 
 # ============================================================
 # MODULE METADATA

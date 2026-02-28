@@ -1,26 +1,5 @@
 """Metrics Calculator — computes MetricsReport from a completed TradeResult.
-
 Version: 2.0.0
-Block 4 — Production Hardening
-
-Changes from v1.0.0:
-- [M4 / P2] All getattr() probe patterns replaced with direct Trade contract
-  property access. Trade.pnl_points, Trade.is_win, and Trade.is_loss are
-  defined properties on the Trade contract — they are the correct and only
-  interface. getattr with fallback chains obscures contract dependencies and
-  introduces a confirmed semantic bug: a breakeven trade (pnl_points == 0.0)
-  is falsy, causing "getattr(...) or t.exit.pnl_points" to evaluate the
-  redundant branch and misrepresent the access pattern.
-- [M4 / P9] Removed module-level NOTE block referencing MagicMock and
-  "copied verbatim from Session 13" — development artifacts with no place
-  in production code.
-- [M4 / P2 / P9] closed_trades resolution: removed isinstance(list) guard
-  that existed solely to work around MagicMock attribute auto-creation.
-  TradeResult.closed_trades is a real contract property; use it directly.
-  If it is absent, that is a contract violation and must fail immediately
-  (Principle 6: Fail Fast) rather than silently degrading to .trades.
-- [M4 / P9] Inline comments referencing test infrastructure (MagicMock,
-  Session numbers) removed throughout.
 """
 import time
 from typing import List
@@ -30,17 +9,12 @@ from src.strategies.contracts.metrics_contracts import (
     create_empty_metrics_report,
 )
 
-
 class MetricsCalculator:
     @staticmethod
     def calculate(trade_result, start_time=None) -> MetricsReport:
         execution_duration_ms = 0.0
         if start_time is not None:
             execution_duration_ms = (time.perf_counter() - start_time) * 1000
-
-        # [M4 / P2] TradeResult.closed_trades is a contract property that
-        # returns trades with a non-None exit. Use it directly — no isinstance
-        # guard, no getattr fallback.
         closed_trades = trade_result.closed_trades
 
         if len(closed_trades) == 0:
@@ -76,8 +50,7 @@ class MetricsCalculator:
         )
 
     @staticmethod
-    def _calculate_win_loss_counts(trades):
-        # [M4 / P2] Trade.is_win is a contract property — access it directly.
+    def _calculate_win_loss_counts(trades):        
         winning = sum(1 for t in trades if t.is_win)
         return winning, len(trades) - winning
 
@@ -89,10 +62,6 @@ class MetricsCalculator:
 
     @staticmethod
     def _calculate_pnl_metrics(trades, total_trades):
-        # [M4 / P2] Trade.pnl_points is a contract property — access it directly.
-        # The previous "getattr(...) or t.exit.pnl_points" pattern had a semantic
-        # bug: a breakeven trade (pnl_points == 0.0) is falsy and would cause the
-        # or-branch to evaluate unnecessarily.
         pnl_values = [t.pnl_points for t in trades]
         total_pnl  = sum(pnl_values)
         expectancy = total_pnl / total_trades if total_trades else 0.0
@@ -100,7 +69,6 @@ class MetricsCalculator:
 
     @staticmethod
     def _calculate_profit_factor(trades):
-        # [M4 / P2] Direct property access throughout.
         gross_profit = sum(t.pnl_points for t in trades if t.is_win)
         gross_loss   = abs(sum(t.pnl_points for t in trades if t.is_loss))
         if gross_loss == 0:
@@ -109,9 +77,6 @@ class MetricsCalculator:
 
     @staticmethod
     def _calculate_extremes(trades):
-        # [M4 / P2] Lambdas removed — direct property access via generator expressions.
-        # Signature simplified: winning_trades / losing_trades counts are not needed
-        # here since is_win / is_loss are already O(1) property calls per trade.
         largest_win  = max((t.pnl_points for t in trades if t.is_win),  default=0.0)
         largest_loss = min((t.pnl_points for t in trades if t.is_loss), default=0.0)
         return round(largest_win, 2), round(largest_loss, 2)
@@ -123,7 +88,6 @@ class MetricsCalculator:
         sorted_trades = sorted(trades, key=lambda t: t.exit.exit_time)
         cumulative = peak = max_dd = 0.0
         for t in sorted_trades:
-            # [M4 / P2] Direct property — no falsy-zero bug.
             cumulative += t.pnl_points
             if cumulative > peak:
                 peak = cumulative
@@ -139,7 +103,6 @@ class MetricsCalculator:
         sorted_trades = sorted(trades, key=lambda t: t.exit.exit_time)
         max_win = max_loss = cur_win = cur_loss = 0
         for t in sorted_trades:
-            # [M4 / P2] Trade.is_win is a contract property — access it directly.
             if t.is_win:
                 cur_win += 1; cur_loss = 0
                 max_win = max(max_win, cur_win)
@@ -160,10 +123,8 @@ class MetricsCalculator:
         trades_per_week = trades_per_day * 7
         return round(trades_per_day, 2), round(trades_per_week, 2)
 
-
 def calculate_metrics(trade_result) -> MetricsReport:
     return MetricsCalculator.calculate(trade_result)
-
 
 def calculate_metrics_with_timing(trade_result, start_time: float) -> MetricsReport:
     return MetricsCalculator.calculate(trade_result, start_time=start_time)

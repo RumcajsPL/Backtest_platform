@@ -1,13 +1,6 @@
 """
-Data Layer Contracts for WBWSStrategy Migration v2.1
-
+Data Layer Contracts for Strategy Builder
 Version: 2.2.0 (Hardening II Final)
-Date: 2026-02-21
-Session: 21 - Final Hardening
-
-Changes from v2.2.0:
-- Block B: Removed from_yaml_config legacy adapter (B-5)
-- Block B: Enhanced validation for date ranges and data quality
 """
 
 from dataclasses import dataclass, field
@@ -15,7 +8,6 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 import pandas as pd
-
 
 # =============================================================================
 # DATA CONFIGURATION CONTRACTS
@@ -47,7 +39,6 @@ class DateRange:
         start_str = self.start.strftime("%Y-%m-%d %H:%M:%S") if self.start else "unlimited"
         end_str = self.end.strftime("%Y-%m-%d %H:%M:%S") if self.end else "unlimited"
         return f"{start_str} → {end_str}"
-
 
 @dataclass(frozen=True)
 class DataFileConfig:
@@ -81,7 +72,6 @@ class DataFileConfig:
                 f"File extension {self.path.suffix} doesn't match format {self.format}"
             )
 
-
 @dataclass(frozen=True)
 class DataConfig:
     """
@@ -105,7 +95,6 @@ class DataConfig:
     validation_rules: Dict[str, Any] = field(default_factory=dict)
 
     # NOTE: from_yaml_config has been removed (B-5)
-
 
 # =============================================================================
 # DATA BUNDLE CONTRACTS
@@ -137,7 +126,6 @@ class DataValidationResult:
         
         detail_str = f" ({', '.join(details)})" if details else ""
         return f"{status}{detail_str}"
-
 
 @dataclass
 class DataInfo:
@@ -182,7 +170,6 @@ class DataInfo:
         if self.cache_hit:
             lines.append("Cache: HIT ⚡")
         return "\n".join(lines)
-
 
 @dataclass
 class DataBundle:
@@ -245,7 +232,6 @@ class DataBundle:
     
     def __str__(self) -> str:
         return f"DataBundle({self.info})"
-
 
 # =============================================================================
 # CACHE STATISTICS (for monitoring)

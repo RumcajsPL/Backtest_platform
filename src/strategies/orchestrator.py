@@ -3,25 +3,7 @@ Strategy Orchestrator
 =====================
 Composes the full strategy pipeline from config load to MetricsReport (core)
 or full HTML report (analytics).
-
 Version: 2.2.0
-Session: Analytics Integration — Production Final
-
-Changes from v2.1.0:
-- [A1] OrchestratorResult: analytics and report fields promoted from stub
-       comments to typed Optional fields. Both are None in core mode.
-- [A2] run(): Stage 6 (TradeAnalytics) and Stage 7 (ReportGenerator) wired
-       behind effective_mode == "analytics" and output.reports.enabled guard.
-       Metrics pre-computed in Stage 5 are passed explicitly to TradeAnalytics
-       to avoid redundant calculation (DRY + performance).
-- [A3] _run_analytics(): new private stage method — mirrors pattern of all
-       other stage methods. Accepts TradeResult + MetricsReport + config.
-- [A4] _run_report(): new private stage method — builds ReportConfig from
-       StrategyConfig to keep all config wiring in one place.
-- [A5] OrchestratorResult.summary(): extended to include report path when
-       available (analytics mode only).
-- [A6] _load_data, _generate_signals, _run_filters, _simulate_trades:
-       unchanged — no modifications to existing stages.
 """
 
 from __future__ import annotations
@@ -33,14 +15,13 @@ from time import perf_counter
 from typing import Optional
 
 from src.strategies.core.cache_manager import CacheManager
-from src.strategies.specific.modules.data_loader import DataLoader
-from src.strategies.specific.modules.signal_generator import SignalGenerator
-from src.strategies.specific.modules.filter_pipeline import FilterPipeline
-from src.strategies.specific.modules.trade_simulator import TradeSimulator
-from src.strategies.specific.modules.metrics_calculator import calculate_metrics
-from src.strategies.specific.modules.trade_analytics import TradeAnalytics
-from src.strategies.specific.modules.report_generator import ReportGenerator
-
+from src.strategies.core.data_loader import DataLoader
+from src.strategies.core.signal_generator import SignalGenerator
+from src.strategies.core.filter_pipeline import FilterPipeline
+from src.strategies.core.trade_simulator import TradeSimulator
+from src.strategies.core.metrics_calculator import calculate_metrics
+from src.strategies.core.trade_analytics import TradeAnalytics
+from src.strategies.core.report_generator import ReportGenerator
 from src.strategies.contracts.data_contracts import DataBundle
 from src.strategies.contracts.signal_contracts import SignalFrame
 from src.strategies.contracts.filter_contracts import FilterPipelineResult
@@ -48,18 +29,15 @@ from src.strategies.contracts.trade_contracts import TradeResult
 from src.strategies.contracts.metrics_contracts import MetricsReport
 from src.strategies.contracts.analytics_contracts import AnalyticsReport
 from src.strategies.contracts.report_contracts import GeneratedReport, ReportConfig
-
-from src.config.config_schema import StrategyConfig
+from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
 _VALID_MODES = frozenset({"core", "analytics"})
 
-
 # ---------------------------------------------------------------------------
 # Result contract
 # ---------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class OrchestratorResult:
     """
@@ -126,11 +104,9 @@ class OrchestratorResult:
             base += f" | report={self.report_path}"
         return base
 
-
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
-
 class StrategyOrchestrator:
     """
     Composes and executes the strategy pipeline.
@@ -434,11 +410,8 @@ class StrategyOrchestrator:
         mode: str,
     ) -> AnalyticsReport:
         """
-        Stage 6: Generate AI-like insights via TradeAnalytics.  [A3]
-
-        Metrics are passed explicitly — they were already computed in Stage 5
-        so TradeAnalytics does not need to recalculate them.
-
+        Stage 6: Generate AI-like insights via TradeAnalytics. 
+        Metrics are passed explicitly 
         The WARNING log from _analyze_comparative_context ("NOT IMPLEMENTED")
         is an internal placeholder note; it is demoted to DEBUG here by setting
         the trade_analytics logger to WARNING during the call so it does not
@@ -465,7 +438,7 @@ class StrategyOrchestrator:
         trade_result: TradeResult,
     ) -> GeneratedReport:
         """
-        Stage 7: Generate self-contained HTML report.  [A4]
+        Stage 7: Generate self-contained HTML report.
 
         ReportConfig is built entirely from StrategyConfig.output.reports so
         there is a single source of truth for all visual and output settings.

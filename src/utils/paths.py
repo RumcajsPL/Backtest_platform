@@ -1,15 +1,16 @@
 # src/utils/paths.py
 from pathlib import Path
 # ---------------------------------------------------------
-# PROJECT ROOT RESOLUTION
+# ROOT RESOLUTION
 # ---------------------------------------------------------
 # This resolves the project root no matter where the code is executed from:
+# - configs/
+# - data/
+# - outputs/
 # - scripts/
-# - notebooks/
 # - tests/
 # - src/
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
 # ---------------------------------------------------------
 # TOP-LEVEL DIRECTORIES
 # ---------------------------------------------------------
@@ -18,42 +19,41 @@ DATA_DIR = PROJECT_ROOT / "data"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 SRC_DIR = PROJECT_ROOT / "src"
-
 # ---------------------------------------------------------
 # DATA SUBDIRECTORIES
 # ---------------------------------------------------------
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
-FEATURES_DATA_DIR = DATA_DIR / "features"
-EXPORTS_DATA_DIR = DATA_DIR / "exports"
-
 # ---------------------------------------------------------
 # OUTPUT SUBDIRECTORIES
 # ---------------------------------------------------------
-BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests" #Future backtester
+BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests"
 LOGS_DIR = OUTPUTS_DIR / "logs"
 REPORTS_DIR = OUTPUTS_DIR / "reports"
-SIGNALS_DIR = OUTPUTS_DIR / "signals"
-STRATEGIES_OUTPUTS_DIR = OUTPUTS_DIR / "strategies" #New architecture strategy-specific outputs (logs, reports, etc.)
-STRATEGIES_LOGS_DIR = STRATEGIES_OUTPUTS_DIR / "logs" #New architecture strategy-specific logs
-STRATEGIES_REPORTS_DIR = STRATEGIES_OUTPUTS_DIR / "reports" #New architecture strategy-specific reports
-
+STRATEGIES_OUTPUTS_DIR = OUTPUTS_DIR / "strategies" 
+STRATEGIES_LOGS_DIR = STRATEGIES_OUTPUTS_DIR / "logs"
+STRATEGIES_REPORTS_DIR = STRATEGIES_OUTPUTS_DIR / "reports"
 # ---------------------------------------------------------
 # SCRIPT RUNNERS
 # ---------------------------------------------------------
 RUNNERS_DIR = SCRIPTS_DIR / "runners"
-DATA_SCRIPTS_DIR = SCRIPTS_DIR / "data"
-VALIDATION_SCRIPTS_DIR = SCRIPTS_DIR / "validation"
-
 # ---------------------------------------------------------
-# STRATEGY SUBDIRECTORIES (NEW MIGRATION STRUCTURE)
+# STRATEGY SUBDIRECTORIES
 # ---------------------------------------------------------
 STRATEGIES_DIR = SRC_DIR / "strategies"
 CONTRACTS_DIR = STRATEGIES_DIR / "contracts"
-SPECIFIC_STRATEGIES_DIR = STRATEGIES_DIR / "specific"
-MODULES_DIR = SPECIFIC_STRATEGIES_DIR / "modules"
-FILTERS_DIR = SPECIFIC_STRATEGIES_DIR / "filters"
-
+CORE_STRATEGIES_ = STRATEGIES_DIR / "core"
+FILTERS_DIR = STRATEGIES_DIR / "filters"
+RUNNERS_DIR = SCRIPTS_DIR / "runners"
+# ---------------------------------------------------------
+# BACKTESTER SUBDIRECTORIES => under construction
+# ---------------------------------------------------------
+BACKTEST_DIR = SRC_DIR / "backtesting"
+CONTRACTS_DIR = BACKTEST_DIR / "contracts"
+# ---------------------------------------------------------
+# UTILS SUBDIRECTORIES
+# ---------------------------------------------------------
+UTILS_DIR = SRC_DIR / "utils"
 # ---------------------------------------------------------
 # TEST SUBDIRECTORIES 
 # ---------------------------------------------------------
@@ -66,58 +66,51 @@ FILTERS_TEST_DIR = UNIT_TESTS_DIR / "filters"
 RUNNER_TESTS_DIR = STRATEGIES_TESTS_DIR / "runners"
 REPORT_TESTS_DIR = STRATEGIES_TESTS_DIR / "reports"
 DIAG_TESTS_DIR = STRATEGIES_TESTS_DIR / "diagnostic"
-
 # ---------------------------------------------------------
 # CONFIG HELPERS
 # ---------------------------------------------------------
 def config_path(*parts) -> Path:
     """Return a path inside configs/."""
     return CONFIGS_DIR.joinpath(*parts)
-
 # ---------------------------------------------------------
 # DATA HELPERS
 # ---------------------------------------------------------
 def data_path(*parts) -> Path:
     """Return a path inside data/."""
     return DATA_DIR.joinpath(*parts)
-
 # ---------------------------------------------------------
 # OUTPUT HELPERS
 # ---------------------------------------------------------
 def output_path(*parts) -> Path:
     """Return a path inside outputs/."""
     return OUTPUTS_DIR.joinpath(*parts)
-
 # ---------------------------------------------------------
-# STRATEGY HELPERS (NEW)
+# STRATEGY HELPERS
 # ---------------------------------------------------------
 def strategy_path(*parts) -> Path:
     """Return a path inside src/strategies/."""
     return STRATEGIES_DIR.joinpath(*parts)
+def config_path(*parts) -> Path:
+    """Return a path inside src/strategies/config/."""
+    return CONFIGS_DIR.joinpath(*parts)
 
 def contract_path(*parts) -> Path:
     """Return a path inside src/strategies/contracts/."""
     return CONTRACTS_DIR.joinpath(*parts)
 
-def specific_strategy_path(*parts) -> Path:
-    """Return a path inside src/strategies/specific/."""
-    return SPECIFIC_STRATEGIES_DIR.joinpath(*parts)
-
-def module_path(*parts) -> Path:
-    """Return a path inside src/strategies/specific/modules/."""
-    return MODULES_DIR.joinpath(*parts)
+def core_strategy_path(*parts) -> Path:
+    """Return a path inside src/strategies/core/."""
+    return CORE_STRATEGIES_.joinpath(*parts)
 
 def filter_path(*parts) -> Path:
-    """Return a path inside src/strategies/specific/filters/."""
+    """Return a path inside src/strategies/filters/."""
     return FILTERS_DIR.joinpath(*parts)
-
 # ---------------------------------------------------------
 # TEST HELPERS (NEW)
 # ---------------------------------------------------------
 def test_path(*parts) -> Path:
     """Return a path inside tests/."""
     return TESTS_DIR.joinpath(*parts)
-
 # ---------------------------------------------------------
 # SAFE FILE CREATION
 # ---------------------------------------------------------

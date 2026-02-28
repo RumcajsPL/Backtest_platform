@@ -1,16 +1,6 @@
 """Time Filter — session hours gate.
-
-Version: 4.0.0 (Hardening II Final)
-Session: 21 - Final Hardening
-
-Changes from v3.0.0:
-- Block A: P1-CH3-8 - Now accepts typed TimeFilterConfig instead of raw dict
-- Block B: Removed all "debug" mode references - strict mode validation
-- DEC-022: Logging gated on analytics mode
-- DEC-027: Always collect timing
-- P1-CH3-3: count_by_type removed from hot path
+Version: 4.0.0
 """
-
 from __future__ import annotations
 
 import logging
@@ -26,7 +16,7 @@ from src.strategies.contracts.filter_contracts import (
     FilterStatus,
 )
 from src.strategies.contracts.signal_contracts import SignalFrame
-from src.config.config_schema import TimeFilterConfig
+from src.strategies.config.config_schema import TimeFilterConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +30,7 @@ class TimeFilter:
 
     def __init__(self, config: TimeFilterConfig, name: str = "time_filter") -> None:
         """
-        Initialize TimeFilter with typed configuration (P1-CH3-8).
+        Initialize TimeFilter with typed configuration.
 
         Args:
             config: TimeFilterConfig instance
@@ -90,7 +80,7 @@ class TimeFilter:
         Parameters
         ----------
         mode:
-            "core" or "analytics". Timing always collected (DEC-027).
+            "core" or "analytics". Timing always collected.
             The removal-rate logger.info is gated on analytics mode.
         """
         start_time = perf_counter()
@@ -141,12 +131,7 @@ class TimeFilter:
 
         trading_hours_mask = (
             (minutes_col >= self.session_start_minutes) &
-            (minutes_col <= self.session_end_minutes)   # [FIX-L3D1] inclusive end:
-                                                        # session_end bar is the last
-                                                        # accepted bar, not first rejected.
-                                                        # Changed from < to <= to match
-                                                        # Legacy pipeline behaviour and
-                                                        # design intent (ACT 0 / F1).
+            (minutes_col <= self.session_end_minutes)
         )
 
         # Operate on numpy values — avoids pandas copy overhead

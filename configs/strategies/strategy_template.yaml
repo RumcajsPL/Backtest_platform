@@ -45,7 +45,7 @@ data:
 # [GENERIC] EXECUTION
 # -----------------------------------------------------------------------------
 execution:
-  mode: "core"  # "core" | "analytics"
+  mode: "analytics"  # "core" | "analytics"
 
 # -----------------------------------------------------------------------------
 # [GENERIC] FILTERS
@@ -159,7 +159,7 @@ trade_management:
 # -----------------------------------------------------------------------------
 output:
   reports:
-    enabled: false
+    enabled: true
     output_dir: "outputs/strategies/reports/wbws"
     theme: "dark"           # "dark" | "light"
     chart_height_px: 300    # Valid range: 100–800

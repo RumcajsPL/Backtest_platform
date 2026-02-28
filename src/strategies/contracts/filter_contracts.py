@@ -1,13 +1,7 @@
 """
-Filter Layer Contracts for WBWSStrategy Migration v3.1
-
+Filter Layer Contracts for Strategy Builder
 This module defines typed contracts for filter execution and pipeline orchestration.
-These contracts replace dict-based filter statistics and string-based signal filtering.
-
-Author: Migration Project
 Version: 3.1.0
-Date: 2026-02-19
-Session: 20 — Block B (removed pipeline_result_to_old_format / old_format_to_pipeline_result)
 """
 
 from dataclasses import dataclass, field
@@ -17,7 +11,6 @@ import pandas as pd
 import numpy as np
 
 from .signal_contracts import SignalFrame
-
 
 # =============================================================================
 # FILTER STATUS ENUM
@@ -36,7 +29,6 @@ class FilterStatus(Enum):
     
     def __str__(self) -> str:
         return self.name
-
 
 # =============================================================================
 # FILTER METADATA
@@ -118,7 +110,6 @@ class FilterMetadata:
         
         return base
 
-
 # =============================================================================
 # FILTER RESULT
 # =============================================================================
@@ -149,7 +140,6 @@ class FilterResult:
     
     def __str__(self) -> str:
         return f"FilterResult({self.metadata})"
-
 
 # =============================================================================
 # FILTER PIPELINE RESULT
@@ -244,7 +234,6 @@ class FilterPipelineResult:
     
     def __str__(self) -> str:
         return f"FilterPipelineResult({self.final_count}/{self.raw_count} signals, {self.pass_rate:.1f}% pass rate)"
-
 
 # =============================================================================
 # FILTER PROTOCOL

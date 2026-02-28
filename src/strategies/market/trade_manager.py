@@ -1,7 +1,5 @@
 """Trade position management: handles position opening/closing logic and pyramiding
-
 Version: 2.1.0
-Changes: Added position-only signal handling to match Legacy order
 """
 import logging
 from typing import Dict, Optional, List, Any
@@ -13,7 +11,7 @@ from src.strategies.contracts.trade_contracts import (
     TradeDirection
 )
 from src.strategies.contracts.position_contracts import Position
-from src.config.config_schema import StrategyConfig
+from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 

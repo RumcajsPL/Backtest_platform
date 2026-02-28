@@ -1,9 +1,8 @@
 """
-run_strategy.py — Strategy Runner (New Architecture)
+run_strategy.py — Strategy Runner
 =====================================================
 Entry point for a single strategy run using the new architecture orchestrator.
 Loads config from a YAML file, runs the pipeline, prints a result summary.
-
 Usage:
     python scripts/runners/run_strategy.py
     python scripts/runners/run_strategy.py --config configs/strategies/wbws/wbws_strategy_v2.yaml
@@ -11,22 +10,7 @@ Usage:
 
 The --mode flag passes mode_override to orchestrator.run() — the YAML is not mutated.
 StrategyConfig is frozen so the override happens at the run() call site only.
-
 Version: 1.2.0
-Changes from v1.1.0:
-- [L1] _configure_logging() rewritten with dual-handler architecture:
-       FileHandler   — level from YAML (output.logging.level) or --log-level CLI
-                       flag, writes to output.logging.output_dir/run_{timestamp}.log
-       StreamHandler — fixed at WARNING so the console stays clean and shows
-                       only the _print_result() summary block.
-- [L2] main(): config is peeked before full orchestrator construction so the
-       log directory and level are available before the pipeline runs.
-       This peek is a read-only from_yaml call — it does not duplicate work
-       because StrategyOrchestrator.from_yaml() calls it again internally and
-       StrategyConfig construction is fast (no I/O beyond the YAML file).
-- [L3] _configure_logging() accepts Optional[LoggingOutputConfig] so it can
-       fall back to safe defaults when called before config is loaded.
-- [L4] Log file name includes timestamp to avoid clobbering previous runs.
 """
 
 from __future__ import annotations
@@ -44,7 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.strategies.orchestrator import StrategyOrchestrator, OrchestratorResult
-from src.config.config_schema import StrategyConfig, LoggingOutputConfig
+from src.strategies.config.config_schema import StrategyConfig, LoggingOutputConfig
 from src.utils.paths import CONFIGS_DIR
 
 # ---------------------------------------------------------------------------
@@ -61,16 +45,12 @@ def _configure_logging(
     cli_level_override: Optional[str],
 ) -> Path:
     """
-    Configure dual-handler logging.  [L1]
-
     FileHandler   — writes the full pipeline log to
                     {output_dir}/run_{timestamp}.log at the level specified
                     by --log-level (CLI) or output.logging.level (YAML),
                     falling back to INFO when neither is set.
-
     StreamHandler — writes WARNING+ to console only, so the terminal shows
                     the clean _print_result() summary and nothing else.
-
     Returns
     -------
     Path
@@ -111,7 +91,6 @@ def _configure_logging(
     root.addHandler(console_handler)
 
     return log_file
-
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -154,7 +133,6 @@ Examples:
         ),
     )
     return parser.parse_args()
-
 
 # ---------------------------------------------------------------------------
 # Output formatting
@@ -202,7 +180,6 @@ def _print_result(result: OrchestratorResult) -> None:
     print(SEP)
     print()
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -210,12 +187,6 @@ def _print_result(result: OrchestratorResult) -> None:
 def main() -> int:
     """
     Returns 0 on success, 1 on failure.
-
-    Logging is configured in two phases:  [L2]
-      Phase 1 — minimal bootstrap (console WARNING only) so any pre-config
-                errors are visible.
-      Phase 2 — after config peek: dual handlers wired from YAML + CLI flag.
-                Bootstrap handler is removed before Phase 2 is attached.
     """
     args = _parse_args()
 
@@ -281,7 +252,6 @@ def main() -> int:
     except Exception as e:
         log.exception("Pipeline failed with unexpected error: %s", e)
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

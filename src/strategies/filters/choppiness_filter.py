@@ -1,9 +1,5 @@
 """Choppiness Index Filter — market trendiness / choppiness gate.
-
-Migrated:  Session 5  v3.0.0
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
+Version: 3.0.0
 Rejects ALL signals when Choppiness Index > threshold (market too choppy).
 CI ranges 0–100: high (>61.8) = choppy; low (<38.2) = strongly trending.
 """
@@ -101,7 +97,7 @@ class ChoppinessFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always collected
         """
         start_time = perf_counter()
 

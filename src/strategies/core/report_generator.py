@@ -1,5 +1,4 @@
 """ReportGenerator — AnalyticsReport → self-contained HTML report.
-
 Philosophy: single file, no external runtime dependencies, production-grade.
 
 Architecture:
@@ -7,21 +6,6 @@ Architecture:
         → AnalyticsReport
             → ReportGenerator.generate()
                 → GeneratedReport (HTML file + in-memory content)
-
-Hardened: 2026-02-20  Session 20 Block I
-Hardened: Block 5     — [L4] Dict → Dict[str, str] in all colour-param signatures;
-          rows: List → List[tuple] in table helper signatures.
-Fixed:    2026-02-26  — [C1] Analytical tab infinite expand bug resolved.
-          Root cause: Chart.js responsive resize loop triggered when tab becomes
-          visible. canvas had no height constraint so container grew on every
-          redraw cycle. Two-part fix:
-            CSS: .chart-card canvas gets explicit height:{h}px + max-height cap
-                 on .chart-card so the container cannot grow beyond its initial size.
-            JS:  animation: {duration: 0} on all Chart constructors prevents the
-                 animation frame from triggering a second layout pass that
-                 restarts the loop. maintainAspectRatio forced false on all charts
-                 (was already set but now explicit at the plugin level too).
-
 Three-layer report structure:
     Layer 1 — EXECUTIVE  : Grade badge, assessment, top insights
     Layer 2 — ANALYTICAL : Chart.js charts + full insight detail
@@ -47,7 +31,6 @@ if TYPE_CHECKING:
     from src.strategies.contracts.trade_contracts import TradeResult
 
 logger = logging.getLogger(__name__)
-
 
 # ============================================================
 # COLOUR / ICON CONSTANTS
@@ -108,7 +91,6 @@ SEVERITY_CSS_CLASS = {
     "success":  "sev-success",
     "info":     "sev-info",
 }
-
 
 # ============================================================
 # MAIN CLASS
@@ -727,7 +709,7 @@ class ReportGenerator:
         return ReportGenerator._build_simple_table(headers, rows, colours)
 
     # ──────────────────────────────────────────────────────────
-    # CSS  [C1 fix: chart-wrap + canvas height constraint]
+    # CSS
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
@@ -1199,7 +1181,7 @@ body {{
 """
 
     # ──────────────────────────────────────────────────────────
-    # JAVASCRIPT  [C1 fix: animation disabled, explicit sizing]
+    # JAVASCRIPT  [explicit sizing]
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
@@ -1244,16 +1226,10 @@ Chart.defaults.color       = '{c["muted"]}';
 Chart.defaults.font.family = "{c['font']}";
 Chart.defaults.font.size   = 11;
 
-// [C1] Global animation off — prevents the post-render layout recalculation
-// that triggers Chart.js ResizeObserver to fire again and grow the container.
 Chart.defaults.animation = false;
 
 const gridOpts = {{ color: '{c["border"]}', drawBorder: false }};
 
-// [C1] Shared options applied to every chart instance.
-// maintainAspectRatio: false is required so Chart.js respects the .chart-wrap
-// height rather than computing height from width. Without this the chart ignores
-// the container height and falls back to its default 300px-in-a-growing-div loop.
 const BASE_OPTS = {{
   responsive: true,
   maintainAspectRatio: false,

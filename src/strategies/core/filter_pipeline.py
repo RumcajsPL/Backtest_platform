@@ -1,24 +1,6 @@
 """
 Filter Pipeline - Orchestrator for Signal Filtering
-
 Version: 2.4.0
-
-Changes from v2.3.0:
-- [BUG-1] _load_time_filter: unwrap nested 'config' key when time_filter YAML
-  uses the structured form:
-      time_filter:
-        enabled: True
-        config:
-          session_start: {hour: 0, minute: 0}
-          session_end: {hour: 23, minute: 59}
-  FilterConfig.from_dict() correctly stores {'config': {nested}} in FilterConfig.config
-  (because 'config' is not a known_key). But _load_time_filter then spread that as
-  **{'config': {nested}} into TimeFilterConfig.from_dict(), which expects flat keys
-  (session_start, session_end, excluded_days). The nested 'config' key was silently
-  ignored and TimeFilterConfig defaulted to 08:30–20:30.
-  Fix: detect the nested 'config' key in time_filter_cfg.config and unwrap it one
-  level before passing to TimeFilterConfig.from_dict(). Flat structure (no nesting)
-  continues to work unchanged.
 """
 
 import hashlib
@@ -39,23 +21,22 @@ from src.strategies.contracts.filter_contracts import (
     FilterProtocol,
 )
 from src.strategies.contracts.cache import FilterPipelineCache
-from src.config.config_schema import StrategyConfig, TimeFilterConfig
+from src.strategies.config.config_schema import StrategyConfig, TimeFilterConfig
 
 # Import all filter implementations
-from src.strategies.specific.filters.time_filter import TimeFilter
-from src.strategies.specific.filters.rsi_filter import RSIFilter
-from src.strategies.specific.filters.cci_filter import CCIFilter
-from src.strategies.specific.filters.adx_filter import ADXFilter
-from src.strategies.specific.filters.bollinger_filter import BollingerFilter
-from src.strategies.specific.filters.choppiness_filter import ChoppinessFilter
-from src.strategies.specific.filters.dpo_filter import DPOFilter
-from src.strategies.specific.filters.ma_filter import MAFilter
-from src.strategies.specific.filters.macd_filter import MACDFilter
-from src.strategies.specific.filters.pivot_filter import PivotFilter
-from src.strategies.specific.filters.supertrend_filter import SupertrendFilter
+from src.strategies.filters.time_filter import TimeFilter
+from src.strategies.filters.rsi_filter import RSIFilter
+from src.strategies.filters.cci_filter import CCIFilter
+from src.strategies.filters.adx_filter import ADXFilter
+from src.strategies.filters.bollinger_filter import BollingerFilter
+from src.strategies.filters.choppiness_filter import ChoppinessFilter
+from src.strategies.filters.dpo_filter import DPOFilter
+from src.strategies.filters.ma_filter import MAFilter
+from src.strategies.filters.macd_filter import MACDFilter
+from src.strategies.filters.pivot_filter import PivotFilter
+from src.strategies.filters.supertrend_filter import SupertrendFilter
 
 logger = logging.getLogger(__name__)
-
 
 class FilterPipeline:
     """
@@ -152,27 +133,7 @@ class FilterPipeline:
 
     def _load_time_filter(self) -> None:
         """
-        Initialize time filter from config using typed TimeFilterConfig.
-
-        [H3] A disabled time filter (enabled: false) is NOT instantiated.
-        self.time_filter remains None, which apply_filters() treats as
-        'no time filtering required'. This ensures disabled filters produce
-        no entries in FilterPipelineResult.filter_results.
-
-        [P6] No try/except: construction errors are config bugs and must
-        propagate immediately. StrategyConfig validates the config before
-        this method is ever called.
-
-        [BUG-1] The time_filter YAML uses a nested 'config' block:
-            time_filter:
-              enabled: True
-              config:
-                session_start: {hour: 8, minute: 30}
-                session_end: {hour: 20, minute: 30}
-        FilterConfig.from_dict() stores this as FilterConfig.config = {'config': {nested}}.
-        We must unwrap that one level before passing to TimeFilterConfig.from_dict(),
-        which expects flat keys (session_start, session_end, excluded_days).
-        If the config is already flat (no nested 'config' key), it passes through unchanged.
+        Initialize time filter from config using typed TimeFilterConfig.    
         """
         time_filter_cfg = self.config.filters.time_filters.get("time_filter")
 
@@ -184,11 +145,6 @@ class FilterPipeline:
                 logger.info(f"Time filter: {reason} — skipped")
             return
 
-        # [BUG-1] Unwrap nested 'config' key if present.
-        # YAML form:  time_filter: {enabled: True, config: {session_start: ...}}
-        #   → FilterConfig.config = {'config': {'session_start': ...}}   ← nested
-        # Flat form:  time_filter: {enabled: True, session_start: ...}
-        #   → FilterConfig.config = {'session_start': ...}               ← already flat
         raw_params = time_filter_cfg.config
         if "config" in raw_params and isinstance(raw_params.get("config"), dict):
             # Structured YAML form: unwrap the inner dict

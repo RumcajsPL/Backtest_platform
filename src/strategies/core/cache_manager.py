@@ -1,18 +1,13 @@
 """
 Cache Manager - Centralized Cache Management for Multi-Run Backtesting
-
 Version: 1.0.0 (Hardening II Final)
-Session: 21 - Final Hardening
-
 Purpose:
     Provides a single source of truth for all module-level caches in the system.
     Enables clean cache lifecycle management between backtester runs.
-
     Modules integrated:
     - RiskManager (ATR cache, annual range cache)
     - SpreadManager (YAML config cache)
     - FilterPipeline (indicator cache via FilterPipelineCache)
-
 Usage in backtester loop:
     cache_manager = CacheManager()
     for params in parameter_grid:
@@ -28,10 +23,8 @@ import logging
 from typing import Dict, Optional, Any
 
 import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
-
 
 class CacheManager:
     """

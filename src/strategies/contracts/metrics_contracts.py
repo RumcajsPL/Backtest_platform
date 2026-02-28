@@ -1,24 +1,14 @@
 """
 Metrics Contracts - Performance Metrics for Backtester
-
-Session 13 - MetricsCalculator
 Version: 1.0.0
 
 Defines MetricsReport contract for standardized metrics calculation.
 Consumed by backtester (memory-only, no file I/O).
-
-Design Principles:
-- Single Responsibility: Only holds metrics data
-- Performance-Driven: Lightweight dataclass, fast serialization
-- Explicit Contracts: All fields typed, validated
-- Type Safety: Immutable, frozen dataclass
-- Production-Ready: No file I/O, memory-only
 """
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 from datetime import datetime
 import json
-
 
 @dataclass(frozen=True)
 class MetricsReport:
@@ -299,7 +289,6 @@ class MetricsReport:
             f")"
         )
 
-
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -337,7 +326,6 @@ def create_empty_metrics_report(execution_duration_ms: float = 0.0) -> MetricsRe
         execution_duration_ms=execution_duration_ms,
     )
 
-
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
@@ -371,7 +359,6 @@ if __name__ == "__main__":
     print("\n" + "="*70)
     print("BACKTESTER FORMAT (to_dict)")
     print("="*70)
-    import json
     print(json.dumps(metrics.to_dict(), indent=2))
     
     print("\n" + "="*70)

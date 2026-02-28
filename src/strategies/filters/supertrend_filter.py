@@ -1,10 +1,6 @@
 """Supertrend Filter — ATR-based directional trend gate.
-
-Migrated:  Session 4  v3.0.0
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
-EXACT legacy filter logic preserved
+Version: 3.0.0
+Logic:
 -------------------------------------
 * mask initialised to True (ones), then directional conditions narrow it
 * NaN zeroed AFTER directional conditions (separate pass) — order matters
@@ -116,7 +112,7 @@ class SupertrendFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always collected.
         """
         start_time = perf_counter()
 

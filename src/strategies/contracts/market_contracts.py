@@ -1,11 +1,6 @@
 """
 Market Contracts - Price Data Frames
 Version: 1.0.0
-Date: 2025-02-13
-
-Replaces the old SignalFrame from trade_management (which caused naming conflict
-with Phase 2 SignalFrame for signal generation).
-
 This contract represents market price data for a single bar, including OHLCV
 and optional higher/lower timeframe data.
 """
@@ -14,7 +9,6 @@ from typing import Dict, Any, Optional
 import pandas as pd
 
 __all__ = ['MarketFrame']
-
 
 @dataclass(frozen=True)
 class MarketFrame:

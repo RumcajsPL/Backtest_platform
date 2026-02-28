@@ -1,9 +1,5 @@
-"""RSI Filter — overbought / oversold conditions.
-
-Migrated:  Session 4  v3.0.0
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
+"""RSI Filter — overbought / oversold conditions
+Version: 3.0.0
 BUY  rejected when RSI >= overbought.
 SELL rejected when RSI <= oversold.
 """
@@ -93,7 +89,7 @@ class RSIFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always.
         """
         start_time = perf_counter()
 

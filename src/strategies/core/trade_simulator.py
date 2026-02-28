@@ -1,51 +1,18 @@
 """
 Trade simulation with LTF OHLC execution
-
 Version: 5.5.0
 Session: duration_bars fix
-
-Changes from v5.4.0:
-- [DUR-1] simulate_trades(): infer strategy bar frequency from df_strategy.index
-  once before the main loop (pd.infer_freq with timedelta fallback). Build a
-  strategy_bar_index dict {timestamp → positional int} for O(1) entry/exit bar
-  lookups. Both structures are passed to every exit path.
-- [DUR-2] _execute_trade_exit(): added strategy_bar_index parameter. Computes
-  duration_bars as (exit_bar_pos - entry_bar_pos) in strategy-TF bars before
-  calling TradeExit.create(). LTF exit_time (sub-bar second-level timestamp) is
-  floored to the containing strategy bar via the inferred bar_timedelta before
-  the index lookup so the bar count is always expressed in strategy TF units.
-- [DUR-3] _handle_close(): same duration_bars computation applied to
-  OPPOSITE_SIGNAL exits. Uses strategy bar timestamp directly (no floor needed —
-  opposite-signal exits fire on a strategy bar boundary).
-- [DUR-4] _close_remaining_positions(): same duration_bars computation applied to
-  END_OF_DATA exits via _execute_trade_exit (inherits [DUR-2] automatically by
-  passing strategy_bar_index through).
-  Root cause fixed: duration_bars was declared on TradeExit with default 0 and
-  was never populated, causing trade_analytics to classify every trade as a fast
-  exit (duration_bars=0 < FAST_EXIT_BARS=3 → 100% fast exit rate).
-
-Changes from v5.3.0 (carried from v5.4.0):
-- [GUARD-1] _precompute_ltf_windows: LTF coverage validation added after the
-  window build. Zero windows built → ValueError with actionable diagnostics.
-  Partial coverage → WARNING logged with coverage percentage.
-
-Changes from v5.2.0 (carried from v5.4.0):
-- [PERF-1] _precompute_ltf_windows: vectorised index conversion and searchsorted.
-- [PERF-2] _check_exits_with_ltf_ohlc: removed per-bar list comprehension and
-  np.array() allocation for the common case of few open trades.
 """
 
 import time
 import logging
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any
-
 import numpy as np
 import pandas as pd
-
-from src.strategies.specific.modules.risk_manager import RiskManager
-from src.strategies.specific.modules.spread_manager import SpreadManager
-from src.strategies.specific.modules.trade_manager import TradeManager
+from src.strategies.market.risk_manager import RiskManager
+from src.strategies.market.spread_manager import SpreadManager
+from src.strategies.market.trade_manager import TradeManager
 from src.strategies.core.null_progressive_tracker import NullProgressiveTracker
 from src.strategies.core.cache_manager import CacheManager
 
@@ -62,7 +29,7 @@ from src.strategies.contracts.trade_contracts import (
     TradeResult,
 )
 from src.strategies.contracts.signal_contracts import SignalFrame
-from src.config.config_schema import StrategyConfig
+from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +40,7 @@ except ImportError:
     NUMBA_AVAILABLE = False
 
 _SIGNAL_CODE_TO_STR = {1: "BUY", 2: "SELL"}
-
-# [PERF-2] Crossover point for direct-access vs np.array() in exit checks.
-# For n_open_trades < _ARRAY_THRESHOLD, direct attribute access is faster than
-# np.array() construction + vectorised comparison. Break-even measured at ~4.
 _ARRAY_THRESHOLD: int = 4
-
 
 class TradeSimulatorProfiler:
     """Simple profiler for performance monitoring in analytics mode"""
@@ -109,7 +71,6 @@ class TradeSimulatorProfiler:
                 f"{name:30s}: {total:.3f}s total, {avg:.3f}s avg, {len(times)} calls"
             )
 
-
 if NUMBA_AVAILABLE:
     @njit
     def _numba_find_first_hit_long(low_np, high_np, sl_price, tp_price, is_sl):
@@ -134,7 +95,6 @@ if NUMBA_AVAILABLE:
                 if low_np[i] <= tp_price:
                     return i
         return -1
-
 
 class TradeSimulator:
     """
@@ -161,10 +121,6 @@ class TradeSimulator:
         self.df_full = df_full
         self.df_artf = df_artf
         self._cache_manager = cache_manager or CacheManager()
-
-        # [L3] Access analytics.profile_simulator via clean optional attribute
-        # chain rather than getattr(config, 'analytics', {}).get(...) which
-        # treated an optional typed object as a plain dict.
         _analytics = getattr(config, "analytics", None)
         self.profile_enabled: bool = bool(
             getattr(_analytics, "profile_simulator", False)
@@ -188,8 +144,6 @@ class TradeSimulator:
         self._tracking_enabled = False
         self.df_ltf: Optional[pd.DataFrame] = None
         self._ltf_windows: Dict = {}
-
-        # Phase 5.7/5.8: All managers now use StrategyConfig
         self.risk_manager = RiskManager(
             config=self.config,
             ohlcv_data=df_full,
@@ -214,7 +168,6 @@ class TradeSimulator:
 
     def initialize_managers(self) -> None:
         """Initialize trade, spread, and risk managers."""
-        # Phase 5.8: TradeManager now accepts StrategyConfig
         self.trade_manager = TradeManager(self.config)
 
         spread_config = self.config.trade_management.spread
@@ -228,7 +181,7 @@ class TradeSimulator:
             )
 
     # ──────────────────────────────────────────────────────────────────── #
-    # Strategy bar frequency inference                              [DUR-1]
+    # Strategy bar frequency inference
     # ──────────────────────────────────────────────────────────────────── #
 
     @staticmethod
@@ -266,7 +219,7 @@ class TradeSimulator:
         return diffs.median()
 
     # ──────────────────────────────────────────────────────────────────── #
-    # Duration bar computation helpers                              [DUR-1]
+    # Duration bar computation helpers
     # ──────────────────────────────────────────────────────────────────── #
 
     @staticmethod
@@ -307,26 +260,7 @@ class TradeSimulator:
     # ──────────────────────────────────────────────────────────────────── #
 
     def _precompute_ltf_windows(self, df_strategy: pd.DataFrame) -> None:
-        """Pre-compute LTF windows and numpy views for each strategy bar.
-
-        [PERF-1] Two vectorised improvements over v5.2.0:
-
-        1. Index conversion: df_strategy.index.to_numpy() is called ONCE to
-           produce strat_np and end_np. The previous implementation called
-           np.datetime64(strategy_time) inside the loop — 68,400 conversions
-           replaced by 1 vectorised call.
-
-        2. searchsorted: both start_idx and end_idx arrays are computed with a
-           single vectorised searchsorted call each on the full ltf index. The
-           previous implementation called searchsorted twice per loop iteration —
-           136,800 calls replaced by 2 vectorised calls.
-
-        3. Uniform fast path: if the LTF file has exactly `ticks_per_bar` rows
-           per strategy bar (the normal case for clean second-level data), numpy
-           reshape + min/max(axis=1) computes all min_low/max_high values in two
-           array operations. A size-mismatch guard falls back to the per-bar loop
-           for non-uniform data so the method is safe for any input.
-
+        """Pre-compute LTF windows and numpy views for each strategy bar.        
         [GUARD-1] LTF coverage validation added after window build:
         - Zero windows built → hard abort (LTF file does not overlap the
           strategy date range at all — wrong file or wrong date_range).
@@ -485,7 +419,7 @@ class TradeSimulator:
         return ts, exit_price, high_val, low_val
 
     # ──────────────────────────────────────────────────────────────────── #
-    # Exit execution                                                [DUR-2]
+    # Exit execution
     # ──────────────────────────────────────────────────────────────────── #
 
     def _execute_trade_exit(
@@ -503,16 +437,7 @@ class TradeSimulator:
     ) -> None:
         """
         Execute trade exit and update tracking.
-
-        TS-2: Fail-fast on unknown exit reason — no silent default.
-
-        [DUR-2] duration_bars is now computed here before constructing TradeExit.
-        exit_time may be a sub-bar LTF timestamp; bar_timedelta is used to floor
-        it to the containing strategy bar before the positional index lookup.
-        Both strategy_bar_index and bar_timedelta are built once in simulate_trades
-        and passed through to avoid any repeated work.
-        """
-        # TS-2: Strict exit reason validation
+        """       
         try:
             exit_reason_enum = ExitReason[exit_reason]
         except KeyError:
@@ -521,10 +446,6 @@ class TradeSimulator:
                 f"Valid values: {[e.name for e in ExitReason]}. "
                 f"This is a code defect — exit_reason must always be a valid ExitReason name."
             ) from None
-
-        # [DUR-2] Compute duration in strategy-TF bars.
-        # entry_time is always on a strategy bar boundary.
-        # exit_time may be sub-bar (LTF); _compute_duration_bars floors it.
         duration_bars = self._compute_duration_bars(
             entry_time=trade.entry.entry_time,
             exit_time=exit_time,
@@ -537,7 +458,7 @@ class TradeSimulator:
             exit_time=exit_time,
             exit_price=exit_price,
             exit_reason=exit_reason_enum,
-            duration_bars=duration_bars,    # [DUR-2] now always populated
+            duration_bars=duration_bars,
         )
         updated_trade = Trade(entry=trade.entry, exit=trade_exit)
 
@@ -593,18 +514,10 @@ class TradeSimulator:
         strategy_timestamp: pd.Timestamp,
         exit_stats: Dict,
         verbose: bool,
-        strategy_bar_index: Dict[pd.Timestamp, int],   # [DUR-2] threaded through
-        bar_timedelta: pd.Timedelta,                    # [DUR-2] threaded through
+        strategy_bar_index: Dict[pd.Timestamp, int],
+        bar_timedelta: pd.Timedelta,
     ) -> None:
         """Check for SL/TP exits using LTF OHLC data.
-
-        [PERF-2] v5.2.0 allocated Python lists and np.array() on every call
-        regardless of the number of open trades. For the typical case of 0–3
-        simultaneous open trades, direct attribute access is faster.
-        The crossover is controlled by _ARRAY_THRESHOLD (= 4).
-
-        [DUR-2] strategy_bar_index and bar_timedelta are now threaded through
-        to _execute_trade_exit so duration_bars can be computed at exit time.
         """
         if not self._open_trades:
             return
@@ -650,7 +563,7 @@ class TradeSimulator:
                     if ts is not None:
                         self._execute_trade_exit(
                             trade, ts, price, reason, exit_stats, verbose, h, l,
-                            strategy_bar_index, bar_timedelta,   # [DUR-2]
+                            strategy_bar_index, bar_timedelta,
                         )
             else:
                 sl_arr = np.array([t.entry.stop_loss  for t in long_trades], dtype=np.float32)
@@ -671,7 +584,7 @@ class TradeSimulator:
                         if ts is not None:
                             self._execute_trade_exit(
                                 trade, ts, price, reason, exit_stats, verbose, h, l,
-                                strategy_bar_index, bar_timedelta,   # [DUR-2]
+                                strategy_bar_index, bar_timedelta,
                             )
 
         # ── Short trades ─────────────────────────────────────────────────
@@ -689,7 +602,7 @@ class TradeSimulator:
                     if ts is not None:
                         self._execute_trade_exit(
                             trade, ts, price, reason, exit_stats, verbose, h, l,
-                            strategy_bar_index, bar_timedelta,   # [DUR-2]
+                            strategy_bar_index, bar_timedelta,
                         )
             else:
                 sl_arr = np.array([t.entry.stop_loss  for t in short_trades], dtype=np.float32)
@@ -731,7 +644,7 @@ class TradeSimulator:
 
         Args:
             df_strategy: Strategy timeframe OHLCV
-            signal_frame: SignalFrame with int8 signals (CF-6)
+            signal_frame: SignalFrame with int8 signals
             verbose: Enable verbose logging
             progressive_tracker: Optional progressive tracker
             signal_id_map: Optional signal ID map
@@ -782,11 +695,6 @@ class TradeSimulator:
         self._precompute_ltf_windows(df_strategy)
         if verbose:
             logger.info(f"Pre-computed {len(self._ltf_windows):,} LTF windows")
-
-        # [DUR-1] Infer strategy bar duration and build positional bar index.
-        # Done once here — O(n) cost, amortised across all trades in the run.
-        # bar_timedelta: used to floor sub-bar LTF exit timestamps.
-        # strategy_bar_index: O(1) timestamp → position lookup for duration_bars.
         bar_timedelta: pd.Timedelta = self._infer_bar_timedelta(df_strategy)
         strategy_bar_index: Dict[pd.Timestamp, int] = {
             ts: i for i, ts in enumerate(df_strategy.index)
@@ -828,13 +736,13 @@ class TradeSimulator:
         }
 
         # ────────────────────────────────────────────────────────────────
-        # Main simulation loop — Legacy-compatible order (position first)
+        # Main simulation loop
         # ────────────────────────────────────────────────────────────────
         for i, timestamp in enumerate(strategy_index_list):
-            # 1) Check exits on LTF (unchanged logic, new duration params)
+            # 1) Check exits on LTF
             check_exits(
                 timestamp, exit_stats, verbose,
-                strategy_bar_index, bar_timedelta,   # [DUR-2]
+                strategy_bar_index, bar_timedelta,
             )
 
             # 2) Skip if no signal — O(1) dict lookup
@@ -890,8 +798,8 @@ class TradeSimulator:
                         position_rejected_count=position_rejected_count,
                         current_bid=bid_price,
                         verbose=verbose,
-                        strategy_bar_index=strategy_bar_index,   # [DUR-3]
-                        bar_timedelta=bar_timedelta,              # [DUR-3]
+                        strategy_bar_index=strategy_bar_index,  
+                        bar_timedelta=bar_timedelta,           
                     )
                     continue
 
@@ -903,7 +811,7 @@ class TradeSimulator:
                     risk_stats["total_adjusted"] += 1
 
                 if tracking_enabled and signal_id:
-                    tracker.update_risk_management_details(...)   # keep your existing call
+                    tracker.update_risk_management_details(...) 
 
             # 7) Execute trade manager actions
             if result.decision_type == DecisionType.CLOSE_AND_REVERSE:
@@ -972,7 +880,7 @@ class TradeSimulator:
             logger.debug(f"[REJECT] {timestamp} {direction} — {reason}")
 
     # ──────────────────────────────────────────────────────────────────── #
-    # Risk rejection handling                                       [DUR-3]
+    # Risk rejection handling
     # ──────────────────────────────────────────────────────────────────── #
 
     def _handle_risk_rejection(
@@ -987,8 +895,8 @@ class TradeSimulator:
         position_rejected_count: Dict,
         current_bid: float,
         verbose: bool,
-        strategy_bar_index: Dict[pd.Timestamp, int],   # [DUR-3]
-        bar_timedelta: pd.Timedelta,                    # [DUR-3]
+        strategy_bar_index: Dict[pd.Timestamp, int], 
+        bar_timedelta: pd.Timedelta,                  
     ) -> None:
         """Handle risk rejection."""
         key = "buy" if is_long else "sell"
@@ -1008,14 +916,14 @@ class TradeSimulator:
         elif action == "CLOSE_AND_REVERSE":
             self._handle_close(
                 timestamp, close_trade_ids, current_bid, {}, verbose,
-                strategy_bar_index, bar_timedelta,   # [DUR-3]
+                strategy_bar_index, bar_timedelta,
             )
             self.trade_manager.close_positions(close_trade_ids)
             if verbose:
                 logger.debug(f"[CLOSE ONLY] {timestamp} {direction} — Risk rejected new position")
 
     # ──────────────────────────────────────────────────────────────────── #
-    # Close positions on opposite signal                            [DUR-3]
+    # Close positions on opposite signal
     # ──────────────────────────────────────────────────────────────────── #
 
     def _handle_close(
@@ -1025,8 +933,8 @@ class TradeSimulator:
         current_bid: float,
         exit_stats: Dict,
         verbose: bool,
-        strategy_bar_index: Dict[pd.Timestamp, int],   # [DUR-3]
-        bar_timedelta: pd.Timedelta,                    # [DUR-3]
+        strategy_bar_index: Dict[pd.Timestamp, int],
+        bar_timedelta: pd.Timedelta,
     ) -> None:
         """
         Close positions due to opposite signal.
@@ -1162,7 +1070,7 @@ class TradeSimulator:
             )
 
     # ──────────────────────────────────────────────────────────────────── #
-    # Close remaining positions at end of backtest                  [DUR-4]
+    # Close remaining positions at end of backtest
     # ──────────────────────────────────────────────────────────────────── #
 
     def _close_remaining_positions(
@@ -1170,16 +1078,11 @@ class TradeSimulator:
         df_strategy: pd.DataFrame,
         exit_stats: Dict,
         verbose: bool,
-        strategy_bar_index: Dict[pd.Timestamp, int],   # [DUR-4]
-        bar_timedelta: pd.Timedelta,                    # [DUR-4]
+        strategy_bar_index: Dict[pd.Timestamp, int],
+        bar_timedelta: pd.Timedelta,                
     ) -> None:
         """
         Close all remaining open positions at end of backtest.
-
-        [DUR-4] strategy_bar_index and bar_timedelta are passed through to
-        _execute_trade_exit so END_OF_DATA exits receive correct duration_bars.
-        last_timestamp is a strategy bar boundary — no floor needed, but
-        _compute_duration_bars handles it uniformly regardless.
         """
         if df_strategy.empty or not self._open_trades:
             return
@@ -1202,6 +1105,6 @@ class TradeSimulator:
                 verbose=verbose,
                 exit_high=last_bid,
                 exit_low=last_bid,
-                strategy_bar_index=strategy_bar_index,   # [DUR-4]
-                bar_timedelta=bar_timedelta,              # [DUR-4]
+                strategy_bar_index=strategy_bar_index,
+                bar_timedelta=bar_timedelta,
             )

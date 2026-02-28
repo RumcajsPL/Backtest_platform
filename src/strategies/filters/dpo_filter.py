@@ -1,10 +1,6 @@
 """DPO Filter — Detrended Price Oscillator (cycle-based directional gate).
-
-Migrated:  Session 5  v3.0.1  (EXACT legacy computation restored)
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
-EXACT legacy logic
+Version: 3.0.1  (EXACT legacy computation restored)
+Logic
 ------------------
 * DPO normalised as percentage: (DPO / close) × 100
 * Optional smoothing of raw DPO (smooth > 1)
@@ -31,13 +27,10 @@ from src.strategies.contracts.signal_contracts import SignalFrame
 
 logger = logging.getLogger(__name__)
 
-
 class DPOFilter:
     """Detrended Price Oscillator filter — cycle-based directional gate.
-
     Implements ``FilterProtocol`` for integration with ``FilterPipeline``.
     """
-
     def __init__(
         self,
         length: int = 20,
@@ -115,7 +108,7 @@ class DPOFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always collected
         """
         start_time = perf_counter()
 

@@ -1,31 +1,19 @@
 """
 Filter Pipeline Cache - Indicator Caching System
-
 Lightweight cache for precomputed indicators to avoid redundant calculations.
 Uses SHA1 hashing of OHLCV data + filter config fingerprint for stable cache keys.
-
-Author: Migration Project
 Version: 2.1.0
-Date: 2026-02-19
-Session: 20 Block D
-
-Changes from v2.0.0:
-- P0-E2 (DEC-026): compute_cache_id() now requires filter_cfg_hash parameter.
-  Cache key = data fingerprint + filter config fingerprint.
-  Prevents cross-config cache collisions in multi-run backtester.
-- Added hits/misses counters for observability (DEC-027)
 """
 
 import hashlib
 import json
 import pickle
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import pandas as pd
 import numpy as np
 
 logger = logging.getLogger(__name__)
-
 
 class FilterPipelineCache:
     """

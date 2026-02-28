@@ -1,12 +1,8 @@
 """MA Filter — moving average slope for trend confirmation.
-
-Migrated:  Session 5  v3.0.1  (EXACT legacy computation restored)
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
-EXACT legacy logic
+Version 3.0.1  (EXACT legacy computation restored)
+EXACT Logic
 ------------------
-* All MA types as legacy (SMA/EMA/WMA/HMA/DEMA/TEMA/KAMA/TRIMA/LSMA)
+* MA types served: SMA/EMA/WMA/HMA/DEMA/TEMA/KAMA/TRIMA/LSMA
 * Slope comparison: MA > MA_shift for BUY; MA < MA_shift for SELL (strict)
 * NaN handling: fillna(False) — ANY NaN makes condition False
 * Non-directional: same mask applied to BUY and SELL separately
@@ -33,7 +29,6 @@ logger = logging.getLogger(__name__)
 _VALID_MA_TYPES = frozenset(
     {"SMA", "EMA", "WMA", "HMA", "DEMA", "TEMA", "KAMA", "TRIMA", "LSMA"}
 )
-
 
 class MAFilter:
     """MA filter — checks moving average slope for trend confirmation.
@@ -119,7 +114,7 @@ class MAFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always collected.
         """
         start_time = perf_counter()
 

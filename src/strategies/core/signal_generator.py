@@ -15,21 +15,17 @@ Changes from v2.2.0:
 import logging
 from typing import Optional
 
-import numpy as np
-import pandas as pd
-
 from src.indicators.wbws_trigger import WBWSTrigger
 from src.strategies.contracts.data_contracts import DataBundle
 from src.strategies.contracts.signal_contracts import SignalFrame, SignalStats
-from src.config.config_schema import StrategyConfig
+from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
 # Valid pandas offset aliases for HTF periods
 _VALID_HTF_PERIODS = frozenset({
-    "1min", "5min", "15min", "30min", "1H", "2H", "4H", "1D", "1W"
+    "1min", "5min", "10min", "15min", "30min", "1H", "4H", "1D", "1W"
 })
-
 
 class SignalGenerator:
     """
@@ -42,10 +38,6 @@ class SignalGenerator:
         config: StrategyConfig instance
         mode: Execution mode ("core" or "analytics")
         trigger: WBWSTrigger instance (reused for performance)
-
-    Performance:
-        - Core mode: ~22-25ms (with int8 optimization)
-        - Analytics mode: ~28-30ms (with lazy metadata)
     """
 
     def __init__(self, config: StrategyConfig, mode: str = "core"):

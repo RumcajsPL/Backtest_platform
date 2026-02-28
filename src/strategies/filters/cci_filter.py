@@ -1,9 +1,5 @@
 """CCI Filter — overbought / oversold conditions.
-
-Migrated:  Session 4  v3.0.0
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
+Vresion: 3.0.0
 BUY  rejected when CCI >= overbought.
 SELL rejected when CCI <= oversold.
 """
@@ -96,7 +92,7 @@ class CCIFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always collected
         """
         start_time = perf_counter()
 

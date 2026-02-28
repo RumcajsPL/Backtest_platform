@@ -1,5 +1,4 @@
 """Spread management: broker spread calculations based on BID price data.
-
 Version: 2.0.0 (Hardening II Final)
 Session: 21 - Final Hardening
 
@@ -24,14 +23,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import ClassVar, Dict, Optional
+from typing import Dict, Optional
 
 import yaml
 
 from src.strategies.core.cache_manager import CacheManager
 
 logger = logging.getLogger(__name__)
-
 
 class SpreadManager:
     """Manages broker spread application assuming input data is BID PRICE.
@@ -45,7 +43,6 @@ class SpreadManager:
     * SHORT entry:     Bid  (sell at Bid — no spread on entry)
     * SHORT SL trigger: Bid_SL + Spread  (buy at Ask to close short)
     * SHORT TP trigger: Bid_TP + Spread  (buy at Ask to close short)
-                        → trigger_tp = tp_bid + spread (DEC-038)
     """
 
     def __init__(
@@ -104,10 +101,6 @@ class SpreadManager:
     @staticmethod
     def _resolve_config_path(spread_config_path: Optional[str]) -> Path:
         """Resolve broker spread config path — fail-fast, no hardcoded default.
-
-        DEC-036: The hardcoded fallback path has been removed. Every caller
-        must supply an explicit path via trade_management.spread.config_path.
-
         Raises
         ------
         ValueError

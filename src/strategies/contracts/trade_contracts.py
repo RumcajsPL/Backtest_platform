@@ -1,17 +1,7 @@
 """
 Trade Contracts - Phase 4 Migration
 Version: 1.4.0
-Date: 2026-02-27
-
-Changes from v1.3.0:
-- [C3] TradeExit.create(): added duration_bars parameter (int, default 0).
-  Previously duration_bars was declared on the dataclass with default 0 but was
-  never passed by any call site — every trade silently reported 0 bars duration,
-  causing trade_analytics._analyze_duration_patterns() to classify 100% of trades
-  as fast exits (< 3 bars). The value is now computed in TradeSimulator (where
-  df_strategy is available) and passed explicitly into this factory method.
-  duration_minutes is unchanged — it continues to be computed here from wall-clock
-  timestamps and serves a complementary purpose (absolute time, not bar count).
+This module defines the core data contracts for trades, including entries, exits, and results.
 """
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -30,7 +20,6 @@ __all__ = [
     'DecisionType',
     'TradeDecision',
 ]
-
 
 # ============================================================================
 # ENUMS
@@ -64,7 +53,6 @@ class TradeDirection(Enum):
     def is_short(self) -> bool:
         return self == TradeDirection.SHORT
 
-
 class ExitReason(Enum):
     """Reason for trade exit"""
     STOP_LOSS = auto()
@@ -87,7 +75,6 @@ class ExitReason(Enum):
         """Convert to legacy string format"""
         return self.name
 
-
 class DecisionType(Enum):
     """Trade manager decision types"""
     NONE = auto()
@@ -107,7 +94,6 @@ class DecisionType(Enum):
         except KeyError:
             raise ValueError(f"Invalid decision type: {decision}")
 
-
 # ============================================================================
 # TRADE PARAMETERS
 # ============================================================================
@@ -120,7 +106,7 @@ class TradeParameters:
     Maps to RiskManager.compute_trade_parameters() output.
     Contains all information needed to open a position and manage its exit.
 
-    TP trigger fields (DEC-037, DEC-038)
+    TP trigger fields 
     --------------------------------------
     take_profit is the raw TP price (mid/bid level).
     take_profit_trigger is the actual price at which the exit fires:
@@ -250,7 +236,6 @@ class TradeParameters:
             'comment': self.comment,
         }
 
-
 # ============================================================================
 # TRADE ENTRY
 # ============================================================================
@@ -366,7 +351,6 @@ class TradeEntry:
             'status': 'OPEN',
         }
 
-
 # ============================================================================
 # TRADE EXIT
 # ============================================================================
@@ -472,7 +456,6 @@ class TradeExit:
             'exit_bar_low': self.exit_bar_low,
         }
 
-
 # ============================================================================
 # TRADE (ENTRY + EXIT)
 # ============================================================================
@@ -576,7 +559,6 @@ class Trade:
             f"{status}, P&L: {pnl_str})"
         )
 
-
 # ============================================================================
 # REJECTED SIGNAL (NOT A TRADE)
 # ============================================================================
@@ -628,7 +610,6 @@ class RejectedSignal:
 
     def __str__(self) -> str:
         return f"RejectedSignal({self.rejection_id}, {self.direction}, {self.rejection_reason})"
-
 
 # ============================================================================
 # TRADE RESULT (PIPELINE OUTPUT)
@@ -786,7 +767,6 @@ class TradeResult:
 
     def __str__(self) -> str:
         return self.get_summary()
-
 
 # ============================================================================
 # TRADE DECISION (TRADE MANAGER OUTPUT)

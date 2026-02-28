@@ -1,16 +1,7 @@
 """
 Config Schema Validation - Type-Safe Configuration
-
 Version: 2.3.0
-Session: Risk Filter Validation Fix
-
-Changes from v2.2.0:
-- Added cross-validation between RiskConfig and DataConfig in StrategyConfig
-- New method _validate_risk_data_dependency ensures ARTF data exists when max_risk_percentile < 100.0
-- RiskConfig now stores reference to DataConfig for validation (set by StrategyConfig)
-- [Risk Filter Intuition] max_risk_percentile now interpreted as PERCENTAGE value
-- [Risk Filter Intuition] Updated warning threshold to 5.0% (was 1.0%)
-- [Risk Filter Intuition] Validation threshold changed from 1.0 to 100.0
+This module defines a comprehensive, type-safe configuration schema for the trading strategy.
 """
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
@@ -30,30 +21,25 @@ class SpreadType(Enum):
     POINTS = "points"
     PIPS = "pips"
 
-
 class ErrorStrategy(Enum):
     """Error handling strategy for filters"""
     FAIL_FAST = "fail_fast"        # Stop on first error (development)
     PASS_THROUGH = "pass_through"  # Skip failing filters (production)
     REJECT_ALL = "reject_all"      # Reject all signals on error (conservative)
 
-
 class TPMode(Enum):
     """Take profit calculation mode"""
     RR_RATIO = "rr_ratio"              # TP = entry ± ATR × sl_mult × rr_ratio
     ATR_MULTIPLIER = "atr_multiplier"  # TP = entry ± ATR × atr_multiplier_tp
 
-
 # Valid pandas offset aliases for HTF periods
 _VALID_HTF_PERIODS = frozenset({
-    "1min", "5min", "15min", "30min", "1H", "2H", "4H", "1D", "1W"
+    "1min", "5min", "10min", "15min", "30min", "1H", "4H", "1D", "1W"
 })
-
 
 # ============================================================================
 # ASSET CONFIGURATION
 # ============================================================================
-
 @dataclass(frozen=True)
 class AssetConfig:
     """Asset-specific configuration"""
@@ -77,11 +63,9 @@ class AssetConfig:
             point_size=float(d.get('point_size', 0.00001)),
         )
 
-
 # ============================================================================
-# SPREAD CONFIGURATION - Phase 5: Values removed, now only in broker file
+# SPREAD CONFIGURATION - broker_spreads.yaml based (optional)
 # ============================================================================
-
 @dataclass(frozen=True)
 class SpreadConfig:
     """Spread configuration - values loaded from broker file only"""
@@ -109,7 +93,6 @@ class SpreadConfig:
             enabled=bool(d.get('enabled', False)),
             config_path=Path(d['config_path']) if d.get('config_path') else None,
         )
-
 
 # ============================================================================
 # RISK MANAGEMENT CONFIGURATION
@@ -201,7 +184,6 @@ class RiskConfig:
             risk_to_reward_ratio=float(d.get('risk_to_reward_ratio', 5.7)),
         )
 
-
 # ============================================================================
 # POSITION CONTROL CONFIGURATION
 # ============================================================================
@@ -230,7 +212,6 @@ class PositionControlConfig:
             close_on_opposite=bool(d.get('close_on_opposite', False)),
             max_positions=int(d.get('max_positions', 1))
         )
-
 
 # ============================================================================
 # TRADE MANAGEMENT CONFIGURATION
@@ -285,7 +266,6 @@ class FilterConfig:
             error_strategy=str(d.get('error_strategy', 'pass_through')),
             config=config_params
         )
-
 
 @dataclass(frozen=True)
 class TimeFilterConfig:
@@ -362,7 +342,6 @@ class FilterPipelineConfig:
             default_error_strategy=str(d.get('default_error_strategy', 'pass_through'))
         )
 
-
 # ============================================================================
 # DATA CONFIGURATION
 # ============================================================================
@@ -391,7 +370,6 @@ class DataPathsConfig:
             ltf_ohlcv=Path(d['ltf_ohlcv']) if d.get('ltf_ohlcv') else None,
             artf_ohlcv=Path(d['artf_ohlcv']) if d.get('artf_ohlcv') else None
         )
-
 
 @dataclass(frozen=True)
 class DateRangeConfig:
@@ -448,7 +426,6 @@ class DateRangeConfig:
             )
         return cls(start=str(d['start']), end=str(d['end']))
 
-
 @dataclass(frozen=True)
 class DataConfig:
     """Complete data configuration"""
@@ -489,7 +466,6 @@ class DataConfig:
             artf_timeframe=str(d.get('artf_timeframe', '1ME')),
         )
 
-
 # ============================================================================
 # EXECUTION CONFIGURATION
 # ============================================================================
@@ -511,7 +487,6 @@ class ExecutionConfig:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'ExecutionConfig':
         return cls(mode=str(d.get('mode', 'core')))
-
 
 # ============================================================================
 # OUTPUT CONFIGURATION
@@ -551,7 +526,6 @@ class ReportOutputConfig:
             include_raw_data=bool(d.get('include_raw_data', True))
         )
 
-
 @dataclass(frozen=True)
 class LoggingOutputConfig:
     """Logging output settings"""
@@ -572,7 +546,6 @@ class LoggingOutputConfig:
             output_dir=Path(d.get('output_dir', 'outputs/strategies/logs'))
         )
 
-
 @dataclass(frozen=True)
 class OutputConfig:
     """Complete output configuration"""
@@ -585,7 +558,6 @@ class OutputConfig:
             reports=ReportOutputConfig.from_dict(d.get('reports', {})),
             logging=LoggingOutputConfig.from_dict(d.get('logging', {}))
         )
-
 
 # ============================================================================
 # COMPLETE STRATEGY CONFIGURATION
@@ -730,7 +702,6 @@ class StrategyConfig:
             if config.data.date_range else "full file (no date range)",
         )
         return config
-
 
 # ============================================================================
 # VALIDATION HELPERS

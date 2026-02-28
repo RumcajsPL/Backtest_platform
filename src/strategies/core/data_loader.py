@@ -1,29 +1,6 @@
 """
 DataLoader v3.2 - LTF Coverage Warning
-
 Version: 3.2.0
-Session: LTF Coverage Guard
-
-Changes from v3.1.0:
-- [GUARD-2] load_data: LTF date-range coverage check added after df_ltf is
-  loaded and sanitized. Compares df_ltf.index boundaries against the
-  configured date_range and emits a logger.warning when the LTF file does
-  not fully cover the strategy window (head gap, tail gap, or both).
-  DataLoader's responsibility is loading — it does not abort on partial
-  coverage because that decision belongs to the operator. The warning fires
-  before any computation (signal generation, simulation) so the operator
-  sees the problem at the earliest possible moment, not after several seconds
-  of pipeline work. The definitive bar-level count is reported later by
-  TradeSimulator [GUARD-1] after _precompute_ltf_windows completes.
-  Warning is unconditional on mode (core and analytics) because partial LTF
-  coverage is always operationally significant regardless of mode.
-
-Changes from v3.0.0 (carried from v3.1.0):
-- [C3] _build_data_config: guards cfg.date_range before attribute access — no
-       AttributeError when date_range is None (YAML `date_range: null`)
-- [M2] _load_file_with_cache: raises ValueError immediately when a loaded file
-       produces an empty DataFrame — eliminates silent failures from timestamp
-       parsing errors or fully out-of-range slices
 """
 
 import pandas as pd
@@ -43,7 +20,7 @@ from src.strategies.contracts.data_contracts import (
     DateRange,
     DataFileConfig,
 )
-from src.config.config_schema import StrategyConfig
+from src.strategies.config.config_schema import StrategyConfig
 
 # Fallback for PROJECT_ROOT
 try:
@@ -53,14 +30,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-
 class DataLoader:
     """
-    DataLoader v3.2 - Fully migrated, trusts StrategyConfig.
+    DataLoader v3.2:
 
     Features:
-    - Accepts StrategyConfig directly (DEC-033)
-    - No config loading or validation - trusts the typed config
     - Returns DataBundle with typed contracts
     - Supports CSV + Parquet (Parquet optimized)
     - Monthly/ARTF data support
@@ -68,12 +42,6 @@ class DataLoader:
     - Intelligent caching with MD5 validation
     - Fail-fast on empty DataFrames (M2)
     - LTF date-range coverage warning (GUARD-2)
-
-    Performance:
-    - Parquet: ~40ms (cold), ~5ms (cache) - 60-70% faster than v2.0
-    - CSV: ~200ms (cold), ~5ms (cache)
-    - Additional 8-15% speedup from optimizations
-    - Core mode: 3-5% faster sanitization
     """
 
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -253,7 +221,7 @@ class DataLoader:
 
         Raises:
             FileNotFoundError: If the file does not exist
-            ValueError: If the loaded DataFrame is empty — fail-fast (M2)
+            ValueError: If the loaded DataFrame is empty — fail-fast
         """
         file_path = file_config.path
 
@@ -318,7 +286,7 @@ class DataLoader:
                 f"Unsupported file format: {suffix}. Must be .csv or .parquet"
             )
 
-        # [M2] Fail-fast on empty result — covers timestamp parsing failures,
+        # Fail-fast on empty result — covers timestamp parsing failures,
         # fully out-of-range slices, and corrupt files that read as zero rows.
         if df.empty:
             raise ValueError(

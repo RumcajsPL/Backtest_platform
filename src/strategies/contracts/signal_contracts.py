@@ -1,11 +1,6 @@
 """Signal Layer Contracts for WBWSStrategy Migration.
-
-OPTIMIZED: v2.2 — int8 storage, lazy metadata, fast iterator.
-HARDENED:  Session 20 (Block G) — frozen dataclasses (DEC-004);
-           SignalFrame.__iter__ guard (DEC-024); "debug" → "analytics" (DEC-022);
-           legacy adapter removed (DEC-021).
-
 Version: 2.3.0
+Defines the data structures used for representing trading signals and their associated metadata in both core and analytics modes.
 """
 from __future__ import annotations
 
@@ -15,7 +10,6 @@ from typing import Any, Dict, Iterator, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
 
 # =============================================================================
 # SIGNAL TYPE ENUM
@@ -59,7 +53,6 @@ class SignalType(Enum):
         """True for SELL signals."""
         return self == SignalType.SELL
 
-
 # =============================================================================
 # SIGNAL (single point-in-time)
 # =============================================================================
@@ -94,7 +87,6 @@ class Signal:
         """True for SELL / SHORT signals."""
         return self.signal_type.is_short
 
-
 # =============================================================================
 # SIGNAL FRAME
 # =============================================================================
@@ -113,19 +105,6 @@ class SignalFrame:
     ``indicator_data`` is present only in **analytics** mode; it is ``None``
     in **core** mode.  This is the authoritative flag for which mode produced
     the frame.
-
-    Frozen note
-    -----------
-    ``frozen=True`` freezes the *references* held by this dataclass — the
-    pandas objects themselves are mutable, but reassignment of ``self.signals``
-    etc. is prevented.  This is the correct and intended behaviour (DEC-004).
-
-    Session 20 changes (Block G)
-    ----------------------------
-    * ``frozen=True`` added (DEC-004 / P1-CH2-1).
-    * ``__iter__`` raises ``RuntimeError`` when ``indicator_data is None``
-      (DEC-024) — forces callers to use ``iter_raw()`` in core mode.
-    * ``from_wbws_trigger`` signal_metadata mode tag: ``"debug"`` → ``"analytics"``.
     """
 
     signals: pd.Series          # int8: 1=BUY, 2=SELL, 0=no signal; DatetimeIndex
@@ -217,8 +196,7 @@ class SignalFrame:
             raise RuntimeError(
                 "SignalFrame.__iter__ requires indicator_data (analytics mode only). "
                 "In core mode, indicator_data is None — use iter_raw() which returns "
-                "(timestamp, signal_code) tuples without needing price data. "
-                "See DEC-024."
+                "(timestamp, signal_code) tuples without needing price data. "                
             )
 
         active = self.signals[self.signals != 0]
@@ -316,7 +294,6 @@ class SignalFrame:
             f", mode={mode})"
         )
 
-
 # =============================================================================
 # SIGNAL STATISTICS
 # =============================================================================
@@ -324,10 +301,6 @@ class SignalFrame:
 @dataclass(frozen=True)
 class SignalStats:
     """Aggregated statistics about a set of signals.
-
-    Session 20 change: ``frozen=True`` added (DEC-004 / P1-CH2-1).
-    ``metadata`` is a plain ``dict``; its reference is frozen but its
-    contents remain mutable — acceptable for read-only stats objects.
     """
 
     buy_count: int = 0

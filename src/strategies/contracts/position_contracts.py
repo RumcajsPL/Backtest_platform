@@ -1,8 +1,6 @@
 """
 Position Contracts - Position Tracking
 Version: 1.0.0
-Date: 2025-02-13
-
 Position tracking for TradeManager.
 Represents an open position in the system.
 """
@@ -13,7 +11,6 @@ import pandas as pd
 from .trade_contracts import TradeDirection
 
 __all__ = ['Position']
-
 
 @dataclass(frozen=True)
 class Position:

@@ -1,10 +1,6 @@
 """MACD Filter — momentum directional filter using histogram.
-
-Migrated:  Session 5  v3.0.1  (EXACT legacy computation restored)
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
-EXACT legacy logic
+Version 3.0.1
+Logic
 ------------------
 * Only histogram used for filtering
 * BUY:  histogram > 0  (strict)
@@ -66,7 +62,7 @@ class MACDFilter:
     # ------------------------------------------------------------------
 
     def _calculate_macd(self, series: pd.Series) -> pd.Series:
-        """Return MACD histogram only — exact legacy implementation."""
+        """Return MACD histogram only."""
         if len(series) < self.slow_length:
             return pd.Series(np.nan, index=series.index, dtype="float32")
 
@@ -118,7 +114,7 @@ class MACDFilter:
         Parameters
         ----------
         mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
+            ``"core"`` or ``"analytics"``.  Timing always.
         """
         start_time = perf_counter()
 

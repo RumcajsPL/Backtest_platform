@@ -1,17 +1,8 @@
 """
 TradeAnalytics Module for WBWSStrategy Migration Project
-
 Intelligent trade analytics engine that generates actionable insights.
 Philosophy: AI-like recommendations, accuracy over speed, human-readable output.
-
-Created:         2026-02-16 (Session 14 - Design)
-Session 15:      2026-02-17 - Time Performance + Trade Quality
-Session 16:      TBD        - Risk Adjusted + Executive Summary + Markdown
-
-Architectural Decision (Session 14):
-- TradeAnalytics aggregates MetricsReport + adds insights (Option A)
-- Metrics parameter is OPTIONAL (auto-calculates if not provided)
-- Benefits: Explicit when metrics pre-calculated, convenient when not
+Version 1.0.0
 """
 
 import time
@@ -43,7 +34,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.strategies.contracts.trade_contracts import TradeResult, Trade
     from src.strategies.contracts.metrics_contracts import MetricsReport
-    from src.config.config_schema import StrategyConfig
+    from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +132,7 @@ class TradeAnalytics:
         if metrics is None:
             logger.debug("Metrics not provided — auto-calculating...")
             try:
-                from src.strategies.specific.modules.metrics_calculator import (
+                from src.strategies.core.metrics_calculator import (
                     MetricsCalculator,
                 )
                 metrics = MetricsCalculator.calculate(trade_result)
@@ -1071,7 +1062,6 @@ class TradeAnalytics:
 
         return insights
 
-
     # ========================================
     # COMPARATIVE CONTEXT  (Session 16)
     # ========================================
@@ -1528,7 +1518,6 @@ class TradeAnalytics:
         )
         logger.info(f"Analytics Markdown saved: {md_path}")
 
-
 # ============================================================
 # CONVENIENCE FUNCTION
 # ============================================================
@@ -1547,7 +1536,6 @@ def analyze_trades(
         >>> report = analyze_trades(result, config, metrics=metrics) # explicit
     """
     return TradeAnalytics.analyze(trade_result, config, metrics=metrics, **kwargs)
-
 
 # ============================================================
 # MODULE METADATA

@@ -1,21 +1,5 @@
 """Risk management: SL/TP with R:R ratio, spread adjustments, annual range validation.
-
 Version: 2.5.0
-Session: Performance Hardening
-
-Changes from v2.4.0:
-- [PERF-3] compute_trade_parameters: SpreadManager.get_spread_info() dict
-  construction removed from the hot path. spread_type and spread_value are now
-  cached as instance attributes (_spread_type, _spread_value) in __init__
-  immediately after SpreadManager construction. Both values are stable for the
-  lifetime of the RiskManager instance. Saves ~5ms per full simulation run.
-- [PERF-4] compute_trade_parameters / validate_risk_percentile: Series.loc[]
-  scalar access on ATR and RAR Series replaced with Series.at[]. .at[] is the
-  pandas-recommended API for single-label scalar access — it bypasses the label
-  broadcasting and alignment machinery of .loc[], yielding ~15-20% faster reads.
-  Cumulative saving ~10-15ms over a full simulation run. Semantics are identical
-  for a single scalar key on a Series with a unique DatetimeIndex.
-
 BID price model (one spread per round trip)
 -------------------------------------------
   LONG:  entry = Bid + spread (Ask); SL exit at Bid; TP exit at Bid
@@ -28,24 +12,22 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from src.strategies.contracts.trade_contracts import TradeParameters
-from src.strategies.specific.modules.spread_manager import SpreadManager
+from src.strategies.market.spread_manager import SpreadManager
 from src.strategies.core.cache_manager import CacheManager
 
 if TYPE_CHECKING:
-    from src.config.config_schema import StrategyConfig
+    from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
-
 # Valid tp_mode values
 _VALID_TP_MODES = frozenset({"rr_ratio", "atr_multiplier"})
-
 
 def _dataframe_fingerprint(df: pd.DataFrame, extra: str = "") -> str:
     """Stable, cheap fingerprint: shape + first/last index + optional extra tag."""
@@ -129,11 +111,6 @@ class RiskManager:
                 f"risk.tp_mode='{self.tp_mode}' is invalid. "
                 f"Valid values: {sorted(_VALID_TP_MODES)}."
             )
-
-        # Annual range config — interpreted as PERCENTAGE.
-        # [FIX-3] Replaced dead self.risk_config dict with explicit bool.
-        # The allow_exceed_limit feature is dormant until the field is added
-        # to StrategyConfig. Set to False here; wire to config when ready.
         self.max_risk_percentile: float = risk_cfg.max_risk_percentile
         self.risk_filter_active: bool = self.max_risk_percentile < 100.0
         self._allow_exceed_limit: bool = False  # not yet in StrategyConfig
@@ -214,11 +191,6 @@ class RiskManager:
                     asset_symbol,
                     self.spread_manager.get_spread_info(),
                 )
-
-        # [PERF-3] Cache spread metadata as instance attributes.
-        # get_spread_info() builds a dict on every call; spread_type and
-        # spread_value are stable after construction and used on every signal bar.
-        # Reading two attrs is ~10x faster than dict construction + two .get() calls.
         if self.spread_manager is not None:
             _info = self.spread_manager.get_spread_info()
             self._spread_type: Optional[str] = _info.get("spread_type")
@@ -333,12 +305,6 @@ class RiskManager:
 
     def _calculate_rolling_annual_range_internal(self) -> Optional[pd.Series]:
         """12-month RAR using monthly ARTF bars — no lookahead.
-
-        [FIX-2] Window now requires exactly 12 months of ARTF history.
-        Partial windows during the first 12 months of the ARTF file produce
-        NaN, preventing artificially low RAR from over-rejecting trades during
-        the warm-up period. Strategy date ranges well within the ARTF file are
-        unaffected (all their windows are full).
         """
         if self.ohlcv_artf is None or self.ohlcv_artf.empty:
             logger.warning("Monthly ARTF data missing — annual range disabled.")
@@ -359,8 +325,6 @@ class RiskManager:
             prev_ym = ym - 1
             start_ym = prev_ym - 11
             window = monthly_by_ym.loc[start_ym:prev_ym]
-            # [FIX-2] Require full 12-month window. Partial warm-up windows
-            # produce NaN — validate_risk_percentile treats NaN as fail-safe reject.
             rar_per_month[ym] = (
                 float(window["high"].max() - window["low"].min())
                 if len(window) >= 12
@@ -395,9 +359,6 @@ class RiskManager:
             self._risk_rejected += 1
             return None
         try:
-            # [PERF-4] .at[] is the pandas scalar-access API — bypasses label
-            # broadcasting overhead of .loc[]. Semantically identical for a
-            # single key on a Series with a unique DatetimeIndex.
             atr_val = float(self.atr_series.at[timestamp])
         except KeyError:
             logger.warning("ATR not available for %s.", timestamp)
@@ -412,10 +373,6 @@ class RiskManager:
 
         if self.spread_manager:
             spread = self.spread_manager.get_spread_in_points(bid_price)
-
-        # [PERF-3] Use cached instance attributes instead of rebuilding
-        # get_spread_info() dict on every call. Both values are stable for
-        # the lifetime of this RiskManager instance.
         spread_type = self._spread_type
         spread_value_config = self._spread_value
 
@@ -505,7 +462,6 @@ class RiskManager:
 
         if self.annual_range_series is not None:
             try:
-                # [PERF-4] .at[] for scalar access — see ATR note above.
                 rar = float(self.annual_range_series.at[timestamp])
                 if not np.isnan(rar) and rar > 0:
                     annual_range_value = rar
@@ -561,32 +517,18 @@ class RiskManager:
         timestamp: pd.Timestamp,
     ) -> Tuple[bool, float, str]:
         """Validate SL distance against max_risk_percentile of annual range.
-
         max_risk_percentile is a PERCENTAGE value (e.g., 0.20 means 0.20%).
         The filter is active when max_risk_percentile < 100.0.
-
-        [FIX-1] Replaced bare try/except KeyError → return True (silent fail-open)
-        with an explicit index membership check. A missing or NaN RAR value now
-        rejects the trade (fail-safe), consistent with the fail-fast principle.
-        An unknown timestamp indicates a data alignment problem that should surface
-        as a rejection, not a silent approval.
-
         Returns
         -------
         Tuple[is_valid, adjusted_stop_loss, comment]
         """
         if not self.risk_filter_active:
             return True, stop_loss, "Risk filter disabled"
-
-        # annual_range_series is guaranteed non-None when risk_filter_active is True
-        # (enforced in __init__). The assertion makes this contract explicit.
         assert self.annual_range_series is not None, (
             "annual_range_series is None with risk_filter_active=True — "
             "this is a constructor invariant violation."
         )
-
-        # [FIX-1] Explicit membership check instead of try/except KeyError.
-        # Missing timestamp → fail-safe rejection, not silent approval.
         if timestamp not in self.annual_range_series.index:
             logger.warning(
                 "RAR index miss at %s — trade rejected (fail-safe). "
@@ -595,12 +537,7 @@ class RiskManager:
                 timestamp,
             )
             return False, stop_loss, f"RAR index miss at {timestamp}"
-
-        # [PERF-4] .at[] for scalar label access — bypasses .loc[] broadcasting.
         current_annual_range = float(self.annual_range_series.at[timestamp])
-
-        # NaN means ARTF warm-up period has < 12 months of history.
-        # Reject the trade — cannot assess risk without a valid RAR.
         if pd.isna(current_annual_range) or current_annual_range <= 0:
             logger.warning(
                 "RAR is NaN/zero at %s (ARTF warm-up or data gap) — "

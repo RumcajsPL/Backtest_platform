@@ -1,10 +1,6 @@
 """Pivot Filter — swing high/low structural bias (HH/HL vs LH/LL).
-
-Migrated:  Session 5  v3.0.1  (EXACT legacy computation restored)
-Hardened:  Session 20 Block H — DEC-022 ("debug" → "analytics"); DEC-027 (always
-           collect timing); P1-CH3-3 (count_by_type removed from hot path).
-
-EXACT legacy logic
+Version: 3.0.1
+Logic
 ------------------
 * Swing detection via ``scipy.signal.argrelextrema``
 * HH/HL/LH/LL sequence analysis with reversal_percent threshold
@@ -33,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 class PivotFilter:
     """Pivot filter — structural market bias via swing-point analysis.
-
     Implements ``FilterProtocol`` for integration with ``FilterPipeline``.
     """
 

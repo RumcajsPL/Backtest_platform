@@ -1,10 +1,5 @@
 """Bollinger Bands Filter — volatility regime (Bandwidth).
-
-Migrated:  Session 5  v3.0.1
-Hardened:  Session 20 Block H — P1-CH3-5 (6 unused indicator arrays removed);
-           DEC-022 ("debug" → "analytics"); DEC-027 (always collect timing);
-           P1-CH3-3 (count_by_type removed from hot path).
-
+Version: 3.0.1
 Passes signals when: bandwidth > (bandwidth_ma × filter_multiplier).
 """
 from __future__ import annotations
@@ -29,10 +24,6 @@ logger = logging.getLogger(__name__)
 
 class BollingerFilter:
     """Bollinger Bands volatility-regime filter using Bandwidth.
-
-    Only ``bb_bandwidth`` and ``bb_bandwidth_ma`` are stored — the raw band
-    levels (upper / middle / lower) are intermediate values that ``apply_filter``
-    never reads and are therefore not cached (P1-CH3-5).
     """
 
     def __init__(
@@ -69,13 +60,8 @@ class BollingerFilter:
         ind_np: Dict[str, np.ndarray],
     ) -> None:
         """Compute Bandwidth and its MA.  Raw band levels are NOT stored.
-
         ``bb_bandwidth``    — ((upper − lower) / middle) × 100
-        ``bb_bandwidth_ma`` — rolling mean of bandwidth (window = width_ma_length)
-
-        P1-CH3-5: ``bb_lower``, ``bb_middle``, ``bb_upper`` (and their numpy
-        counterparts) have been removed — they were computed but never read
-        in ``apply_filter``.
+        ``bb_bandwidth_ma`` — rolling mean of bandwidth (window = width_ma_length)       
         """
         _zero = lambda: pd.Series(0.0, index=df.index, dtype="float32")
         _zero_np = lambda: np.zeros(len(df), dtype=np.float32)
@@ -131,16 +117,7 @@ class BollingerFilter:
         indicators: Dict[str, pd.Series],
         ind_np: Dict[str, np.ndarray],
         mode: str = "core",
-    ) -> FilterResult:
-        """Filter signals based on Bollinger Bandwidth — vectorised.
-
-        Passes when: ``bandwidth > bandwidth_ma × filter_multiplier``.
-
-        Parameters
-        ----------
-        mode:
-            ``"core"`` or ``"analytics"``.  Timing always collected (DEC-027).
-        """
+    ) -> FilterResult:     
         start_time = perf_counter()
 
         # ---- disabled fast-path ----------------------------------------
