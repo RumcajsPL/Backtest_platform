@@ -30,7 +30,7 @@ graph TD
         A1[("configs/strategies/strategy_template.yaml")]
         A2[("configs/spreads/broker_spreads.yaml")]
         A3((scripts/runners/run_strategy.py)) -->|"--config --mode"| A4
-        subgraph A4 [src/config/config_schema.py]
+        subgraph A4 [src/strategies/config/config_schema.py]
             direction LR
             A4a["StrategyConfig<br/>(frozen dataclass)"]
             A4b["AssetConfig, DataConfig,<br/>TradeManagementConfig, ..."]
