@@ -26,6 +26,7 @@ Public interface
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 import json
 import logging
@@ -39,6 +40,38 @@ from src.backtesting.contracts import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: uniform field access on dataclasses OR dicts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get(obj: Any, field: str, default=None):
+    """
+    Unified field access for frozen dataclasses and plain dicts.
+    All CandidateStore query methods return frozen dataclasses — never dicts.
+    This replaces obj.get(field) everywhere in this module.
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(field, default)
+    return getattr(obj, field, default)
+
+
+def _to_dict(obj: Any) -> dict:
+    """
+    Convert a frozen dataclass to a plain dict, or return a copy if already dict.
+    Used when building flat_records for JSON/Parquet serialisation.
+    """
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return dict(obj)
+    if dataclasses.is_dataclass(obj):
+        return dataclasses.asdict(obj)
+    # Fallback: try __dict__
+    return vars(obj)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public interface
@@ -104,50 +137,52 @@ def _collect_report_data(store: Any, run_id: str) -> dict:
     """
     Pull all relevant data from the store for report generation.
     Returns a structured dict ready for rendering.
+
+    All CandidateStore query methods return List[<frozen dataclass>], not List[dict].
+    We use _get() for uniform field access and _to_dict() for serialisation.
     """
-    # Query verdicts
-    verdicts = _safe_query(store, "query_verdicts", run_id) or []
-    candidates = _safe_query(store, "query_candidates", run_id) or []
-    wfo_scores = _safe_query(store, "query_wfo_consistency_scores", run_id) or []
-    mc_results_deep = _safe_query(store, "query_mc_results", run_id, mode="deep") or []
+    verdicts           = _safe_query(store, "query_verdicts", run_id) or []
+    candidates         = _safe_query(store, "query_candidates", run_id) or []
+    wfo_scores         = _safe_query(store, "query_wfo_consistency_scores", run_id) or []
+    mc_results_deep    = _safe_query(store, "query_mc_results", run_id, mode="deep") or []
     sensitivity_profiles = _safe_query(store, "query_sensitivity_profiles", run_id) or []
-    run_meta = _safe_query(store, "get_run_metadata", run_id)
+    run_meta           = _safe_query(store, "get_run_metadata", run_id)
 
-    # Build lookup maps
-    verdict_map = {v.get("candidate_id"): v for v in verdicts}
-    wfo_map = {w.get("candidate_id"): w for w in wfo_scores}
-    mc_map = {m.get("candidate_id"): m for m in mc_results_deep}
-    sens_map = {s.get("candidate_id"): s for s in sensitivity_profiles}
+    # Build lookup maps  — keyed by candidate_id (dataclass attribute, not dict key)
+    verdict_map = {_get(v, "candidate_id"): v for v in verdicts}
+    wfo_map     = {_get(w, "candidate_id"): w for w in wfo_scores}
+    mc_map      = {_get(m, "candidate_id"): m for m in mc_results_deep}
+    sens_map    = {_get(s, "candidate_id"): s for s in sensitivity_profiles}
 
-    # Build flat records for JSON/Parquet
+    # Build flat records for JSON/Parquet — dicts only, merged by candidate_id
     flat_records = []
     for cand in candidates:
-        cid = cand.get("candidate_id")
-        record = dict(cand)
-        record.update(wfo_map.get(cid, {}))
-        record.update(mc_map.get(cid, {}))
-        record.update(sens_map.get(cid, {}))
-        record.update(verdict_map.get(cid, {}))
+        cid = _get(cand, "candidate_id")
+        record: dict = _to_dict(cand)
+        record.update(_to_dict(wfo_map.get(cid)))
+        record.update(_to_dict(mc_map.get(cid)))
+        record.update(_to_dict(sens_map.get(cid)))
+        record.update(_to_dict(verdict_map.get(cid)))
         flat_records.append(record)
 
-    # Funnel statistics
     funnel = _compute_funnel(candidates)
 
     return {
-        "run_meta": run_meta,
-        "verdicts": verdicts,
-        "candidates": candidates,
-        "wfo_scores": wfo_scores,
-        "mc_results_deep": mc_results_deep,
+        "run_meta":            run_meta,
+        "verdicts":            verdicts,
+        "candidates":          candidates,
+        "wfo_scores":          wfo_scores,
+        "mc_results_deep":     mc_results_deep,
         "sensitivity_profiles": sensitivity_profiles,
-        "verdict_map": verdict_map,
-        "wfo_map": wfo_map,
-        "mc_map": mc_map,
-        "sens_map": sens_map,
-        "flat_records": flat_records,
-        "funnel": funnel,
-        "run_id": run_id,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "verdict_map":         verdict_map,
+        "wfo_map":             wfo_map,
+        "mc_map":              mc_map,
+        "sens_map":            sens_map,
+        "flat_records":        flat_records,
+        "funnel":              funnel,
+        "run_id":              run_id,
+        "generated_at":        datetime.now(UTC).isoformat(),
+        "_store":              store,   # passed to chart functions (_make_wfo_bar_chart etc.)
     }
 
 
@@ -164,9 +199,12 @@ def _safe_query(store: Any, method_name: str, *args, **kwargs):
 
 
 def _compute_funnel(candidates: list) -> dict:
-    """Compute stage-level funnel counts from candidate records."""
+    """Compute stage-level funnel counts from candidate records (dataclasses)."""
     from collections import Counter
-    stage_counts = Counter(c.get("stage") or c.get("origin_stage", "UNKNOWN") for c in candidates)
+    stage_counts = Counter(
+        _get(c, "stage") or _get(c, "origin_stage", "UNKNOWN")
+        for c in candidates
+    )
     return dict(stage_counts)
 
 
@@ -181,17 +219,17 @@ def _write_html_report(
     output_path: Path,
 ) -> None:
     """Render and write the full HTML report."""
-    verdicts = data["verdicts"]
-    go_candidates = [v for v in verdicts if v.get("verdict") == Verdict.AUTO_GO.value]
-    borderline_candidates = [v for v in verdicts if v.get("verdict") == Verdict.BORDERLINE.value]
-    no_go_candidates = [v for v in verdicts if v.get("verdict") == Verdict.NO_GO.value]
+    verdicts           = data["verdicts"]
+    go_candidates      = [v for v in verdicts if _get(v, "verdict") == Verdict.AUTO_GO.value]
+    borderline_candidates = [v for v in verdicts if _get(v, "verdict") == Verdict.BORDERLINE.value]
+    no_go_candidates   = [v for v in verdicts if _get(v, "verdict") == Verdict.NO_GO.value]
 
-    run_summary_html = _render_run_summary(data, go_candidates, borderline_candidates, no_go_candidates)
-    funnel_html = _render_funnel(data["funnel"])
-    shortlist_html = _render_shortlist(go_candidates + borderline_candidates, data, scenario)
+    run_summary_html      = _render_run_summary(data, go_candidates, borderline_candidates, no_go_candidates)
+    funnel_html           = _render_funnel(data["funnel"])
+    shortlist_html        = _render_shortlist(go_candidates + borderline_candidates, data, scenario)
     candidate_details_html = _render_all_candidate_details(verdicts, data, scenario)
 
-    generated_at = data["generated_at"]
+    generated_at  = data["generated_at"]
     scenario_name = scenario.name
 
     html = f"""<!DOCTYPE html>
@@ -209,12 +247,12 @@ def _write_html_report(
   h3 {{ color: #16213e; }}
   .card {{ background: white; border-radius: 8px; padding: 20px; margin: 16px 0;
            box-shadow: 0 2px 8px rgba(0,0,0,0.08); }}
-  .verdict-go {{ border-left: 5px solid #27ae60; }}
+  .verdict-auto_go {{ border-left: 5px solid #27ae60; }}
   .verdict-borderline {{ border-left: 5px solid #f39c12; }}
   .verdict-no_go {{ border-left: 5px solid #e74c3c; }}
   .badge {{ display: inline-block; padding: 3px 10px; border-radius: 12px;
             font-size: 12px; font-weight: 600; text-transform: uppercase; }}
-  .badge-go {{ background: #27ae60; color: white; }}
+  .badge-auto_go {{ background: #27ae60; color: white; }}
   .badge-borderline {{ background: #f39c12; color: white; }}
   .badge-no_go {{ background: #e74c3c; color: white; }}
   .metric-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -318,22 +356,22 @@ def _render_shortlist(candidates: list, data: dict, scenario: ScenarioProfile) -
     if not candidates:
         return "<div class='card'>No go or borderline candidates found.</div>"
 
-    # Sort: AUTO_GO first, then by wfo_consistency_score DESC
     def sort_key(v):
-        is_go = 1 if v.get("verdict") == Verdict.AUTO_GO.value else 0
-        wfo = v.get("wfo_consistency_score") or 0.0
+        is_go = 1 if _get(v, "verdict") == Verdict.AUTO_GO.value else 0
+        wfo   = _get(v, "wfo_consistency_score") or 0.0
         return (-is_go, -wfo)
 
     sorted_cands = sorted(candidates, key=sort_key)
 
     rows = ""
     for v in sorted_cands:
-        cid = v.get("candidate_id", "")
-        verdict_val = v.get("verdict", "")
-        badge_cls = f"badge-{verdict_val}"
-        wfo = v.get("wfo_consistency_score")
-        ruin = v.get("mc_deep_ruin_probability")
-        spike = v.get("sensitivity_spike")
+        cid         = _get(v, "candidate_id", "")
+        verdict_val = _get(v, "verdict", "")
+        badge_cls   = f"badge-{verdict_val}"
+        wfo         = _get(v, "wfo_consistency_score")
+        ruin        = _get(v, "mc_deep_ruin_probability")
+        spike       = _get(v, "sensitivity_spike")
+        evidence    = _get(v, "evidence_summary", "") or ""
         rows += f"""
     <tr>
       <td><code>{cid[:12]}</code></td>
@@ -341,7 +379,7 @@ def _render_shortlist(candidates: list, data: dict, scenario: ScenarioProfile) -
       <td>{f"{wfo:.3f}" if wfo is not None else "—"}</td>
       <td>{f"{ruin:.3f}" if ruin is not None else "—"}</td>
       <td>{"⚠ spike" if spike else "—"}</td>
-      <td style="font-size:11px">{v.get("evidence_summary", "")[:120]}…</td>
+      <td style="font-size:11px">{evidence[:120]}…</td>
     </tr>"""
 
     return f"""<div class="card">
@@ -356,29 +394,26 @@ def _render_shortlist(candidates: list, data: dict, scenario: ScenarioProfile) -
 
 def _render_all_candidate_details(verdicts: list, data: dict, scenario: ScenarioProfile) -> str:
     if not verdicts:
-        return "<div class='card'>No candidates to display.</div>"
+        return "<div class='card'>No verdicts found for this run.</div>"
 
     html_parts = []
     for v in verdicts:
-        cid = v.get("candidate_id", "")
-        verdict_val = v.get("verdict", "no_go")
-        card_cls = f"verdict-{verdict_val}"
-        badge_cls = f"badge-{verdict_val}"
+        cid         = _get(v, "candidate_id", "")
+        verdict_val = _get(v, "verdict", "no_go")
+        card_cls    = f"verdict-{verdict_val}"
+        badge_cls   = f"badge-{verdict_val}"
 
-        wfo = v.get("wfo_consistency_score")
-        ruin = v.get("mc_deep_ruin_probability")
-        evidence = v.get("evidence_summary", "No evidence summary available.")
+        wfo      = _get(v, "wfo_consistency_score")
+        ruin     = _get(v, "mc_deep_ruin_probability")
+        evidence = _get(v, "evidence_summary", "No evidence summary available.")
 
         flags_html = ""
         for flag_name in ["sensitivity_spike", "oos_gate_triggered", "window_collapse_flag", "sensitivity_profile_incomplete"]:
-            if v.get(flag_name):
+            if _get(v, flag_name):
                 flags_html += f'<span class="flag">{flag_name}</span> '
 
-        # Scenario-emphasised metrics grid
-        metric_cells = _render_scenario_metrics(v, data, cid, scenario)
-
-        # Charts
-        chart_html = _render_candidate_charts(cid, data)
+        metric_cells  = _render_scenario_metrics(v, data, cid, scenario)
+        chart_html    = _render_candidate_charts(cid, data)
 
         deployment_note = ""
         if verdict_val in (Verdict.AUTO_GO.value, Verdict.BORDERLINE.value):
@@ -415,20 +450,19 @@ def _render_all_candidate_details(verdicts: list, data: dict, scenario: Scenario
 
 
 def _render_scenario_metrics(
-    verdict_row: dict, data: dict, candidate_id: str, scenario: ScenarioProfile
+    verdict_row: Any, data: dict, candidate_id: str, scenario: ScenarioProfile
 ) -> str:
     """Render metric cells in scenario report_emphasis order."""
     emphasis_metrics = list(scenario.report_emphasis)
     cells = ""
     for metric_name in emphasis_metrics:
-        value = verdict_row.get(metric_name)
+        value = _get(verdict_row, metric_name)
         if value is None:
-            # Try wfo_map or mc_map
-            wfo_row = data["wfo_map"].get(candidate_id, {})
-            mc_row = data["mc_map"].get(candidate_id, {})
-            value = wfo_row.get(metric_name) or mc_row.get(metric_name)
+            wfo_row = data["wfo_map"].get(candidate_id)
+            mc_row  = data["mc_map"].get(candidate_id)
+            value   = _get(wfo_row, metric_name) or _get(mc_row, metric_name)
 
-        label = metric_name.replace("_", " ").title()
+        label     = metric_name.replace("_", " ").title()
         value_str = f"{value:.3f}" if isinstance(value, float) else (str(value) if value is not None else "—")
         cells += f"""<div class="metric-cell">
       <div class="metric-label">{label}</div>
@@ -445,12 +479,10 @@ def _render_candidate_charts(candidate_id: str, data: dict) -> str:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        # WFO window bar chart
         wfo_chart = _make_wfo_bar_chart(candidate_id, data)
         if wfo_chart:
             charts_html += f'<img class="chart-img" src="data:image/png;base64,{wfo_chart}" alt="WFO Window Performance">'
 
-        # Sensitivity delta chart
         sens_chart = _make_sensitivity_chart(candidate_id, data)
         if sens_chart:
             charts_html += f'<img class="chart-img" src="data:image/png;base64,{sens_chart}" alt="Sensitivity Delta">'
@@ -475,8 +507,8 @@ def _make_wfo_bar_chart(candidate_id: str, data: dict) -> Optional[str]:
         if not window_results:
             return None
 
-        window_ids = [r.get("window_id", "") for r in window_results]
-        net_pnls = [r.get("net_pnl") or 0.0 for r in window_results]
+        window_ids = [_get(r, "window_id", "") for r in window_results]
+        net_pnls   = [_get(r, "net_pnl") or 0.0 for r in window_results]
 
         fig, ax = plt.subplots(figsize=(8, 3))
         colors = ["#27ae60" if p >= 0 else "#e74c3c" for p in net_pnls]
@@ -510,23 +542,22 @@ def _make_sensitivity_chart(candidate_id: str, data: dict) -> Optional[str]:
         if not sens_results:
             return None
 
-        # Build pivot: param_name → list of deltas (across steps)
         from collections import defaultdict
         param_deltas: dict = defaultdict(list)
         for r in sens_results:
-            delta = r.get("fitness_delta")
+            delta = _get(r, "fitness_delta")
             if delta is not None:
-                param_deltas[r.get("parameter_name", "?")].append(abs(delta))
+                param_deltas[_get(r, "parameter_name", "?")].append(abs(delta))
 
         if not param_deltas:
             return None
 
-        params = list(param_deltas.keys())
+        params     = list(param_deltas.keys())
         max_deltas = [max(v) for v in param_deltas.values()]
 
         fig, ax = plt.subplots(figsize=(8, max(3, len(params) * 0.4 + 1)))
         colors = ["#e74c3c" if d > 0.15 else "#0f3460" for d in max_deltas]
-        bars = ax.barh(params, max_deltas, color=colors, edgecolor="white", linewidth=0.5)
+        ax.barh(params, max_deltas, color=colors, edgecolor="white", linewidth=0.5)
         ax.axvline(0.15, color="#f39c12", linewidth=1.2, linestyle="--", label="spike threshold")
         ax.set_title(f"Sensitivity Max |Δ Fitness| — {candidate_id[:12]}", fontsize=11)
         ax.set_xlabel("|Fitness Delta|")
@@ -555,7 +586,7 @@ def _write_borderline_checklists(
     """Write one adversarial checklist HTML per borderline candidate."""
     borderline = [
         v for v in data["verdicts"]
-        if v.get("verdict") == Verdict.BORDERLINE.value
+        if _get(v, "verdict") == Verdict.BORDERLINE.value
     ]
     if not borderline:
         return
@@ -564,48 +595,48 @@ def _write_borderline_checklists(
     checklist_dir.mkdir(exist_ok=True)
 
     for v in borderline:
-        cid = v.get("candidate_id", "")
+        cid = _get(v, "candidate_id", "")
         checklist_path = checklist_dir / f"checklist_{run_id[:8]}_{cid[:12]}.html"
         _write_single_checklist(v, data, scenario, run_id, checklist_path)
         logger.info("Adversarial checklist written: %s", checklist_path)
 
 
 def _write_single_checklist(
-    verdict_row: dict,
+    verdict_row: Any,
     data: dict,
     scenario: ScenarioProfile,
     run_id: str,
     output_path: Path,
 ) -> None:
     """Write a single adversarial borderline checklist HTML file."""
-    cid = verdict_row.get("candidate_id", "")
-    wfo = verdict_row.get("wfo_consistency_score")
-    ruin = verdict_row.get("mc_deep_ruin_probability")
-    evidence = verdict_row.get("evidence_summary", "")
-    sens_spike = verdict_row.get("sensitivity_spike")
-    profile_incomplete = verdict_row.get("sensitivity_profile_incomplete")
+    cid               = _get(verdict_row, "candidate_id", "")
+    wfo               = _get(verdict_row, "wfo_consistency_score")
+    ruin              = _get(verdict_row, "mc_deep_ruin_probability")
+    evidence          = _get(verdict_row, "evidence_summary", "")
+    sens_spike        = _get(verdict_row, "sensitivity_spike")
+    profile_incomplete = _get(verdict_row, "sensitivity_profile_incomplete")
 
     flags_section = ""
     if sens_spike:
         flags_section += "<li>⚠️ <strong>Sensitivity spike detected</strong> — verify robustness of spiking parameters manually.</li>"
     if profile_incomplete:
         flags_section += "<li>⚠️ <strong>Sensitivity profile incomplete</strong> — &gt;50% perturbation evaluations failed.</li>"
-    if verdict_row.get("oos_gate_triggered"):
+    if _get(verdict_row, "oos_gate_triggered"):
         flags_section += "<li>⚠️ <strong>IS/OOS gate triggered</strong> — examine forward-test performance degradation.</li>"
-    if verdict_row.get("window_collapse_flag"):
+    if _get(verdict_row, "window_collapse_flag"):
         flags_section += "<li>⚠️ <strong>Window collapse detected</strong> — at least one WFO window showed extreme drawdown.</li>"
 
     checklist_items = [
-        ("Market regime", "Does the evaluation period cover representative market conditions (trending + ranging)?"),
-        ("Data quality", "Were any data gaps, outliers, or feed errors present during the test period?"),
-        ("Overfitting risk", "Is the parameter set in a densely explored region (potential fitness landscape overfitting)?"),
-        ("Sensitivity review", "Have all parameters with |Δ fitness| > 0.10 been reviewed for economic rationale?"),
-        ("WFO window coverage", "Do the WFO windows cover multiple distinct market periods?"),
-        ("MC stress test", "Does the ruin probability remain acceptable under a worse perturbation profile?"),
-        ("Execution assumptions", "Are the spread, slippage, and execution delay assumptions realistic for eToro?"),
-        ("Risk sizing", "Is the risk_percentile parameter appropriate for the current account balance?"),
+        ("Market regime",        "Does the evaluation period cover representative market conditions (trending + ranging)?"),
+        ("Data quality",         "Were any data gaps, outliers, or feed errors present during the test period?"),
+        ("Overfitting risk",     "Is the parameter set in a densely explored region (potential fitness landscape overfitting)?"),
+        ("Sensitivity review",   "Have all parameters with |Δ fitness| > 0.10 been reviewed for economic rationale?"),
+        ("WFO window coverage",  "Do the WFO windows cover multiple distinct market periods?"),
+        ("MC stress test",       "Does the ruin probability remain acceptable under a worse perturbation profile?"),
+        ("Execution assumptions","Are the spread, slippage, and execution delay assumptions realistic for eToro?"),
+        ("Risk sizing",          "Is the risk_percentile parameter appropriate for the current account balance?"),
         ("Correlated positions", "Would this strategy be traded alongside other correlated strategies?"),
-        ("Paper trading plan", "Is there a defined paper trading duration and success criteria before live deployment?"),
+        ("Paper trading plan",   "Is there a defined paper trading duration and success criteria before live deployment?"),
     ]
 
     items_html = ""
