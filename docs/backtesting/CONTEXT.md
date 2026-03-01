@@ -183,6 +183,32 @@ When Phase 5 begins, the task is audit `orchestrator.py` Stages 5/6/7 full imple
 - **`datetime.utcnow()` deprecation**: Phase 2/3 modules use `datetime.utcnow()`. Python 3.12+ emits `DeprecationWarning`. Phase 4 modules all use `datetime.now(UTC)`. Schedule cleanup of Phase 2/3 modules in Phase 5.
 - **Path resolution**: Always use `src/utils/paths.py` for all path construction. Never hardcode separators or roots.
 - **ProcessPoolExecutor tests**: Always patch the worker function submitted to the executor, not the functions it calls internally. Module-level patches in the parent process do not propagate to spawned worker processes.
+## SQLLite initiated with all structure per docs\backtesting\SQLITE_SCHEMA.md:
+db avalilabe in: `data/db/backtest.db`
+Python connection template (exemple):
+```python
+import sqlite3
+
+def get_db_connection(db_path: str = "data/db/backtest.db"):
+    conn = sqlite3.connect(db_path)
+    
+    # Recommended pragmas (as noted in your schema.md)
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
+    conn.execute("PRAGMA cache_size = -64000;")   # ~64 MB cache, adjust if needed
+    
+    # Optional but very useful for debugging
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    
+    return conn
+```
+Usage exemple:
+```python
+conn = get_db_connection()
+# ... do your queries ...
+conn.close()
+```
 ## To take into account: file location and path resolution to be always solved by src\utils\paths.py
 ### path.py content
 ```python
