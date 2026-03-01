@@ -1,14 +1,5 @@
 """Spread management: broker spread calculations based on BID price data.
-Version: 2.0.0 (Hardening II Final)
-Session: 21 - Final Hardening
-
-Changes from v1.0.0 (Session 21 updates):
-- Block B: Removed all "debug" mode references - strict mode validation
-- Block C: Integrated with CacheManager for multi-run cache lifecycle
-- DEC-036: Fail-fast config path resolution; _load_global_settings()
-- SM-1: Blank symbol guard
-- SM-2: Removed hardcoded fallback path - requires explicit config_path
-
+Version: 2.0.0
 BID price convention
 --------------------
 All OHLCV data is BID price. Spread model (one spread per round trip):

@@ -3,6 +3,7 @@ Trade Contracts - Phase 4 Migration
 Version: 1.4.0
 This module defines the core data contracts for trades, including entries, exits, and results.
 """
+import json
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, Any, Optional, List
@@ -740,7 +741,6 @@ class TradeResult:
 
     def to_json(self, indent: Optional[int] = None) -> str:
         """Serialize TradeResult to JSON string."""
-        import json
         result_dict = self.to_dict()
 
         def default_handler(obj):

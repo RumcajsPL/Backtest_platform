@@ -434,7 +434,7 @@ class ReportGenerator:
         )
 
         dur = tq.duration_analysis
-        dur_rows: List = [
+        dur_rows: List[str] = [
             ("Average",            f"{dur.avg_bars:.1f} bars"),
             ("Median",             f"{dur.median_bars} bars"),
             ("Fast (<3 bars)",     f"{dur.fast_exits_count} ({dur.fast_exits_pct:.1f}%)"),

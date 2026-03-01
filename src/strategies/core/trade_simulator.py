@@ -1,7 +1,7 @@
 """
 Trade simulation with LTF OHLC execution
+Princimal pipeline integrating spread,risk and trade management in one E2E simulator of trades
 Version: 5.5.0
-Session: duration_bars fix
 """
 
 import time
@@ -10,9 +10,11 @@ from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any
 import numpy as np
 import pandas as pd
+
 from src.strategies.market.risk_manager import RiskManager
 from src.strategies.market.spread_manager import SpreadManager
 from src.strategies.market.trade_manager import TradeManager
+
 from src.strategies.core.null_progressive_tracker import NullProgressiveTracker
 from src.strategies.core.cache_manager import CacheManager
 

@@ -5,8 +5,8 @@
 ## Identity
 **Project**: Backtesting & Optimization Framework for WBWSStrategy
 **Operator**: Single quantitative retail trader, Windows 10, eToro broker
-**Stage**: Phase 3 — Optimization Engines | Session 1
-**Last session ended**: 2026-02-28 — Completed Phase 2: All core infrastructure modules implemented, benchmarks passed, integration test successful.
+**Stage**: Phase 4 — Evaluation Layer | Session 1
+**Last session ended**: 2026-03-01 — Completed Phase 3: All 14 optimization engine modules implemented, 53 tests pass (3 unit + 1 integration).
 ---
 ## Non-Negotiables (Architecture — never override these)
 1. **Contracts are the interface** — frozen dataclasses between every module. No raw dicts.
@@ -62,58 +62,24 @@ All three built-in scenarios fully specified in TECHNICAL_SPEC.md Section 5 and 
 ---
 ## Current Phase Status
 ```
-PHASE:        Phase 3 — Optimization Engines
-COMPLETED:    - Phase 2: Both benchmarks passed, all 8 core modules implemented (candidate_store, parameter_space, sampler, scenario, strategy_runner, fitness, ranker, orchestrator skeleton), contracts defined, all unit tests passed, integration test passed
---- Strategy speed benchmark
-(venv) PS E:\Trading\Backtest_platform> python tests/backtesting/benchmarks/bench_d01_strategy_speed.py --config configs/strategies/strategy_template.yaml
-
-============================================================
-D-01 Benchmark: Strategy Integration Speed
-Mode: direct Python call | Candidates: 50 | Sequential
-Config: E:\Trading\Backtest_platform\configs\strategies\strategy_template.yaml
-Pass criterion: avg ≤ 20.0s per candidate
-============================================================
-  [ 10/50] last=4.09s  running_avg=5.74s
-  [ 20/50] last=4.12s  running_avg=5.29s
-  [ 30/50] last=3.90s  running_avg=4.89s
-  [ 40/50] last=6.97s  running_avg=4.80s
-  [ 50/50] last=4.43s  running_avg=4.69s
-
-============================================================
-Results:
-  Candidates evaluated : 50
-  Errors               : 0
-  Avg time/candidate   : 4.687s  (PASS ✓)
-  Median               : 4.175s
-  P95                  : 6.974s
-  Total                : 234.4s
-  6-worker projection  : 39s  (0.7 min)
-
-VERDICT: PASS ✓
-============================================================
-
-   * Phase 1: All specs produced, decisions resolved, contracts defined, schema designed
-      IN PROGRESS:  - CHANGE_LOG.md SESSION 3 block (to be written at end of session)
-   * PROJECT_REPORT.md update
-   * CONTEXT.md update (this file)
-      BLOCKED ON:   Nothing — all Phase 2 deliverables complete
-      NEXT TASK:    Phase 3 — Optimization Engines
-      Start with: wfo/wfo_evaluator.py (required by GA)
+PHASE:        Phase 4 — Evaluation Layer
+COMPLETED:    - Phase 3: All 14 optimization engine modules implemented (wfo/*, ga/*, monte_carlo/*)
+                53 tests pass. Key validations: GA window sampling independence, diversity penalty
+                effectiveness, MC vectorised equity simulation, consistency scorer correctness.
+              - Phase 2: Both benchmarks passed, all 8 core modules implemented, contracts defined,
+                all unit tests passed, integration test passed.
+              - Phase 1: All specs produced, decisions resolved, contracts defined, schema designed.
+   IN PROGRESS:  - CHANGE_LOG.md SESSION 4 block (written — append to file)
+                 - PROJECT_REPORT.md update (operator handles)
+                 - CONTEXT.md (this file — updated)
+   BLOCKED ON:   strategy_runner.py date windowing — see Known Issues below
+   NEXT TASK:    Phase 4 — Evaluation Layer
+   Start with:   evaluation/sensitivity.py
 ```
 ---
 ## Open Decisions — ALL RESOLVED
-~~D-01~~: **RESOLVED** — Direct Python call (import StrategyOrchestrator in worker process). Benchmark required in Phase 2.
-~~D-02~~: **RESOLVED** — SQLite WAL mode + single-writer queue (workers submit to queue; one writer thread drains). Benchmark required in Phase 2.
-~~D-03~~: **RESOLVED** — Per-candidate temp YAML named by parameter hash. Deleted in `finally`. Optional `retain_temp_yamls: true` for debugging.
-~~D-04~~: **RESOLVED** — Top-N by fitness from MC_PREFILTER_PASS. Diversity handled by GA diversity penalty during evolution.
-~~D-05~~: **RESOLVED** — Randomly sample 2 windows per GA generation from full window list. Min 3 windows required.
-~~D-06~~: **RESOLVED** — Default counts: 200/zone Random, top 120 MC Pre-filter, pop 60 GA, 30 gen, top 30 Full WFO, top 10 MC Deep, top 5 Sensitivity.
-~~D-07~~: **RESOLVED** — Starting thresholds: WFO go ≥0.65, borderline 0.40–0.65, no_go <0.40; MC go ≤5%, borderline 5–15%, no_go >15%. Scenario-specific values in TECHNICAL_SPEC.md.
-~~D-08~~: **RESOLVED** — All optimizable parameters. 5 candidates × ~15 params × 4 steps ≈ 300 evaluations, ~200s at 6 workers.
-~~D-09~~: **RESOLVED** — Both JSON and Parquet, both enabled by default. Configurable via `output.formats`.
-~~D-10~~: **RESOLVED** — Build new `report_generator.py`. Structurally too different from existing single-run generator to extend.
-~~D-11~~: **RESOLVED** — Hybrid: normalised Euclidean for continuous params, Hamming for discrete params, weighted average.
-~~D-12~~: **RESOLVED** — `enforce_oos_gate: false` by default. When enabled: >50% IS/OOS degradation = borderline flag (never auto-reject).
+(All 12 decisions D-01 through D-12 resolved. See TECHNICAL_SPEC.md Section 1 for full details.)
+
 ---
 ## Key Contracts — ALL DEFINED (TECHNICAL_SPEC.md)
 - [x] `RunMetadata` — run_id, config_hash, scenario, seeds (all 5), window IDs, checkpoint, version
@@ -126,9 +92,10 @@ VERDICT: PASS ✓
 - [x] `WFOConsistencyScore` — candidate_id, 4 sub-metrics, composite_score, windows_evaluated, flags
 - [x] `MCResult` — candidate_id, mode, profile_name, iterations, avg_final_equity, worst_drawdown, ruin_probability, p5_final_equity, error
 - [x] `SensitivityProfile` — candidate_id, baseline_fitness, ParameterSensitivity tuple, spike_detected, spike_parameters, profile_complete
-- [x] `VerdictResult` — candidate_id, verdict, deployment_status (PAPER_TRADE_REQUIRED), pillar scores, flags, evidence_summary, yaml_output_path
+- [x] `VerdictResult` — candidate_id, verdict, deployment_status (PAPER_TRADE_REQUIRED), pillar scores, flags, evidence_summary
 - [x] `CandidateRecord` — flattened SQLite row with all stage fields as primitives
 - [x] `ParameterSensitivity` — sub-contract for individual parameter step result
+
 ---
 ## SQLite Schema — 9 Tables (SQLITE_SCHEMA.md)
 - [x] `runs` — one row per pipeline run, immutable artifacts
@@ -141,11 +108,51 @@ VERDICT: PASS ✓
 - [x] `sensitivity_results` — one row per candidate per parameter per step
 - [x] `sensitivity_profiles` — summary (spike_detected, spike_parameters) per candidate
 - [x] `verdicts` — final verdict + all evidence per candidate
+
 ---
 ## Scenario Profiles — All 3 Defined (TECHNICAL_SPEC.md Section 5)
 - [x] `capital_accumulation` — win_rate + consistency focus. max_dd 15%, min_wr 45%, go WFO ≥0.65, go MC ≤5%
 - [x] `swing_trading` — expectancy + profit_factor focus. min_expectancy 0.8, go WFO ≥0.60, go MC ≤7%
 - [x] `conservative` — drawdown + win_rate + ruin focus. max_dd 10%, min_wr 52%, go WFO ≥0.70, go MC ≤3%
+
+---
+## Modules Implemented (Phase 2 + Phase 3)
+```
+Phase 2 (core infrastructure):
+  src/backtesting/candidate_store.py       ✓
+  src/backtesting/parameter_space.py       ✓
+  src/backtesting/sampler.py               ✓
+  src/backtesting/scenario.py              ✓
+  src/backtesting/strategy_runner.py       ✓
+  src/backtesting/fitness.py               ✓
+  src/backtesting/ranker.py                ✓
+  src/backtesting/orchestrator.py          ✓ (skeleton — Stages 5/6/7 stubs remain)
+
+Phase 3 (optimization engines):
+  src/backtesting/wfo/window_generator.py  ✓
+  src/backtesting/wfo/wfo_evaluator.py     ✓
+  src/backtesting/wfo/wfo_engine.py        ✓
+  src/backtesting/wfo/consistency_scorer.py ✓
+  src/backtesting/ga/population.py         ✓
+  src/backtesting/ga/selection.py          ✓
+  src/backtesting/ga/crossover.py          ✓
+  src/backtesting/ga/mutation.py           ✓
+  src/backtesting/ga/diversity.py          ✓
+  src/backtesting/ga/ga_engine.py          ✓
+
+  src/backtesting/monte_carlo/perturbation.py     ✓
+  src/backtesting/monte_carlo/equity_simulator.py ✓
+  src/backtesting/monte_carlo/mc_metrics.py       ✓
+  src/backtesting/monte_carlo/mc_engine.py        ✓
+
+Phase 4 (to build):
+  src/backtesting/evaluation/sensitivity.py   ← START HERE
+  src/backtesting/evaluation/verdict.py
+  src/backtesting/yaml_generator.py
+  src/backtesting/report_generator.py
+  src/backtesting/orchestrator.py             (final wiring of Stages 5/6/7)
+```
+
 ---
 ## What NOT To Do
 - Do not modify `ARCHITECTURE.md` or any file under `src/strategies/` — strategy architecture is frozen
@@ -155,69 +162,46 @@ VERDICT: PASS ✓
 - Do not implement eToro API integration — future project, not this one
 - Do not implement regime-aware MC perturbation profiles — v2 scope
 - Do not implement true global parameter sensitivity random-walk — v2 scope
+- Do not set `deployment_status = LIVE_APPROVED` anywhere in code — operator-only action
+
 ---
-## Phase 3 Starting Point
-When Phase 3 begins, the first implementation task is `wfo/wfo_evaluator.py`. Read TECHNICAL_SPEC.md and FUNCTIONAL_SPEC.md before writing any code. WFO evaluator is required by GA — build it first.
-Key Phase 3 validations: GA window sampling independence, diversity penalty effectiveness, R-05 profiling (GA runtime).
+## Phase 4 Starting Point
+When Phase 4 begins, the first implementation task is `evaluation/sensitivity.py`.
+Read TECHNICAL_SPEC.md (contracts) and FUNCTIONAL_SPEC.md (Stage 6 and Stage 7 details) and SQLITE_SCHEMA.md (sensitivity + verdict tables) before writing any code.
+
+**Known integration bridge required before live testing:**
+- `strategy_runner.py` must accept `date_start` and `date_end` keyword arguments to scope evaluation to a WFO window date range. `wfo_evaluator.evaluate_window()` already calls this interface. Confirm or implement in Phase 4 orchestrator wiring block.
+- `candidate_store.py` must expose: `write_wfo_window_result()`, `write_wfo_consistency_score()`, `flag_candidate_wfo_insufficient()`. Confirm these exist or add them.
+
+## Platform / Environment Notes (for all future sessions)
+- **Timezone**: All platform data (OHLCV, strategy signals) is in **CET/CEST**. Internal pipeline timestamps use UTC. Any module computing or displaying wall-clock timestamps visible to the operator should note this distinction.
+- **`datetime.utcnow()` deprecation**: All Phase 3 modules use `datetime.utcnow()`. Python 3.12+ emits `DeprecationWarning`. Do not fix piecemeal — schedule a single cleanup pass migrating all occurrences to `datetime.now(datetime.UTC)` when convenient (not blocking).
+- **Path resolution**: Always use `src/utils/paths.py` for all path construction. Never hardcode separators or roots.
+
 ## To take into account: file location and path resolution to be always solved by src\utils\paths.py
 ### path.py content
 ```python
-# ---------------------------------------------------------
-# ROOT RESOLUTION
-# ---------------------------------------------------------
-# This resolves the project root no matter where the code is executed from:
-# - configs/
-# - data/
-# - outputs/
-# - scripts/
-# - tests/
-# - src/
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-# ---------------------------------------------------------
-# TOP-LEVEL DIRECTORIES
-# ---------------------------------------------------------
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 DATA_DIR = PROJECT_ROOT / "data"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 SRC_DIR = PROJECT_ROOT / "src"
-# ---------------------------------------------------------
-# DATA SUBDIRECTORIES
-# ---------------------------------------------------------
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
-# ---------------------------------------------------------
-# OUTPUT SUBDIRECTORIES
-# ---------------------------------------------------------
 BACKTEST_OUTPUT_DIR = OUTPUTS_DIR / "backtests"
 LOGS_DIR = OUTPUTS_DIR / "logs"
 REPORTS_DIR = OUTPUTS_DIR / "reports"
-STRATEGIES_OUTPUTS_DIR = OUTPUTS_DIR / "strategies" 
+STRATEGIES_OUTPUTS_DIR = OUTPUTS_DIR / "strategies"
 STRATEGIES_LOGS_DIR = STRATEGIES_OUTPUTS_DIR / "logs"
 STRATEGIES_REPORTS_DIR = STRATEGIES_OUTPUTS_DIR / "reports"
-# ---------------------------------------------------------
-# SCRIPT RUNNERS
-# ---------------------------------------------------------
 RUNNERS_DIR = SCRIPTS_DIR / "runners"
-# ---------------------------------------------------------
-# STRATEGY SUBDIRECTORIES
-# ---------------------------------------------------------
 STRATEGIES_DIR = SRC_DIR / "strategies"
 CONTRACTS_DIR = STRATEGIES_DIR / "contracts"
 CORE_STRATEGIES_ = STRATEGIES_DIR / "core"
 FILTERS_DIR = STRATEGIES_DIR / "filters"
-RUNNERS_DIR = SCRIPTS_DIR / "runners"
-# ---------------------------------------------------------
-# BACKTESTER SUBDIRECTORIES => under construction
-# ---------------------------------------------------------
 BACKTEST_DIR = SRC_DIR / "backtesting"
-# ---------------------------------------------------------
-# UTILS SUBDIRECTORIES
-# ---------------------------------------------------------
 UTILS_DIR = SRC_DIR / "utils"
-# ---------------------------------------------------------
-# TEST SUBDIRECTORIES 
-# ---------------------------------------------------------
 TESTS_DIR = PROJECT_ROOT / "tests"
 STRATEGIES_TESTS_DIR = TESTS_DIR / "strategies"
 BACKTESTING_TESTS_DIR = TESTS_DIR / "backtesting"

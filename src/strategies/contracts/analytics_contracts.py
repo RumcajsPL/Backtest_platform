@@ -15,18 +15,8 @@ if TYPE_CHECKING:
 # ============================================================
 @dataclass(frozen=True)
 class TradingSessionConfig:
-    """Configuration for trading session definitions used in time-performance analysis.
-
-    Default sessions are standard forex UTC windows (Asia / London / NY).
-    Override to match your instrument's actual active hours.
-
-    Session 20 change: ``frozen=True`` added (DEC-004 / P1-CH5-1).
-
-    Notes
-    -----
-    ``sessions`` is a ``dict`` whose *reference* is frozen; the dict contents
-    are mutable, but this is a read-only configuration object and should never
-    be mutated after construction.
+    """
+    Configuration for trading session definitions used in time-performance analysis.
     """
 
     sessions: Dict[str, tuple] = field(

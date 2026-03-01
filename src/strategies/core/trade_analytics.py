@@ -13,6 +13,12 @@ from statistics import mean, median, stdev
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.strategies.contracts.trade_contracts import TradeResult, Trade
+    from src.strategies.contracts.metrics_contracts import MetricsReport
+    from src.strategies.config.config_schema import StrategyConfig
+
 # Import contracts from proper location
 from src.strategies.contracts.analytics_contracts import (
     AnalyticsReport,
@@ -29,12 +35,6 @@ from src.strategies.contracts.analytics_contracts import (
     create_empty_insight,
     create_empty_session_metrics,
 )
-
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from src.strategies.contracts.trade_contracts import TradeResult, Trade
-    from src.strategies.contracts.metrics_contracts import MetricsReport
-    from src.strategies.config.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
 

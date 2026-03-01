@@ -1,15 +1,7 @@
 """
-Signal Generator v3 - Final Hardened Implementation
-
-Version: 3.0.0 (Hardening II Final)
-Session: 21 - Final Hardening
-
-Changes from v2.2.0:
-- Block A: Accepts StrategyConfig instead of htf_period string (DEC-034)
-- Block B: Validates htf_period against known pandas offset aliases (SG-1)
-- Block B: Adds empty DataFrame guard with clear error message (SG-2)
-- Block B: Removes all "debug" mode references - strict mode validation
-- Returns SignalFrame with typed signals (int8 codes)
+Signal Generator
+Trigger indicator integration and raw signal generator
+Version: 3.0.0
 """
 
 import logging
