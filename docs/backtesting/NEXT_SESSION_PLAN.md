@@ -7,7 +7,7 @@
 ## How to Start the Session
 1. Open a new chat
 2. Paste the **entire content of `CONTEXT.md`** as your first message
-3. Add: *"We are starting Phase 5 — Orchestrator Final Wiring. Follow the breakdown in NEXT_SESSION_PLAN.md."*
+3. Add: *"We are starting Phase 5 — Orchestrator audit and live testing. Follow the breakdown in NEXT_SESSION_PLAN.md."*
 4. Claude reads the `backtester-project` skill automatically
 5. Ask Claude to confirm it has read CONTEXT.md, the skill, and the current `orchestrator.py` and `candidate_store.py` — before writing any code
 
