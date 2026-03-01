@@ -78,31 +78,31 @@ class _FakeOrchestratorResult:
 
 def _inject_fake_strategy_modules(cache_manager_instance, orchestrator_run_fn):
     """
-    Inject fake src.config.config_schema, src.strategies.orchestrator,
-    and src.core.cache_manager into sys.modules so strategy_runner's
+    Inject fake src.strategies.config.config_schema, src.strategies.orchestrator,
+    and src.strategies.core.cache_manager into sys.modules so strategy_runner's
     imports succeed without the real strategy package.
     """
     # src package
     src_mod = types.ModuleType("src")
     sys.modules.setdefault("src", src_mod)
 
-    # src.config
-    config_mod = types.ModuleType("src.config")
-    sys.modules["src.config"] = config_mod
-    src_mod.config = config_mod
-
-    # src.config.config_schema
-    schema_mod = types.ModuleType("src.config.config_schema")
-    fake_config_cls = MagicMock()
-    fake_config_cls.from_yaml = MagicMock(return_value=MagicMock())
-    schema_mod.StrategyConfig = fake_config_cls
-    sys.modules["src.config.config_schema"] = schema_mod
-    config_mod.config_schema = schema_mod
-
     # src.strategies
     strat_mod = types.ModuleType("src.strategies")
     sys.modules["src.strategies"] = strat_mod
     src_mod.strategies = strat_mod
+
+    # src.strategies.config
+    config_mod = types.ModuleType("src.strategies.config")
+    sys.modules["src.strategies.config"] = config_mod
+    strat_mod.config = config_mod
+
+    # src.strategies.config.config_schema
+    schema_mod = types.ModuleType("src.strategies.config.config_schema")
+    fake_config_cls = MagicMock()
+    fake_config_cls.from_yaml = MagicMock(return_value=MagicMock())
+    schema_mod.StrategyConfig = fake_config_cls
+    sys.modules["src.strategies.config.config_schema"] = schema_mod
+    config_mod.config_schema = schema_mod
 
     # src.strategies.orchestrator
     orch_mod = types.ModuleType("src.strategies.orchestrator")
@@ -112,22 +112,21 @@ def _inject_fake_strategy_modules(cache_manager_instance, orchestrator_run_fn):
     sys.modules["src.strategies.orchestrator"] = orch_mod
     strat_mod.orchestrator = orch_mod
 
-    # src.core
-    core_mod = types.ModuleType("src.core")
-    sys.modules["src.core"] = core_mod
-    src_mod.core = core_mod
+    # src.strategies.core
+    core_mod = types.ModuleType("src.strategies.core")
+    sys.modules["src.strategies.core"] = core_mod
+    strat_mod.core = core_mod
 
-    # src.core.cache_manager
-    cache_mod = types.ModuleType("src.core.cache_manager")
+    # src.strategies.core.cache_manager
+    cache_mod = types.ModuleType("src.strategies.core.cache_manager")
     fake_cm_cls = MagicMock(return_value=cache_manager_instance)
     cache_mod.CacheManager = fake_cm_cls
-    sys.modules["src.core.cache_manager"] = cache_mod
+    sys.modules["src.strategies.core.cache_manager"] = cache_mod
     core_mod.cache_manager = cache_mod
-
 
 def _remove_fake_strategy_modules():
     for key in list(sys.modules.keys()):
-        if key.startswith("src.config") or key.startswith("src.strategies") or key.startswith("src.core"):
+        if key.startswith("src.strategies"):
             del sys.modules[key]
 
 

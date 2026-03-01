@@ -16,134 +16,221 @@ The following schema replaces the previous folder structure, file list, pipeline
 ## 2. Architecture Schema
 The following schema replaces the previous folder structure, file list, pipeline diagram, and integration guide. It is the single source of truth for understanding the system's structure and data flow.
 ```mermaid
+%%{init: {
+  "theme": "default",
+  "themeVariables": {
+    "primaryColor": "#ffffff",
+    "primaryTextColor": "#111111",
+    "primaryBorderColor": "#444",
+    "lineColor": "#555",
+    "secondaryColor": "#f3f3f3",
+    "tertiaryColor": "#e8e8e8",
+    "fontSize": "14px",
+    "edgeLabelBackground":"#f0f0f0"
+  }
+}}%%
+
 graph TD
+    %% --- Legend ---
     subgraph Legend [Legend]
-        L1[("YAML Config File")]
-        L2["Python Module (.py)"]
-        L3[["Typed Contract (@dataclass)"]]
-        L4{"Execution Mode Gate"}
-        L5((CLI Entry Point))
-        L6[/"Data File (Parquet)"/]
-        L7(("Central Cache Manager"))
+        L1[("YAML Config File")]:::yaml
+        L2["Python Module (.py)"]:::module
+        L3[["Typed Contract (@dataclass)"]]:::contract
+        L4{"Execution Mode Gate"}:::special
+        L5((CLI Entry Point)):::special
+        L6[/"Data File (Parquet)"/]:::file
+        L7(("Central Cache Manager")):::special
     end
+
+    %% --- 1. Configuration & Entry ---
     subgraph "1. Configuration & Entry"
-        A1[("configs/strategies/strategy_template.yaml")]
-        A2[("configs/spreads/broker_spreads.yaml")]
-        A3((scripts/runners/run_strategy.py)) -->|"--config --mode"| A4
+        A1[("configs/strategies/strategy_template.yaml")]:::yaml
+        A2[("configs/spreads/broker_spreads.yaml")]:::yaml
+        A3((scripts/runners/run_strategy.py)):::special -->|"--config --mode"| A4
         subgraph A4 [src/strategies/config/config_schema.py]
             direction LR
-            A4a["StrategyConfig<br/>(frozen dataclass)"]
-            A4b["AssetConfig, DataConfig,<br/>TradeManagementConfig, ..."]
+            A4a["StrategyConfig<br/>(frozen dataclass)"]:::contract
+            A4b["AssetConfig, DataConfig,<br/>TradeManagementConfig, ..."]:::contract
         end
         A1 -->|yaml.safe_load| A4
         A4 -->|config passed to all modules| B1
-        A4 -->|config passed to all modules| C1
-        A4 -->|config passed to all modules| D1
-        A4 -->|config passed to all modules| E1
-        A4 -->|config passed to all modules| F1
-        A4 -->|config passed to all modules| G1
-        A4 -->|config passed to all modules| H1
+        A4 --> C1
+        A4 --> D1
+        A4 --> E1
+        A4 --> F1
+        A4 --> G1
+        A4 --> H1
     end
+
+    %% --- 2. Data Layer ---
     subgraph "2. Data Layer"
-        B1[src/strategies/core/data_loader.py]
-        B2[[src/strategies/contracts/data_contracts.py<br/>DataBundle, DataInfo, DataConfig]]
-        B3[/"data/processed/ohlcv/*.parquet"/]
+        B1[src/strategies/core/data_loader.py]:::module
+        B2[[src/strategies/contracts/data_contracts.py<br/>DataBundle, DataInfo, DataConfig]]:::contract
+        B3[/"data/processed/ohlcv/*.parquet"/]:::file
+        
+        B1 -->|from src.utils.paths| U1
+        B1 -->|from src.utils.structured_logger| U2
         B1 -->|loads| B3
         B1 -->|validates & returns| B2
         B2 -->|"data_bundle"| C1
         B2 -->|"df_strategy"| D1
         B2 -->|"df_strategy, df_ltf, df_full"| G1
     end
+
+    %% --- 3. Signal Generation ---
     subgraph "3. Signal Generation"
-        C1[src/strategies/core/signal_generator.py]
-        C2[src/indicators/wbws_trigger.py]
-        C3[[src/strategies/contracts/signal_contracts.py<br/>SignalFrame, SignalType]]
-        C1 -->|uses| C2
+        C1[src/strategies/core/signal_generator.py]:::module
+        C2[src/indicators/wbws_trigger.py]:::module
+        C3[[src/strategies/contracts/signal_contracts.py<br/>SignalFrame, SignalType]]:::contract
+        
+        C1 -->|from src.indicators.wbws_trigger| C2
+        C1 -->|from src.strategies.contracts.data_contracts| B2
+        C1 -->|from src.strategies.config.config_schema| A4
         C1 -->|validates & returns| C3
         C3 -->|"signal_frame"| D1
     end
+
+    %% --- 4. Filter Pipeline ---
     subgraph "4. Filter Pipeline"
-        D1[src/strategies/core/filter_pipeline.py]
-        D2[[src/strategies/contracts/filter_contracts.py<br/>FilterPipelineResult, FilterProtocol]]
-       
+        D1[src/strategies/core/filter_pipeline.py]:::module
+        D2[[src/strategies/contracts/filter_contracts.py<br/>FilterPipelineResult, FilterProtocol]]:::contract
+        
         subgraph D3 [src/strategies/filters/]
             direction LR
-            D3a[adx_filter.py<br/>bollinger_filter.py<br/>cci_filter.py<br/>...]
-            D3b[time_filter.py]
+            D3a[adx_filter.py<br/>bollinger_filter.py<br/>cci_filter.py<br/>...]:::module
+            D3b[time_filter.py]:::module
         end
-        D1 -->|instantiates & applies| D3
+        
+        D1 -->|from src.strategies.filters.*| D3
+        D1 -->|from src.strategies.contracts.signal_contracts| C3
+        D1 -->|from src.strategies.contracts.cache| F1
+        D1 -->|from src.strategies.config.config_schema| A4
         D1 -->|validates & returns| D2
         D2 -->|"filter_result"| G1
     end
+
+    %% --- 5. Risk & Spread Management ---
     subgraph "5. Risk & Spread Management"
-        E1[src/strategies/market/risk_manager.py]
-        E2[src/strategies/market/spread_manager.py]
-        E3[[src/strategies/contracts/trade_contracts.py<br/>TradeParameters]]
-        E4[src/strategies/core/cache_manager.py]
-        E2 -->|reads| A2
-        E1 -->|uses| E2
-        E1 -->|caches via| E4
+        E1[src/strategies/market/risk_manager.py]:::module
+        E2[src/strategies/market/spread_manager.py]:::module
+        E3[[src/strategies/contracts/trade_contracts.py<br/>TradeParameters]]:::contract
+        E4[src/strategies/core/cache_manager.py]:::special
+        
+        E1 -->|from src.strategies.market.spread_manager| E2
+        E1 -->|from src.strategies.core.cache_manager| E4
+        E1 -->|from src.strategies.config.config_schema| A4
         E1 -->|returns| E3
+        
+        E2 -->|from src.strategies.core.cache_manager| E4
+        E2 -->|reads| A2
         E3 -->|"trade_params"| G1
     end
+
+    %% --- 6. Trade Simulation ---
     subgraph "6. Trade Simulation"
-        G1[src/strategies/core/trade_simulator.py]
-        G2[src/strategies/market/trade_manager.py]
-        G3[[src/strategies/contracts/trade_contracts.py<br/>TradeResult, Trade]]
-        G4[[src/strategies/contracts/position_contracts.py<br/>Position]]
+        G1[src/strategies/core/trade_simulator.py]:::module
+        G2[src/strategies/market/trade_manager.py]:::module
+        G3[[src/strategies/contracts/trade_contracts.py<br/>TradeResult, Trade]]:::contract
+        G4[[src/strategies/contracts/position_contracts.py<br/>Position]]:::contract
+        
+        G1 -->|from src.strategies.market.risk_manager| E1
+        G1 -->|from src.strategies.market.spread_manager| E2
+        G1 -->|from src.strategies.market.trade_manager| G2
+        G1 -->|from src.strategies.core.null_progressive_tracker| N1[null_progressive_tracker]:::module
+        G1 -->|from src.strategies.core.cache_manager| E4
+        G1 -->|from src.strategies.contracts.trade_contracts| E3
+        G1 -->|from src.strategies.contracts.signal_contracts| C3
+        G1 -->|from src.strategies.config.config_schema| A4
         G1 -->|manages state via| G2
         G1 -->|creates & returns| G3
         G2 -->|tracks| G4
         G3 -->|"trade_result"| H1
         G3 -->|"trade_result"| I1
     end
+
+    %% --- 7. Metrics Calculation ---
     subgraph "7. Metrics Calculation"
-        H1[src/strategies/core/metrics_calculator.py]
-        H2[[src/strategies/contracts/metrics_contracts.py<br/>MetricsReport]]
+        H1[src/strategies/core/metrics_calculator.py]:::module
+        H2[[src/strategies/contracts/metrics_contracts.py<br/>MetricsReport]]:::contract
+        
+        H1 -->|from src.strategies.contracts.metrics_contracts| H2
         H1 -->|calculates & returns| H2
         H2 -->|"metrics"| I1
         H2 -->|"metrics"| OrchestratorResult
     end
+
+    %% --- 8. Analytics & Reporting ---
     subgraph "8. Analytics & Reporting"
-        I1[src/strategies/core/trade_analytics.py]
-        I2[[src/strategies/contracts/analytics_contracts.py<br/>AnalyticsReport, Insight]]
-        I3[src/strategies/core/report_generator.py]
-        I4[[src/strategies/contracts/report_contracts.py<br/>GeneratedReport, ReportConfig]]
+        I1[src/strategies/core/trade_analytics.py]:::module
+        I2[[src/strategies/contracts/analytics_contracts.py<br/>AnalyticsReport, Insight]]:::contract
+        I3[src/strategies/core/report_generator.py]:::module
+        I4[[src/strategies/contracts/report_contracts.py<br/>GeneratedReport, ReportConfig]]:::contract
+        
+        I1 -->|from src.strategies.contracts.analytics_contracts| I2
+        I1 -->|from src.strategies.contracts.trade_contracts| E3
+        I1 -->|from src.strategies.contracts.metrics_contracts| H2
+        I1 -->|from src.strategies.config.config_schema| A4
         I1 -->|generates| I2
+        
         I2 -->|"analytics_report"| I3
+        I3 -->|from src.strategies.contracts.analytics_contracts| I2
+        I3 -->|from src.strategies.contracts.trade_contracts| E3
+        I3 -->|from src.strategies.contracts.report_contracts| I4
         I3 -->|builds & returns| I4
         I4 -->|"generated_report"| OrchestratorResult
-        I4 -->|writes| O1[/"outputs/strategies/reports/*.html"/]
+        I4 -->|writes| O1[/"outputs/strategies/reports/*.html"/]:::file
     end
+
+    %% --- 9. Orchestration ---
     subgraph "9. Orchestration"
-        OrchestratorResult[[src/strategies/orchestrator.py<br/>OrchestratorResult]]
-       
+        Orchestrator[[src/strategies/orchestrator.py]]:::module
+        OrchestratorResult[[src/strategies/orchestrator.py<br/>OrchestratorResult]]:::contract
+        
+        Orchestrator -->|from src.strategies.core.*| B1
+        Orchestrator -->|from src.strategies.core.*| C1
+        Orchestrator -->|from src.strategies.core.*| D1
+        Orchestrator -->|from src.strategies.core.*| G1
+        Orchestrator -->|from src.strategies.core.*| H1
+        Orchestrator -->|from src.strategies.core.*| I1
+        Orchestrator -->|from src.strategies.core.*| I3
+        Orchestrator -->|from src.strategies.core.cache_manager| E4
+        Orchestrator -->|from src.strategies.config.config_schema| A4
+        Orchestrator -->|returns| OrchestratorResult
+        
         H2 --> OrchestratorResult
         G3 --> OrchestratorResult
         I2 --> OrchestratorResult
         I4 --> OrchestratorResult
     end
+
+    %% --- 10. Core Utilities ---
     subgraph "10. Core Utilities"
-        U1[src/utils/paths.py<br/>PROJECT_ROOT, data_path]
-        U2[src/utils/structured_logger.py<br/>StructuredLogger]
-        U3[src/strategies/core/cache_manager.py<br/>CacheManager]
+        U1[src/utils/paths.py<br/>PROJECT_ROOT, data_path]:::module
+        U2[src/utils/structured_logger.py<br/>StructuredLogger]:::module
+        U3[src/strategies/core/cache_manager.py<br/>CacheManager]:::special
+        N1[src/strategies/core/null_progressive_tracker.py]:::module
+        
         U1 -.->|path resolution| A4
-        U1 -.->|path resolution| B1
-        U1 -.->|path resolution| I3
-        U2 -.->|logging| A4
-        U2 -.->|logging| B1
-        U2 -.->|logging| C1
-        U2 -.->|logging| G1
-        U3 -.->|caching| E1
-        U3 -.->|caching| E2
+        U1 -.-> B1
+        U1 -.-> I3
+        U2 -.-> A4
+        U2 -.-> B1
+        U2 -.-> C1
+        U2 -.-> G1
+        U2 -.-> Orchestrator
+        U3 -.-> E1
+        U3 -.-> E2
+        U3 -.-> G1
     end
-    style A1 fill:#f9f,stroke:#333,stroke-width:2px
-    style A2 fill:#f9f,stroke:#333,stroke-width:2px
-    style B3 fill:#ccf,stroke:#333,stroke-width:2px
-    style O1 fill:#ccf,stroke:#333,stroke-width:2px
-    style A3 fill:#afa,stroke:#333,stroke-width:2px
-    style E4 fill:#ffc,stroke:#333,stroke-width:2px
-    linkStyle default stroke-width:1px,fill:none,stroke:#666
+
+    %% --- Classes ---
+    classDef yaml fill:#dce6f2,stroke:#444,color:#111;
+    classDef module fill:#e7f0e7,stroke:#444,color:#111;
+    classDef contract fill:#f0eaf5,stroke:#555,color:#111;
+    classDef file fill:#f2f2f2,stroke:#555,color:#111;
+    classDef special fill:#f7f3e3,stroke:#555,color:#111;
+
+    linkStyle default stroke-width:1px,fill:none,stroke:#555
 ```
 ---
 ### 3. Architecture Principles
