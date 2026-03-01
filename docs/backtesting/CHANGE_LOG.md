@@ -407,4 +407,148 @@ None — all 12 open decisions were already resolved. No new decisions required.
 - Phase 4 begins with `evaluation/sensitivity.py`
 - No blocked items
 - AV-01 smoke test scheduled for Phase 4 Block 5
+
+## SESSION 5 — Phase 4: Evaluation Layer
+**Date**: 2026-03-01
+**Status**: COMPLETE ✓
+**Tests**: 61 unit tests pass (0 failures, 0 warnings) + 4 AV-01 smoke tests pass + 3 pipeline integration tests pass = **68 tests total, all green**
+
+---
+
+### Work Completed
+
+#### Block 0 — `src/backtesting/evaluation/sensitivity.py`
+- Implemented `evaluate_sensitivity()` with `ProcessPoolExecutor` parallel workers
+- `_perturb_value()` handles `int`, `float`, and `choice` types; out-of-zone steps return `None` (skipped, never produces invalid parameter values)
+- `_step_offsets(max_steps)` generates `[-N, ..., -1, +1, ..., +N]` in order
+- `_evaluate_perturbation()` is the worker function — patched directly in unit tests (not the functions it calls internally, which do not survive process boundaries)
+- `profile_complete = False` when >50% of all planned perturbations fail
+- `spike_detected = True` when any `|fitness_delta| > spike_threshold`; `spike_parameters` lists the names (deduplicated)
+- Results assembled in deterministic insertion order, not completion order
+
+#### Block 1 — `src/backtesting/evaluation/verdict.py`
+- Exact two-pillar logic per FUNCTIONAL_SPEC.md Section 13:
+  - `AUTO_GO`: both pillars at go thresholds AND no modifier flags
+  - `BORDERLINE`: either pillar in borderline band OR any modifier flag
+  - `NO_GO`: either pillar in no_go zone — modifier flags cannot override
+- `oos_gate_triggered` in `VerdictResult` only fires when `oos_gate_enabled=True` AND `WFOConsistencyScore.oos_gate_triggered=True` — two-condition guard
+- `deployment_status = PAPER_TRADE_REQUIRED` always; enforced by `VerdictResult.__post_init__` which raises `ValueError` on `LIVE_APPROVED`
+- `evidence_summary` produced for all three verdict paths, mentioning both pillar scores and all active flags
+- `_compute_median_oos_delta()` returns `None` — per-window oos_delta is stored in individual `WFOWindowResult` rows; orchestrator computes if needed
+
+#### Block 2 — `src/backtesting/yaml_generator.py`
+- `_STRATEGY_PARAM_KEY_MAP` maps parameter names to `(yaml_section, yaml_key)` for clean merge into base strategy YAML
+- `backtester_metadata` section embedded with: `run_id`, `candidate_id`, `zone_name`, `config_hash`, `scenario_name`, `backtester_version`, `generated_at`, `deployment_status: PAPER_TRADE_REQUIRED`, `verdict`, `wfo_consistency_score`, `mc_deep_ruin_probability`, `sensitivity_spike`, all 5 seeds
+- Validation: attempts `StrategyConfig.from_yaml()` if importable; falls back to structural check (requires `strategy` and `parameters` sections)
+- `build_output_path(output_dir, run_id, candidate_id)` helper: `{output_dir}/trading_yamls/{run_id[:8]}_{candidate_id[:12]}_strategy.yaml`
+- Output directory created automatically (`mkdir parents=True`)
+
+#### Block 3 — `src/backtesting/report_generator.py`
+- Reads entirely from store via duck-typed interface (`query_verdicts`, `query_candidates`, `query_wfo_consistency_scores`, `query_mc_results`, `query_sensitivity_profiles`) — no raw data passed in
+- Self-contained HTML: no external CSS/JS. All styles inline. No Jinja2 dependency — f-string template rendering
+- Scenario-framed: `report_emphasis` from `ScenarioProfile` controls metric cell ordering in per-candidate detail section
+- Sections: run summary → pipeline funnel → ranked shortlist (go + borderline, sorted AUTO_GO first then WFO score DESC) → per-candidate detail
+- Per-candidate inline charts: WFO window bar chart + sensitivity delta heatmap (matplotlib Agg → base64 PNG) — gracefully skipped on any error
+- Adversarial borderline checklist: separate HTML per borderline candidate in `checklists/` subdirectory; 10-item structured checklist with operator sign-off fields
+- JSON: per-candidate flat record, `json.dumps`, written to `json/` subdirectory
+- Parquet: per-candidate `pandas.DataFrame.to_parquet`, written to `parquet/` subdirectory; gracefully skipped if pandas unavailable
+- All formats independently disableable via `formats` dict argument
+
+#### Unit Tests (all new)
+| File | Tests | Result |
+|---|---|---|
+| `tests/backtesting/unit/test_sensitivity.py` | 17 | ✓ all pass |
+| `tests/backtesting/unit/test_verdict.py` | 17 | ✓ all pass |
+| `tests/backtesting/unit/test_yaml_generator.py` | 16 | ✓ all pass |
+| `tests/backtesting/unit/test_report_generator.py` | 11 | ✓ all pass |
+| **Phase 4 unit total** | **61** | **✓ all pass** |
+| **Cumulative unit total** | **114** (53 Phase 3 + 61 Phase 4) | **✓ all pass** |
+
+#### Integration / Smoke Tests (all new)
+| File | Tests | Result |
+|---|---|---|
+| `tests/backtesting/integration/test_av01_random_baseline.py` | 4 | ✓ all pass |
+| `tests/backtesting/integration/test_full_pipeline_e2e.py` | 3 | ✓ all pass |
+
+**AV-01 outcome**: 100 random-signal candidates → 0 AUTO_GO verdicts. Majority NO_GO. All PAPER_TRADE_REQUIRED. Pipeline verdict thresholds are suitably strict.
+
+---
+
+### Bug Fixed During Session
+**`test_flat_profile_no_spike` initial failure**: Original test patched `runner_evaluate` and `evaluate_fitness`, but `_evaluate_perturbation` runs inside `ProcessPoolExecutor` workers where module-level patches in the parent process do not apply. Workers tried to open `base.yaml` (which does not exist in `tmp_path`), all 10 perturbations failed → `profile_complete=False`. Fixed by patching `_evaluate_perturbation` directly — the function submitted to the executor — using a shared `_run_with_fake_executor()` helper pattern applied consistently across all three `TestEvaluateSensitivity` tests.
+
+**Lesson**: When testing `ProcessPoolExecutor`-based code, always patch the worker function itself, not functions the worker calls internally.
+
+---
+
+### Contracts Note
+`Candidate` is **not** a defined contract in `contracts.py`. The integration test initially imported it; removed. The correct type for candidate objects passed between modules is `CandidateParameterSet`.
+
+---
+
+### Files Created / Modified
+```
+CREATED:
+  src/backtesting/evaluation/__init__.py          (implicit — directory)
+  src/backtesting/evaluation/sensitivity.py
+  src/backtesting/evaluation/verdict.py
+  src/backtesting/yaml_generator.py
+  src/backtesting/report_generator.py
+  tests/backtesting/unit/test_sensitivity.py
+  tests/backtesting/unit/test_verdict.py
+  tests/backtesting/unit/test_yaml_generator.py
+  tests/backtesting/unit/test_report_generator.py
+  tests/backtesting/integration/test_av01_random_baseline.py
+  tests/backtesting/integration/test_full_pipeline_e2e.py
+
+NOT YET DONE (Phase 5):
+  src/backtesting/orchestrator.py                 (Stages 5/6/7 stubs → full wiring)
+```
+
+---
+
+### Orchestrator and Candidate Store Status
+`orchestrator.py` + `candidate_store.py`:
+candidate_store.py — Added 12 methods that didn't exist:
+Write path (enqueue → writer thread):
+write_wfo_consistency_score(score, run_id) — maps to _write_wfo_consistency_score
+write_mc_result(result, run_id) — maps to _write_mc_result
+write_sensitivity_profile(profile, run_id) — maps to _write_sensitivity_profile (writes both sensitivity_results per-step rows AND the sensitivity_profiles summary row)
+write_verdict(verdict, run_id) — maps to _write_verdict (embeds full evidence_json blob)
+flush() — blocks until write queue is fully drained (used at end of each stage)
+
+Read path (direct, no queue):
+
+get_wfo_consistency_score(candidate_id) → Optional[WFOConsistencyScore]
+get_mc_result(candidate_id, mode) → Optional[MCResult]
+get_sensitivity_profile(candidate_id) → Optional[SensitivityProfile] (reconstructs parameter_sensitivities tuple from sensitivity_results rows)
+get_candidate_result(candidate_id) → Optional[CandidateResult]
+get_fitness_score(candidate_id) → Optional[float]
+rank_by_wfo(run_id, top_n) → List[Dict] ordered by WFO score DESC
+query_verdicts/mc_results/wfo_consistency_scores/sensitivity_profiles/sensitivity_results/wfo_window_results — used by report_generator
+
+orchestrator.py — _run_stage_5_mc_deep, _run_stage_6_sensitivity, _run_stage_7_report fully wired:
+
+Each calls store.rank_by_wfo(), loops candidates, calls the evaluation module, writes to store
+Stage 7 fetches all three inputs (WFO score, MC result, sensitivity profile), computes verdict, generates trading YAML for go/borderline, rebuilds the frozen VerdictResult with yaml_output_path set, then calls generate_report()
+Missing sensitivity profile → _neutral_sensitivity() with profile_complete=False → auto-triggers sensitivity_profile_incomplete modifier flag
+store.flush() after each stage's write loop, store.close() guaranteed in finally
+datetime.now(UTC) throughout (no utcnow())
+---
+
+### Phase 4 Acceptance Criteria — All Met
+- [x] `SensitivityProfile` built correctly: spike detected, `profile_complete` flag accurate
+- [x] Verdict engine: correct outcome for all 3 verdict paths with all modifier combinations
+- [x] `yaml_generator.py`: output validates as StrategyConfig, metadata embedded
+- [x] HTML report generated: self-contained, scenario-framed, borderline checklist present
+- [x] AV-01: random-signal candidates all receive NO_GO verdict (0 AUTO_GO)
+- [x] Full pipeline integration test passes: store tables populated, report + YAML generated
+- [x] Orchestrator: all 8 stages wired
+- [ ] Live end-to-end test with real SQLite + real strategy runner — deferred to Phase 5
+
+---
+
+### Next Session
+**Phase 5 — Orchestrator Final Wiring + Live Integration**
+See `docs/backtesting/NEXT_SESSION_PLAN.md` for full breakdown.
 <!-- APPEND NEW SESSION BLOCKS BELOW THIS LINE -->

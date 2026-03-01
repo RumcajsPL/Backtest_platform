@@ -7,25 +7,39 @@ Responsibilities (orchestrate only):
 - Execute stages in order with checkpoint skip logic
 - Write immutable run artifacts at start (config hash, seeds, perturbation profile)
 
-Stages 1–7 are stubs. Stage 0 is fully implemented.
+Stages 1–4 remain stubs pending their respective phase implementations.
+Stages 0, 5, 6, and 7 are fully implemented.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 from src.backtesting.candidate_store import CandidateStore
 from src.backtesting.contracts import (
+    CandidateParameterSet,
+    CandidateResult,
     Checkpoint,
+    MCMode,
+    MCResult,
     RunMetadata,
+    ScenarioProfile,
+    SensitivityProfile,
+    Verdict,
+    VerdictResult,
+    WFOConsistencyScore,
 )
+from src.backtesting.evaluation.sensitivity import evaluate_sensitivity
+from src.backtesting.evaluation.verdict import compute_verdict
+from src.backtesting.report_generator import generate_report
 from src.backtesting.scenario import load_scenario
+from src.backtesting.yaml_generator import build_output_path, generate_trading_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +52,8 @@ def run(config_path: Path) -> None:
     """
     Main pipeline entry point. Loads config, opens the store, resumes or starts
     a fresh run, and executes all enabled stages in order.
+    CandidateStore.close() is guaranteed via finally — drains write queue and
+    closes the SQLite connection cleanly even on exception.
     """
     config = _load_and_validate_config(config_path)
     output_dir = Path(config["run"]["output_dir"])
@@ -47,13 +63,11 @@ def run(config_path: Path) -> None:
     store = CandidateStore(db_path)
     try:
         run_metadata = _resume_or_start(store, config, config_path)
-
         _execute_pipeline(config, store, run_metadata)
-
         store.set_checkpoint(run_metadata.run_id, Checkpoint.COMPLETE)
         logger.info("Pipeline complete — run_id=%s", run_metadata.run_id)
     finally:
-        store.close()
+        store.close()   # drains write queue, joins writer thread, closes connection
 
 
 # ── Config loading ─────────────────────────────────────────────────────────────
@@ -75,8 +89,6 @@ def _load_and_validate_config(config_path: Path) -> dict:
     _require_keys(config, ["backtester_version", "scenario", "run", "scenarios", "zones", "walk_forward"])
     _require_keys(config["run"], ["output_dir", "temp_dir"])
 
-    # Validate WFO windows exist (min 3 required — Stage 0 also validates,
-    # but fail early here on structural config problems)
     windows = config.get("walk_forward", {}).get("windows", [])
     if len(windows) < 3:
         raise ValueError(
@@ -89,8 +101,7 @@ def _load_and_validate_config(config_path: Path) -> dict:
 
 def _compute_config_hash(config_path: Path) -> str:
     """SHA-256 of the raw YAML file content."""
-    content = config_path.read_bytes()
-    return hashlib.sha256(content).hexdigest()
+    return hashlib.sha256(config_path.read_bytes()).hexdigest()
 
 
 # ── Resume or start ────────────────────────────────────────────────────────────
@@ -105,47 +116,38 @@ def _resume_or_start(
     is not COMPLETE, resume it. If config hash has changed, refuse to resume and
     raise. If no existing run found, start fresh.
     """
+    import sqlite3
+
     current_hash = _compute_config_hash(config_path)
 
-    # Look for the most recent run with this config hash
-    # (reads directly from store via runs table)
-    import sqlite3
     conn = sqlite3.connect(str(store._db_path))
-    row = conn.execute(
-        "SELECT run_id, config_hash, checkpoint FROM runs "
-        "WHERE config_hash = ? AND checkpoint != ? "
-        "ORDER BY started_at DESC LIMIT 1",
-        (current_hash, Checkpoint.COMPLETE.name),
-    ).fetchone()
-    conn.close()
+    try:
+        row = conn.execute(
+            "SELECT run_id FROM runs WHERE config_hash = ? AND checkpoint != ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (current_hash, Checkpoint.COMPLETE.name),
+        ).fetchone()
 
-    if row is not None:
-        run_id, stored_hash, checkpoint_name = row
-        logger.info(
-            "Resuming existing run %s at checkpoint %s", run_id, checkpoint_name
-        )
-        existing = store.get_run_metadata(run_id)
-        return existing
+        if row is not None:
+            run_id = row[0]
+            logger.info("Resuming existing run %s", run_id)
+            return store.get_run_metadata(run_id)
 
-    # Check if there is any run with a DIFFERENT hash — this means the config
-    # was modified without completing the previous run. Refuse to silently mix.
-    conn = sqlite3.connect(str(store._db_path))
-    conflict_row = conn.execute(
-        "SELECT run_id, config_hash FROM runs WHERE checkpoint != ? LIMIT 1",
-        (Checkpoint.COMPLETE.name,),
-    ).fetchone()
-    conn.close()
+        conflict = conn.execute(
+            "SELECT run_id, config_hash FROM runs WHERE checkpoint != ? LIMIT 1",
+            (Checkpoint.COMPLETE.name,),
+        ).fetchone()
+    finally:
+        conn.close()
 
-    if conflict_row is not None:
-        existing_run_id, existing_hash = conflict_row
+    if conflict is not None:
+        existing_run_id, existing_hash = conflict
         raise ValueError(
             f"Config hash mismatch. An incomplete run ({existing_run_id}) "
             f"exists with hash {existing_hash[:12]}… but current config hash "
-            f"is {current_hash[:12]}…. Post-run config changes create a new "
-            f"run — delete or complete the existing run first."
+            f"is {current_hash[:12]}…. Delete or complete the existing run first."
         )
 
-    # Start fresh
     return _initialise_run(store, config, config_path, current_hash)
 
 
@@ -157,14 +159,13 @@ def _initialise_run(
 ) -> RunMetadata:
     """Create and persist a new RunMetadata row."""
     run_id = str(uuid.uuid4())
-    windows_config = config["walk_forward"]["windows"]
-    wfo_window_ids = tuple(w["id"] for w in windows_config)
+    wfo_window_ids = tuple(w["id"] for w in config["walk_forward"]["windows"])
 
     run_metadata = RunMetadata(
         run_id=run_id,
         config_hash=config_hash,
         scenario_name=config["scenario"],
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(UTC),
         perturbation_profile_name=_extract_perturbation_profile(config),
         random_search_seed=config.get("random_search", {}).get("seed", 42),
         ga_seed=config.get("genetic", {}).get("seed", 43),
@@ -187,7 +188,7 @@ def _execute_pipeline(
     store: CandidateStore,
     run_metadata: RunMetadata,
 ) -> None:
-    """Execute all enabled pipeline stages with checkpoint skip logic."""
+    """Execute all pipeline stages in order with checkpoint skip logic."""
     run_id = run_metadata.run_id
 
     # ── Stage 0: Validation & Init ────────────────────────────────────────────
@@ -246,7 +247,7 @@ def _execute_pipeline(
         logger.info("Stage 7 (Report) already complete — skipping")
 
 
-# ── Stage 0: Fully implemented ────────────────────────────────────────────────
+# ── Stage 0: Validation & Init ────────────────────────────────────────────────
 
 def _run_stage_0_init(
     config: dict,
@@ -254,30 +255,19 @@ def _run_stage_0_init(
     run_metadata: RunMetadata,
 ) -> None:
     """
-    Stage 0: Validate configuration, data files, and WFO windows.
-
-    Validations performed:
-    1. Scenario loads without error (weights sum to 1.0, thresholds valid)
-    2. WFO windows: minimum 3 required, no overlapping windows, dates parseable
-    3. Parameter zones: at least one zone is enabled
-    4. Data files exist (if data.path is configured)
-
+    Validate configuration, scenario, WFO windows, and enabled zones.
     Raises ValueError on any validation failure.
     """
     logger.info("Stage 0: Validation & Init — run_id=%s", run_metadata.run_id)
 
-    # 1. Validate scenario loads cleanly
     try:
         scenario = load_scenario(config)
         logger.debug("Scenario '%s' loaded successfully", scenario.name)
     except (ValueError, KeyError) as exc:
         raise ValueError(f"Stage 0: Scenario validation failed: {exc}") from exc
 
-    # 2. Validate WFO windows
-    windows_config = config.get("walk_forward", {}).get("windows", [])
-    _validate_wfo_windows(windows_config)
+    _validate_wfo_windows(config.get("walk_forward", {}).get("windows", []))
 
-    # 3. Validate at least one parameter zone is enabled
     zones = config.get("zones", {})
     enabled_zones = [name for name, zdef in zones.items() if zdef.get("enabled", True)]
     if not enabled_zones:
@@ -286,28 +276,23 @@ def _run_stage_0_init(
             "Enable at least one zone under 'zones' in the config."
         )
     logger.debug("Enabled parameter zones: %s", enabled_zones)
-
-    logger.info("Stage 0: All validations passed — %d WFO windows, %d enabled zones",
-                len(windows_config), len(enabled_zones))
+    logger.info(
+        "Stage 0: All validations passed — %d WFO windows, %d enabled zones",
+        len(config.get("walk_forward", {}).get("windows", [])),
+        len(enabled_zones),
+    )
 
 
 def _validate_wfo_windows(windows_config: list) -> None:
-    """
-    Validate WFO window definitions.
-    - Minimum 3 windows required (GA random sampling requires ≥ 3)
-    - All window IDs must be non-empty and unique
-    - All dates must be parseable as YYYY-MM-DD
-    - start must be strictly before end for each window
-    """
+    """Validate WFO window definitions — min 3, unique IDs, valid dates, start < end."""
     from datetime import date
 
     if len(windows_config) < 3:
         raise ValueError(
             f"Minimum 3 WFO windows required for GA random sampling; "
-            f"found {len(windows_config)}. Add more windows under walk_forward.windows."
+            f"found {len(windows_config)}."
         )
-
-    seen_ids = set()
+    seen_ids: set = set()
     for w in windows_config:
         window_id = w.get("id")
         if not window_id:
@@ -315,23 +300,20 @@ def _validate_wfo_windows(windows_config: list) -> None:
         if window_id in seen_ids:
             raise ValueError(f"Duplicate WFO window id: '{window_id}'")
         seen_ids.add(window_id)
-
         try:
             start = date.fromisoformat(str(w["start"]))
             end = date.fromisoformat(str(w["end"]))
         except (KeyError, ValueError) as exc:
             raise ValueError(
-                f"WFO window '{window_id}': invalid date format. "
-                f"Expected YYYY-MM-DD for 'start' and 'end'. Error: {exc}"
+                f"WFO window '{window_id}': invalid date. Error: {exc}"
             ) from exc
-
         if start >= end:
             raise ValueError(
                 f"WFO window '{window_id}': start ({start}) must be before end ({end})"
             )
 
 
-# ── Stage stubs (Stages 1–7) ───────────────────────────────────────────────────
+# ── Stages 1–4: Stubs ─────────────────────────────────────────────────────────
 
 def _run_stage_1_random_search(
     config: dict, store: CandidateStore, run_metadata: RunMetadata
@@ -357,22 +339,359 @@ def _run_stage_4_wfo(
     logger.info("Stage 4: Full WFO — stub, not yet implemented")
 
 
-def _run_stage_5_mc_deep(
-    config: dict, store: CandidateStore, run_metadata: RunMetadata
-) -> None:
-    logger.info("Stage 5: MC Deep — stub, not yet implemented")
+# ── Stage 5: MC Deep ──────────────────────────────────────────────────────────
 
+def _run_stage_5_mc_deep(
+    config: dict,
+    store: CandidateStore,
+    run_metadata: RunMetadata,
+) -> None:
+    """
+    Stage 5: Monte Carlo Deep simulation.
+
+    Takes the top-N candidates by WFO consistency score, runs a full MC Deep
+    simulation on each (all perturbation types, configured iteration count),
+    and writes each MCResult to the store.
+
+    On MC failure (result.error set): writes the result anyway (ruin_probability=None)
+    and logs a warning. The None ruin_probability path produces NO_GO in Stage 7.
+    """
+    from src.backtesting.monte_carlo.mc_engine import run_mc
+
+    run_id = run_metadata.run_id
+    mc_config = config.get("monte_carlo", {}).get("deep", {})
+    input_count: int = mc_config.get("input_count", 10)
+
+    logger.info("Stage 5: MC Deep — top %d candidates by WFO score", input_count)
+
+    top_records = store.rank_by_wfo(run_id, top_n=input_count)
+    if not top_records:
+        logger.warning("Stage 5: No candidates with WFO scores — skipping MC Deep")
+        return
+
+    processed = 0
+    for record in top_records:
+        candidate = _record_to_candidate(record)
+        candidate_result = store.get_candidate_result(candidate.candidate_id)
+
+        if candidate_result is None:
+            logger.warning(
+                "Stage 5: No full-dataset result for candidate %s — skipping",
+                candidate.candidate_id[:12],
+            )
+            continue
+
+        mc_result: MCResult = run_mc(
+            candidate=candidate,
+            candidate_result=candidate_result,
+            mode=MCMode.DEEP,
+            config=config,
+            seed=run_metadata.mc_deep_seed,
+        )
+
+        store.write_mc_result(mc_result, run_id)
+        processed += 1
+
+        if mc_result.error:
+            logger.warning(
+                "Stage 5: MC Deep failed for candidate %s: %s",
+                candidate.candidate_id[:12], mc_result.error,
+            )
+        else:
+            logger.debug(
+                "Stage 5: candidate %s — ruin=%.4f  p5=%.2f",
+                candidate.candidate_id[:12],
+                mc_result.ruin_probability,
+                mc_result.p5_final_equity or 0.0,
+            )
+
+    store.flush()
+    logger.info("Stage 5: MC Deep complete — %d/%d candidates processed",
+                processed, len(top_records))
+
+
+# ── Stage 6: Parameter Sensitivity ───────────────────────────────────────────
 
 def _run_stage_6_sensitivity(
-    config: dict, store: CandidateStore, run_metadata: RunMetadata
+    config: dict,
+    store: CandidateStore,
+    run_metadata: RunMetadata,
 ) -> None:
-    logger.info("Stage 6: Parameter Sensitivity — stub, not yet implemented")
+    """
+    Stage 6: Parameter sensitivity analysis.
 
+    Perturbs each parameter ±1 and ±2 steps (via ProcessPoolExecutor workers),
+    evaluates fitness at each perturbation, and writes a SensitivityProfile
+    per candidate. profile_complete=False auto-triggers the
+    sensitivity_profile_incomplete modifier flag in Stage 7 verdict computation.
+    """
+    run_id = run_metadata.run_id
+    sens_config = config.get("sensitivity", {})
+    input_count: int = sens_config.get("input_count", 5)
+    spike_threshold: float = sens_config.get("spike_threshold", 0.15)
+    max_steps: int = sens_config.get("max_steps", 2)
+    max_workers: int = config.get("run", {}).get("max_workers", 6)
+    min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
+
+    base_yaml_path = _resolve_base_yaml(config)
+    temp_dir = Path(config["run"]["temp_dir"])
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    scenario: ScenarioProfile = load_scenario(config)
+    parameter_space_def: dict = config.get("zones", {})
+
+    logger.info(
+        "Stage 6: Sensitivity — top %d candidates, spike_threshold=%.2f, max_steps=%d",
+        input_count, spike_threshold, max_steps,
+    )
+
+    top_records = store.rank_by_wfo(run_id, top_n=input_count)
+    if not top_records:
+        logger.warning("Stage 6: No candidates with WFO scores — skipping Sensitivity")
+        return
+
+    processed = 0
+    for record in top_records:
+        candidate = _record_to_candidate(record)
+        baseline_fitness = store.get_fitness_score(candidate.candidate_id)
+
+        if baseline_fitness is None:
+            logger.warning(
+                "Stage 6: No baseline fitness for candidate %s — skipping",
+                candidate.candidate_id[:12],
+            )
+            continue
+
+        sensitivity: SensitivityProfile = evaluate_sensitivity(
+            candidate=candidate,
+            baseline_fitness=baseline_fitness,
+            parameter_space_def=parameter_space_def,
+            base_yaml_path=base_yaml_path,
+            temp_dir=temp_dir,
+            scenario=scenario,
+            spike_threshold=spike_threshold,
+            max_steps=max_steps,
+            max_workers=max_workers,
+            min_significant_trades=min_significant_trades,
+        )
+
+        store.write_sensitivity_profile(sensitivity, run_id)
+        processed += 1
+
+        logger.debug(
+            "Stage 6: candidate %s — spike=%s  complete=%s  params_tested=%d",
+            candidate.candidate_id[:12],
+            sensitivity.spike_detected,
+            sensitivity.profile_complete,
+            len(sensitivity.parameter_sensitivities),
+        )
+
+    store.flush()
+    logger.info("Stage 6: Sensitivity complete — %d/%d candidates processed",
+                processed, len(top_records))
+
+
+# ── Stage 7: Report & Output ──────────────────────────────────────────────────
 
 def _run_stage_7_report(
-    config: dict, store: CandidateStore, run_metadata: RunMetadata
+    config: dict,
+    store: CandidateStore,
+    run_metadata: RunMetadata,
 ) -> None:
-    logger.info("Stage 7: Report & Output — stub, not yet implemented")
+    """
+    Stage 7: Verdict computation, trading YAML generation, and report output.
+
+    For each top candidate (ranked by WFO score):
+      1. Fetch WFO consistency score, MC deep result, and sensitivity profile
+      2. Compute verdict via two-pillar logic + modifier flags
+      3. Write VerdictResult to store
+      4. For AUTO_GO and BORDERLINE: generate trading YAML with embedded metadata
+
+    Then generate:
+      - Self-contained HTML report (scenario-framed, inline charts)
+      - Per-borderline adversarial checklist HTML
+      - JSON per-candidate records
+      - Parquet per-candidate records (if pandas available)
+    """
+    run_id = run_metadata.run_id
+    sens_config = config.get("sensitivity", {})
+    input_count: int = sens_config.get("input_count", 5)
+    oos_gate_enabled: bool = config.get("walk_forward", {}).get("enforce_oos_gate", False)
+
+    output_dir = Path(config["run"]["output_dir"])
+    base_yaml_path = _resolve_base_yaml(config)
+    scenario: ScenarioProfile = load_scenario(config)
+    formats: dict = config.get("output", {}).get("formats", {
+        "html": True, "json": True, "parquet": True,
+    })
+
+    logger.info(
+        "Stage 7: Report & Output — top %d candidates, oos_gate=%s",
+        input_count, oos_gate_enabled,
+    )
+
+    top_records = store.rank_by_wfo(run_id, top_n=input_count)
+    if not top_records:
+        logger.warning("Stage 7: No candidates available — generating empty report")
+
+    # ── 7a: Verdicts ──────────────────────────────────────────────────────────
+    verdicts_written = 0
+    for record in top_records:
+        candidate_id: str = record["candidate_id"]
+
+        wfo_score: Optional[WFOConsistencyScore] = store.get_wfo_consistency_score(candidate_id)
+        mc_result: Optional[MCResult] = store.get_mc_result(candidate_id, mode=MCMode.DEEP)
+        sensitivity: Optional[SensitivityProfile] = store.get_sensitivity_profile(candidate_id)
+
+        if wfo_score is None:
+            logger.warning(
+                "Stage 7: No WFO score for %s — cannot compute verdict", candidate_id[:12]
+            )
+            continue
+        if mc_result is None:
+            logger.warning(
+                "Stage 7: No MC Deep result for %s — cannot compute verdict", candidate_id[:12]
+            )
+            continue
+        if sensitivity is None:
+            # Sensitivity may be missing if the candidate was excluded at Stage 6.
+            # profile_complete=False → sensitivity_profile_incomplete modifier flag.
+            logger.warning(
+                "Stage 7: No sensitivity profile for %s — using neutral profile",
+                candidate_id[:12],
+            )
+            sensitivity = _neutral_sensitivity(candidate_id)
+
+        verdict: VerdictResult = compute_verdict(
+            candidate_id=candidate_id,
+            wfo_score=wfo_score,
+            mc_result=mc_result,
+            sensitivity=sensitivity,
+            scenario=scenario,
+            oos_gate_enabled=oos_gate_enabled,
+        )
+
+        # ── 7b: Trading YAML for go/borderline ────────────────────────────────
+        yaml_output_path: Optional[str] = None
+        if verdict.verdict in (Verdict.AUTO_GO, Verdict.BORDERLINE):
+            candidate = _record_to_candidate(record)
+            out_path = build_output_path(output_dir, run_id, candidate_id)
+            try:
+                yaml_path = generate_trading_yaml(
+                    candidate=candidate,
+                    verdict=verdict,
+                    run_metadata=run_metadata,
+                    base_strategy_yaml_path=base_yaml_path,
+                    output_path=out_path,
+                )
+                yaml_output_path = str(yaml_path)
+                logger.info(
+                    "Stage 7: Trading YAML written — candidate=%s  file=%s",
+                    candidate_id[:12], yaml_path.name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Stage 7: Failed to write trading YAML for candidate %s: %s",
+                    candidate_id[:12], exc,
+                )
+
+        # Rebuild VerdictResult with yaml_output_path populated (frozen dataclass)
+        final_verdict = VerdictResult(
+            candidate_id=verdict.candidate_id,
+            scenario_name=verdict.scenario_name,
+            verdict=verdict.verdict,
+            deployment_status=verdict.deployment_status,
+            wfo_consistency_score=verdict.wfo_consistency_score,
+            mc_deep_ruin_probability=verdict.mc_deep_ruin_probability,
+            sensitivity_spike=verdict.sensitivity_spike,
+            oos_gate_triggered=verdict.oos_gate_triggered,
+            window_collapse_flag=verdict.window_collapse_flag,
+            sensitivity_profile_incomplete=verdict.sensitivity_profile_incomplete,
+            median_oos_delta=verdict.median_oos_delta,
+            parameter_region_width=verdict.parameter_region_width,
+            yaml_output_path=yaml_output_path,
+            evidence_summary=verdict.evidence_summary,
+        )
+
+        store.write_verdict(final_verdict, run_id)
+        verdicts_written += 1
+
+        logger.info(
+            "Stage 7: verdict=%s  candidate=%s  WFO=%.3f  ruin=%s",
+            final_verdict.verdict.value,
+            candidate_id[:12],
+            final_verdict.wfo_consistency_score or 0.0,
+            f"{final_verdict.mc_deep_ruin_probability:.4f}"
+            if final_verdict.mc_deep_ruin_probability is not None else "N/A",
+        )
+
+    store.flush()
+    logger.info("Stage 7: %d verdicts written", verdicts_written)
+
+    # ── 7c: HTML report + JSON/Parquet ────────────────────────────────────────
+    generate_report(
+        store=store,
+        run_id=run_id,
+        scenario=scenario,
+        output_dir=output_dir,
+        formats=formats,
+    )
+
+    logger.info("Stage 7: Report & Output complete — run_id=%s", run_id)
+
+
+# ── Stage helper utilities ─────────────────────────────────────────────────────
+
+def _record_to_candidate(record: Dict[str, Any]) -> CandidateParameterSet:
+    """
+    Reconstruct a CandidateParameterSet from a rank_by_wfo record dict.
+    Supports both 'parameters' (dict) and 'parameters_json' (JSON string) keys.
+    """
+    import json
+
+    zone_name: str = record.get("zone_name", "unknown")
+    params = record.get("parameters")
+
+    if not params:
+        params_json = record.get("parameters_json", "{}")
+        params = json.loads(params_json) if isinstance(params_json, str) else {}
+
+    if isinstance(params, str):
+        params = json.loads(params)
+
+    return CandidateParameterSet.create(
+        zone_name=zone_name,
+        parameters=params,
+        generation=record.get("generation"),
+    )
+
+
+def _neutral_sensitivity(candidate_id: str) -> SensitivityProfile:
+    """
+    Return a neutral SensitivityProfile for candidates where sensitivity
+    evaluation was skipped. profile_complete=False → triggers the
+    sensitivity_profile_incomplete modifier flag in the verdict engine.
+    """
+    return SensitivityProfile(
+        candidate_id=candidate_id,
+        baseline_fitness=0.0,
+        parameter_sensitivities=(),
+        spike_detected=False,
+        spike_parameters=(),
+        profile_complete=False,
+    )
+
+
+def _resolve_base_yaml(config: dict) -> Path:
+    """
+    Resolve the base strategy YAML path. Reads config['strategy']['base_yaml_path']
+    if present; falls back to the default template location via paths.py.
+    """
+    from src.utils.paths import CONFIGS_DIR
+    configured = config.get("strategy", {}).get("base_yaml_path")
+    if configured:
+        return Path(configured)
+    return CONFIGS_DIR / "strategies" / "strategy_template.yaml"
 
 
 # ── Internal utilities ─────────────────────────────────────────────────────────

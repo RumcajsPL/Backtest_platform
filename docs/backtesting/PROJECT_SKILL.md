@@ -52,10 +52,11 @@ Verdict logic (exact — do not approximate):
 Modifier flags (any one → borderline, never no_go on their own):
 - `sensitivity_spike` — |fitness_delta| > spike_threshold for any parameter
 - `oos_gate_triggered` — only when `enforce_oos_gate: true` AND IS/OOS degradation > 50%
-- `window_collapse_flag` — any WFO window showed severe drawdown (≥ 40%)
+- `window_collapse_flag` — any WFO window showed severe drawdown
 - `sensitivity_profile_incomplete` — >50% of perturbation evaluations failed
 
 `VerdictResult.deployment_status`: always `PAPER_TRADE_REQUIRED` for go/borderline.
+`VerdictResult.__post_init__` raises `ValueError` if `LIVE_APPROVED` is set for go/borderline — this is enforced at contract construction, not just convention.
 Operator manually sets `LIVE_APPROVED` after paper trading period. Never set in code.
 
 ---
@@ -110,7 +111,7 @@ from datetime import datetime, UTC
 evaluated_at = datetime.now(UTC)
 
 # WRONG — deprecated in Python 3.12+
-evaluated_at = datetime.utcnow()  # emits DeprecationWarning — do not use in new code
+evaluated_at = datetime.utcnow()  # do not use in any new code
 ```
 
 ---
@@ -120,8 +121,7 @@ evaluated_at = datetime.utcnow()  # emits DeprecationWarning — do not use in n
 ### Phase 2 — Core Infrastructure (complete ✓)
 ```
 orchestrator.py           — sequences stages, checkpoints, resume. Writes immutable run
-                            artifacts (config hash, seeds) at start. Stages 5/6/7 stubs
-                            to be fully wired in Phase 4.
+                            artifacts (config hash, seeds) at start. Stages 5/6/7 fully wired in Phase 4.
 parameter_space.py        — expands YAML zones to parameter sets. No strategy knowledge.
 sampler.py                — LHS or random selection from expanded space. No evaluation.
 scenario.py               — loads ScenarioProfile from YAML. One profile per run.
@@ -130,9 +130,13 @@ strategy_runner.py        — single candidate evaluation. Builds temp YAML, cal
                             Returns failed CandidateResult on any error — never raises.
 fitness.py                — stateless. Receives MetricsReport + ScenarioProfile. Returns FitnessResult.
 candidate_store.py        — SQLite. WAL mode + single-writer queue. Thread-safe writes.
-                            Public methods: write_candidate(), write_wfo_window_result(),
+                            Public write methods: write_candidate(), write_wfo_window_result(),
                             write_wfo_consistency_score(), flag_candidate_wfo_insufficient(),
-                            get_checkpoint(), set_checkpoint(), query_candidates(),
+                            write_mc_result(), write_sensitivity_profile(), write_verdict().
+                            Public query methods: get_checkpoint(), set_checkpoint(),
+                            query_candidates(), query_verdicts(), query_wfo_consistency_scores(),
+                            query_mc_results(), query_sensitivity_profiles(),
+                            query_wfo_window_results(), query_sensitivity_results(),
                             rank_by_wfo(), close().
 ranker.py                 — stateless. Query spec in → ranked list out.
 ```
@@ -148,14 +152,12 @@ wfo/wfo_engine.py         — orchestrates WFO. "lightweight" mode for GA (pre-s
                             when >50% of windows fail per candidate.
 wfo/consistency_scorer.py — aggregates WFOWindowResults → four temporal metrics →
                             composite WFO consistency score [0,1]. Returns WFOConsistencyScore.
-                            Median return: sigmoid-normalised. Variance + worst_dd: inverted.
 ga/population.py          — population init from MC_PREFILTER_PASS records. Elite extraction.
 ga/selection.py           — tournament selection. Configurable tournament size.
 ga/crossover.py           — uniform crossover. zone_name inherited from parent_a.
 ga/mutation.py            — Gaussian on step grid (int/float), random flip (choice).
                             All params strictly clamped to zone min/max.
-ga/diversity.py           — hybrid Euclidean/Hamming distance (D-11). RMS normalised per
-                            continuous param. Linear penalty scalar in [0, penalty_weight].
+ga/diversity.py           — hybrid Euclidean/Hamming distance (D-11). Linear penalty scalar.
 ga/ga_engine.py           — full evolution loop. rng.sample(wfo_windows, k=2) per generation.
                             Diversity penalty applied pre-selection. Elite preservation.
                             Stagnation early stop. All candidates written to store with stage=GA.
@@ -163,50 +165,59 @@ monte_carlo/perturbation.py    — named profiles from YAML. Pre-filter: shuffle
                                  Deep: all 5 perturbation types. Vectorised numpy for deep mode.
 monte_carlo/equity_simulator.py — simulate_paths() → shape (n_iterations, n_trades+1).
                                    Fully vectorised via np.cumsum. No Python loops over paths.
-                                   Deterministic for same seed. Per-path derived seeds.
 monte_carlo/mc_metrics.py      — compute_metrics() → (avg_final_equity, worst_drawdown,
                                   ruin_probability, p5_final_equity). All vectorised numpy.
-                                  Drawdown via np.maximum.accumulate. Ruin via np.min per path.
 monte_carlo/mc_engine.py       — pre-filter and deep mode dispatch. Never raises.
-                                  All failures → MCResult(error=str(exc)).
 ```
 
-### Phase 4 — Evaluation Layer (to build)
+### Phase 4 — Evaluation Layer (complete ✓)
 ```
 evaluation/sensitivity.py — perturbs each parameter ±1/±2 steps. Parallel via ProcessPoolExecutor.
-                            profile_complete=False if >50% perturbations failed (auto-borderline).
+                            Worker function: _evaluate_perturbation() — patch THIS in tests, not
+                            the functions it calls internally (patches don't cross process boundaries).
+                            profile_complete=False if >50% perturbations failed.
+                            spike_detected=True if any |fitness_delta| > spike_threshold.
                             Returns SensitivityProfile.
-evaluation/verdict.py     — two-pillar logic + modifier flags. Exact verdict logic per spec.
+evaluation/verdict.py     — two-pillar logic + modifier flags. Exact verdict logic (see above).
+                            oos_gate_triggered only fires when oos_gate_enabled=True AND
+                            WFOConsistencyScore.oos_gate_triggered=True (two-condition guard).
                             Never sets deployment_status=LIVE_APPROVED. Returns VerdictResult.
-yaml_generator.py         — top candidate → base strategy YAML merged with candidate params.
-                            Embeds metadata: scenario, run_id, config_hash, deployment_status.
-                            Validates output as StrategyConfig before writing.
-report_generator.py       — reads entirely from CandidateStore. Jinja2 HTML, scenario-framed.
-                            Inline base64 charts (matplotlib Agg backend).
-                            Borderline checklist as separate HTML file per borderline candidate.
-                            JSON/Parquet output configurable via output.formats in YAML.
+yaml_generator.py         — merges candidate params into base strategy YAML via _STRATEGY_PARAM_KEY_MAP.
+                            Embeds backtester_metadata: scenario, run_id, config_hash, all 5 seeds,
+                            deployment_status=PAPER_TRADE_REQUIRED, verdict, wfo/mc scores.
+                            Validates via StrategyConfig.from_yaml() if importable, else structural check.
+                            build_output_path(): {output_dir}/trading_yamls/{run_id[:8]}_{cid[:12]}_strategy.yaml
+report_generator.py       — reads entirely from CandidateStore via duck-typed query interface.
+                            Self-contained HTML: no Jinja2 dep, no external CSS/JS. f-string rendering.
+                            Scenario-framed: report_emphasis controls metric cell order.
+                            Charts: matplotlib Agg → base64 PNG inline. Gracefully skipped on error.
+                            Adversarial checklist: separate HTML per borderline candidate in checklists/.
+                            JSON: per-candidate flat record → json/. Parquet: → parquet/ (pandas).
 ```
 
+### Phase 5 — Orchestrator Audit
+```
+orchestrator.py           — audit completness.
+                            confirm CandidateStore.close() in finally block.
+```
 ---
 
 ## Contracts Checklist
 Before writing any inter-module call, verify the contract in `TECHNICAL_SPEC.md`:
 - `RunMetadata` — run_id (UUID4), config_hash (SHA-256 64-char hex), scenario_name, 5 seeds, wfo_window_ids (tuple, min 3), checkpoint (Checkpoint enum), backtester_version
 - `ScenarioProfile` — 6 fitness weights (must sum=1.0), 6 constraint thresholds, mc_prefilter_ruin_threshold, 4 WFO temporal weights (must sum=1.0), 5 verdict thresholds, report_emphasis tuple
-- `CandidateParameterSet` — zone_name, parameters dict, candidate_id (SHA-256 of params). **Always use `.create()` factory — never call constructor directly.**
+- `CandidateParameterSet` — zone_name, parameters dict, candidate_id (SHA-256 of params). **Always use `.create()` factory.** `Candidate` is NOT a defined contract — do not import or use it.
 - `CandidateResult` — candidate_id, evaluated_at, metrics (Optional), trades (Optional), total_trades (Optional), error (Optional). `is_valid` property.
-- `FitnessResult` — candidate_id, scenario_name, fitness_score (Optional, must be in [0,1]), passed_constraints, rejection_reason, failing_constraint, failing_value, 6 constraint actuals
+- `FitnessResult` — candidate_id, scenario_name, fitness_score (Optional [0,1]), passed_constraints, rejection_reason, failing_constraint, failing_value, 6 constraint actuals
 - `WFOWindow` — window_id, start_date, end_date (start must be before end)
-- `WFOWindowResult` — candidate_id, window_id, evaluated_at, fitness_score (Optional), total_trades, net_pnl, max_drawdown, win_rate, expectancy, profit_factor, oos_delta, error. `is_valid` property.
-- `WFOConsistencyScore` — candidate_id, windows_evaluated, windows_total, median_window_return (raw float), window_return_variance (raw float), worst_window_drawdown (raw float), fraction_positive_windows [0,1], composite_score [0,1], oos_gate_triggered, window_collapse_flag
+- `WFOWindowResult` — candidate_id, window_id, evaluated_at, fitness_score, total_trades, net_pnl, max_drawdown, win_rate, expectancy, profit_factor, oos_delta, error. `is_valid` property.
+- `WFOConsistencyScore` — candidate_id, windows_evaluated, windows_total, 4 sub-metrics (raw floats), composite_score [0,1], oos_gate_triggered, window_collapse_flag
 - `MCResult` — candidate_id, mode (MCMode enum), perturbation_profile_name, iterations, evaluated_at, avg_final_equity, worst_drawdown_across_paths, ruin_probability [0,1], p5_final_equity, error. `is_valid` property.
 - `ParameterSensitivity` — parameter_name, step (int: -2/-1/+1/+2), perturbed_value, fitness_delta (Optional), evaluation_error (Optional)
-- `SensitivityProfile` — candidate_id, baseline_fitness [0,1], parameter_sensitivities (tuple of ParameterSensitivity), spike_detected, spike_parameters (tuple of str, non-empty when spike_detected=True), profile_complete
-- `VerdictResult` — candidate_id, scenario_name, verdict (Verdict enum), deployment_status (DeploymentStatus enum — always PAPER_TRADE_REQUIRED for go/borderline), wfo_consistency_score (Optional), mc_deep_ruin_probability (Optional), sensitivity_spike, oos_gate_triggered, window_collapse_flag, sensitivity_profile_incomplete, median_oos_delta, parameter_region_width, yaml_output_path, evidence_summary (must not be empty)
-- `CandidateRecord` — flattened SQLite row. All fields as primitives. parameters_json is JSON backup. Individual parameter columns are primary storage.
-
+- `SensitivityProfile` — candidate_id, baseline_fitness [0,1], parameter_sensitivities (Tuple[ParameterSensitivity,...]), spike_detected, spike_parameters (Tuple[str,...], non-empty when spike_detected=True), profile_complete
+- `VerdictResult` — candidate_id, scenario_name, verdict (Verdict enum), deployment_status (always PAPER_TRADE_REQUIRED for go/borderline — enforced by __post_init__), wfo_consistency_score, mc_deep_ruin_probability, 4 modifier flags, median_oos_delta, parameter_region_width, yaml_output_path, evidence_summary (non-empty)
+- `CandidateRecord` — flattened SQLite row. All fields as primitives. parameters_json is JSON backup.
 ---
-
 ## All Decisions Resolved — Quick Reference
 ALL 12 decisions RESOLVED. Do not re-open without explicit operator instruction.
 | D | Decision | Resolution |
@@ -215,17 +226,15 @@ ALL 12 decisions RESOLVED. Do not re-open without explicit operator instruction.
 | D-02 | SQLite concurrency | WAL mode + single-writer queue. Benchmark passed Phase 2. |
 | D-03 | Temp YAML lifecycle | Per-candidate, named by param hash. Deleted in `finally`. `retain_temp_yamls: true` for debug. |
 | D-04 | GA seeding | Top-N by fitness from MC_PREFILTER_PASS. Diversity handled by penalty during evolution. |
-| D-05 | GA WFO windows | Randomly sample 2 per generation from full list. Min 3 windows required (Stage 0 validates). Validated Phase 3. |
+| D-05 | GA WFO windows | Randomly sample 2 per generation from full list. Min 3 windows required (Stage 0 validates). |
 | D-06 | Stage counts | 200/zone → 120 → pop 60 / 30 gen → 30 → 10 → 5. All YAML-configurable. |
-| D-07 | Verdict thresholds | WFO: go≥0.65 / borderline 0.40–0.65 / no_go<0.40. MC: go≤5% / borderline 5–15% / no_go>15%. Scenario-specific. Calibrate Phase 6. |
+| D-07 | Verdict thresholds | WFO: go≥0.65 / borderline 0.40–0.65 / no_go<0.40. MC: go≤5% / borderline 5–15% / no_go>15%. Scenario-specific. |
 | D-08 | Sensitivity scope | All parameters (~300 evals, ~200s at 6 workers). |
 | D-09 | Output formats | Both JSON + Parquet, both on by default. Independently disableable. |
-| D-10 | Report generator | Build new. Jinja2 HTML. Too different from single-run strategy report to extend. |
-| D-11 | Diversity distance | Hybrid: normalised Euclidean (continuous params) + Hamming (discrete params), weighted avg by type fraction. |
-| D-12 | IS/OOS gate default | Off by default. Opt-in via `enforce_oos_gate: true`. >50% degradation = borderline flag (never auto-reject). |
-
+| D-10 | Report generator | Build new. Self-contained HTML, f-string rendering (no Jinja2 file dep). |
+| D-11 | Diversity distance | Hybrid: normalised Euclidean (continuous) + Hamming (discrete), weighted avg by type fraction. |
+| D-12 | IS/OOS gate default | Off by default. Opt-in via `enforce_oos_gate: true`. >50% degradation = borderline flag. |
 ---
-
 ## SQLite Schema — 9 Tables (full schema in SQLITE_SCHEMA.md)
 ```
 runs                   — one row per run. Immutable: config_hash, 5 seeds, perturbation_profile_name.
@@ -239,44 +248,12 @@ sensitivity_results    — one row per candidate per parameter per step.
 sensitivity_profiles   — summary: spike_detected, spike_parameters, profile_complete per candidate.
 verdicts               — final verdict + full evidence + deployment_status per candidate.
 ```
-**Schema rules:**
-- One row per candidate per stage — never denormalised blobs
-- All numeric metrics as individual columns — no JSON-serialised metric blobs in primary columns
-- All parameter values as individual columns — enables `WHERE rsi_period > 14 AND atr_multiplier < 2.0`
-- All rows have timestamps
-- No information destroyed — every MetricsReport field is a column
-- ML-ready: `SELECT * FROM candidates JOIN verdicts WHERE verdict != 'no_go'` = feature matrix
-
 ---
-
 ## Adversarial Challenge Suite
-- **AV-01** Random-signal baseline: replace signals with coin flips → all candidates must receive `no_go`. **Run as smoke test at end of Phase 4.**
-- **AV-02** Overfit-injection test: curve-fit strategy tuned to one window → must be flagged borderline or no_go at WFO stage.
-- **AV-03** Meta-config stability: >80% verdict stability under seed/iteration perturbation on known-robust candidates.
-- **AV-04** Borderline escalation: adversarial checklist HTML generated for every borderline candidate — operator sign-off required before deployment.
-
----
-
-## What NOT To Do
-- Do not modify `src/strategies/` — strategy architecture is frozen input
-- Do not use `analytics` mode inside the backtester loop — `core` mode only
-- Do not add `print()` statements — use `structured_logger.py` from strategy architecture
-- Do not hardcode parameter names anywhere except `strategy_runner.py`
-- Do not implement ML/AI layer — schema design only in v1
-- Do not implement eToro API — future project
-- Do not implement regime-aware MC perturbation profiles — v2 scope
-- Do not implement true global parameter sensitivity random-walk — v2 scope
-- Do not re-open any of D-01 through D-12 without explicit operator instruction
-- Do not set `deployment_status = LIVE_APPROVED` anywhere in code — operator-only manual action
-- Do not use `datetime.utcnow()` in new code — use `datetime.now(UTC)` (Python 3.12+ compatible)
-
----
-
-## Platform / Environment Notes
-- **OS**: Windows 10. Always use `pathlib.Path`. Always use `ProcessPoolExecutor` with spawn mode.
-- **Broker**: eToro. No API integration — future project.
-- **Data timezone**: All OHLCV data and strategy signals operate in **CET/CEST**. Internal pipeline timestamps use UTC. Report wall-clock displays should note this distinction.
-- **Path resolution**: Always use `src/utils/paths.py`. Never hardcode path separators or project roots.
+- **AV-01** ✓ PASSED (Phase 4): Random-signal baseline → 0 AUTO_GO verdicts on 100 candidates. Pipeline thresholds validated.
+- **AV-02** Overfit-injection test: curve-fit strategy tuned to one window → must be flagged borderline or no_go at WFO stage. Run in Phase 6 calibration.
+- **AV-03** Meta-config stability: >80% verdict stability under seed/iteration perturbation on known-robust candidates. Phase 6.
+- **AV-04** Borderline escalation: adversarial checklist HTML generated for every borderline candidate — operator sign-off required. Implemented in report_generator.py ✓.
 
 ---
 
@@ -330,75 +307,18 @@ else:
     _run_random_search(config, store, run_metadata)
     store.set_checkpoint(run_id, Checkpoint.RANDOM_SEARCH_COMPLETE)
 
-# ── candidate_store.py — single-writer queue pattern ────────────────────────
-import queue, threading
+# ── orchestrator.py — always close store ─────────────────────────────────────
+try:
+    _run_all_stages(...)
+finally:
+    store.close()   # drains write queue, joins writer thread, closes connection
 
-class CandidateStore:
-    def __init__(self, db_path: Path):
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode = WAL")
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("PRAGMA synchronous = NORMAL")
-        self._queue: queue.Queue = queue.Queue()
-        self._writer = threading.Thread(target=self._drain_queue, daemon=True)
-        self._writer.start()
+# ── evaluation/verdict.py — oos_gate two-condition guard ────────────────────
+# CORRECT — both conditions required
+oos_gate_triggered: bool = oos_gate_enabled and wfo_score.oos_gate_triggered
 
-    def write_candidate(self, record: CandidateRecord) -> None:
-        self._queue.put(record)          # non-blocking for callers
-
-    def write_wfo_window_result(self, result: WFOWindowResult, run_id: str) -> None:
-        self._queue.put(("wfo_window", result, run_id))
-
-    def write_wfo_consistency_score(self, score: WFOConsistencyScore, run_id: str) -> None:
-        self._queue.put(("wfo_consistency", score, run_id))
-
-    def flag_candidate_wfo_insufficient(self, candidate_id: str, run_id: str) -> None:
-        self._queue.put(("wfo_insufficient", candidate_id, run_id))
-
-    def _drain_queue(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:
-                break
-            self._do_write(item)
-            self._queue.task_done()
-
-    def close(self) -> None:
-        self._queue.join()
-        self._queue.put(None)
-        self._writer.join()
-        self._conn.close()
-
-# ── CandidateParameterSet — always use the factory ───────────────────────────
-candidate = CandidateParameterSet.create(
-    zone_name="safe",
-    parameters={"rsi_period": 14, "atr_multiplier": 2.0, "session_filter": "london"},
-    generation=None    # None = Random Search; int = GA generation number
-)
-
-# ── fitness.py — constraint evaluation order (cheapest rejection first) ─────
-import operator as op
-
-CONSTRAINT_CHECKS = [
-    ("max_drawdown",    "max_drawdown",      "max_drawdown",        op.gt),
-    ("win_rate",        "win_rate",          "min_win_rate",        op.lt),
-    ("losing_streak",   "max_losing_streak", "max_losing_streak",   op.gt),
-    ("trades_per_week", "trades_per_week",   "min_trades_per_week", op.lt),
-    ("expectancy",      "expectancy",        "min_expectancy",      op.lt),
-    ("profit_factor",   "profit_factor",     "min_profit_factor",   op.lt),
-]
-
-# ── ga/ga_engine.py — random window sampling per generation ─────────────────
-def _sample_ga_windows(all_windows: List[WFOWindow], rng: random.Random) -> List[WFOWindow]:
-    """Sample 2 windows without replacement. Called once per generation."""
-    return rng.sample(all_windows, k=2)   # requires len(all_windows) >= 3 (validated Stage 0)
-
-# ── monte_carlo/equity_simulator.py — vectorised path simulation ─────────────
-# All N paths computed in one call. No Python loops over paths.
-equity_paths = np.hstack([
-    np.full((n_iterations, 1), starting_equity),
-    starting_equity + np.cumsum(all_returns, axis=1)
-])  # shape: (n_iterations, n_trades + 1)
+# WRONG — ignores whether gate is enabled in config
+oos_gate_triggered: bool = wfo_score.oos_gate_triggered  # never
 
 # ── evaluation/verdict.py — deployment_status guard ─────────────────────────
 # CORRECT — always PAPER_TRADE_REQUIRED in code
@@ -407,15 +327,66 @@ VerdictResult(
     deployment_status=DeploymentStatus.PAPER_TRADE_REQUIRED,  # always
     ...
 )
-# WRONG — never set LIVE_APPROVED in code
+# WRONG — never set LIVE_APPROVED in code; contract __post_init__ raises ValueError
 deployment_status=DeploymentStatus.LIVE_APPROVED  # never — operator-only
+
+# ── yaml_generator.py — build canonical output path ─────────────────────────
+from src.backtesting.yaml_generator import build_output_path
+out_path = build_output_path(output_dir, run_id, candidate_id)
+# → {output_dir}/trading_yamls/{run_id[:8]}_{candidate_id[:12]}_strategy.yaml
+
+# ── Testing ProcessPoolExecutor-based code ───────────────────────────────────
+# CORRECT — patch the worker function itself
+with patch("src.backtesting.evaluation.sensitivity._evaluate_perturbation", side_effect=fake_fn):
+    ...
+
+# WRONG — patches in parent process don't propagate to spawned workers
+with patch("src.backtesting.evaluation.sensitivity.runner_evaluate", fake_fn):
+    ...  # runner_evaluate is called INSIDE _evaluate_perturbation in worker — patch won't apply
+
+# ── CandidateParameterSet — always use the factory ───────────────────────────
+candidate = CandidateParameterSet.create(
+    zone_name="safe",
+    parameters={"rsi_period": 14, "atr_multiplier": 2.0, "session_filter": "london"},
+    generation=None    # None = Random Search; int = GA generation number
+)
+# NOTE: "Candidate" is NOT a defined contract. CandidateParameterSet is the correct type.
 ```
 
 ---
 
-## Key Files to Read Before Coding
-1. `docs/backtesting/TECHNICAL_SPEC.md` — all contracts + all decisions + YAML schema + scenario profiles
-2. `docs/backtesting/SQLITE_SCHEMA.md` — full database schema + query examples
-3. `docs/backtesting/FUNCTIONAL_SPEC.md` — plain-language description of all 8 stages
-4. `docs/backtesting/CONTEXT.md` — current phase status, next task, and integration bridge items
-5. `docs/strategies/architecture/ARCHITECTURE.md` — strategy architecture (frozen input)
+## Test Counts by Phase
+| Phase | Unit Tests | Integration/Smoke | Total |
+|---|---|---|---|
+| Phase 2 | 3 | 1 | 4 (benchmarks) |
+| Phase 3 | 50 | 1 | 51 |
+| Phase 4 | 61 | 7 (4 AV-01 + 3 e2e) | 68 |
+| **Cumulative** | **114** | **9** | **123** |
+
+All 123 tests green as of end of Phase 4.
+
+---
+
+## What NOT To Do
+- Do not modify `src/strategies/` — strategy architecture is frozen input
+- Do not use `analytics` mode inside the backtester loop — `core` mode only
+- Do not add `print()` statements — use `structured_logger.py` from strategy architecture
+- Do not hardcode parameter names anywhere except `strategy_runner.py`
+- Do not implement ML/AI layer — schema design only in v1
+- Do not implement eToro API — future project
+- Do not implement regime-aware MC perturbation profiles — v2 scope
+- Do not implement true global parameter sensitivity random-walk — v2 scope
+- Do not re-open any of D-01 through D-12 without explicit operator instruction
+- Do not set `deployment_status = LIVE_APPROVED` anywhere in code — operator-only manual action
+- Do not use `datetime.utcnow()` in any new code — use `datetime.now(UTC)` (Python 3.12+ compatible)
+- Do not import or use `Candidate` — not a defined contract. Use `CandidateParameterSet`.
+- Do not patch functions called inside ProcessPoolExecutor workers — patch the worker function itself.
+
+---
+
+## Platform / Environment Notes
+- **OS**: Windows 10. Always use `pathlib.Path`. Always use `ProcessPoolExecutor` with spawn mode.
+- **Broker**: eToro. No API integration — future project.
+- **Data timezone**: All OHLCV data and strategy signals operate in **CET/CEST**. Internal pipeline timestamps use UTC.
+- **Path resolution**: Always use `src/utils/paths.py`. Never hardcode path separators or project roots.
+- **`datetime.utcnow()` status**: Phase 2/3 modules still use it (cleanup deferred to Phase 5). Phase 4 modules all use `datetime.now(UTC)`. Do not introduce any new `utcnow()` calls.

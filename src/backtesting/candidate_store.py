@@ -18,16 +18,23 @@ import queue
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.backtesting.contracts import (
     CandidateRecord,
+    CandidateResult,
     CandidateStage,
     Checkpoint,
+    DeploymentStatus,
+    MCMode,
+    MCResult,
     RunMetadata,
+    SensitivityProfile,
     Verdict,
+    VerdictResult,
+    WFOConsistencyScore,
 )
 
 logger = logging.getLogger(__name__)
@@ -240,7 +247,7 @@ def _ts(dt: datetime) -> str:
 
 
 def _now_ts() -> str:
-    return datetime.now(tz=None).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class CandidateStore:
@@ -275,7 +282,7 @@ class CandidateStore:
     def initialise_run(self, run_metadata: RunMetadata) -> None:
         """Insert the runs row. Called once at Stage 0. Blocks until written."""
         self._queue.put(("_write_run", run_metadata))
-        self._queue.join()   # Block until this specific write completes
+        self._queue.join()
 
     def write_candidate(self, record: CandidateRecord) -> None:
         """Non-blocking enqueue. Worker-safe. Returns immediately."""
@@ -284,6 +291,26 @@ class CandidateStore:
     def set_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> None:
         """Update checkpoint in runs table. Blocks until written."""
         self._queue.put(("_set_checkpoint", (run_id, checkpoint)))
+        self._queue.join()
+
+    def write_wfo_consistency_score(self, score: WFOConsistencyScore, run_id: str) -> None:
+        """Enqueue a WFOConsistencyScore write. Non-blocking."""
+        self._queue.put(("_write_wfo_consistency_score", (score, run_id)))
+
+    def write_mc_result(self, result: MCResult, run_id: str) -> None:
+        """Enqueue an MCResult write. Non-blocking."""
+        self._queue.put(("_write_mc_result", (result, run_id)))
+
+    def write_sensitivity_profile(self, profile: SensitivityProfile, run_id: str) -> None:
+        """Enqueue a SensitivityProfile write (summary + per-step results). Non-blocking."""
+        self._queue.put(("_write_sensitivity_profile", (profile, run_id)))
+
+    def write_verdict(self, verdict: VerdictResult, run_id: str) -> None:
+        """Enqueue a VerdictResult write. Non-blocking."""
+        self._queue.put(("_write_verdict", (verdict, run_id)))
+
+    def flush(self) -> None:
+        """Block until the write queue is fully drained."""
         self._queue.join()
 
     # ── Public read API ───────────────────────────────────────────────────────
@@ -330,6 +357,190 @@ class CandidateStore:
             checkpoint=Checkpoint[checkpoint_val],
             backtester_version=backtester_version,
         )
+
+    def get_wfo_consistency_score(self, candidate_id: str) -> Optional[WFOConsistencyScore]:
+        """Return the WFOConsistencyScore for a candidate, or None if not found."""
+        row = self._conn.execute(
+            """SELECT candidate_id, windows_evaluated, windows_total,
+                      median_window_return, window_return_variance,
+                      worst_window_drawdown, fraction_positive_windows,
+                      wfo_consistency_score, oos_gate_triggered, window_collapse_flag
+               FROM wfo_consistency_scores WHERE candidate_id = ?""",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        (
+            cid, windows_evaluated, windows_total,
+            median_return, variance, worst_dd, frac_pos,
+            composite, oos_gate, collapse,
+        ) = row
+        return WFOConsistencyScore(
+            candidate_id=cid,
+            windows_evaluated=windows_evaluated or 0,
+            windows_total=windows_total or 0,
+            median_window_return=median_return or 0.0,
+            window_return_variance=variance or 0.0,
+            worst_window_drawdown=worst_dd or 0.0,
+            fraction_positive_windows=frac_pos or 0.0,
+            composite_score=composite or 0.0,
+            oos_gate_triggered=bool(oos_gate) if oos_gate is not None else False,
+            window_collapse_flag=bool(collapse) if collapse is not None else False,
+        )
+
+    def get_mc_result(self, candidate_id: str, mode: MCMode) -> Optional[MCResult]:
+        """Return the MCResult for a candidate and mode, or None if not found."""
+        row = self._conn.execute(
+            """SELECT candidate_id, mode, perturbation_profile_name, iterations,
+                      recorded_at, avg_final_equity, worst_drawdown_across_paths,
+                      ruin_probability, p5_final_equity, evaluation_error
+               FROM mc_results WHERE candidate_id = ? AND mode = ?""",
+            (candidate_id, mode.value),
+        ).fetchone()
+        if row is None:
+            return None
+        (
+            cid, mode_str, profile_name, iterations, recorded_at,
+            avg_equity, worst_dd, ruin_prob, p5_equity, error,
+        ) = row
+        return MCResult(
+            candidate_id=cid,
+            mode=MCMode(mode_str),
+            perturbation_profile_name=profile_name,
+            iterations=iterations,
+            evaluated_at=datetime.fromisoformat(recorded_at),
+            avg_final_equity=avg_equity,
+            worst_drawdown_across_paths=worst_dd,
+            ruin_probability=ruin_prob,
+            p5_final_equity=p5_equity,
+            error=error,
+        )
+
+    def get_sensitivity_profile(self, candidate_id: str) -> Optional[SensitivityProfile]:
+        """Return the SensitivityProfile summary for a candidate, or None if not found."""
+        from src.backtesting.contracts import ParameterSensitivity
+
+        row = self._conn.execute(
+            """SELECT candidate_id, baseline_fitness, spike_detected,
+                      spike_parameters, profile_complete
+               FROM sensitivity_profiles WHERE candidate_id = ?""",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cid, baseline, spike_det, spike_params_json, complete = row
+
+        # Reload per-step results to reconstruct parameter_sensitivities tuple
+        step_rows = self._conn.execute(
+            """SELECT parameter_name, step, perturbed_value, fitness_delta, evaluation_error
+               FROM sensitivity_results WHERE candidate_id = ?
+               ORDER BY parameter_name, step""",
+            (candidate_id,),
+        ).fetchall()
+
+        sensitivities = tuple(
+            ParameterSensitivity(
+                parameter_name=r[0],
+                step=r[1],
+                perturbed_value=r[2],
+                fitness_delta=r[3],
+                evaluation_error=r[4],
+            )
+            for r in step_rows
+        )
+
+        spike_parameters: tuple = ()
+        if spike_params_json:
+            try:
+                spike_parameters = tuple(json.loads(spike_params_json))
+            except (json.JSONDecodeError, TypeError):
+                spike_parameters = ()
+
+        return SensitivityProfile(
+            candidate_id=cid,
+            baseline_fitness=baseline,
+            parameter_sensitivities=sensitivities,
+            spike_detected=bool(spike_det),
+            spike_parameters=spike_parameters,
+            profile_complete=bool(complete),
+        )
+
+    def get_candidate_result(self, candidate_id: str) -> Optional[CandidateResult]:
+        """
+        Return a CandidateResult reconstructed from the evaluations table.
+        Returns the first RANDOM or GA stage evaluation that passed constraints.
+        Returns None if not found.
+        """
+        row = self._conn.execute(
+            """SELECT candidate_id, recorded_at, fitness_score, actual_total_trades, error_message
+               FROM evaluations
+               WHERE candidate_id = ?
+                 AND stage IN ('RANDOM', 'GA')
+                 AND passed_constraints = 1
+               ORDER BY recorded_at ASC LIMIT 1""",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cid, recorded_at, fitness_score, total_trades, error = row
+        return CandidateResult(
+            candidate_id=cid,
+            evaluated_at=datetime.fromisoformat(recorded_at),
+            metrics=None,     # metrics are not persisted in column form; used structurally
+            trades=None,
+            total_trades=total_trades,
+            error=error,
+        )
+
+    def get_fitness_score(self, candidate_id: str) -> Optional[float]:
+        """
+        Return the fitness score from the candidate's first RANDOM or GA evaluation.
+        Returns None if not found.
+        """
+        row = self._conn.execute(
+            """SELECT fitness_score FROM evaluations
+               WHERE candidate_id = ? AND stage IN ('RANDOM', 'GA') AND passed_constraints = 1
+               ORDER BY recorded_at ASC LIMIT 1""",
+            (candidate_id,),
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def rank_by_wfo(self, run_id: str, top_n: int) -> List[Dict[str, Any]]:
+        """
+        Return the top-N candidates by WFO consistency score for a given run.
+        Each returned dict has: candidate_id, zone_name, wfo_consistency_score,
+        parameters (as dict), generation.
+        Candidates with no WFO score are excluded.
+        """
+        rows = self._conn.execute(
+            """SELECT c.candidate_id, c.zone_name, c.generation,
+                      wcs.wfo_consistency_score, cp.parameters_json
+               FROM wfo_consistency_scores wcs
+               JOIN candidates c ON wcs.candidate_id = c.candidate_id
+               LEFT JOIN candidate_parameters cp ON c.candidate_id = cp.candidate_id
+               WHERE wcs.run_id = ? AND wcs.wfo_consistency_score IS NOT NULL
+               ORDER BY wcs.wfo_consistency_score DESC
+               LIMIT ?""",
+            (run_id, top_n),
+        ).fetchall()
+
+        result = []
+        for row in rows:
+            cid, zone_name, generation, wfo_score, params_json = row
+            try:
+                params = json.loads(params_json) if params_json else {}
+            except (json.JSONDecodeError, TypeError):
+                params = {}
+            result.append({
+                "candidate_id": cid,
+                "zone_name": zone_name,
+                "generation": generation,
+                "wfo_consistency_score": wfo_score,
+                "parameters": params,
+                # Also expose parameters_json for _record_to_candidate compatibility
+                "parameters_json": params_json or "{}",
+            })
+        return result
 
     def query_candidates(
         self,
@@ -395,9 +606,104 @@ class CandidateStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_candidate_record(row) for row in rows]
 
+    def query_verdicts(self, run_id: str) -> List[Dict[str, Any]]:
+        """Return all verdict rows for a run as plain dicts."""
+        rows = self._conn.execute(
+            """SELECT candidate_id, scenario_name, verdict, deployment_status,
+                      wfo_consistency_score, mc_deep_ruin_probability,
+                      sensitivity_spike, oos_gate_triggered, window_collapse_flag,
+                      sensitivity_profile_incomplete, yaml_output_path, evidence_summary
+               FROM verdicts WHERE run_id = ?
+               ORDER BY wfo_consistency_score DESC""",
+            (run_id,),
+        ).fetchall()
+        keys = [
+            "candidate_id", "scenario_name", "verdict", "deployment_status",
+            "wfo_consistency_score", "mc_deep_ruin_probability",
+            "sensitivity_spike", "oos_gate_triggered", "window_collapse_flag",
+            "sensitivity_profile_incomplete", "yaml_output_path", "evidence_summary",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
+    def query_wfo_consistency_scores(self, run_id: str) -> List[Dict[str, Any]]:
+        """Return all WFO consistency score rows for a run as plain dicts."""
+        rows = self._conn.execute(
+            """SELECT candidate_id, wfo_consistency_score, median_window_return,
+                      window_return_variance, worst_window_drawdown,
+                      fraction_positive_windows, windows_evaluated, windows_total,
+                      oos_gate_triggered, window_collapse_flag
+               FROM wfo_consistency_scores WHERE run_id = ?
+               ORDER BY wfo_consistency_score DESC""",
+            (run_id,),
+        ).fetchall()
+        keys = [
+            "candidate_id", "wfo_consistency_score", "median_window_return",
+            "window_return_variance", "worst_window_drawdown", "fraction_positive_windows",
+            "windows_evaluated", "windows_total", "oos_gate_triggered", "window_collapse_flag",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
+    def query_mc_results(self, run_id: str, mode: str) -> List[Dict[str, Any]]:
+        """Return all MC result rows for a run and mode as plain dicts."""
+        rows = self._conn.execute(
+            """SELECT candidate_id, mode, ruin_probability, avg_final_equity,
+                      worst_drawdown_across_paths, p5_final_equity, iterations, evaluation_error
+               FROM mc_results WHERE run_id = ? AND mode = ?
+               ORDER BY ruin_probability ASC""",
+            (run_id, mode),
+        ).fetchall()
+        keys = [
+            "candidate_id", "mode", "ruin_probability", "avg_final_equity",
+            "worst_drawdown_across_paths", "p5_final_equity", "iterations", "evaluation_error",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
+    def query_sensitivity_profiles(self, run_id: str) -> List[Dict[str, Any]]:
+        """Return all sensitivity profile summary rows for a run as plain dicts."""
+        rows = self._conn.execute(
+            """SELECT candidate_id, baseline_fitness, spike_detected,
+                      spike_parameters, profile_complete
+               FROM sensitivity_profiles WHERE run_id = ?""",
+            (run_id,),
+        ).fetchall()
+        keys = ["candidate_id", "baseline_fitness", "spike_detected",
+                "spike_parameters", "profile_complete"]
+        return [dict(zip(keys, row)) for row in rows]
+
+    def query_sensitivity_results(self, candidate_id: str) -> List[Dict[str, Any]]:
+        """Return all per-step sensitivity results for a candidate as plain dicts."""
+        rows = self._conn.execute(
+            """SELECT parameter_name, step, perturbed_value, baseline_fitness,
+                      perturbed_fitness, fitness_delta, is_spike, evaluation_error
+               FROM sensitivity_results WHERE candidate_id = ?
+               ORDER BY parameter_name, step""",
+            (candidate_id,),
+        ).fetchall()
+        keys = [
+            "parameter_name", "step", "perturbed_value", "baseline_fitness",
+            "perturbed_fitness", "fitness_delta", "is_spike", "evaluation_error",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
+    def query_wfo_window_results(self, candidate_id: str) -> List[Dict[str, Any]]:
+        """Return all WFO window results for a candidate as plain dicts."""
+        rows = self._conn.execute(
+            """SELECT window_id, fitness_score, total_trades, net_pnl,
+                      max_drawdown, win_rate, expectancy, profit_factor, oos_delta, evaluation_error
+               FROM wfo_window_results WHERE candidate_id = ?
+               ORDER BY window_id""",
+            (candidate_id,),
+        ).fetchall()
+        keys = [
+            "window_id", "fitness_score", "total_trades", "net_pnl",
+            "max_drawdown", "win_rate", "expectancy", "profit_factor",
+            "oos_delta", "evaluation_error",
+        ]
+        return [dict(zip(keys, row)) for row in rows]
+
     def close(self) -> None:
         """Flush pending writes, stop the writer thread, close connection."""
-        self._queue.join()           # Drain all pending items
+        self._queue.join()
         self._queue.put(_STOP_SENTINEL)
         self._writer.join()
         self._conn.close()
@@ -443,7 +749,7 @@ class CandidateStore:
                 run_metadata.mc_deep_seed,
                 run_metadata.sensitivity_seed,
                 json.dumps(list(run_metadata.wfo_window_ids)),
-                run_metadata.checkpoint.name,   # store name ("RUN_INITIALISED") not int
+                run_metadata.checkpoint.name,
             ),
         )
         self._conn.commit()
@@ -453,7 +759,7 @@ class CandidateStore:
         run_id, checkpoint = args
         self._conn.execute(
             "UPDATE runs SET checkpoint = ? WHERE run_id = ?",
-            (checkpoint.name, run_id),  # store name not int
+            (checkpoint.name, run_id),
         )
         self._conn.commit()
         logger.debug("Checkpoint updated: run=%s  checkpoint=%s", run_id, checkpoint.name)
@@ -462,7 +768,6 @@ class CandidateStore:
         """Write one CandidateRecord: upsert candidates + parameters, insert evaluation."""
         params = json.loads(record.parameters_json)
 
-        # 1. candidates row
         self._conn.execute(
             """INSERT OR IGNORE INTO candidates
                (candidate_id, run_id, zone_name, generation, origin_stage, created_at)
@@ -477,7 +782,6 @@ class CandidateStore:
             ),
         )
 
-        # 2. candidate_parameters row
         self._conn.execute(
             """INSERT OR IGNORE INTO candidate_parameters
                (candidate_id, parameters_json,
@@ -502,7 +806,6 @@ class CandidateStore:
             ),
         )
 
-        # 3. evaluations row
         self._conn.execute(
             """INSERT INTO evaluations (
                 eval_id, candidate_id, run_id, stage, generation, recorded_at,
@@ -532,6 +835,167 @@ class CandidateStore:
             ),
         )
         self._conn.commit()
+
+    def _write_wfo_consistency_score(self, args: tuple) -> None:
+        score, run_id = args
+        self._conn.execute(
+            """INSERT OR REPLACE INTO wfo_consistency_scores (
+                candidate_id, run_id, recorded_at,
+                median_window_return, window_return_variance,
+                worst_window_drawdown, fraction_positive_windows,
+                wfo_consistency_score, windows_evaluated, windows_total,
+                oos_gate_triggered, window_collapse_flag
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                score.candidate_id,
+                run_id,
+                _now_ts(),
+                score.median_window_return,
+                score.window_return_variance,
+                score.worst_window_drawdown,
+                score.fraction_positive_windows,
+                score.composite_score,
+                score.windows_evaluated,
+                score.windows_total,
+                int(score.oos_gate_triggered),
+                int(score.window_collapse_flag),
+            ),
+        )
+        self._conn.commit()
+        logger.debug("WFO score written: candidate=%s  score=%.4f",
+                     score.candidate_id[:12], score.composite_score)
+
+    def _write_mc_result(self, args: tuple) -> None:
+        result, run_id = args
+        self._conn.execute(
+            """INSERT OR REPLACE INTO mc_results (
+                result_id, candidate_id, run_id, mode, perturbation_profile_name,
+                iterations, recorded_at, avg_final_equity, worst_drawdown_across_paths,
+                ruin_probability, p5_final_equity, evaluation_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(uuid.uuid4()),
+                result.candidate_id,
+                run_id,
+                result.mode.value,
+                result.perturbation_profile_name,
+                result.iterations,
+                _ts(result.evaluated_at),
+                result.avg_final_equity,
+                result.worst_drawdown_across_paths,
+                result.ruin_probability,
+                result.p5_final_equity,
+                result.error,
+            ),
+        )
+        self._conn.commit()
+        logger.debug("MCResult written: candidate=%s  mode=%s  ruin=%s",
+                     result.candidate_id[:12], result.mode.value,
+                     f"{result.ruin_probability:.4f}" if result.ruin_probability is not None else "N/A")
+
+    def _write_sensitivity_profile(self, args: tuple) -> None:
+        profile, run_id = args
+        now = _now_ts()
+        spike_threshold = 0.0   # is_spike already computed in profile; use per-step delta
+
+        # Write per-step sensitivity_results rows
+        for ps in profile.parameter_sensitivities:
+            is_spike = (
+                ps.parameter_name in profile.spike_parameters
+                if ps.fitness_delta is not None else False
+            )
+            perturbed_fitness = (
+                profile.baseline_fitness + ps.fitness_delta
+                if ps.fitness_delta is not None else None
+            )
+            self._conn.execute(
+                """INSERT OR REPLACE INTO sensitivity_results (
+                    result_id, candidate_id, run_id, parameter_name, step,
+                    perturbed_value, baseline_fitness, perturbed_fitness,
+                    fitness_delta, is_spike, recorded_at, evaluation_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()),
+                    profile.candidate_id,
+                    run_id,
+                    ps.parameter_name,
+                    ps.step,
+                    str(ps.perturbed_value),
+                    profile.baseline_fitness,
+                    perturbed_fitness,
+                    ps.fitness_delta,
+                    int(is_spike),
+                    now,
+                    ps.evaluation_error,
+                ),
+            )
+
+        # Write sensitivity_profiles summary row
+        self._conn.execute(
+            """INSERT OR REPLACE INTO sensitivity_profiles (
+                candidate_id, run_id, baseline_fitness, spike_detected,
+                spike_parameters, profile_complete, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                profile.candidate_id,
+                run_id,
+                profile.baseline_fitness,
+                int(profile.spike_detected),
+                json.dumps(list(profile.spike_parameters)) if profile.spike_parameters else None,
+                int(profile.profile_complete),
+                now,
+            ),
+        )
+        self._conn.commit()
+        logger.debug("SensitivityProfile written: candidate=%s  spike=%s  complete=%s",
+                     profile.candidate_id[:12], profile.spike_detected, profile.profile_complete)
+
+    def _write_verdict(self, args: tuple) -> None:
+        verdict, run_id = args
+        evidence_json = json.dumps({
+            "verdict": verdict.verdict.value,
+            "deployment_status": verdict.deployment_status.value,
+            "wfo_consistency_score": verdict.wfo_consistency_score,
+            "mc_deep_ruin_probability": verdict.mc_deep_ruin_probability,
+            "sensitivity_spike": verdict.sensitivity_spike,
+            "oos_gate_triggered": verdict.oos_gate_triggered,
+            "window_collapse_flag": verdict.window_collapse_flag,
+            "sensitivity_profile_incomplete": verdict.sensitivity_profile_incomplete,
+            "median_oos_delta": verdict.median_oos_delta,
+            "parameter_region_width": verdict.parameter_region_width,
+            "yaml_output_path": verdict.yaml_output_path,
+        })
+        self._conn.execute(
+            """INSERT OR REPLACE INTO verdicts (
+                candidate_id, run_id, scenario_name, verdict, deployment_status,
+                wfo_consistency_score, mc_deep_ruin_probability,
+                sensitivity_spike, oos_gate_triggered, window_collapse_flag,
+                sensitivity_profile_incomplete, median_oos_delta, parameter_region_width,
+                yaml_output_path, evidence_summary, evidence_json, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                verdict.candidate_id,
+                run_id,
+                verdict.scenario_name,
+                verdict.verdict.value,
+                verdict.deployment_status.value,
+                verdict.wfo_consistency_score,
+                verdict.mc_deep_ruin_probability,
+                int(verdict.sensitivity_spike),
+                int(verdict.oos_gate_triggered),
+                int(verdict.window_collapse_flag),
+                int(verdict.sensitivity_profile_incomplete),
+                verdict.median_oos_delta,
+                verdict.parameter_region_width,
+                verdict.yaml_output_path,
+                verdict.evidence_summary,
+                evidence_json,
+                _now_ts(),
+            ),
+        )
+        self._conn.commit()
+        logger.debug("Verdict written: candidate=%s  verdict=%s",
+                     verdict.candidate_id[:12], verdict.verdict.value)
 
     # ── Row deserialisation ───────────────────────────────────────────────────
 

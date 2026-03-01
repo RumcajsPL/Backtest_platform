@@ -1,12 +1,9 @@
 # PROJECT CONTEXT — Backtesting & Optimization Framework
-<!-- PASTE THIS ENTIRE FILE AS YOUR FIRST MESSAGE IN EVERY NEW CHAT SESSION -->
-<!-- After pasting, describe what you need in the same message. -->
-<!-- Then ask Claude to confirm it has read and understood before proceeding. -->
 ## Identity
 **Project**: Backtesting & Optimization Framework for WBWSStrategy
 **Operator**: Single quantitative retail trader, Windows 10, eToro broker
-**Stage**: Phase 4 — Evaluation Layer | Session 1
-**Last session ended**: 2026-03-01 — Completed Phase 3: All 14 optimization engine modules implemented, 53 tests pass (3 unit + 1 integration).
+**Stage**: Phase 5 — Orchestrator Final Wiring + Live Integration
+**Last session ended**: 2026-03-01 — Completed Phase 4: All evaluation modules implemented, 68 tests pass (61 unit + 4 AV-01 smoke + 3 integration). AV-01 passed: 0 AUTO_GO verdicts on random-signal baseline.
 ---
 ## Non-Negotiables (Architecture — never override these)
 1. **Contracts are the interface** — frozen dataclasses between every module. No raw dicts.
@@ -62,19 +59,22 @@ All three built-in scenarios fully specified in TECHNICAL_SPEC.md Section 5 and 
 ---
 ## Current Phase Status
 ```
-PHASE:        Phase 4 — Evaluation Layer
-COMPLETED:    - Phase 3: All 14 optimization engine modules implemented (wfo/*, ga/*, monte_carlo/*)
+PHASE:        Phase 5 — Orchestrator Final Wiring + Live Integration
+COMPLETED:    - Phase 4: All evaluation modules implemented and tested.
+                61 unit tests pass. 4 AV-01 smoke tests pass. 3 integration tests pass.
+                AV-01: 0 AUTO_GO on 100 random-signal candidates. Pipeline thresholds validated.
+              - Phase 3: All 14 optimization engine modules implemented (wfo/*, ga/*, monte_carlo/*).
                 53 tests pass. Key validations: GA window sampling independence, diversity penalty
                 effectiveness, MC vectorised equity simulation, consistency scorer correctness.
               - Phase 2: Both benchmarks passed, all 8 core modules implemented, contracts defined,
                 all unit tests passed, integration test passed.
               - Phase 1: All specs produced, decisions resolved, contracts defined, schema designed.
-   IN PROGRESS:  - CHANGE_LOG.md SESSION 4 block (written — append to file)
+   IN PROGRESS:  - CHANGE_LOG.md SESSION 5 block (append to file)
                  - PROJECT_REPORT.md update (operator handles)
                  - CONTEXT.md (this file — updated)
-   BLOCKED ON:   strategy_runner.py date windowing — see Known Issues below
-   NEXT TASK:    Phase 4 — Evaluation Layer
-   Start with:   evaluation/sensitivity.py
+   BLOCKED ON:   Nothing currently blocking.
+   NEXT TASK:    Phase 5 — Orchestrator Final Wiring Audit, Live Integration and Phase 5 — Output Layer 
+   Start with:   orchestrator.py and candidate_store.py completness audit
 ```
 ---
 ## Open Decisions — ALL RESOLVED
@@ -95,7 +95,7 @@ COMPLETED:    - Phase 3: All 14 optimization engine modules implemented (wfo/*, 
 - [x] `VerdictResult` — candidate_id, verdict, deployment_status (PAPER_TRADE_REQUIRED), pillar scores, flags, evidence_summary
 - [x] `CandidateRecord` — flattened SQLite row with all stage fields as primitives
 - [x] `ParameterSensitivity` — sub-contract for individual parameter step result
-
+- NOTE: `Candidate` is NOT a defined contract. Use `CandidateParameterSet` for candidate objects.
 ---
 ## SQLite Schema — 9 Tables (SQLITE_SCHEMA.md)
 - [x] `runs` — one row per pipeline run, immutable artifacts
@@ -108,15 +108,13 @@ COMPLETED:    - Phase 3: All 14 optimization engine modules implemented (wfo/*, 
 - [x] `sensitivity_results` — one row per candidate per parameter per step
 - [x] `sensitivity_profiles` — summary (spike_detected, spike_parameters) per candidate
 - [x] `verdicts` — final verdict + all evidence per candidate
-
 ---
 ## Scenario Profiles — All 3 Defined (TECHNICAL_SPEC.md Section 5)
 - [x] `capital_accumulation` — win_rate + consistency focus. max_dd 15%, min_wr 45%, go WFO ≥0.65, go MC ≤5%
 - [x] `swing_trading` — expectancy + profit_factor focus. min_expectancy 0.8, go WFO ≥0.60, go MC ≤7%
 - [x] `conservative` — drawdown + win_rate + ruin focus. max_dd 10%, min_wr 52%, go WFO ≥0.70, go MC ≤3%
-
 ---
-## Modules Implemented (Phase 2 + Phase 3)
+## Modules Implemented (Phase 2 + Phase 3 + Phase 4)
 ```
 Phase 2 (core infrastructure):
   src/backtesting/candidate_store.py       ✓
@@ -126,7 +124,7 @@ Phase 2 (core infrastructure):
   src/backtesting/strategy_runner.py       ✓
   src/backtesting/fitness.py               ✓
   src/backtesting/ranker.py                ✓
-  src/backtesting/orchestrator.py          ✓ (skeleton — Stages 5/6/7 stubs remain)
+  src/backtesting/orchestrator.py          ✓ 
 
 Phase 3 (optimization engines):
   src/backtesting/wfo/window_generator.py  ✓
@@ -139,20 +137,21 @@ Phase 3 (optimization engines):
   src/backtesting/ga/mutation.py           ✓
   src/backtesting/ga/diversity.py          ✓
   src/backtesting/ga/ga_engine.py          ✓
-
   src/backtesting/monte_carlo/perturbation.py     ✓
   src/backtesting/monte_carlo/equity_simulator.py ✓
   src/backtesting/monte_carlo/mc_metrics.py       ✓
   src/backtesting/monte_carlo/mc_engine.py        ✓
 
-Phase 4 (to build):
-  src/backtesting/evaluation/sensitivity.py   ← START HERE
-  src/backtesting/evaluation/verdict.py
-  src/backtesting/yaml_generator.py
-  src/backtesting/report_generator.py
-  src/backtesting/orchestrator.py             (final wiring of Stages 5/6/7)
-```
+Phase 4 (evaluation layer):
+  src/backtesting/evaluation/sensitivity.py   ✓
+  src/backtesting/evaluation/verdict.py       ✓
+  src/backtesting/yaml_generator.py           ✓
+  src/backtesting/report_generator.py         ✓
 
+Phase 5 (to build):
+  src/backtesting/orchestrator.py             
+  tests/backtesting/integration/test_live_pipeline.py ← Live SQLite + real (or realistic) runner
+```
 ---
 ## What NOT To Do
 - Do not modify `ARCHITECTURE.md` or any file under `src/strategies/` — strategy architecture is frozen
@@ -163,21 +162,27 @@ Phase 4 (to build):
 - Do not implement regime-aware MC perturbation profiles — v2 scope
 - Do not implement true global parameter sensitivity random-walk — v2 scope
 - Do not set `deployment_status = LIVE_APPROVED` anywhere in code — operator-only action
-
+- Do not use `datetime.utcnow()` in new code — use `datetime.now(UTC)` (Python 3.12+ compatible)
+- Do not import or use `Candidate` — it is not a defined contract. Use `CandidateParameterSet`.
+- When testing ProcessPoolExecutor-based code: patch the worker function itself (`_evaluate_perturbation`), not functions the worker calls internally (patches do not cross process boundaries).
 ---
-## Phase 4 Starting Point
-When Phase 4 begins, the first implementation task is `evaluation/sensitivity.py`.
-Read TECHNICAL_SPEC.md (contracts) and FUNCTIONAL_SPEC.md (Stage 6 and Stage 7 details) and SQLITE_SCHEMA.md (sensitivity + verdict tables) before writing any code.
+## Phase 5 Starting Point
+When Phase 5 begins, the task is audit `orchestrator.py` Stages 5/6/7 full implementations.
 
-**Known integration bridge required before live testing:**
-- `strategy_runner.py` must accept `date_start` and `date_end` keyword arguments to scope evaluation to a WFO window date range. `wfo_evaluator.evaluate_window()` already calls this interface. Confirm or implement in Phase 4 orchestrator wiring block.
-- `candidate_store.py` must expose: `write_wfo_window_result()`, `write_wfo_consistency_score()`, `flag_candidate_wfo_insufficient()`. Confirm these exist or add them.
-
+**Pre-coding reads required:**
+- `src/backtesting/orchestrator.py` — audit existing
+- `src/backtesting/candidate_store.py` — audit existing
+(**other on demand**)
+**Known integration items to confirm before coding:**
+1. `strategy_runner.py` accepts `date_start` and `date_end` kwargs — confirm exists or implement
+2. `candidate_store.py` exposes: `write_wfo_window_result()`, `write_wfo_consistency_score()`, `flag_candidate_wfo_insufficient()`, `write_mc_result()`, `write_sensitivity_profile()`, `write_verdict()`, `query_verdicts()`, `query_sensitivity_results()`, `query_wfo_window_results()` — confirm all exist
+3. `CandidateStore.close()` called in `finally` block of `orchestrator.run()`
+4. `datetime.utcnow()` cleanup — schedule single pass migrating all Phase 2/3 occurrences to `datetime.now(UTC)`
 ## Platform / Environment Notes (for all future sessions)
 - **Timezone**: All platform data (OHLCV, strategy signals) is in **CET/CEST**. Internal pipeline timestamps use UTC. Any module computing or displaying wall-clock timestamps visible to the operator should note this distinction.
-- **`datetime.utcnow()` deprecation**: All Phase 3 modules use `datetime.utcnow()`. Python 3.12+ emits `DeprecationWarning`. Do not fix piecemeal — schedule a single cleanup pass migrating all occurrences to `datetime.now(datetime.UTC)` when convenient (not blocking).
+- **`datetime.utcnow()` deprecation**: Phase 2/3 modules use `datetime.utcnow()`. Python 3.12+ emits `DeprecationWarning`. Phase 4 modules all use `datetime.now(UTC)`. Schedule cleanup of Phase 2/3 modules in Phase 5.
 - **Path resolution**: Always use `src/utils/paths.py` for all path construction. Never hardcode separators or roots.
-
+- **ProcessPoolExecutor tests**: Always patch the worker function submitted to the executor, not the functions it calls internally. Module-level patches in the parent process do not propagate to spawned worker processes.
 ## To take into account: file location and path resolution to be always solved by src\utils\paths.py
 ### path.py content
 ```python
