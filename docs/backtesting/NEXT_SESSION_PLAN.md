@@ -8,7 +8,7 @@
 3. Add: *"We are starting Phase 3 — Optimization Engines. Follow the breakdown in NEXT_SESSION_PLAN.md."*
 4. Claude reads the `backtester-project` skill automatically (it is in your account)
 5. Ask Claude to confirm it has read CONTEXT.md, the skill, TECHNICAL_SPEC.md, before writing any code
-**pre-coding reads to upload on Claude request (Claude make choice only required for session ):**
+**pre-coding eventual reads to upload on Claude request (Claude make choices only required for session ):**
 - `docs/backtesting/TECHNICAL_SPEC.md` — all contracts and module signatures
 - `docs/backtesting/FUNCTIONAL_SPEC.md` — detailed stage descriptions
 - `docs/backtesting/SQLITE_SCHEMA.md` — schema for WFO and MC storage
