@@ -457,7 +457,7 @@ def e2e_run(tmp_path_factory, request):
     }
 
     # ── Teardown ──────────────────────────────────────────────────────────────
-    shutil.rmtree(run_dir, ignore_errors=True)
+    shutil.rmtree(run_dir, ignore_errors=True) #removing all content after test execution, comment to disable 
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -662,6 +662,15 @@ class TestE2EWBWSRealData:
             f"No JSON output files found under {output_dir}. "
             "Stage 7 JSON generation may have failed."
         )
+    def test_p07b_parquet_output_exists(self, e2e_run):
+        """P-07b: Parquet output files exist after Stage 7 (formats.parquet: true)."""
+        if e2e_run["n_seeded"] == 0:
+            pytest.skip("No candidates to generate Parquet for")
+        parquet_files = list(e2e_run["output_dir"].rglob("*.parquet"))
+        assert parquet_files, (
+            f"No Parquet files found under {e2e_run['output_dir']}. "
+            "Confirm output.formats.parquet: true in backtest_template.yaml."
+        )
 
     def test_p08_sensitivity_profiles_written(self, e2e_run):
         """P-08: At least 1 sensitivity profile exists after Stage 6."""
@@ -707,6 +716,9 @@ class TestE2EWBWSRealData:
                 "SELECT COUNT(*) FROM sensitivity_profiles WHERE run_id = ?",
                 (ctx["run_id"],),
             ).fetchone()[0]
+            html_files = list(ctx["output_dir"].rglob("*.html"))
+            json_files = list(ctx["output_dir"].rglob("*.json"))
+            parquet_files = list(ctx["output_dir"].rglob("*.parquet"))
         finally:
             conn.close()
 
@@ -728,6 +740,10 @@ class TestE2EWBWSRealData:
             print(f"  Pipeline error    : {ctx['pipeline_error'] or 'none'}")
             print(f"  Writer errors     : {ctx['writer_errors'] or 'none'}")
             print(f"  DB path           : {ctx['db_path']}")
+            print(f"  Artifacts written :")
+            print(f"    HTML            : {len(html_files)} file(s)")
+            print(f"    JSON            : {len(json_files)} file(s)")
+            print(f"    Parquet         : {len(parquet_files)} file(s)")
             print(f"{'='*60}\n")
 
 

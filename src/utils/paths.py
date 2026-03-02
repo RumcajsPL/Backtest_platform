@@ -24,6 +24,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 # ---------------------------------------------------------
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
+DB_DATA_DIR = DATA_DIR / "db"
 # ---------------------------------------------------------
 # OUTPUT SUBDIRECTORIES
 # ---------------------------------------------------------

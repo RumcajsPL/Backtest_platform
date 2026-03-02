@@ -3,7 +3,7 @@
 **Project**: Backtesting & Optimization Framework for WBWSStrategy
 **Operator**: Single quantitative retail trader, Windows 10, eToro broker
 **Stage**: Phase 6 in progress — E2E real data test fully green!
-**Last session ended (interrupted by Claude technical issues)**: 2026-03-02 — Phase 6 Block 0 and Block 1 done. Discussion of Block 1 audit findings
+**Last session ended (interrupted by Claude technical issues)**: 2026-03-02 — Phase 6 Block 0 and Block 1 done. Start Block 2
 
 ---
 ## Non-Negotiables (Architecture — never override)
@@ -72,24 +72,9 @@ Phase 6 (hardening):   In progress — see Current Phase Status below
 ---
 ## Current Phase Status
 ```
-PHASE:        Phase 6 — Hardening & Delivery (Block 0 in progress)
-COMPLETED:    - backtest_template.yaml: production-ready, created from scratch
-                  - 3 production scenarios (capital_accumulation, swing_trading, conservative)
-                  - e2e_test scenario created and passed
-                  - WFO windows calibrated for 3-month WBWS data slice
-                  - Parameter zones: safe + exploration (discovery disabled)
-              - ARCHITECTURE.md: created for docs/backtesting/
-                  - Full module map, Mermaid diagrams, data flow, contract table
-              - strategy_runner.py: fixed
-                  - _PARAM_KEY_MAP: corrected all YAML paths to match strategy_template.yaml
-                  - Added all possible filters
-                  - Fixed datetime.utcnow() → datetime.now(UTC)
-                  - Fixed orchestrator.run(mode=) → run(mode_override=)
-              - test_e2e_wbws_real_data.py: created, pipeline executes cleanly - all pass - green
-                
-
-NEXT TASK:    1. Finalize post Block 1 discussion 
-              2. Then: Phase 6 full hardening blocks
+PHASE:        Phase 6 — Hardening & Delivery (Block 2 to start)
+COMPLETED:    Block 0 & 1                 
+NEXT TASK:    Start Phase 6 hardening blocks (Block 2 to start)
 ```
 ---
 ## Key Files Modified This Session
@@ -97,6 +82,7 @@ NEXT TASK:    1. Finalize post Block 1 discussion
 |---|---|
 | `configs/backtesting/backtest_template.yaml` | Created from scratch and updated — production ready |
 | `src/backtesting/strategy_runner.py` | Fixed _PARAM_KEY_MAP, datetime, run() kwarg |
+| `docs/backtesting/BACKTESTER_USER_GUIDE.md` | Drafted, to be progressively update during Phase 6| 
 ---
 ## Open Decisions — ALL RESOLVED (D-01 through D-12)
 See TECHNICAL_SPEC.md Section 1.
@@ -192,12 +178,11 @@ _PARAM_KEY_MAP: Dict[str, str] = {
     #   ma_type        — choice param with high interaction effects. Dedicated zone only.
 }
 ```
-
 ---
 ## Phase 6 Blocks (organized this session)
 ```
-Block 0:  E2E real data test — corrected, closed, 13 test pass green
-Block 1:  strategy_runner parameter mapping audit (done)
+Block 0 (done):  E2E real data test — corrected, closed, 13 test pass green
+Block 1 (done):  strategy_runner parameter mapping audit
           - Validate ALL parametrable strategy features are covered in _PARAM_KEY_MAP
           - Strategy has 10 technical filters (rsi, bollinger, choppiness, supertrend,
             cci, adx, macd, ma, pivot, dpo) — each with enabled flag + parameters
@@ -206,7 +191,7 @@ Block 1:  strategy_runner parameter mapping audit (done)
           - Strategy TF (strategy_tf) and HTF (htf_tf) are parametrable
           - Session filter (time_filter) is parametrable
           - Full mapping audit → confirm all are in _PARAM_KEY_MAP or document why not
-Block 2:  Adversarial suite
+Block 2 (start from here):  Adversarial suite
           - AV-02: Overfit-injection → must fail at WFO
           - AV-03: >80% verdict stability under seed perturbation
 Block 3:  Performance validation

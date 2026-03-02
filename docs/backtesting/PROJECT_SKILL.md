@@ -13,10 +13,7 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-
-**Current status (2026-03-02)**: Phase 6 in progress. 155 + 7 tests (7 pass, 6 skip on E2E).
-E2E test pipeline runs clean but WFO survivors = 0 — constraint rejection bug under investigation.
-
+**Current status (2026-03-02)**: Phase 6 in progress. Block 2 to start
 ---
 ## Pipeline (in order — do not reorder)
 ```
@@ -31,7 +28,6 @@ Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
 ```
 Stages 1–4 are currently stubs in orchestrator.py. E2E test seeds store directly and
 sets checkpoint to WFO_COMPLETE to exercise Stages 5–7 on real data.
-
 ---
 ## Verdict Model
 **Two mandatory pillars**: (1) WFO composite score, (2) MC deep ruin probability.
@@ -39,14 +35,11 @@ sets checkpoint to WFO_COMPLETE to exercise Stages 5–7 on real data.
 - `AUTO_GO`: both pillars pass go thresholds AND no modifier flags
 - `BORDERLINE`: either pillar in borderline zone OR any modifier flag
 - `NO_GO`: either pillar in no_go zone — modifier flags cannot override
-
 Modifier flags (any → borderline): `sensitivity_spike`, `oos_gate_triggered`
 (only when `enforce_oos_gate: true` AND WFO triggered), `window_collapse_flag`,
 `sensitivity_profile_incomplete`.
-
 `deployment_status`: always `PAPER_TRADE_REQUIRED` for go/borderline.
 `__post_init__` raises if `LIVE_APPROVED` set. Operator-only promotion after paper trading.
-
 ---
 ## Scenario System
 One active scenario per run. Four defined:
@@ -56,9 +49,7 @@ One active scenario per run. Four defined:
 - `e2e_test` — **pipeline validation only**, NOT for trading. Loose constraints
   calibrated to pass real strategy output (13% win rate, negative expectancy).
   DO NOT use for production optimization runs.
-
 Full values: `TECHNICAL_SPEC.md` Section 5 and `backtest_template.yaml`.
-
 ---
 ## Architecture Rules (non-negotiable)
 ```python
@@ -72,7 +63,6 @@ Full values: `TECHNICAL_SPEC.md` Section 5 and `backtest_template.yaml`.
 # LIVE_APPROVED: never set in code — operator-only manual action
 # strategy_runner.run(): mode_override="core" — NOT mode="core"
 ```
-
 ---
 ## Module Map
 ### Phase 2 — Core Infrastructure ✓
@@ -132,31 +122,78 @@ report_generator.py       — self-contained HTML. Inline charts (matplotlib Agg
 ```
 orchestrator.py  — all 8 stages wired. Stages 1–4 are stubs.
 ```
-
 ---
 ## strategy_runner._PARAM_KEY_MAP — Current State (verified 2026-03-02)
 ```python
-_PARAM_KEY_MAP = {
-    "rsi_period":           "filters.technical_filters.rsi_filter.length",
-    "rsi_overbought":       "filters.technical_filters.rsi_filter.overbought",
-    "rsi_oversold":         "filters.technical_filters.rsi_filter.oversold",
-    "adx_threshold":        "filters.technical_filters.adx_filter.threshold",
-    "atr_length":           "trade_management.risk.atr_length",
-    "atr_multiplier":       "trade_management.risk.atr_multiplier_sl",
-    "rr_target":            "trade_management.risk.risk_to_reward_ratio",
-    "risk_percentile":      "trade_management.risk.max_risk_percentile",
-    "bollinger_length":     "filters.technical_filters.bollinger_filter.length",
-    "bollinger_multiplier": "filters.technical_filters.bollinger_filter.filter_multiplier",
-    "strategy_tf":          "data.strategy_timeframe",   # path unverified
-    "htf_tf":               "data.htf_timeframe",        # path unverified
-    "session_filter":       "filters.time.session",      # path unverified
-}
-# Remaining 7 filters NOT yet mapped (Block 1 task):
-# choppiness, supertrend, cci, macd, ma, pivot, dpo
-# Filter enabled flags NOT mapped (Block 1 decision needed)
-# Filter sequence order NOT mapped (Block 1 decision needed)
-```
+_PARAM_KEY_MAP: Dict[str, str] = {
+    # ── RSI filter (always enabled in safe/exploration zones) ────────────────
+    "rsi_period":               "filters.technical_filters.rsi_filter.length",
+    "rsi_overbought":           "filters.technical_filters.rsi_filter.overbought",
+    "rsi_oversold":             "filters.technical_filters.rsi_filter.oversold",
 
+    # ── Bollinger filter (always enabled in safe/exploration zones) ──────────
+    "bollinger_length":         "filters.technical_filters.bollinger_filter.length",
+    "bollinger_multiplier":     "filters.technical_filters.bollinger_filter.filter_multiplier",
+    "bollinger_width_ma":       "filters.technical_filters.bollinger_filter.width_ma_length",
+
+    # ── ADX filter ───────────────────────────────────────────────────────────
+    "adx_enabled":              "filters.technical_filters.adx_filter.enabled",
+    "adx_length":               "filters.technical_filters.adx_filter.adx_length",
+    "adx_threshold":            "filters.technical_filters.adx_filter.threshold",
+
+    # ── Choppiness filter ────────────────────────────────────────────────────
+    "choppiness_enabled":       "filters.technical_filters.choppiness_filter.enabled",
+    "choppiness_length":        "filters.technical_filters.choppiness_filter.length",
+    "choppiness_threshold":     "filters.technical_filters.choppiness_filter.threshold",
+
+    # ── Supertrend filter ────────────────────────────────────────────────────
+    "supertrend_enabled":       "filters.technical_filters.supertrend_filter.enabled",
+    "supertrend_atr_length":    "filters.technical_filters.supertrend_filter.atr_length",
+    "supertrend_factor":        "filters.technical_filters.supertrend_filter.factor",
+
+    # ── CCI filter ───────────────────────────────────────────────────────────
+    "cci_enabled":              "filters.technical_filters.cci_filter.enabled",
+    "cci_length":               "filters.technical_filters.cci_filter.length",
+    "cci_overbought":           "filters.technical_filters.cci_filter.overbought",
+    "cci_oversold":             "filters.technical_filters.cci_filter.oversold",
+
+    # ── MACD filter ──────────────────────────────────────────────────────────
+    "macd_enabled":             "filters.technical_filters.macd_filter.enabled",
+    "macd_fast":                "filters.technical_filters.macd_filter.fast_length",
+    "macd_slow":                "filters.technical_filters.macd_filter.slow_length",
+    "macd_signal":              "filters.technical_filters.macd_filter.signal_length",
+
+    # ── MA filter ────────────────────────────────────────────────────────────
+    "ma_enabled":               "filters.technical_filters.ma_filter.enabled",
+    "ma_length":                "filters.technical_filters.ma_filter.length",
+    "ma_slope_length":          "filters.technical_filters.ma_filter.slope_length",
+    # ma_type excluded: high interaction effects; add as choice param in dedicated zone (v2+)
+
+    # ── Pivot filter ─────────────────────────────────────────────────────────
+    "pivot_enabled":            "filters.technical_filters.pivot_filter.enabled",
+    "pivot_reversal_pct":       "filters.technical_filters.pivot_filter.reversal_percent",
+    "pivot_order":              "filters.technical_filters.pivot_filter.order",
+
+    # ── DPO filter ───────────────────────────────────────────────────────────
+    "dpo_enabled":              "filters.technical_filters.dpo_filter.enabled",
+    "dpo_length":               "filters.technical_filters.dpo_filter.length",
+    "dpo_smooth":               "filters.technical_filters.dpo_filter.smooth",
+    "dpo_threshold":            "filters.technical_filters.dpo_filter.threshold",
+
+    # ── Trade management — risk ───────────────────────────────────────────────
+    "atr_length":               "trade_management.risk.atr_length",
+    "atr_multiplier":           "trade_management.risk.atr_multiplier_sl",
+    "rr_target":                "trade_management.risk.risk_to_reward_ratio",
+    "risk_percentile":          "trade_management.risk.max_risk_percentile",
+
+    # EXCLUDED (v2+):
+    #   strategy_tf    — data.paths.strategy_ohlcv is a full file path, not a TF field.
+    #                    Requires path construction + file existence validation.
+    #   htf_tf         — same issue; data.htf_period also needs a matching file path.
+    #   session_filter — session_start/end are nested {hour, minute} dicts, not scalars.
+    #   filter_sequence — list of 10 names; 10! orderings, no fitness gradient. v2+.
+    #   ma_type        — choice param with high interaction effects. Dedicated zone only.
+```
 ---
 ## Critical Patch Targets
 ```python
@@ -165,12 +202,10 @@ _PARAM_KEY_MAP = {
 patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)
 # WRONG — AttributeError:
 patch("src.backtesting.orchestrator.run_mc", ...)
-
 # ProcessPoolExecutor worker — patch the worker itself
 # CORRECT:
 patch("src.backtesting.evaluation.sensitivity._evaluate_perturbation", ...)
 ```
-
 ---
 ## SQLite Schema — 9 Tables
 ```
@@ -185,7 +220,6 @@ sensitivity_results    — one row per candidate per parameter per step
 sensitivity_profiles   — summary: spike_detected, spike_parameters, profile_complete
 verdicts               — final verdict + evidence + deployment_status per candidate
 ```
-
 ---
 ## Test Counts
 | Phase | Tests | Status |
@@ -194,26 +228,32 @@ verdicts               — final verdict + evidence + deployment_status per cand
 | test_live_pipeline.py (Phase 5) | 17 | ✅ Green |
 | test_sqlite_queries.py (Phase 5) | 12 | ✅ Green |
 | test_report_yaml.py (Phase 5) | 19 | ✅ Green |
-| test_e2e_wbws_real_data.py (Phase 6) | 13 | ⚠️ 7 pass / 6 skip |
-| **Total** | **184** | ⚠️ 162 green, 6 skipped |
-
+| test_e2e_wbws_real_data.py (Phase 6) | 14 | ✅ Green |
+| **Total** | **184** | ✅ 184 green |
 ---
 ## Adversarial Suite
 - **AV-01** ✅ PASSED (Phase 4): 0 AUTO_GO on 100 random-signal candidates.
 - **AV-02** ⬜ Phase 6 Block 2: overfit-injection → must fail at WFO.
 - **AV-03** ⬜ Phase 6 Block 2: >80% verdict stability under seed perturbation.
 - **AV-04** ✅ Implemented: adversarial checklist HTML per borderline candidate.
-
+## Rest of Phase 6 hardening (yet to organize in blocks -from Block 3)
+- Validate full pipeline completes within 4-hour target on target hardware
+- Profile and resolve bottlenecks if over budget (tuning levers: sample counts, MC iterations, stage transition candidate counts)
+- Validate resume-after-interruption at each of the 8 checkpoints
+- Validate parallel worker isolation: kill one worker mid-run, confirm pipeline continues
+- Calibrate verdict thresholds against first real run results (D-07)
+- Tuning and performance optimization. Execution speed is a key, quicker runs backtesters more runs can pass
+- Final documentation: module reference, YAML configuration guide, scenario authoring guide, output format guide, SQLite query cookbook, paper trading protocol
 ---
 ## Open Issues (Phase 6)
-1. **E2E WFO survivors = 0** — strategy evaluates without error but candidates fail
-   fitness constraints. Likely: fitness.py metric extraction mismatch or drawdown
-   unit mismatch (points vs fraction). Fix in next session.
-2. **_PARAM_KEY_MAP incomplete** — 7 filters + filter sequence + enabled flags not mapped.
-   Full audit in Block 1.
-3. **strategy_tf / htf_tf / session_filter paths** — in map but not verified against
-   actual strategy_template.yaml structure.
-
+N/A
+---
+## Session deliverables (All phases and session)
+- Anticipate the end of session and always provide before Claude chat closes:
+   - Updated docs\backtesting\CONTEXT.md
+   - Appendix for docs\backtesting\CHANGE_LOG.md
+   - New docs\backtesting\NEXT_SESSION_PLAN.md for next Claude chat window and session
+   - Updated Claude skill to replace the actual: docs\backtesting\PROJECT_SKILL.md
 ---
 ## What NOT To Do
 - Do not modify `src/strategies/` — strategy architecture is frozen
@@ -227,7 +267,6 @@ verdicts               — final verdict + evidence + deployment_status per cand
 - Do not patch functions called inside ProcessPoolExecutor workers
 - Do not use `mode="core"` — use `mode_override="core"`
 - Do not use `e2e_test` scenario for production optimization runs
-
 ---
 ## Platform Notes
 - **OS**: Windows 10, Python 3.13.12
