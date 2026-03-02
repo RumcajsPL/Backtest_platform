@@ -591,4 +591,68 @@ Fixed 3 patch failures: `run_mc` patched at `mc_engine` module (local import pat
 1. `test_report_yaml.py` — 10 failing tests. Cause unknown — upload failing test output at session start.
 2. `datetime.utcnow()` cleanup — Phase 2/3 modules still use deprecated call. Deferred. Phase 2/3 warning captured/reported in `test_live_pipeline.py::test_no_utcnow_deprecation_warnings_in_phase_4_5_modules` (non-blocking).
 3. `write_wfo_window_result()` / `flag_candidate_wfo_insufficient()` — existence on disk unconfirmed. Verify before Phase 6 WFO engine wiring.
+
+## SESSION 7 — 2026-03-02
+**Phase**: Phase 6 Block 0 — E2E real data test
+**Status at close**: Pipeline executes cleanly, WFO survivors = 0 (blocked, deferred)
+
+### New Files Created
+| File | Description |
+|---|---|
+| `configs/backtesting/backtest_template.yaml` | Production-ready config created from scratch. 3 production scenarios + e2e_test scenario. WFO windows for 3-month WBWS slice. Parameter zones: safe + exploration (discovery disabled). |
+| `docs/backtesting/ARCHITECTURE.md` | New developer-facing architecture document. Full module map, 5 Mermaid diagrams (pipeline, dependency graph, data flow, store threading, verdict logic), contract reference table, SQLite schema summary, non-negotiables table. |
+| `tests/backtesting/integration/test_e2e_wbws_real_data.py` | E2E integration test. 13 test cases (P-01 through P-08 + summary). Module-scoped fixture. Seeds store with 5 real strategy evaluations, injects WFO scores, runs Stages 5–7. Smoke mode (50 MC iters) and realistic mode (--e2e-realistic flag). |
+
+### Files Modified
+| File | Change |
+|---|---|
+| `src/backtesting/strategy_runner.py` | (1) Fixed `_PARAM_KEY_MAP`: all YAML paths corrected to match actual strategy_template.yaml structure (was using non-existent `indicators.*` paths). Added `bollinger_length` and `bollinger_multiplier` entries. (2) Fixed `datetime.utcnow()` → `datetime.now(UTC)` on all 5 occurrences. (3) Fixed `orchestrator.run(mode="core")` → `orchestrator.run(mode_override="core")` to match actual StrategyOrchestrator signature. |
+
+### Bugs Fixed
+| Bug | Root Cause | Fix |
+|---|---|---|
+| YAML parse error line 302 | Flow-mapping keys with no space before `{` (e.g. `max_risk_percentile:{`) | Added space before all flow-mapping braces in zones section |
+| All candidates EVALUATION_ERROR: "No YAML key mapping for atr_multiplier_sl" | Zone parameter names in backtest_template.yaml didn't match _PARAM_KEY_MAP keys | Renamed zone params to match map keys (atr_multiplier_sl→atr_multiplier, risk_to_reward→rr_target, max_risk_percentile→risk_percentile) |
+| All candidates EVALUATION_ERROR: "unexpected keyword argument 'mode'" | strategy_runner.py used `run(mode="core")`, actual kwarg is `mode_override` | Fixed to `run(mode_override="core")` |
+| _PARAM_KEY_MAP paths invalid | Old paths used `indicators.rsi.period` style; strategy uses `filters.technical_filters.rsi_filter.length` | Rewrote all paths to match strategy_template.yaml actual structure |
+
+### E2E Test Status at Close
+```
+Total tests    : 13
+PASS           : 7  (P-01, P-01b, P-02, P-02b, P-05b, P-06, P-z_summary)
+SKIP           : 6  (P-03 through P-08 except P-05b and P-06)
+FAIL           : 0
+Pipeline error : none
+Writer errors  : none
+WFO survivors  : 0  ← BLOCKING — root cause not confirmed
+```
+
+### Observed Strategy Output (real data, default RSI-only config)
+```
+Data slice      : 2025-09-15 → 2025-12-17 (3 months, DAX 1-min)
+Total trades    : 1076
+Win rate        : 13.2%
+Total PnL       : -1108.8 pts
+Expectancy      : -1.03 pts/trade
+Profit factor   : 0.90
+Max drawdown    : -1490.2 pts
+```
+These results easily clear e2e_test scenario constraints — constraint rejection
+is unexpected and indicates a bug in fitness.py metric extraction or scenario loading.
+
+### Deferred to Session 8
+- Root cause diagnosis for WFO survivors = 0 (add diagnostic prints to fixture)
+- Block 1: strategy parameter mapping audit (10 filters, filter sequence, enabled flags)
+- Block 2+: adversarial suite, performance validation, resume/checkpoint tests
+
+### Phase 6 Block Organization (defined this session)
+```
+Block 0: E2E real data test          — IN PROGRESS
+Block 1: Parameter mapping audit     — NOT STARTED
+Block 2: Adversarial suite           — NOT STARTED
+Block 3: Performance validation      — NOT STARTED
+Block 4: Robustness                  — NOT STARTED
+Block 5: Threshold calibration       — NOT STARTED
+Block 6: Final documentation         — NOT STARTED
+```
 <!-- APPEND NEW SESSION BLOCKS BELOW THIS LINE -->
