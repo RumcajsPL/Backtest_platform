@@ -36,21 +36,74 @@ logger = logging.getLogger(__name__)
 # This dict is the ONLY place in the backtester that knows strategy config keys.
 # Update here when the strategy YAML schema changes.
 _PARAM_KEY_MAP: Dict[str, str] = {
-    "rsi_period":            "filters.technical_filters.rsi_filter.length",
-    "rsi_overbought":        "filters.technical_filters.rsi_filter.overbought",
-    "rsi_oversold":          "filters.technical_filters.rsi_filter.oversold",
-    "adx_threshold":         "filters.technical_filters.adx_filter.threshold",
-    "atr_length":            "trade_management.risk.atr_length",
-    "atr_multiplier":        "trade_management.risk.atr_multiplier_sl",
-    "rr_target":             "trade_management.risk.risk_to_reward_ratio",
-    "risk_percentile":       "trade_management.risk.max_risk_percentile",
-    "bollinger_length":      "filters.technical_filters.bollinger_filter.length",
-    "bollinger_multiplier":  "filters.technical_filters.bollinger_filter.filter_multiplier",
-    "strategy_tf":           "data.strategy_timeframe",
-    "htf_tf":                "data.htf_timeframe",
-    "session_filter":        "filters.time.session",
-}
+    # ── RSI filter (always enabled in safe/exploration zones) ────────────────
+    "rsi_period":               "filters.technical_filters.rsi_filter.length",
+    "rsi_overbought":           "filters.technical_filters.rsi_filter.overbought",
+    "rsi_oversold":             "filters.technical_filters.rsi_filter.oversold",
 
+    # ── Bollinger filter (always enabled in safe/exploration zones) ──────────
+    "bollinger_length":         "filters.technical_filters.bollinger_filter.length",
+    "bollinger_multiplier":     "filters.technical_filters.bollinger_filter.filter_multiplier",
+    "bollinger_width_ma":       "filters.technical_filters.bollinger_filter.width_ma_length",
+
+    # ── ADX filter ───────────────────────────────────────────────────────────
+    "adx_enabled":              "filters.technical_filters.adx_filter.enabled",
+    "adx_length":               "filters.technical_filters.adx_filter.adx_length",
+    "adx_threshold":            "filters.technical_filters.adx_filter.threshold",
+
+    # ── Choppiness filter ────────────────────────────────────────────────────
+    "choppiness_enabled":       "filters.technical_filters.choppiness_filter.enabled",
+    "choppiness_length":        "filters.technical_filters.choppiness_filter.length",
+    "choppiness_threshold":     "filters.technical_filters.choppiness_filter.threshold",
+
+    # ── Supertrend filter ────────────────────────────────────────────────────
+    "supertrend_enabled":       "filters.technical_filters.supertrend_filter.enabled",
+    "supertrend_atr_length":    "filters.technical_filters.supertrend_filter.atr_length",
+    "supertrend_factor":        "filters.technical_filters.supertrend_filter.factor",
+
+    # ── CCI filter ───────────────────────────────────────────────────────────
+    "cci_enabled":              "filters.technical_filters.cci_filter.enabled",
+    "cci_length":               "filters.technical_filters.cci_filter.length",
+    "cci_overbought":           "filters.technical_filters.cci_filter.overbought",
+    "cci_oversold":             "filters.technical_filters.cci_filter.oversold",
+
+    # ── MACD filter ──────────────────────────────────────────────────────────
+    "macd_enabled":             "filters.technical_filters.macd_filter.enabled",
+    "macd_fast":                "filters.technical_filters.macd_filter.fast_length",
+    "macd_slow":                "filters.technical_filters.macd_filter.slow_length",
+    "macd_signal":              "filters.technical_filters.macd_filter.signal_length",
+
+    # ── MA filter ────────────────────────────────────────────────────────────
+    "ma_enabled":               "filters.technical_filters.ma_filter.enabled",
+    "ma_length":                "filters.technical_filters.ma_filter.length",
+    "ma_slope_length":          "filters.technical_filters.ma_filter.slope_length",
+    # ma_type excluded: high interaction effects; add as choice param in dedicated zone (v2+)
+
+    # ── Pivot filter ─────────────────────────────────────────────────────────
+    "pivot_enabled":            "filters.technical_filters.pivot_filter.enabled",
+    "pivot_reversal_pct":       "filters.technical_filters.pivot_filter.reversal_percent",
+    "pivot_order":              "filters.technical_filters.pivot_filter.order",
+
+    # ── DPO filter ───────────────────────────────────────────────────────────
+    "dpo_enabled":              "filters.technical_filters.dpo_filter.enabled",
+    "dpo_length":               "filters.technical_filters.dpo_filter.length",
+    "dpo_smooth":               "filters.technical_filters.dpo_filter.smooth",
+    "dpo_threshold":            "filters.technical_filters.dpo_filter.threshold",
+
+    # ── Trade management — risk ───────────────────────────────────────────────
+    "atr_length":               "trade_management.risk.atr_length",
+    "atr_multiplier":           "trade_management.risk.atr_multiplier_sl",
+    "rr_target":                "trade_management.risk.risk_to_reward_ratio",
+    "risk_percentile":          "trade_management.risk.max_risk_percentile",
+
+    # EXCLUDED (v2+):
+    #   strategy_tf    — data.paths.strategy_ohlcv is a full file path, not a TF field.
+    #                    Requires path construction + file existence validation.
+    #   htf_tf         — same issue; data.htf_period also needs a matching file path.
+    #   session_filter — session_start/end are nested {hour, minute} dicts, not scalars.
+    #   filter_sequence — list of 10 names; 10! orderings, no fitness gradient. v2+.
+    #   ma_type        — choice param with high interaction effects. Dedicated zone only.
+}
 
 def evaluate(
     candidate: CandidateParameterSet,

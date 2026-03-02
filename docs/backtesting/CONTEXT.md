@@ -2,8 +2,8 @@
 ## Identity
 **Project**: Backtesting & Optimization Framework for WBWSStrategy
 **Operator**: Single quantitative retail trader, Windows 10, eToro broker
-**Stage**: Phase 6 in progress — E2E real data test not yet fully green
-**Last session ended**: 2026-03-02 — Phase 6 Block 0 in progress. E2E test scaffolding complete, pipeline executes without errors, but candidates still not passing constraints (0 WFO survivors). Root cause not yet confirmed — likely fitness.py constraint evaluation issue. Troubleshooting deferred to next session.
+**Stage**: Phase 6 in progress — E2E real data test fully green!
+**Last session ended (interrupted by Claude technical issues)**: 2026-03-02 — Phase 6 Block 0 and Block 1 done. Discussion of Block 1 audit findings
 
 ---
 ## Non-Negotiables (Architecture — never override)
@@ -66,8 +66,8 @@ Phase 6 (hardening):   In progress — see Current Phase Status below
 | test_live_pipeline.py | 17 | ✅ All green |
 | test_sqlite_queries.py | 12 | ✅ All green |
 | test_report_yaml.py | 19 | ✅ All green |
-| test_e2e_wbws_real_data.py | 13 | ⚠️ 7 pass, 6 skip (WFO survivors = 0) |
-| **Total green** | **155 + 7** | |
+| test_e2e_wbws_real_data.py | 13 | ✅ All green |
+| **Total green** | **155 + 13** | |
 
 ---
 ## Current Phase Status
@@ -75,62 +75,31 @@ Phase 6 (hardening):   In progress — see Current Phase Status below
 PHASE:        Phase 6 — Hardening & Delivery (Block 0 in progress)
 COMPLETED:    - backtest_template.yaml: production-ready, created from scratch
                   - 3 production scenarios (capital_accumulation, swing_trading, conservative)
-                  - e2e_test scenario (loose constraints for pipeline validation)
+                  - e2e_test scenario created and passed
                   - WFO windows calibrated for 3-month WBWS data slice
                   - Parameter zones: safe + exploration (discovery disabled)
               - ARCHITECTURE.md: created for docs/backtesting/
                   - Full module map, Mermaid diagrams, data flow, contract table
               - strategy_runner.py: fixed
                   - _PARAM_KEY_MAP: corrected all YAML paths to match strategy_template.yaml
-                  - Added bollinger_length + bollinger_multiplier entries
+                  - Added all possible filters
                   - Fixed datetime.utcnow() → datetime.now(UTC)
                   - Fixed orchestrator.run(mode=) → run(mode_override=)
-              - test_e2e_wbws_real_data.py: created, pipeline executes cleanly
-                  - 5 real strategy evaluations complete without error
-                  - 0 evaluation errors
-                  - Pipeline error: none, writer errors: none
-                  - P-01, P-01b, P-02, P-02b, P-05b, P-06 all PASS
+              - test_e2e_wbws_real_data.py: created, pipeline executes cleanly - all pass - green
+                
 
-BLOCKED ON:   WFO survivors = 0 — candidates evaluated successfully but all fail
-              constraints even with e2e_test scenario (very loose thresholds).
-              Root cause not confirmed. Likely candidate: fitness.py constraint
-              evaluation not reading the e2e_test scenario correctly, OR
-              fitness.py has a bug where actual metrics are computed differently
-              than expected. Needs debug logging to confirm.
-
-NEXT TASK:    1. Add diagnostic prints to test fixture to surface actual metric
-                 values per candidate (win_rate, trades_per_week, etc.)
-              2. Confirm which constraint is rejecting and why
-              3. Fix root cause (fitness.py, scenario loading, or metric extraction)
-              4. Get all 13 E2E tests green
-              5. Then: Phase 6 full hardening blocks
+NEXT TASK:    1. Finalize post Block 1 discussion 
+              2. Then: Phase 6 full hardening blocks
 ```
-
----
-## Known Issues
-1. **E2E test: WFO survivors = 0** — candidates pass strategy evaluation (no errors) but
-   fail constraints in fitness.py even with e2e_test scenario loose thresholds.
-   Next session: add diagnostic output to isolate which constraint fails and what
-   actual values are being checked against.
-2. **Stages 1–4 are stubs** in orchestrator.py — E2E test seeds store directly,
-   sets checkpoint to WFO_COMPLETE. TODO marker in test for when stages are wired.
-3. **strategy_runner._PARAM_KEY_MAP** — old entries (`indicators.rsi.period` style paths)
-   were wrong; fixed this session to match actual strategy_template.yaml paths.
-   Verify all mappings are correct when new strategy parameters are added.
-
 ---
 ## Key Files Modified This Session
 | File | Change |
 |---|---|
-| `configs/backtesting/backtest_template.yaml` | Created from scratch — production ready |
+| `configs/backtesting/backtest_template.yaml` | Created from scratch and updated — production ready |
 | `src/backtesting/strategy_runner.py` | Fixed _PARAM_KEY_MAP, datetime, run() kwarg |
-| `docs/backtesting/ARCHITECTURE.md` | Created — full module/data flow documentation |
-| `tests/backtesting/integration/test_e2e_wbws_real_data.py` | Created — E2E test |
-
 ---
 ## Open Decisions — ALL RESOLVED (D-01 through D-12)
 See TECHNICAL_SPEC.md Section 1.
-
 ---
 ## Key Patching Rule (critical for tests)
 `run_mc` is imported **locally** inside `_run_stage_5_mc_deep()` — it is NOT on the orchestrator module namespace.
@@ -147,32 +116,88 @@ ProcessPoolExecutor workers: always patch the worker function itself (`_evaluate
 - **Path resolution**: Always use `src/utils/paths.py`
 - **DB**: `data/db/backtest.db` (production). Tests use `tmp_path` fixtures.
 - **strategy_runner.run() kwarg**: `mode_override="core"` — NOT `mode="core"`
-
 ---
-## strategy_runner._PARAM_KEY_MAP — Current State (verified this session)
+## strategy_runner._PARAM_KEY_MAP — Current State frozen state of V1
 ```python
-_PARAM_KEY_MAP = {
-    "rsi_period":           "filters.technical_filters.rsi_filter.length",
-    "rsi_overbought":       "filters.technical_filters.rsi_filter.overbought",
-    "rsi_oversold":         "filters.technical_filters.rsi_filter.oversold",
-    "adx_threshold":        "filters.technical_filters.adx_filter.threshold",
-    "atr_length":           "trade_management.risk.atr_length",
-    "atr_multiplier":       "trade_management.risk.atr_multiplier_sl",
-    "rr_target":            "trade_management.risk.risk_to_reward_ratio",
-    "risk_percentile":      "trade_management.risk.max_risk_percentile",
-    "bollinger_length":     "filters.technical_filters.bollinger_filter.length",
-    "bollinger_multiplier": "filters.technical_filters.bollinger_filter.filter_multiplier",
-    "strategy_tf":          "data.strategy_timeframe",
-    "htf_tf":               "data.htf_timeframe",
-    "session_filter":       "filters.time.session",
+# ── Parameter name mapping: backtester name → StrategyConfig YAML key ─────────
+# This dict is the ONLY place in the backtester that knows strategy config keys.
+# Update here when the strategy YAML schema changes.
+_PARAM_KEY_MAP: Dict[str, str] = {
+    # ── RSI filter (always enabled in safe/exploration zones) ────────────────
+    "rsi_period":               "filters.technical_filters.rsi_filter.length",
+    "rsi_overbought":           "filters.technical_filters.rsi_filter.overbought",
+    "rsi_oversold":             "filters.technical_filters.rsi_filter.oversold",
+
+    # ── Bollinger filter (always enabled in safe/exploration zones) ──────────
+    "bollinger_length":         "filters.technical_filters.bollinger_filter.length",
+    "bollinger_multiplier":     "filters.technical_filters.bollinger_filter.filter_multiplier",
+    "bollinger_width_ma":       "filters.technical_filters.bollinger_filter.width_ma_length",
+
+    # ── ADX filter ───────────────────────────────────────────────────────────
+    "adx_enabled":              "filters.technical_filters.adx_filter.enabled",
+    "adx_length":               "filters.technical_filters.adx_filter.adx_length",
+    "adx_threshold":            "filters.technical_filters.adx_filter.threshold",
+
+    # ── Choppiness filter ────────────────────────────────────────────────────
+    "choppiness_enabled":       "filters.technical_filters.choppiness_filter.enabled",
+    "choppiness_length":        "filters.technical_filters.choppiness_filter.length",
+    "choppiness_threshold":     "filters.technical_filters.choppiness_filter.threshold",
+
+    # ── Supertrend filter ────────────────────────────────────────────────────
+    "supertrend_enabled":       "filters.technical_filters.supertrend_filter.enabled",
+    "supertrend_atr_length":    "filters.technical_filters.supertrend_filter.atr_length",
+    "supertrend_factor":        "filters.technical_filters.supertrend_filter.factor",
+
+    # ── CCI filter ───────────────────────────────────────────────────────────
+    "cci_enabled":              "filters.technical_filters.cci_filter.enabled",
+    "cci_length":               "filters.technical_filters.cci_filter.length",
+    "cci_overbought":           "filters.technical_filters.cci_filter.overbought",
+    "cci_oversold":             "filters.technical_filters.cci_filter.oversold",
+
+    # ── MACD filter ──────────────────────────────────────────────────────────
+    "macd_enabled":             "filters.technical_filters.macd_filter.enabled",
+    "macd_fast":                "filters.technical_filters.macd_filter.fast_length",
+    "macd_slow":                "filters.technical_filters.macd_filter.slow_length",
+    "macd_signal":              "filters.technical_filters.macd_filter.signal_length",
+
+    # ── MA filter ────────────────────────────────────────────────────────────
+    "ma_enabled":               "filters.technical_filters.ma_filter.enabled",
+    "ma_length":                "filters.technical_filters.ma_filter.length",
+    "ma_slope_length":          "filters.technical_filters.ma_filter.slope_length",
+    # ma_type excluded: high interaction effects; add as choice param in dedicated zone (v2+)
+
+    # ── Pivot filter ─────────────────────────────────────────────────────────
+    "pivot_enabled":            "filters.technical_filters.pivot_filter.enabled",
+    "pivot_reversal_pct":       "filters.technical_filters.pivot_filter.reversal_percent",
+    "pivot_order":              "filters.technical_filters.pivot_filter.order",
+
+    # ── DPO filter ───────────────────────────────────────────────────────────
+    "dpo_enabled":              "filters.technical_filters.dpo_filter.enabled",
+    "dpo_length":               "filters.technical_filters.dpo_filter.length",
+    "dpo_smooth":               "filters.technical_filters.dpo_filter.smooth",
+    "dpo_threshold":            "filters.technical_filters.dpo_filter.threshold",
+
+    # ── Trade management — risk ───────────────────────────────────────────────
+    "atr_length":               "trade_management.risk.atr_length",
+    "atr_multiplier":           "trade_management.risk.atr_multiplier_sl",
+    "rr_target":                "trade_management.risk.risk_to_reward_ratio",
+    "risk_percentile":          "trade_management.risk.max_risk_percentile",
+
+    # EXCLUDED (v2+):
+    #   strategy_tf    — data.paths.strategy_ohlcv is a full file path, not a TF field.
+    #                    Requires path construction + file existence validation.
+    #   htf_tf         — same issue; data.htf_period also needs a matching file path.
+    #   session_filter — session_start/end are nested {hour, minute} dicts, not scalars.
+    #   filter_sequence — list of 10 names; 10! orderings, no fitness gradient. v2+.
+    #   ma_type        — choice param with high interaction effects. Dedicated zone only.
 }
 ```
 
 ---
 ## Phase 6 Blocks (organized this session)
 ```
-Block 0:  E2E real data test — IN PROGRESS (pipeline runs, survivors=0 blocking)
-Block 1:  strategy_runner parameter mapping audit
+Block 0:  E2E real data test — corrected, closed, 13 test pass green
+Block 1:  strategy_runner parameter mapping audit (done)
           - Validate ALL parametrable strategy features are covered in _PARAM_KEY_MAP
           - Strategy has 10 technical filters (rsi, bollinger, choppiness, supertrend,
             cci, adx, macd, ma, pivot, dpo) — each with enabled flag + parameters

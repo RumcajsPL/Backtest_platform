@@ -335,42 +335,88 @@ scenarios:
 zones:
   safe:
     enabled: true
-    # Conservative ranges — validated parameter region, lower optimisation risk
+    # Conservative ranges — RSI + Bollinger always on, no secondary filter toggling.
+    # 9 parameters → well-behaved LHS sampling.
     parameters:
-      rsi_period:         {type: int,    min: 10, max: 20, step: 2}
-      rsi_overbought:     {type: int,    min: 65, max: 80, step: 5}
-      rsi_oversold:       {type: int,    min: 20, max: 35, step: 5}
-      atr_length:          {type: int,   min: 10, max: 20, step: 2}
-      atr_multiplier:      {type: float, min: 1.0, max: 2.0, step: 0.2}
-      rr_target:           {type: float, min: 5.0, max: 9.0, step: 1.0}
-      risk_percentile:     {type: float, min: 0.15, max: 0.30, step: 0.05}
-      bollinger_length:    {type: int,   min: 10, max: 20, step: 2}
+      rsi_period:           {type: int,   min: 10, max: 20, step: 2}
+      rsi_overbought:       {type: int,   min: 65, max: 80, step: 5}
+      rsi_oversold:         {type: int,   min: 20, max: 35, step: 5}
+      atr_length:           {type: int,   min: 10, max: 20, step: 2}
+      atr_multiplier:       {type: float, min: 1.0, max: 2.0, step: 0.2}
+      rr_target:            {type: float, min: 5.0, max: 9.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.15, max: 0.30, step: 0.05}
+      bollinger_length:     {type: int,   min: 10, max: 20, step: 2}
       bollinger_multiplier: {type: float, min: 0.3, max: 0.7, step: 0.1}
 
   exploration:
     enabled: true
-    # Wider ranges — higher optimisation risk, more candidates per zone
+    # Wider ranges + secondary filter toggling (ADX, Choppiness, Supertrend).
+    # enabled flags are choice parameters — optimizer can turn filters on/off.
+    # RSI and Bollinger remain always-on (no enabled flag — base YAML default applies).
     parameters:
-      rsi_period:         {type: int,    min: 8,  max: 24, step: 2}
-      rsi_overbought:     {type: int,    min: 60, max: 85, step: 5}
-      rsi_oversold:       {type: int,    min: 15, max: 40, step: 5}
-      atr_length:          {type: int,   min: 7,  max: 28, step: 3}
-      atr_multiplier:      {type: float, min: 0.8, max: 2.5, step: 0.2}
-      rr_target:           {type: float, min: 4.0, max: 10.0, step: 1.0}
-      risk_percentile:     {type: float, min: 0.10, max: 0.40, step: 0.05}
-      bollinger_length:    {type: int,   min: 8,  max: 30, step: 2}
+      rsi_period:           {type: int,   min: 8,  max: 24, step: 2}
+      rsi_overbought:       {type: int,   min: 60, max: 85, step: 5}
+      rsi_oversold:         {type: int,   min: 15, max: 40, step: 5}
+      atr_length:           {type: int,   min: 7,  max: 28, step: 3}
+      atr_multiplier:       {type: float, min: 0.8, max: 2.5, step: 0.2}
+      rr_target:            {type: float, min: 4.0, max: 10.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.10, max: 0.40, step: 0.05}
+      bollinger_length:     {type: int,   min: 8,  max: 30, step: 2}
       bollinger_multiplier: {type: float, min: 0.2, max: 1.0, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 20, max: 50, step: 5}
+      # ADX — togglable secondary filter
+      adx_enabled:          {type: choice, choices: [true, false]}
+      adx_length:           {type: int,   min: 10, max: 20, step: 2}
+      adx_threshold:        {type: float, min: 15.0, max: 30.0, step: 2.5}
+      # Choppiness — togglable secondary filter
+      choppiness_enabled:   {type: choice, choices: [true, false]}
+      choppiness_length:    {type: int,   min: 10, max: 20, step: 2}
+      choppiness_threshold: {type: float, min: 55.0, max: 65.0, step: 2.5}
+      # Supertrend — togglable secondary filter
+      supertrend_enabled:   {type: choice, choices: [true, false]}
+      supertrend_atr_length: {type: int,  min: 7,  max: 14, step: 1}
+      supertrend_factor:    {type: float, min: 2.0, max: 4.0, step: 0.5}
 
   discovery:
     enabled: false
-    # Experimental — wide ranges, disabled by default
+    # Experimental — full filter suite including CCI, MACD, MA, Pivot, DPO.
+    # High compute cost. Enable only for dedicated exploration runs.
+    # All secondary filters are togglable. Wide parameter ranges.
     parameters:
-      rsi_period:         {type: int,    min: 5,  max: 30, step: 1}
-      rsi_overbought:     {type: int,    min: 55, max: 90, step: 5}
-      rsi_oversold:       {type: int,    min: 10, max: 45, step: 5}
-      atr_length:          {type: int,   min: 5,  max: 35, step: 2}
-      atr_multiplier:      {type: float, min: 0.5, max: 3.5, step: 0.25}
-      rr_target:           {type: float, min: 3.0, max: 12.0, step: 1.0}
-      risk_percentile:     {type: float, min: 0.05, max: 0.50, step: 0.05}
-      bollinger_length:    {type: int,   min: 5,  max: 40, step: 2}
+      rsi_period:           {type: int,   min: 5,  max: 30, step: 1}
+      rsi_overbought:       {type: int,   min: 55, max: 90, step: 5}
+      rsi_oversold:         {type: int,   min: 10, max: 45, step: 5}
+      atr_length:           {type: int,   min: 5,  max: 35, step: 2}
+      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
+      rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.05, max: 0.50, step: 0.05}
+      bollinger_length:     {type: int,   min: 5,  max: 40, step: 2}
       bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 15, max: 60, step: 5}
+      adx_enabled:          {type: choice, choices: [true, false]}
+      adx_length:           {type: int,   min: 8,  max: 25, step: 2}
+      adx_threshold:        {type: float, min: 10.0, max: 35.0, step: 2.5}
+      choppiness_enabled:   {type: choice, choices: [true, false]}
+      choppiness_length:    {type: int,   min: 8,  max: 25, step: 2}
+      choppiness_threshold: {type: float, min: 50.0, max: 70.0, step: 2.5}
+      supertrend_enabled:   {type: choice, choices: [true, false]}
+      supertrend_atr_length: {type: int,  min: 5,  max: 20, step: 1}
+      supertrend_factor:    {type: float, min: 1.5, max: 5.0, step: 0.5}
+      cci_enabled:          {type: choice, choices: [true, false]}
+      cci_length:           {type: int,   min: 10, max: 30, step: 5}
+      cci_overbought:       {type: int,   min: 80, max: 120, step: 10}
+      cci_oversold:         {type: int,   min: -120, max: -80, step: 10}
+      macd_enabled:         {type: choice, choices: [true, false]}
+      macd_fast:            {type: int,   min: 8,  max: 16, step: 2}
+      macd_slow:            {type: int,   min: 20, max: 30, step: 2}
+      macd_signal:          {type: int,   min: 6,  max: 12, step: 1}
+      ma_enabled:           {type: choice, choices: [true, false]}
+      ma_length:            {type: int,   min: 15, max: 50, step: 5}
+      ma_slope_length:      {type: int,   min: 5,  max: 20, step: 5}
+      pivot_enabled:        {type: choice, choices: [true, false]}
+      pivot_reversal_pct:   {type: float, min: 0.20, max: 0.60, step: 0.05}
+      pivot_order:          {type: int,   min: 3,  max: 8,  step: 1}
+      dpo_enabled:          {type: choice, choices: [true, false]}
+      dpo_length:           {type: int,   min: 14, max: 30, step: 2}
+      dpo_smooth:           {type: int,   min: 2,  max: 5,  step: 1}
+      dpo_threshold:        {type: float, min: 0.1, max: 0.5, step: 0.1}

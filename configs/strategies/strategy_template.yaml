@@ -85,7 +85,7 @@ filters:
       oversold: 30
 
     dpo_filter:
-      enabled: false
+      enabled: true
       length: 20
       smooth: 3
       threshold: 0.2
@@ -124,7 +124,7 @@ filters:
       signal_length: 9
 
     ma_filter:
-      enabled: false
+      enabled: true
       ma_type: "TEMA"
       length: 25
       slope_length: 10
@@ -151,7 +151,7 @@ trade_management:
     atr_length: 14
     atr_multiplier_sl: 1.4
     tp_mode: "rr_ratio"
-    risk_to_reward_ratio: 7
+    risk_to_reward_ratio: 4
     atr_multiplier_tp: 7.98
     max_risk_percentile: 0.23 #In % => 0.15 stands for 0.15% | 100 stands for 100% => max risk percentile disabled
 

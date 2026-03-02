@@ -6,15 +6,11 @@
 ## How to Start
 1. Open new chat, paste `CONTEXT.md` as first message
 2. Add: *"Phase 6 in progress, follow NEXT_SESSION_PLAN.md"*
-3. **Upload**:
-   - `src/backtesting/fitness.py` — needed to diagnose constraint rejection issue
-   - `src/backtesting/strategy_runner.py` — to verify current state
-   - `tests/backtesting/integration/test_e2e_wbws_real_data.py` — current test
-   - `configs/backtesting/backtest_template.yaml` — current config
+3. **Upload**: to be decided (Blok 0 & 1 completed)
 4. Confirm skill read, CONTEXT.md understood
 
 ---
-## Block 0 — Fix E2E Test (Priority 1)
+## Block 0 — Fix E2E Test (Priority 1) - DONE
 
 ### Problem
 Pipeline runs cleanly (0 evaluation errors, 0 pipeline errors) but `WFO survivors = 0`.
@@ -61,7 +57,7 @@ These numbers should easily clear e2e_test constraints. Something is wrong upstr
 - Full summary shows verdicts written
 
 ---
-## Block 1 — Strategy Parameter Mapping Audit (Priority 2)
+## Block 1 — Strategy Parameter Mapping Audit (Priority 2) - DONE
 
 ### Goal
 Validate that the backtester can exercise ALL parametrable features of WBWSStrategy,
@@ -111,7 +107,7 @@ verification against actual strategy_template.yaml structure.
 - Short audit table documenting: parameter → YAML path → zone inclusion decision
 
 ---
-## Block 2 — Adversarial Suite (if time permits)
+## Block 2 — Adversarial Suite
 
 ### AV-02: Overfit-injection test
 - Create a deliberately curve-fit parameter set (parameters optimized on the exact
