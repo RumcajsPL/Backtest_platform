@@ -655,4 +655,58 @@ Block 4: Robustness                  — NOT STARTED
 Block 5: Threshold calibration       — NOT STARTED
 Block 6: Final documentation         — NOT STARTED
 ```
+## SESSION 9 — 2026-03-02 — Phase 6 Block 2: Adversarial Suite — ALL GREEN
+
+### Goal
+Write and run Block 2 adversarial tests (AV-02 + AV-03). 8/8 green on first run.
+
+### Results
+```
+tests/backtesting/integration/test_adversarial_suite.py — 8 passed in 769.82s (0:12:49)
+
+TestAV02OverfitInjection::test_av02_p01_pipeline_completes          PASSED
+TestAV02OverfitInjection::test_av02_p02_verdict_is_not_auto_go      PASSED
+TestAV02OverfitInjection::test_av02_p03_collapse_evidence_present   PASSED
+TestAV02OverfitInjection::test_av02_p04_writer_no_errors            PASSED
+TestAV03VerdictStability::test_av03_p01_all_runs_complete           PASSED
+TestAV03VerdictStability::test_av03_p02_at_least_one_verdict_per_run PASSED
+TestAV03VerdictStability::test_av03_p03_verdict_stability_above_threshold PASSED
+  → Stable positions: 5/5 (100%). All: no_go across seeds [42, 137, 9871].
+TestAV03VerdictStability::test_av03_p04_writer_no_errors_any_run    PASSED
+```
+
+### AV-02 Confirmed Behaviour
+Overfit candidate (fitness_score=0.97 / WFO composite=0.18 / window_collapse_flag=True /
+oos_gate_triggered=True) → verdict = **no_go**. The two-pillar verdict engine correctly
+rejects a candidate with strong in-sample fitness but cross-window OOS collapse.
+No mitigation needed (no SKIPs, no MISSING verdict rows).
+
+### AV-03 Confirmed Behaviour
+5/5 candidate positions produced identical verdicts (no_go) across seeds 42, 137, 9871.
+Stability = 100%, well above the 80% threshold. Verdict is signal-driven at SMOKE_MC_ITERATIONS=50.
+All-no_go result is consistent with the real strategy's known performance characteristics
+(13% win rate, negative expectancy) under the e2e_test scenario.
+
+### Key Timing Data Point
+- 5 candidates (smoke config): **769s total**
+- Per-candidate average: ~154s
+- This is the baseline scaling reference for Block 3 production budget estimation.
+
+### New Test File
+`tests/backtesting/integration/test_adversarial_suite.py` — 8 tests, all green.
+Uses module-scoped fixtures for both AV-02 and AV-03 (pattern consistent with E2E test).
+
+### Test Count Delta
+| File | Before | After |
+|---|---|---|
+| test_adversarial_suite.py | 0 | 8 ✅ |
+| **Running total** | 184 | **192** |
+
+### Files Changed
+| File | Change |
+|---|---|
+| `tests/backtesting/integration/test_adversarial_suite.py` | Created — 8 tests, all green |
+| `docs/backtesting/CONTEXT.md` | Updated: Block 2 closed, AV results locked, Block 3 next |
+| `docs/backtesting/NEXT_SESSION_PLAN.md` | Block 3 fully specified (8-step plan) |
+| `docs/backtesting/PROJECT_SKILL.md` | AV-02/03 status ✅, test counts updated to 192 |
 <!-- APPEND NEW SESSION BLOCKS BELOW THIS LINE -->

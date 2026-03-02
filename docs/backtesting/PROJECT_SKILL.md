@@ -13,7 +13,7 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-02)**: Phase 6 in progress. Block 2 to start
+**Current status (2026-03-02)**: Phase 6 in progress. Blocks 0–2 done. Block 3 next.
 ---
 ## Pipeline (in order — do not reorder)
 ```
@@ -26,8 +26,8 @@ Stage 5: MC Deep               (full iterations, all perturbation types, WFO sur
 Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline)
 Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
 ```
-Stages 1–4 are currently stubs in orchestrator.py. E2E test seeds store directly and
-sets checkpoint to WFO_COMPLETE to exercise Stages 5–7 on real data.
+Stages 1–4 are currently stubs in orchestrator.py. E2E test and performance test seed
+the store directly and set checkpoint to WFO_COMPLETE to exercise Stages 5–7.
 ---
 ## Verdict Model
 **Two mandatory pillars**: (1) WFO composite score, (2) MC deep ruin probability.
@@ -62,6 +62,7 @@ Full values: `TECHNICAL_SPEC.md` Section 5 and `backtest_template.yaml`.
 # "Candidate" is NOT a contract — use CandidateParameterSet
 # LIVE_APPROVED: never set in code — operator-only manual action
 # strategy_runner.run(): mode_override="core" — NOT mode="core"
+# Timing instrumentation: logger.info only — never print(), never debug flags
 ```
 ---
 ## Module Map
@@ -70,6 +71,7 @@ Full values: `TECHNICAL_SPEC.md` Section 5 and `backtest_template.yaml`.
 orchestrator.py       — sequences stages, checkpoints, resume. Stages 5/6/7 fully wired.
                         Stages 1–4 are stubs pending implementation.
                         close() in finally guaranteed.
+                        BLOCK 3: add per-stage time.perf_counter() timing if not present.
 parameter_space.py    — expands YAML zones. No strategy knowledge.
 sampler.py            — LHS or random selection. No evaluation.
 scenario.py           — loads ScenarioProfile from YAML.
@@ -123,7 +125,7 @@ report_generator.py       — self-contained HTML. Inline charts (matplotlib Agg
 orchestrator.py  — all 8 stages wired. Stages 1–4 are stubs.
 ```
 ---
-## strategy_runner._PARAM_KEY_MAP — Current State (verified 2026-03-02)
+## strategy_runner._PARAM_KEY_MAP — Current State (verified 2026-03-02, frozen V1)
 ```python
 _PARAM_KEY_MAP: Dict[str, str] = {
     # ── RSI filter (always enabled in safe/exploration zones) ────────────────
@@ -186,13 +188,8 @@ _PARAM_KEY_MAP: Dict[str, str] = {
     "rr_target":                "trade_management.risk.risk_to_reward_ratio",
     "risk_percentile":          "trade_management.risk.max_risk_percentile",
 
-    # EXCLUDED (v2+):
-    #   strategy_tf    — data.paths.strategy_ohlcv is a full file path, not a TF field.
-    #                    Requires path construction + file existence validation.
-    #   htf_tf         — same issue; data.htf_period also needs a matching file path.
-    #   session_filter — session_start/end are nested {hour, minute} dicts, not scalars.
-    #   filter_sequence — list of 10 names; 10! orderings, no fitness gradient. v2+.
-    #   ma_type        — choice param with high interaction effects. Dedicated zone only.
+    # EXCLUDED (v2+): strategy_tf, htf_tf, session_filter, filter_sequence, ma_type
+}
 ```
 ---
 ## Critical Patch Targets
@@ -228,25 +225,41 @@ verdicts               — final verdict + evidence + deployment_status per cand
 | test_live_pipeline.py (Phase 5) | 17 | ✅ Green |
 | test_sqlite_queries.py (Phase 5) | 12 | ✅ Green |
 | test_report_yaml.py (Phase 5) | 19 | ✅ Green |
-| test_e2e_wbws_real_data.py (Phase 6) | 14 | ✅ Green |
-| **Total** | **184** | ✅ 184 green |
+| test_e2e_wbws_real_data.py (Phase 6 Block 0) | 13 | ✅ Green |
+| test_adversarial_suite.py (Phase 6 Block 2) | 8 | ✅ Green |
+| test_performance.py (Phase 6 Block 3) | ~6 | ⬜ Not yet written |
+| **Total green** | **192** | ✅ 192 green |
 ---
-## Adversarial Suite
+## Adversarial Suite (all results locked)
 - **AV-01** ✅ PASSED (Phase 4): 0 AUTO_GO on 100 random-signal candidates.
-- **AV-02** ⬜ Phase 6 Block 2: overfit-injection → must fail at WFO.
-- **AV-03** ⬜ Phase 6 Block 2: >80% verdict stability under seed perturbation.
+- **AV-02** ✅ PASSED (Block 2): overfit candidate (fitness=0.97, WFO composite=0.18,
+  window_collapse_flag=True, oos_gate_triggered=True) → verdict = no_go.
+  Two-pillar rejection confirmed. No mitigations needed.
+- **AV-03** ✅ PASSED (Block 2): 5/5 positions stable at 100% across seeds [42, 137, 9871].
+  All positions: no_go. Confirmed signal-driven at SMOKE_MC_ITERATIONS=50.
 - **AV-04** ✅ Implemented: adversarial checklist HTML per borderline candidate.
-## Rest of Phase 6 hardening (yet to organize in blocks -from Block 3)
-- Validate full pipeline completes within 4-hour target on target hardware
-- Profile and resolve bottlenecks if over budget (tuning levers: sample counts, MC iterations, stage transition candidate counts)
-- Validate resume-after-interruption at each of the 8 checkpoints
-- Validate parallel worker isolation: kill one worker mid-run, confirm pipeline continues
-- Calibrate verdict thresholds against first real run results (D-07)
-- Tuning and performance optimization. Execution speed is a key, quicker runs backtesters more runs can pass
-- Final documentation: module reference, YAML configuration guide, scenario authoring guide, output format guide, SQLite query cookbook, paper trading protocol
+
+## Performance Baseline (from Block 2 smoke run)
+```
+5 candidates, MC iterations=50, sensitivity_steps=1 → 769s (12m49s)
+Per-candidate average: ~154s
+Use this to estimate production budget before launching Block 3 test.
+```
+
+## Block 3 — Performance Validation (NEXT)
+Goal: Stages 5–7 with PERF_N_CANDIDATES=20 + production iteration counts ≤ 14400s.
+Pass criteria: PERF-01 to PERF-06 (see NEXT_SESSION_PLAN.md for full spec).
+Files to upload: orchestrator.py + backtest_template.yaml.
+First action: estimate production time from smoke baseline BEFORE running.
+
+## Rest of Phase 6 (Blocks 4–6)
+- Block 4: Resume-after-interruption at each of 8 checkpoints + parallel worker isolation
+- Block 5: Verdict threshold calibration after first real run (D-07)
+- Block 6: Final documentation (module ref, YAML guide, scenario guide, query cookbook,
+           output format guide, paper trading protocol)
 ---
-## Open Issues (Phase 6)
-N/A
+## Open Issues
+None — all known risks have mitigation notes in CONTEXT.md and NEXT_SESSION_PLAN.md.
 ---
 ## Session deliverables (All phases and session)
 - Anticipate the end of session and always provide before Claude chat closes:
@@ -258,7 +271,7 @@ N/A
 ## What NOT To Do
 - Do not modify `src/strategies/` — strategy architecture is frozen
 - Do not use `analytics` mode — `core` mode only
-- Do not add `print()` statements — use structured_logger
+- Do not add `print()` statements — use structured_logger / logger.info
 - Do not implement ML/AI layer, eToro API, regime-aware MC, or global sensitivity random-walk (all v2+)
 - Do not re-open D-01 through D-12
 - Do not set `deployment_status = LIVE_APPROVED` in code
