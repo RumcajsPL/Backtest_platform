@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -36,17 +36,19 @@ logger = logging.getLogger(__name__)
 # This dict is the ONLY place in the backtester that knows strategy config keys.
 # Update here when the strategy YAML schema changes.
 _PARAM_KEY_MAP: Dict[str, str] = {
-    "rsi_period":       "indicators.rsi.period",
-    "rsi_overbought":   "indicators.rsi.overbought",
-    "rsi_oversold":     "indicators.rsi.oversold",
-    "adx_threshold":    "indicators.adx.threshold",
-    "atr_length":       "indicators.atr.length",
-    "atr_multiplier":   "trade_management.risk.atr_multiplier_sl",
-    "rr_target":        "trade_management.risk.rr_ratio",
-    "risk_percentile":  "trade_management.risk.max_risk_percentile",
-    "strategy_tf":      "data.strategy_timeframe",
-    "htf_tf":           "data.htf_timeframe",
-    "session_filter":   "filters.time.session",
+    "rsi_period":            "filters.technical_filters.rsi_filter.length",
+    "rsi_overbought":        "filters.technical_filters.rsi_filter.overbought",
+    "rsi_oversold":          "filters.technical_filters.rsi_filter.oversold",
+    "adx_threshold":         "filters.technical_filters.adx_filter.threshold",
+    "atr_length":            "trade_management.risk.atr_length",
+    "atr_multiplier":        "trade_management.risk.atr_multiplier_sl",
+    "rr_target":             "trade_management.risk.risk_to_reward_ratio",
+    "risk_percentile":       "trade_management.risk.max_risk_percentile",
+    "bollinger_length":      "filters.technical_filters.bollinger_filter.length",
+    "bollinger_multiplier":  "filters.technical_filters.bollinger_filter.filter_multiplier",
+    "strategy_tf":           "data.strategy_timeframe",
+    "htf_tf":                "data.htf_timeframe",
+    "session_filter":        "filters.time.session",
 }
 
 
@@ -84,7 +86,7 @@ def evaluate(
             )
             return CandidateResult(
                 candidate_id=candidate.candidate_id,
-                evaluated_at=datetime.utcnow(),
+                evaluated_at=datetime.now(UTC),
                 metrics=None,
                 trades=None,
                 total_trades=None,
@@ -101,7 +103,7 @@ def evaluate(
 
         # ── Run strategy in core mode ──────────────────────────────────────
         orchestrator = StrategyOrchestrator(strategy_config, cache_manager=cache_manager)
-        result = orchestrator.run(mode="core")
+        result = orchestrator.run(mode_override="core")
 
         metrics = result.metrics
         trades = result.trade_result
@@ -117,7 +119,7 @@ def evaluate(
             )
             return CandidateResult(
                 candidate_id=candidate.candidate_id,
-                evaluated_at=datetime.utcnow(),
+                evaluated_at=datetime.now(UTC),
                 metrics=None,
                 trades=None,
                 total_trades=total_trades,
@@ -126,7 +128,7 @@ def evaluate(
 
         return CandidateResult(
             candidate_id=candidate.candidate_id,
-            evaluated_at=datetime.utcnow(),
+            evaluated_at=datetime.now(UTC),
             metrics=metrics,
             trades=trades,
             total_trades=total_trades,
@@ -141,7 +143,7 @@ def evaluate(
         )
         return CandidateResult(
             candidate_id=candidate.candidate_id,
-            evaluated_at=datetime.utcnow(),
+            evaluated_at=datetime.now(UTC),
             metrics=None,
             trades=None,
             total_trades=None,

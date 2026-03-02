@@ -1,0 +1,376 @@
+# =============================================================================
+# backtest_template.yaml — Backtesting & Optimization Framework
+# Version: 1.0.0
+# Date: 2026-03-02
+#
+# Source of truth: docs/backtesting/TECHNICAL_SPEC.md
+# Schema reference: TECHNICAL_SPEC.md Section 5
+#
+# USAGE:
+#   python -m src.backtesting.orchestrator --config configs/backtesting/backtest_template.yaml
+#
+# IMPORTANT — before first run:
+#   1. Confirm parameter names under `zones` match WBWSStrategy's StrategyConfig fields
+#   2. Calibrate verdict thresholds after Phase 6 first real run (D-07)
+#   3. WFO windows are sized for the 3-month data slice (2025-09-15 → 2025-12-17)
+#      Extend windows when a longer data slice is used
+# =============================================================================
+
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+backtester_version: "1.0.0"       # Must match BACKTESTER_VERSION in orchestrator.py
+scenario: "capital_accumulation"  # Active scenario — must match a key under `scenarios`
+
+
+# ── Strategy base config ──────────────────────────────────────────────────────
+# The strategy YAML that all candidates are derived from.
+# Parameter overrides from the optimizer are merged on top of this file.
+strategy:
+  base_yaml_path: "configs/strategies/strategy_template.yaml"
+
+
+# ── Run settings ──────────────────────────────────────────────────────────────
+run:
+  mode: "full_pipeline"             # "full_pipeline" | "random_only" | "ga_only"
+  output_dir: "outputs/backtesting" # All run artifacts written here (DB, HTML, YAMLs, JSON)
+  temp_dir: "temp/backtesting"      # Temp candidate YAMLs — deleted after each evaluation
+  retain_temp_yamls: false          # Set true only for debugging evaluation failures
+  max_workers: 6                    # ProcessPoolExecutor workers (Windows spawn mode)
+  log_level: "INFO"                 # "DEBUG" | "INFO" | "WARNING"
+
+
+# ── Stage enables ─────────────────────────────────────────────────────────────
+# In full_pipeline mode all stages run. Set individual flags to false for
+# partial pipeline runs during development only.
+stages:
+  random_search: true
+  mc_prefilter: true
+  genetic_algorithm: true
+  walk_forward: true
+  monte_carlo_deep: true
+  sensitivity: true
+  report: true
+
+
+# ── Random Search (Stage 1) ───────────────────────────────────────────────────
+random_search:
+  method: "lhs"                     # "lhs" (Latin Hypercube) | "random"
+  samples_per_zone: 200             # Candidates sampled per enabled zone
+                                    # 2 zones enabled → 400 total in first run
+  min_significant_trades: 30        # Significance guard — fewer trades → rejected
+  seed: 42
+
+
+# ── MC Pre-Filter (Stage 2) ───────────────────────────────────────────────────
+mc_prefilter:
+  input_count: 120                  # Top N from Random Search by fitness score
+  iterations: 300                   # Low — this is the cheap ruin screen only
+  perturbation_profile: "default"   # Must match a key under perturbation_profiles
+  seed: 43
+
+
+# ── Genetic Algorithm (Stage 3) ───────────────────────────────────────────────
+genetic:
+  population_size: 60               # Seeded from top-N MC_PREFILTER_PASS by fitness
+  generations: 30
+  elite_fraction: 0.10              # Top 10% carried forward unchanged each generation
+  mutation_rate: 0.15
+  crossover_rate: 0.70
+  tournament_size: 5
+  stagnation_generations: 10        # Early-stop if no improvement for N generations
+  diversity_penalty_weight: 0.10    # Diversity term weight in GA composite fitness
+  diversity_distance_threshold: 0.15  # Normalised distance below which penalty applies
+  seed: 44
+
+
+# ── Walk-Forward Optimisation (Stage 4) ───────────────────────────────────────
+walk_forward:
+  input_count: 30                   # Top N from combined Random + GA pool by fitness
+  enforce_oos_gate: false           # D-12: off by default; set true to activate IS/OOS gate
+  oos_degradation_threshold: 0.50   # Only used when enforce_oos_gate: true
+
+  # Windows calibrated for the 3-month WBWS data slice (2025-09-15 → 2025-12-17)
+  # Each window covers ~3 weeks (DAX trading days, session hours 08:30–20:30 CET)
+  # Minimum 3 windows required (Stage 0 validation enforces this)
+  # NOTE: Extend windows when using a longer data slice
+  windows:
+    - id: "W01"
+      start: "2025-09-15"
+      end: "2025-10-03"
+    - id: "W02"
+      start: "2025-10-06"
+      end: "2025-10-24"
+    - id: "W03"
+      start: "2025-10-27"
+      end: "2025-11-14"
+    - id: "W04"
+      start: "2025-11-17"
+      end: "2025-12-05"
+    - id: "W05"
+      start: "2025-12-08"
+      end: "2025-12-17"
+
+
+# ── Monte Carlo Deep (Stage 5) ────────────────────────────────────────────────
+monte_carlo:
+  deep:
+    input_count: 10                 # Top N from WFO by consistency score
+    iterations: 3000                # Full simulation — all perturbation types
+    perturbation_profile: "default"
+    ruin_threshold: 0.20            # Equity fraction at which a path is declared ruined
+    seed: 45
+
+
+# ── Parameter Sensitivity (Stage 6) ──────────────────────────────────────────
+sensitivity:
+  input_count: 5                    # Top N from MC Deep (subset of Stage 5 input)
+  max_steps: 2                      # Perturb ±1 and ±2 steps per parameter
+  spike_threshold: 0.15             # |fitness_delta| above this → spike flag → borderline
+
+
+# ── Output (Stage 7) ──────────────────────────────────────────────────────────
+output:
+  shortlist_count: 5                # Candidates in final HTML shortlist
+  formats:
+    html: true
+    json: true
+    parquet: true
+  save_intermediates:
+    equity_curves: false            # Per-candidate MC equity curves (large storage)
+    trade_logs: false               # Per-candidate full trade lists
+    candidate_yamls: false          # Temp eval YAMLs (distinct from trading-ready YAMLs)
+
+
+# ── Perturbation Profiles ─────────────────────────────────────────────────────
+# "default" is referenced by both mc_prefilter and monte_carlo.deep above.
+# Add named profiles here for adversarial testing (AV-01, AV-02).
+perturbation_profiles:
+  default:
+    version: "1.0"
+    spread_noise_bps_range: [0, 3]  # Spread noise in basis points [min, max]
+    slippage_pips_range: [0, 1]     # Slippage in pips [min, max]
+    risk_noise_fraction: 0.05       # ±5% position size noise
+    shuffle_trades: true            # Randomly reorder trade sequence in each path
+    resample_returns: true          # Bootstrap-resample returns across paths
+    execution_delay_bars: 0         # 0 = no simulated execution delay
+
+
+# ── Scenarios ─────────────────────────────────────────────────────────────────
+# Three built-in scenarios. Active scenario is set at the top of this file.
+# To add a custom scenario: append a new key here and update `scenario:` above.
+#
+# Verdict threshold starting values per D-07 — recalibrate after first real run.
+# Fitness weights must sum to 1.0 (validated at construction by ScenarioProfile).
+# WFO temporal weights must sum to 1.0 (same validation).
+
+scenarios:
+  capital_accumulation:
+    description: "Steadily grow account balance with controlled risk"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.25
+      max_drawdown: 0.20          # Penalising weight — higher drawdown reduces fitness
+      win_rate: 0.15
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.45
+      max_drawdown: 0.15          # Hard cap: 15% max drawdown
+      max_losing_streak: 7
+      min_trades_per_week: 3.0
+      min_expectancy: 0.4
+      min_profit_factor: 1.3
+    mc_prefilter_ruin_threshold: 0.25  # Pre-filter fail if ruin_prob > 25%
+    wfo_temporal_weights:
+      median_return: 0.30
+      variance: 0.30              # Inverted — higher variance = lower consistency
+      worst_drawdown: 0.20        # Inverted
+      fraction_positive: 0.20
+    verdict_thresholds:           # D-07 starting values — calibrate after first run
+      go_wfo_floor: 0.65
+      borderline_wfo_floor: 0.40
+      go_mc_ruin_ceiling: 0.05
+      borderline_mc_ruin_ceiling: 0.15
+      sensitivity_spike_threshold: 0.15
+    report_emphasis:
+      - wfo_consistency_score
+      - fraction_positive_windows
+      - actual_trades_per_week
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+  swing_trading:
+    description: "Maximise R:R on high-quality directional signals"
+    fitness_weights:
+      net_pnl: 0.15
+      expectancy: 0.35
+      max_drawdown: 0.15
+      win_rate: 0.10
+      trade_frequency: 0.05
+      profit_factor: 0.20
+    constraints:
+      min_win_rate: 0.38
+      max_drawdown: 0.20
+      max_losing_streak: 10
+      min_trades_per_week: 1.0
+      min_expectancy: 0.8
+      min_profit_factor: 1.5
+    mc_prefilter_ruin_threshold: 0.30
+    wfo_temporal_weights:
+      median_return: 0.40
+      variance: 0.25
+      worst_drawdown: 0.20
+      fraction_positive: 0.15
+    verdict_thresholds:
+      go_wfo_floor: 0.60
+      borderline_wfo_floor: 0.38
+      go_mc_ruin_ceiling: 0.07
+      borderline_mc_ruin_ceiling: 0.18
+      sensitivity_spike_threshold: 0.18
+    report_emphasis:
+      - actual_expectancy
+      - actual_profit_factor
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - median_window_return
+
+  conservative:
+    description: "Preserve capital; avoid ruin above all else"
+    fitness_weights:
+      net_pnl: 0.10
+      expectancy: 0.15
+      max_drawdown: 0.35
+      win_rate: 0.25
+      trade_frequency: 0.05
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.52
+      max_drawdown: 0.10
+      max_losing_streak: 5
+      min_trades_per_week: 2.0
+      min_expectancy: 0.3
+      min_profit_factor: 1.2
+    mc_prefilter_ruin_threshold: 0.15
+    wfo_temporal_weights:
+      median_return: 0.20
+      variance: 0.35
+      worst_drawdown: 0.30
+      fraction_positive: 0.15
+    verdict_thresholds:
+      go_wfo_floor: 0.70
+      borderline_wfo_floor: 0.50
+      go_mc_ruin_ceiling: 0.03
+      borderline_mc_ruin_ceiling: 0.10
+      sensitivity_spike_threshold: 0.12
+    report_emphasis:
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+      - wfo_worst_window_drawdown
+      - actual_win_rate
+      - wfo_consistency_score
+
+  e2e_test:
+    # -----------------------------------------------------------------------
+    # E2E PIPELINE TEST SCENARIO — NOT FOR TRADING USE
+    # Constraints are intentionally loose to allow real strategy evaluations
+    # to pass through all pipeline stages, validating plumbing not strategy
+    # quality. Calibrated against observed strategy output:
+    #   win_rate ~13%, trades ~1076 over 3 months, negative expectancy.
+    # DO NOT use this scenario for production optimization runs.
+    # -----------------------------------------------------------------------
+    description: "Pipeline validation only — loose constraints for E2E testing"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.20
+      max_drawdown: 0.20
+      win_rate: 0.20
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.05          # Well below observed 13.2%
+      max_drawdown: 0.99          # Effectively disabled
+      max_losing_streak: 9999     # Effectively disabled
+      min_trades_per_week: 1.0    # Observed ~83/week — easily cleared
+      min_expectancy: -10.0       # Negative expectancy accepted
+      min_profit_factor: 0.05     # Effectively disabled
+    mc_prefilter_ruin_threshold: 0.99   # Pass everything through pre-filter
+    wfo_temporal_weights:
+      median_return: 0.25
+      variance: 0.25
+      worst_drawdown: 0.25
+      fraction_positive: 0.25
+    verdict_thresholds:
+      go_wfo_floor: 0.01          # Near-zero — almost everything is AUTO_GO
+      borderline_wfo_floor: 0.005
+      go_mc_ruin_ceiling: 0.99
+      borderline_mc_ruin_ceiling: 0.999
+      sensitivity_spike_threshold: 0.99
+    report_emphasis:
+      - actual_win_rate
+      - actual_trades_per_week
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+
+
+# ── Parameter Zones ───────────────────────────────────────────────────────────
+# Structure: zone_name → enabled + parameters dict
+# Each parameter:
+#   type: "int" | "float" | "choice"
+#   int/float: min, max, step (both bounds inclusive, step-aligned grid)
+#   choice: choices list
+#
+# Parameter NAMES must exactly match the keys WBWSStrategy's StrategyConfig
+# accepts as overrides (what strategy_runner.py injects into the temp YAML).
+#
+# CURRENT STATE: Names mirror the TECHNICAL_SPEC.md example zones.
+# ACTION REQUIRED before first run: verify each name maps to a real
+# WBWSStrategy config field (e.g. filters.technical_filters.rsi_filter.length
+# becomes rsi_period only if strategy_runner.py maps it that way).
+#
+# `discovery` zone is disabled by default — wide ranges, high compute cost.
+# Enable only for dedicated exploration runs.
+
+zones:
+  safe:
+    enabled: true
+    # Conservative ranges — validated parameter region, lower optimisation risk
+    parameters:
+      rsi_period:         {type: int,    min: 10, max: 20, step: 2}
+      rsi_overbought:     {type: int,    min: 65, max: 80, step: 5}
+      rsi_oversold:       {type: int,    min: 20, max: 35, step: 5}
+      atr_length:          {type: int,   min: 10, max: 20, step: 2}
+      atr_multiplier:      {type: float, min: 1.0, max: 2.0, step: 0.2}
+      rr_target:           {type: float, min: 5.0, max: 9.0, step: 1.0}
+      risk_percentile:     {type: float, min: 0.15, max: 0.30, step: 0.05}
+      bollinger_length:    {type: int,   min: 10, max: 20, step: 2}
+      bollinger_multiplier: {type: float, min: 0.3, max: 0.7, step: 0.1}
+
+  exploration:
+    enabled: true
+    # Wider ranges — higher optimisation risk, more candidates per zone
+    parameters:
+      rsi_period:         {type: int,    min: 8,  max: 24, step: 2}
+      rsi_overbought:     {type: int,    min: 60, max: 85, step: 5}
+      rsi_oversold:       {type: int,    min: 15, max: 40, step: 5}
+      atr_length:          {type: int,   min: 7,  max: 28, step: 3}
+      atr_multiplier:      {type: float, min: 0.8, max: 2.5, step: 0.2}
+      rr_target:           {type: float, min: 4.0, max: 10.0, step: 1.0}
+      risk_percentile:     {type: float, min: 0.10, max: 0.40, step: 0.05}
+      bollinger_length:    {type: int,   min: 8,  max: 30, step: 2}
+      bollinger_multiplier: {type: float, min: 0.2, max: 1.0, step: 0.1}
+
+  discovery:
+    enabled: false
+    # Experimental — wide ranges, disabled by default
+    parameters:
+      rsi_period:         {type: int,    min: 5,  max: 30, step: 1}
+      rsi_overbought:     {type: int,    min: 55, max: 90, step: 5}
+      rsi_oversold:       {type: int,    min: 10, max: 45, step: 5}
+      atr_length:          {type: int,   min: 5,  max: 35, step: 2}
+      atr_multiplier:      {type: float, min: 0.5, max: 3.5, step: 0.25}
+      rr_target:           {type: float, min: 3.0, max: 12.0, step: 1.0}
+      risk_percentile:     {type: float, min: 0.05, max: 0.50, step: 0.05}
+      bollinger_length:    {type: int,   min: 5,  max: 40, step: 2}
+      bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
