@@ -390,7 +390,7 @@ def e2e_run(tmp_path_factory, request):
             })()
         else:
             fitness_result = evaluate_fitness(candidate_result, scenario)
-
+            
         record = _build_candidate_record(run_id, candidate, candidate_result, fitness_result)
         store.write_candidate(record)
 

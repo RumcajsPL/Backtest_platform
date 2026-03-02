@@ -19,7 +19,7 @@ Never raises — all failures surface as MCResult with error set.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.backtesting.contracts import (
     CandidateParameterSet,
@@ -72,7 +72,7 @@ def run_mc(
             mode=mode,
             perturbation_profile_name=_get_profile_name(config, mode),
             iterations=1,  # Minimum valid value — actual iterations unknown in error path
-            evaluated_at=datetime.utcnow(),
+            evaluated_at=datetime.now(timezone.utc),
             avg_final_equity=None,
             worst_drawdown_across_paths=None,
             ruin_probability=None,
@@ -151,7 +151,7 @@ def _run_mc_internal(
         mode=mode,
         perturbation_profile_name=profile_name,
         iterations=iterations,
-        evaluated_at=datetime.utcnow(),
+        evaluated_at=datetime.now(timezone.utc),
         avg_final_equity=avg_final_equity,
         worst_drawdown_across_paths=worst_drawdown,
         ruin_probability=ruin_probability,

@@ -12,6 +12,18 @@ Constraint order (fail fast — cheapest rejection first):
 4. trades_per_week — float comparison
 5. expectancy     — float comparison
 6. profit_factor  — float comparison
+
+Unit normalisation (MetricsReport → scenario threshold space):
+- win_rate:    MetricsReport stores 0–100 (percent). Scenarios use 0–1 (fraction).
+               Normalised by dividing by 100 before comparison and storage.
+- max_drawdown: MetricsReport stores negative points (e.g. -1490.0).
+               Scenarios use positive fractions (e.g. 0.15 = 15% drawdown).
+               Normalised by abs(points) / MAX_DRAWDOWN_REF_POINTS.
+               MAX_DRAWDOWN_REF_POINTS is a calibration constant representing
+               a "100% drawdown" reference equity in points. Recalibrate in
+               Phase 6 Block 5 after first real run results are available.
+               Default: 10_000 pts (conservative — errs toward passing the
+               constraint rather than rejecting valid candidates).
 """
 from __future__ import annotations
 
@@ -25,17 +37,46 @@ from src.backtesting.contracts import (
     ScenarioProfile,
 )
 
+# ── Drawdown normalisation reference ─────────────────────────────────────────
+# MetricsReport.max_drawdown is in points (negative). Scenario max_drawdown
+# thresholds are fractions in [0, 1]. This constant converts points → fraction.
+# Interpretation: MAX_DRAWDOWN_REF_POINTS represents "100% drawdown" equity.
+# Recalibrate in Phase 6 Block 5. Default is deliberately conservative (large)
+# so that borderline candidates are not incorrectly rejected during validation.
+MAX_DRAWDOWN_REF_POINTS: float = 10_000.0
+
+
+def _normalise_win_rate(win_rate_pct: Optional[float]) -> Optional[float]:
+    """Convert win_rate from 0–100 percent to 0–1 fraction. None-safe."""
+    if win_rate_pct is None:
+        return None
+    return win_rate_pct / 100.0
+
+
+def _normalise_max_drawdown(max_drawdown_points: Optional[float]) -> Optional[float]:
+    """
+    Convert max_drawdown from negative points to positive fraction in [0, 1].
+    MetricsReport.max_drawdown is negative (e.g. -1490.0 pts).
+    Scenario threshold is positive fraction (e.g. 0.15).
+    None-safe.
+    """
+    if max_drawdown_points is None:
+        return None
+    return min(1.0, abs(max_drawdown_points) / MAX_DRAWDOWN_REF_POINTS)
+
+
 # ── Constraint check table ────────────────────────────────────────────────────
-# (field_label, metrics_attr, scenario_threshold_attr, comparator)
+# (field_label, metrics_attr, scenario_threshold_attr, comparator, normaliser)
 # Ordered cheapest/most-rejecting first.
+# normaliser: optional callable applied to the raw metric value before comparison.
 
 _CONSTRAINT_CHECKS: Tuple = (
-    ("max_drawdown",     "max_drawdown",      "max_drawdown",        op.gt),
-    ("win_rate",         "win_rate",          "min_win_rate",        op.lt),
-    ("losing_streak",    "max_losing_streak", "max_losing_streak",   op.gt),
-    ("trades_per_week",  "trades_per_week",   "min_trades_per_week", op.lt),
-    ("expectancy",       "expectancy",        "min_expectancy",      op.lt),
-    ("profit_factor",    "profit_factor",     "min_profit_factor",   op.lt),
+    ("max_drawdown",    "max_drawdown",      "max_drawdown",        op.gt, _normalise_max_drawdown),
+    ("win_rate",        "win_rate",          "min_win_rate",        op.lt, _normalise_win_rate),
+    ("losing_streak",   "losing_streak",     "max_losing_streak",   op.gt, None),
+    ("trades_per_week", "trades_per_week",   "min_trades_per_week", op.lt, None),
+    ("expectancy",      "expectancy_points", "min_expectancy",      op.lt, None),
+    ("profit_factor",   "profit_factor",     "min_profit_factor",   op.lt, None),
 )
 
 
@@ -73,17 +114,20 @@ def evaluate_fitness(
 
     m = result.metrics
 
-    # Extract constraint actuals (always populated for valid results)
-    actual_win_rate         = _get(m, "win_rate")
-    actual_max_drawdown     = _get(m, "max_drawdown")
-    actual_losing_streak    = _get(m, "max_losing_streak")
+    # Extract and normalise constraint actuals.
+    # Stored in normalised units (0–1 fractions) to match scenario thresholds.
+    actual_win_rate         = _normalise_win_rate(_get(m, "win_rate"))
+    actual_max_drawdown     = _normalise_max_drawdown(_get(m, "max_drawdown"))
+    actual_losing_streak    = _get(m, "losing_streak")
     actual_trades_per_week  = _get(m, "trades_per_week")
-    actual_expectancy       = _get(m, "expectancy")
+    actual_expectancy       = _get(m, "expectancy_points")
     actual_profit_factor    = _get(m, "profit_factor")
 
-    # Evaluate constraints in order — return on first failure
-    for label, metric_attr, threshold_attr, comparator in _CONSTRAINT_CHECKS:
-        actual = _get(m, metric_attr)
+    # Evaluate constraints in order — return on first failure.
+    # Normalised values are used for comparison so units match scenario thresholds.
+    for label, metric_attr, threshold_attr, comparator, normaliser in _CONSTRAINT_CHECKS:
+        raw = _get(m, metric_attr)
+        actual = normaliser(raw) if (normaliser is not None) else raw
         threshold = getattr(scenario, threshold_attr)
         if actual is None or comparator(actual, threshold):
             return FitnessResult(
@@ -134,29 +178,36 @@ def _compute_weighted_score(metrics, scenario: ScenarioProfile) -> float:
     Compute the composite fitness score in [0, 1] by normalising each metric
     and combining with scenario weights.
 
-    Normalisation bounds are conservative defaults; the pipeline will calibrate
-    these in Phase 6. For now they are chosen to keep the score in [0, 1] for
-    realistic strategy outputs.
+    All inputs are taken from MetricsReport in their native units and normalised
+    here. win_rate and max_drawdown normalisation matches _CONSTRAINT_CHECKS above.
 
     Drawdown is inverted: lower drawdown → higher contribution.
     """
-    # Normalise each metric to [0, 1]
-    win_rate_norm         = _clamp(_get(metrics, "win_rate") or 0.0, 0.0, 1.0)
-    expectancy_norm       = _clamp((_get(metrics, "expectancy") or 0.0) / 3.0, 0.0, 1.0)
-    profit_factor_norm    = _clamp(((_get(metrics, "profit_factor") or 1.0) - 1.0) / 4.0, 0.0, 1.0)
-    drawdown_norm         = _clamp(1.0 - (_get(metrics, "max_drawdown") or 0.0), 0.0, 1.0)
-    net_pnl_raw           = _get(metrics, "total_pnl_points") or _get(metrics, "net_pnl") or 0.0
-    net_pnl_norm          = _clamp(net_pnl_raw / 5000.0, 0.0, 1.0)   # ~5000 pts as "excellent"
-    freq_raw              = _get(metrics, "trades_per_week") or 0.0
-    trade_freq_norm       = _clamp(freq_raw / 20.0, 0.0, 1.0)         # ~20 trades/week as ceiling
+    # win_rate: normalise from 0–100 → 0–1
+    win_rate_norm = _clamp(_normalise_win_rate(_get(metrics, "win_rate")) or 0.0, 0.0, 1.0)
+
+    # expectancy_points: use expectancy_points (points per trade)
+    expectancy_norm = _clamp((_get(metrics, "expectancy_points") or 0.0) / 3.0, 0.0, 1.0)
+
+    profit_factor_norm = _clamp(((_get(metrics, "profit_factor") or 1.0) - 1.0) / 4.0, 0.0, 1.0)
+
+    # max_drawdown: normalise from points → fraction, then invert
+    drawdown_frac = _normalise_max_drawdown(_get(metrics, "max_drawdown")) or 0.0
+    drawdown_norm = _clamp(1.0 - drawdown_frac, 0.0, 1.0)
+
+    net_pnl_raw = _get(metrics, "total_pnl_points") or 0.0
+    net_pnl_norm = _clamp(net_pnl_raw / 5000.0, 0.0, 1.0)  # ~5000 pts as "excellent"
+
+    freq_raw = _get(metrics, "trades_per_week") or 0.0
+    trade_freq_norm = _clamp(freq_raw / 20.0, 0.0, 1.0)     # ~20 trades/week as ceiling
 
     score = (
-        scenario.weight_net_pnl         * net_pnl_norm
-        + scenario.weight_expectancy    * expectancy_norm
-        + scenario.weight_max_drawdown  * drawdown_norm
-        + scenario.weight_win_rate      * win_rate_norm
+        scenario.weight_net_pnl           * net_pnl_norm
+        + scenario.weight_expectancy      * expectancy_norm
+        + scenario.weight_max_drawdown    * drawdown_norm
+        + scenario.weight_win_rate        * win_rate_norm
         + scenario.weight_trade_frequency * trade_freq_norm
-        + scenario.weight_profit_factor * profit_factor_norm
+        + scenario.weight_profit_factor   * profit_factor_norm
     )
 
     return _clamp(score, 0.0, 1.0)

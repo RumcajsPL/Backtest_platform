@@ -23,6 +23,12 @@ asset:
 
 # -----------------------------------------------------------------------------
 # [GENERIC] DATA
+# Backtester note:
+# Ohlcv Data available: strategy,ltf,htf : from 2023-01-01 to 2026-02-28
+# Ohlcv Data available: artf : from 2021-01-01 to 2026-02-28
+# TimeFrame available (ohlcv): 
+#               strategy tf: 1min (safe); 5min(explore); 10min, 15min (discovery)
+#               htf : 1min, 5min, 10min, 15min, 30min, 1h, 4h, 1D   
 # -----------------------------------------------------------------------------
 data:
   paths:
@@ -30,10 +36,11 @@ data:
     htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet"
     ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet"
     artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
+    
 
   date_range:
     start: "2025-09-15 08:30:00"   # Format: YYYY-MM-DD HH:MM:SS 
-    end:   "2025-12-17 20:30:00"
+    end:   "2025-12-17 20:30:00"  # Format: YYYY-MM-DD HH:MM:SS 
 
   timezone: "CET"
 
