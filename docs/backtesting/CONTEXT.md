@@ -100,17 +100,47 @@ ProcessPoolExecutor workers: always patch the worker function itself (`_evaluate
 - **OS**: Windows 10. `pathlib.Path`, `ProcessPoolExecutor` spawn mode, `utf-8` explicit.
 - **Python**: 3.13.12
 - **Timezone**: OHLCV/signals in CET/CEST. Pipeline timestamps in UTC.
-- **Path resolution**: Always use `src/utils/paths.py`.
+- **Path resolution**: Always use `src/utils/paths.py`:
+    # ---------------------------------------------------------
+    # TEST SUBDIRECTORIES 
+    # ---------------------------------------------------------
+    TESTS_DIR = PROJECT_ROOT / "tests"
+    BACKTESTING_TESTS_DIR = TESTS_DIR / "backtesting"
+    BCST_BENCH_TEST_DIR = BACKTESTING_TESTS_DIR / "benchmarks"
+    BCST_INEGR_TEST_DIR = BACKTESTING_TESTS_DIR / "integration"
+    BCST_UNIT_TEST_DIR = BACKTESTING_TESTS_DIR / "unit"
+- **Full pipline of bactester (all completed)**:
+    src\backtesting\evaluation\sensitivity.py
+    src\backtesting\evaluation\verdict.py
+    src\backtesting\ga\crossover.py
+    src\backtesting\ga\diversity.py
+    src\backtesting\ga\ga_engine.py
+    src\backtesting\ga\mutation.py
+    src\backtesting\ga\population.py
+    src\backtesting\ga\selection.py
+    src\backtesting\monte_carlo\equity_simulator.py
+    src\backtesting\monte_carlo\mc_engine.py
+    src\backtesting\monte_carlo\mc_metrics.py
+    src\backtesting\monte_carlo\perturbation.py
+    src\backtesting\wfo\consistency_scorer.py
+    src\backtesting\wfo\wfo_engine.py
+    src\backtesting\wfo\wfo_evaluator.py
+    src\backtesting\wfo\window_generator.py
+    src\backtesting\candidate_store.py
+    src\backtesting\contracts.py
+    src\backtesting\fitness.py
+    src\backtesting\orchestrator.py
+    src\backtesting\parameter_space.py
+    src\backtesting\ranker.py
+    src\backtesting\report_generator.py
+    src\backtesting\sampler.py
+    src\backtesting\scenario.py
+    src\backtesting\strategy_runner.py
+    src\backtesting\yaml_generator.py
 - **DB**: `data/db/backtest.db` (production). Tests use `tmp_path` fixtures.
-
 ---
-## Phase 6 Starting Point (when Phase 5 complete)
+## Phase 6 Starting Point (Phase 5 to Phase 6)
 **Tasks**:
 1. E2E test on real wbws data 
-2. AV-02 overfit-injection test
-3. AV-03 meta-config stability (>80% verdict stability under seed perturbation)
-4. Performance validation: ≤4hr full pipeline on real WBWS data
-5. Resume validation: all 8 checkpoints
-6. `datetime.utcnow()` cleanup (can be done end of Phase 5)
-7. Verdict threshold calibration (D-07) against first real run
+2. Organize Phase 6 on logical blocks
 <!-- END CONTEXT.md -->

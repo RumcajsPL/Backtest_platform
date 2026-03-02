@@ -46,7 +46,7 @@ CORE_STRATEGIES_ = STRATEGIES_DIR / "core"
 FILTERS_DIR = STRATEGIES_DIR / "filters"
 RUNNERS_DIR = SCRIPTS_DIR / "runners"
 # ---------------------------------------------------------
-# BACKTESTER SUBDIRECTORIES => under construction
+# BACKTESTER SUBDIRECTORIES
 # ---------------------------------------------------------
 BACKTEST_DIR = SRC_DIR / "backtesting"
 # ---------------------------------------------------------

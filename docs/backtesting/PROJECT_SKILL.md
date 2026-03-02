@@ -114,12 +114,8 @@ report_generator.py       — self-contained HTML (no Jinja2). Inline charts (ma
 
 ### Phase 5 — Wiring ✓
 ```
-orchestrator.py  — all 8 stages wired. Stages 1–4 remain stubs (implementations in Phase 3 modules).
-                   Stage 5 calls mc_engine.run_mc() (LOCAL import — patch at mc_engine, not orchestrator).
-                   Stage 6 calls evaluate_sensitivity().
-                   Stage 7 calls compute_verdict(), generate_trading_yaml(), generate_report().
+orchestrator.py  — all 8 stages wired. 
 ```
-
 ---
 ## Critical Patch Targets
 ```python
