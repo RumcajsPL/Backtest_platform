@@ -11,6 +11,7 @@ a single failing sensitivity worker does not abort the remaining candidates.
 Upload both before writing any code:
 1. `src/backtesting/orchestrator.py` — to verify resume logic per checkpoint
 2. `src/backtesting/evaluation/sensitivity.py` — to verify worker error handling
+3. Confirm skill read, CONTEXT.md understood
 ---
 ## Block 4 Test File
 `tests/backtesting/integration/test_robustness.py`
