@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,24 +228,51 @@ def _execute_pipeline(
         logger.info("Stage 4 (Full WFO) already complete — skipping")
 
     # ── Stage 5: MC Deep ──────────────────────────────────────────────────────
+    _t5 = time.perf_counter()
     if store.get_checkpoint(run_id).value < Checkpoint.MONTE_CARLO_COMPLETE.value:
         _run_stage_5_mc_deep(config, store, run_metadata)
         store.set_checkpoint(run_id, Checkpoint.MONTE_CARLO_COMPLETE)
     else:
         logger.info("Stage 5 (MC Deep) already complete — skipping")
+    _elapsed_5 = time.perf_counter() - _t5
 
     # ── Stage 6: Parameter Sensitivity ───────────────────────────────────────
+    _t6 = time.perf_counter()
     if store.get_checkpoint(run_id).value < Checkpoint.SENSITIVITY_COMPLETE.value:
         _run_stage_6_sensitivity(config, store, run_metadata)
         store.set_checkpoint(run_id, Checkpoint.SENSITIVITY_COMPLETE)
     else:
         logger.info("Stage 6 (Sensitivity) already complete — skipping")
+    _elapsed_6 = time.perf_counter() - _t6
 
     # ── Stage 7: Report & Output ──────────────────────────────────────────────
+    _t7 = time.perf_counter()
     if store.get_checkpoint(run_id).value < Checkpoint.COMPLETE.value:
         _run_stage_7_report(config, store, run_metadata)
     else:
         logger.info("Stage 7 (Report) already complete — skipping")
+    _elapsed_7 = time.perf_counter() - _t7
+
+    _elapsed_total = _elapsed_5 + _elapsed_6 + _elapsed_7
+    _budget = 14400.0
+    logger.info(
+        "TIMING stage_5_mc_deep elapsed=%.1fs", _elapsed_5,
+    )
+    logger.info(
+        "TIMING stage_6_sensitivity elapsed=%.1fs", _elapsed_6,
+    )
+    logger.info(
+        "TIMING stage_7_report elapsed=%.1fs", _elapsed_7,
+    )
+    logger.info(
+        "TIMING SUMMARY  stage5=%.1fs  stage6=%.1fs  stage7=%.1fs  total=%.1fs  budget=%.0fs  %s",
+        _elapsed_5,
+        _elapsed_6,
+        _elapsed_7,
+        _elapsed_total,
+        _budget,
+        "PASS" if _elapsed_total <= _budget else "OVER BUDGET",
+    )
 
 
 # ── Stage 0: Validation & Init ────────────────────────────────────────────────

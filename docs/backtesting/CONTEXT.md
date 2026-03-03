@@ -2,21 +2,19 @@
 ## Identity
 **Project**: Backtesting & Optimization Framework for WBWSStrategy
 **Operator**: Single quantitative retail trader, Windows 10, eToro broker
-**Stage**: Phase 6 in progress — Block 2 fully green. Start Block 3.
-**Last session ended**: 2026-03-02 — Block 2 adversarial suite 8/8 green. Start Block 3.
-
+**Stage**: Phase 6 in progress — Block 3 complete (7/7 green). Start Block 4.
+**Last session ended**: 2026-03-03 — Block 3 closed. All 7 PERF criteria green. 199 total tests.
 ---
 ## Non-Negotiables (Architecture — never override)
 1. **Contracts are the interface** — frozen dataclasses between every module. No raw dicts.
 2. **Single responsibility** — one module, one concern. Orchestrator orchestrates only.
 3. **Fail fast** — invalid config raises at construction. No silent fallbacks.
 4. **Single source of truth** — all config from `backtest_template.yaml`. No module self-loads config.
-5. **Immutability** — `frozen=True` on all contracts. `object.__setattr__` in `__post_init__` only.
-6. **Windows compatibility** — `pathlib.Path`, `ProcessPoolExecutor` spawn mode, explicit `utf-8` encoding.
-7. **Code hygiene** — no print statements, no debug flags, no MagicMocks in production, no commented-out blocks.
-8. **CacheManager** — reuse existing from strategy architecture. `clear_all_caches()` between runs.
+5. **Immutability** — `frozen=True` on all contracts.
+6. **Windows compatibility** — `pathlib.Path`, `ProcessPoolExecutor` spawn mode, explicit `utf-8`.
+7. **Code hygiene** — no print statements, no debug flags, no MagicMocks in production.
+8. **CacheManager** — reuse existing. `clear_all_caches()` between runs.
 9. **Immutable run artifacts** — config hash, all seeds, perturbation profile name stored immutably.
-
 ---
 ## Project Reference Files
 | File | Purpose | Location |
@@ -27,10 +25,8 @@
 | `SQLITE_SCHEMA.md` | 9 tables, CREATE TABLE, indexes, 10 query examples | `docs/backtesting/` |
 | `CHANGE_LOG.md` | All changes + session handoff blocks | `docs/backtesting/` |
 | `PROJECT_REPORT.md` | Phase progress tracker | `docs/backtesting/` |
-| `ARCHITECTURE.md` | Backtester architecture — module map, data flow, Mermaid diagrams | `docs/backtesting/` |
-| `ARCHITECTURE.md` | Strategy architecture (frozen — do not modify) | `docs/strategies/architecture/` |
+| `ARCHITECTURE.md` | Backtester architecture | `docs/backtesting/` |
 | `backtest_template.yaml` | Backtester config template | `configs/backtesting/` |
-
 ---
 ## Pipeline (DO NOT REORDER)
 ```
@@ -43,21 +39,8 @@ Stage 5: MC Deep               (full iterations, all perturbation types, WFO sur
 Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline)
 Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
 ```
-
----
-## Modules Implemented
-```
-Phase 2 (core):        candidate_store.py, parameter_space.py, sampler.py, scenario.py,
-                       strategy_runner.py, fitness.py, ranker.py, orchestrator.py ✓
-Phase 3 (engines):     wfo/{window_generator,wfo_evaluator,wfo_engine,consistency_scorer}.py
-                       ga/{population,selection,crossover,mutation,diversity,ga_engine}.py
-                       monte_carlo/{perturbation,equity_simulator,mc_metrics,mc_engine}.py ✓
-Phase 4 (evaluation):  evaluation/{sensitivity,verdict}.py, yaml_generator.py,
-                       report_generator.py ✓
-Phase 5 (wiring):      orchestrator.py Stages 5/6/7 fully wired ✓
-Phase 6 (hardening):   In progress — Block 2 code written, awaiting first run
-```
-
+Stages 1–4 are stubs. E2E and performance tests seed the store directly and set
+checkpoint to WFO_COMPLETE to exercise Stages 5–7.
 ---
 ## Test Counts
 | Scope | Tests | Status |
@@ -68,114 +51,121 @@ Phase 6 (hardening):   In progress — Block 2 code written, awaiting first run
 | test_report_yaml.py | 19 | ✅ All green |
 | test_e2e_wbws_real_data.py | 13 | ✅ All green |
 | test_adversarial_suite.py | 8 | ✅ All green |
-| **Total green** | **192** | ✅ |
-
+| test_performance.py | 7 | ✅ All green |
+| **Total green** | **199** | ✅ |
 ---
 ## Current Phase Status
 ```
-PHASE:        Phase 6 — Hardening & Delivery
-COMPLETED:    Block 0, Block 1, Block 2
-NEXT TASK:    Block 3 — Performance validation (4-hour budget)
+PHASE:      Phase 6 — Hardening & Delivery
+COMPLETED:  Blocks 0, 1, 2, 3
+NEXT:       Block 4 — Robustness
 ```
 ---
-## Key Files Modified This Session
+## Block 3 Performance Baseline (LOCKED — 2026-03-03)
+```
+Hardware:  Windows 10, 6 workers
+Config:    mc.deep.iterations=3000, mc.deep.input_count=10,
+           sens.input_count=5, sens.max_steps=2, max_workers=6
+Run 1:  Total=457.2s  Stage5=2.5s   Stage6=446.3s  Stage7=8.3s
+Run 2:  Total=337.2s  Stage5=0.3s   Stage6=332.6s  Stage7=4.4s
+        (Run 2 faster — warm pool / OS cache effects)
+Key findings:
+  Stage 5 MC Deep:     0.3–2.5s for 10 cands × 3000 iters
+                       Fully vectorised (np.cumsum). NEVER the bottleneck.
+  Stage 6 Sensitivity: 333–446s for 5 cands, 66–89s/cand avg
+                       Structural bottleneck. Windows ProcessPoolExecutor
+                       spawn mode pays per-worker startup cost per candidate.
+                       5 cands × 9 params × 4 perturbations ≈ 180 evals.
+  Stage 7 Report:      4–8s. Fine.
+Budget consumed:  337–457s of 14,400s (2.3–3.2%) ✅
+PERF-06 ceiling:  99% — Stage 6 dominance is expected (not a bug).
+```
+---
+## Performance Optimisation Opportunities
+Not blocking delivery. Planned for Block 7.
+```
+OPT-01  [HIGH IMPACT]  Pool reuse across candidates in Stage 6
+        ProcessPoolExecutor created fresh per candidate in evaluate_sensitivity().
+        On Windows spawn, each creation pays startup overhead × 6 workers.
+        Fix: create pool ONCE for the Stage 6 run, pass it in.
+        Expected: 40–60% reduction in Stage 6 elapsed.
+        File: src/backtesting/evaluation/sensitivity.py
+OPT-02  [MEDIUM IMPACT]  Batch perturbations per worker task
+        Each perturbation is a separate dispatch → fine-grained IPC on Windows.
+        Fix: one worker task processes ALL perturbations for one candidate.
+        File: src/backtesting/evaluation/sensitivity.py
+OPT-03  [LOW IMPACT, trivial]  sensitivity.input_count: 3 (down from 5)
+        Each candidate costs 66–89s. Top 3 by WFO score are all that matters.
+        Saves ~130–180s. YAML-only change. Risk: none.
+OPT-04  [NEGLIGIBLE]  Stage 5 at current scale
+        <3s for 3000 iters on 10 candidates. No action until input_count > 50.
+```
+---
+## Key Files Modified This Session (2026-03-03)
 | File | Change |
 |---|---|
-| `tests/backtesting/integration/test_adversarial_suite.py` | Created + all 8 green |
-
+| `src/backtesting/orchestrator.py` | Added `time.perf_counter()` per-stage timing |
+| `tests/backtesting/integration/test_performance.py` | Created — 7/7 PERF criteria green |
+| `src/backtesting/contracts.py` | Restored after accidental corruption (content unchanged) |
 ---
-## AV-02 / AV-03 Results (Block 2 — locked, do not reopen)
+## Adversarial Suite Results (Block 2 — locked)
 ```
-AV-02: overfit candidate (fitness=0.97, WFO composite=0.18, window_collapse_flag=True)
-       → verdict = no_go. Two-pillar rejection confirmed. Pipeline correctly rejects
-         high in-sample fitness when WFO shows cross-window collapse.
-AV-03: same 5 candidates under seeds [42, 137, 9871]
-       → 5/5 positions stable (100%). All positions: no_go across all seeds.
-       → Verdict is signal-driven, not noise-driven (confirmed at SMOKE_MC_ITERATIONS=50).
+AV-02: overfit candidate → no_go. Two-pillar rejection confirmed.
+AV-03: 5/5 positions stable (100%) across seeds [42, 137, 9871]. All: no_go.
 ```
-
 ---
-## Open Decisions — ALL RESOLVED (D-01 through D-12)
-See TECHNICAL_SPEC.md Section 1.
----
-## Key Patching Rule (critical for tests)
-`run_mc` is imported **locally** inside `_run_stage_5_mc_deep()` — it is NOT on the orchestrator module namespace.
-- ✅ CORRECT: `patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)`
-- ❌ WRONG: `patch("src.backtesting.orchestrator.run_mc", ...)` → AttributeError
-General rule: patch where the name is looked up at call time, not where it is defined.
-ProcessPoolExecutor workers: always patch the worker function itself (`_evaluate_perturbation`), never functions it calls internally.
-
----
-## Platform / Environment Notes
-- **OS**: Windows 10. `pathlib.Path`, `ProcessPoolExecutor` spawn mode, `utf-8` explicit.
-- **Python**: 3.13.12
-- **Timezone**: OHLCV/signals in CET/CEST. Pipeline timestamps in UTC.
-- **Path resolution**: Always use `src/utils/paths.py`
-- **DB**: `data/db/backtest.db` (production). Tests use `tmp_path` fixtures.
-- **strategy_runner.run() kwarg**: `mode_override="core"` — NOT `mode="core"`
----
-## strategy_runner._PARAM_KEY_MAP — Current State frozen state of V1
+## Critical Patch Targets
 ```python
-# ── Parameter name mapping: backtester name → StrategyConfig YAML key ─────────
-_PARAM_KEY_MAP: Dict[str, str] = {
-    "rsi_period":               "filters.technical_filters.rsi_filter.length",
-    "rsi_overbought":           "filters.technical_filters.rsi_filter.overbought",
-    "rsi_oversold":             "filters.technical_filters.rsi_filter.oversold",
-    "bollinger_length":         "filters.technical_filters.bollinger_filter.length",
-    "bollinger_multiplier":     "filters.technical_filters.bollinger_filter.filter_multiplier",
-    "bollinger_width_ma":       "filters.technical_filters.bollinger_filter.width_ma_length",
-    "adx_enabled":              "filters.technical_filters.adx_filter.enabled",
-    "adx_length":               "filters.technical_filters.adx_filter.adx_length",
-    "adx_threshold":            "filters.technical_filters.adx_filter.threshold",
-    "choppiness_enabled":       "filters.technical_filters.choppiness_filter.enabled",
-    "choppiness_length":        "filters.technical_filters.choppiness_filter.length",
-    "choppiness_threshold":     "filters.technical_filters.choppiness_filter.threshold",
-    "supertrend_enabled":       "filters.technical_filters.supertrend_filter.enabled",
-    "supertrend_atr_length":    "filters.technical_filters.supertrend_filter.atr_length",
-    "supertrend_factor":        "filters.technical_filters.supertrend_filter.factor",
-    "cci_enabled":              "filters.technical_filters.cci_filter.enabled",
-    "cci_length":               "filters.technical_filters.cci_filter.length",
-    "cci_overbought":           "filters.technical_filters.cci_filter.overbought",
-    "cci_oversold":             "filters.technical_filters.cci_filter.oversold",
-    "macd_enabled":             "filters.technical_filters.macd_filter.enabled",
-    "macd_fast":                "filters.technical_filters.macd_filter.fast_length",
-    "macd_slow":                "filters.technical_filters.macd_filter.slow_length",
-    "macd_signal":              "filters.technical_filters.macd_filter.signal_length",
-    "ma_enabled":               "filters.technical_filters.ma_filter.enabled",
-    "ma_length":                "filters.technical_filters.ma_filter.length",
-    "ma_slope_length":          "filters.technical_filters.ma_filter.slope_length",
-    "pivot_enabled":            "filters.technical_filters.pivot_filter.enabled",
-    "pivot_reversal_pct":       "filters.technical_filters.pivot_filter.reversal_percent",
-    "pivot_order":              "filters.technical_filters.pivot_filter.order",
-    "dpo_enabled":              "filters.technical_filters.dpo_filter.enabled",
-    "dpo_length":               "filters.technical_filters.dpo_filter.length",
-    "dpo_smooth":               "filters.technical_filters.dpo_filter.smooth",
-    "dpo_threshold":            "filters.technical_filters.dpo_filter.threshold",
-    "atr_length":               "trade_management.risk.atr_length",
-    "atr_multiplier":           "trade_management.risk.atr_multiplier_sl",
-    "rr_target":                "trade_management.risk.risk_to_reward_ratio",
-    "risk_percentile":          "trade_management.risk.max_risk_percentile",
-    # EXCLUDED (v2+): strategy_tf, htf_tf, session_filter, filter_sequence, ma_type
-}
+# run_mc is a LOCAL import inside _run_stage_5_mc_deep — NOT on orchestrator namespace
+patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)          # CORRECT
+patch("src.backtesting.orchestrator.run_mc", ...)                   # WRONG — AttributeError
+patch("src.backtesting.evaluation.sensitivity._evaluate_perturbation", ...)  # worker patch
 ```
+---
+## Test Import Convention (CRITICAL)
+Violating this causes circular import errors at pytest collection time.
+```python
+# 1. sys.path FIRST
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+# 2. path anchor
+from src.utils.paths import PROJECT_ROOT
+# 3. contracts BEFORE candidate_store
+from src.backtesting.contracts import (...)
+# 4. candidate_store AFTER contracts
+from src.backtesting.candidate_store import CandidateStore
+```
+---
+## CandidateStore Write API (critical for test fixtures)
+```python
+store.write_candidate(record: CandidateRecord)   # ONE arg — fitness embedded in record
+store.query_mc_results(run_id, "deep")           # mode is str not MCMode enum
+# There is NO write_fitness_result() method
+```
+---
+## Platform Notes
+- Windows 10, Python 3.13.12
+- `pathlib.Path`, spawn mode, `utf-8` explicit everywhere
+- `strategy_runner.run()` kwarg: `mode_override="core"` NOT `mode="core"`
+- Timestamps: pipeline UTC, OHLCV/signals CET/CEST
+- DB: `data/db/backtest.db` (prod), `tmp_path` in tests
 ---
 ## Phase 6 Blocks
 ```
-Block 0 (done):  E2E real data test — 13/13 green
-Block 1 (done):  strategy_runner parameter mapping audit — _PARAM_KEY_MAP frozen V1
-Block 2 (done):  Adversarial suite — 8/8 green
-          AV-02: overfit → no_go ✅  (769s / 12m49s on operator hardware)
-          AV-03: 5/5 positions stable at 100% across seeds [42, 137, 9871] ✅
-Block 3 (NEXT):  Performance validation — 4-hour wall-clock budget
-          See NEXT_SESSION_PLAN.md for full task breakdown and timing instrumentation plan
-Block 4:  Robustness
-          - Resume-after-interruption at each of 8 checkpoints
-          - Parallel worker isolation (kill one worker mid-run, confirm pipeline continues)
-Block 5:  Threshold calibration (D-07)
-          - Recalibrate verdict thresholds after first real run results
+Block 0 (done):  E2E real data — 13/13 ✅
+Block 1 (done):  _PARAM_KEY_MAP audit — frozen V1 ✅
+Block 2 (done):  Adversarial suite — 8/8 ✅
+Block 3 (done):  Performance — 7/7 ✅
+                 Baseline locked. OPT-01–04 identified. Block 7 planned.
+Block 4 (NEXT):  Robustness
+                 Resume-after-interruption at each of 8 Checkpoint values.
+                 Worker isolation: one crash → remaining complete;
+                 failing candidate gets sensitivity_profile_complete=False.
+                 File: tests/backtesting/integration/test_robustness.py
+                 Upload before starting: orchestrator.py + evaluation/sensitivity.py
+Block 5:  Threshold calibration after first real Stages 1–4 run
 Block 6:  Final documentation
-          - Module reference, YAML config guide, scenario authoring guide,
-            output format guide, SQLite query cookbook, paper trading protocol
+Block 7:  OPT-01 + OPT-02 — expected 40–60% Stage 6 reduction
 ```
-
 <!-- END CONTEXT.md -->
