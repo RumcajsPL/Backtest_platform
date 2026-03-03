@@ -13,7 +13,7 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-03)**: Phase 6 in progress. Blocks 0–3 done. Block 4 next.
+**Current status (2026-03-03)**: Phase 6 in progress. Blocks 0–5 done. Block 6 next.
 ---
 ## Pipeline (in order — do not reorder)
 ```
@@ -185,19 +185,18 @@ OPT-04 [NEGLIGIBLE]: Stage 5 needs no action until input_count > 50
 | test_e2e_wbws_real_data.py (Phase 6 Block 0) | 13 | ✅ Green |
 | test_adversarial_suite.py (Phase 6 Block 2) | 8 | ✅ Green |
 | test_performance.py (Phase 6 Block 3) | 7 | ✅ Green |
-| **Total green** | **199** | ✅ |
----
-## Adversarial Suite (results locked)
-- **AV-02**: overfit candidate → no_go. Two-pillar rejection confirmed.
-- **AV-03**: 5/5 positions stable (100%) across seeds [42, 137, 9871]. All: no_go.
----
-## Phase 6 Remaining Blocks
-```
-Block 4 (NEXT): Robustness — resume-after-interruption + worker isolation
-                ~11 ROB criteria, test_robustness.py
-                Upload: orchestrator.py + evaluation/sensitivity.py
-Block 5: Threshold calibration after first real Stages 1–4 run
-Block 6: Final documentation
+| test_threshold_calibration.py (Phase 6 Block 5) | 22 | ✅ Green |
+| **Total green** | **233** | ✅ |
+
+Block 4 key finding (add to skill notes):
+  Windows spawn mock constraint — patch at orchestrator level for Stage 6 tests.
+  See ARCHITECTURE.md §9 and CONTEXT.md "Windows Spawn Mode" section.
+Block 5 key finding (add to skill notes):
+  Verdict boundary operators are >= and <= (inclusive) at go thresholds.
+  Confirmed from verdict.py source and 22-test calibration suite.
+  Verdict grid locked — see CONTEXT.md "Verdict Grid" section.
+|---
+Block 6 (NEXT): Final documentation
 Block 7: OPT-01 + OPT-02 implementation
 ```
 ---

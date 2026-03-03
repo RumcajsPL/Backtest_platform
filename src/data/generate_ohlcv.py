@@ -1,160 +1,234 @@
 import os
+import lzma
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta, timezone
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import pytz
+import yaml
+import argparse
+import gc
+from concurrent.futures import ProcessPoolExecutor
 
-# --- CONFIGURATION ---
+from numba import njit
 
-BASE_URL = "https://datafeed.dukascopy.com/datafeed"
+# --- CONSTANTS ---
+INSTRUMENT_DIVISOR_MAP = {
+    "DEUIDXEUR": 1000.0, "XAUUSD": 1000.0, "USA500IDXUSD": 1000.0,
+    "USA30IDXUSD": 1000.0, "USATECHIDXUSD": 1000.0, "FRAIDXEUR": 1000.0,
+    "GBRIDXGBP": 1000.0, "EURJPY": 1000.0, "USDJPY": 1000.0,
+    "AUDUSD": 100000.0, "EURUSD": 100000.0, "GBPUSD": 100000.0,
+    "USDCAD": 100000.0, "USDCHF": 100000.0,
+}
+DEFAULT_PRICE_DIVISOR = 100000.0
+RAW_DATA_ROOT = "data/raw/dukascopy_bi5"
+INDEX_NAME = "timestamp"
+DEFAULT_CONFIG_PATH = "configs/data_aggregator.yaml"
+OUTPUT_TIMEZONE = "Europe/Berlin"
 
-# --- UTILITY: SESSION WITH RETRIES & POOLING ---
-
-def get_requests_session(pool_size=50):
-    """
-    Sets up a requests session with retries and increased connection pool size.
-    This ensures that 50 threads can actually have 50 open connections.
-    """
-    session = requests.Session()
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+# ------------------------------------------------------------
+# Optimized Numba Decoder (Returns Arrays, not Lists)
+# ------------------------------------------------------------
+@njit(cache=True)
+def decode_bi5_numba(raw_data, base_ts, divisor):
+    n_bytes = len(raw_data)
+    n_ticks = n_bytes // 20
     
-    # OPTIMIZATION: Match pool_connections and pool_maxsize to your max_workers
-    adapter = HTTPAdapter(
-        max_retries=retry,
-        pool_connections=pool_size,
-        pool_maxsize=pool_size
-    )
+    # Pre-allocate arrays
+    out_ts = np.empty(n_ticks, dtype=np.float64)
+    out_price = np.empty(n_ticks, dtype=np.float64)
+    out_vol = np.empty(n_ticks, dtype=np.float64)
     
-    session.mount("https://", adapter)
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-    return session
-
-# --- PATH AND URL FUNCTIONS ---
-
-def get_bi5_url(instrument: str, dt: datetime) -> str:
-    """Generates the URL for a specific hourly .bi5 file."""
-    month_index = dt.month - 1
-    url_path = f"{instrument.upper()}/{dt.year}/{month_index:02d}/{dt.day:02d}/{dt.hour:02d}h_ticks.bi5"
-    return f"{BASE_URL}/{url_path}"
-
-def get_local_filepath(instrument: str, dt: datetime, base_dir: str) -> str:
-    """Generates the local file path for a specific hourly .bi5 file."""
-    dir_path = os.path.join(
-        base_dir, 
-        instrument.upper(), 
-        str(dt.year), 
-        f"{dt.month:02d}", 
-        f"{dt.day:02d}"
-    )
-    filename = f"{dt.hour:02d}h_ticks.bi5"
-    return os.path.join(dir_path, filename)
-
-# --- CORE DOWNLOAD FUNCTION ---
-
-def download_single_hour(instrument: str, dt: datetime, base_dir: str, session: requests.Session) -> str:
-    """Downloads a single hourly .bi5 file and saves it locally."""
-    # We construct the path again here to ensure safety, though it's slightly redundant
-    local_path = get_local_filepath(instrument, dt, base_dir)
-    url = get_bi5_url(instrument, dt)
+    count = 0
+    i = 0
+    div = float(divisor)
     
-    # Redundant check removed here because we do it in the main loop now for speed
+    while i + 20 <= n_bytes:
+        # Decode big-endian integers manually
+        b0, b1, b2, b3 = raw_data[i], raw_data[i+1], raw_data[i+2], raw_data[i+3]
+        ms = (np.uint32(b0) << 24) | (np.uint32(b1) << 16) | (np.uint32(b2) << 8) | np.uint32(b3)
 
-    try:
-        response = session.get(url, timeout=30)
-        response.raise_for_status() 
+        b8, b9, b10, b11 = raw_data[i+8], raw_data[i+9], raw_data[i+10], raw_data[i+11]
+        bid_int = np.int32((np.uint32(b8) << 24) | (np.uint32(b9) << 16) | (np.uint32(b10) << 8) | np.uint32(b11))
 
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        
-        with open(local_path, 'wb') as f:
-            f.write(response.content)
-            
-        return f"✅ Downloaded: {local_path}"
-        
-    except requests.exceptions.HTTPError as e:
-        if response.status_code == 404:
-             return f"⚠️ Missing (404): {url}"
-        return f"❌ HTTP Error {response.status_code}: {e}"
-    except requests.exceptions.RequestException as e:
-        return f"❌ Network Error: {e}"
-    except Exception as e:
-        return f"❌ Unexpected Error: {e}"
+        # Ask/Bid Volumes
+        v0, v1, v2, v3 = raw_data[i+12], raw_data[i+13], raw_data[i+14], raw_data[i+15]
+        ask_vol = np.int32((np.uint32(v0) << 24) | (np.uint32(v1) << 16) | (np.uint32(v2) << 8) | np.uint32(v3))
 
-def download_and_save_bi5_files(instrument: str, start_date: datetime, end_date: datetime, output_dir: str, max_workers: int = 50):
-    """
-    Concurrently downloads raw Dukascopy .bi5 tick files for a date range.
-    """
-    print(f"--- Starting Concurrent Download for {instrument} ---")
-    print(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        w0, w1, w2, w3 = raw_data[i+16], raw_data[i+17], raw_data[i+18], raw_data[i+19]
+        bid_vol = np.int32((np.uint32(w0) << 24) | (np.uint32(w1) << 16) | (np.uint32(w2) << 8) | np.uint32(w3))
 
-    # Ensure start/end dates are hour-aligned UTC
-    start = start_date.replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    end = end_date.replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-    
-    # Generate list of all hourly datetimes to download
-    hours_to_download = []
-    current_dt = start
-    while current_dt <= end:
-        hours_to_download.append(current_dt)
-        current_dt += timedelta(hours=1)
-        
-    total_files = len(hours_to_download)
-    print(f"Total range covers {total_files} hours.")
-
-    # Pass max_workers to session to size the pool correctly
-    session = get_requests_session(pool_size=max_workers)
-    
-    futures_list = {}
-    skipped_count = 0
-    
-    print("Checking existing files (this might take a moment)...")
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for hour in hours_to_download:
-            # OPTIMIZATION: Check existence BEFORE submitting the thread.
-            # This saves massive overhead on "resume" runs.
-            local_path = get_local_filepath(instrument, hour, output_dir)
-            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                skipped_count += 1
-                continue
-            
-            # Only submit if file doesn't exist
-            future = executor.submit(download_single_hour, instrument, hour, output_dir, session)
-            futures_list[future] = hour
-
-        if skipped_count > 0:
-            print(f"Skipped {skipped_count} existing files.")
-        
-        files_to_download = len(futures_list)
-        print(f"Starting download for {files_to_download} new files with {max_workers} workers...")
-        
-        count = 0
-        for future in as_completed(futures_list):
+        if bid_int > 0:
+            out_ts[count] = base_ts + (ms / 1000.0)
+            out_price[count] = bid_int / div
+            out_vol[count] = abs(ask_vol) + abs(bid_vol)
             count += 1
-            try:
-                result = future.result()
-                # Progress update
-                if count % 100 == 0 or count == files_to_download:
-                    print(f"Progress: {count}/{files_to_download} ({count/files_to_download:.1%})", end='\r')
-            except Exception as exc:
-                print(f"\nError processing hour: {futures_list[future].strftime('%Y-%m-%d %H:%M')}, Exception: {exc}")
+            
+        i += 20
 
-    print("\n--- Download Complete ---")
+    return out_ts[:count], out_price[:count], out_vol[:count]
+
+# ------------------------------------------------------------
+# Worker Function (Runs in parallel process)
+# ------------------------------------------------------------
+def process_single_day(args):
+    """
+    Processes all 24 hourly files for a single day.
+    Returns a resampled DataFrame for that day (or None).
+    """
+    instrument, day_dt, raw_root, divisor, target_tz_str, timeframe_pd = args
     
+    # Storage for the whole day (list of arrays is faster than appending to DF)
+    day_ts, day_prices, day_vols = [], [], []
+    
+    # Iterate 0-23 hours
+    for hour in range(24):
+        hour_dt = day_dt + timedelta(hours=hour)
+        
+        # Path construction
+        file_path = os.path.join(
+            raw_root, instrument, str(hour_dt.year),
+            f"{hour_dt.month:02d}", f"{hour_dt.day:02d}",
+            f"{hour_dt.hour:02d}h_ticks.bi5"
+        )
+        
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            try:
+                with open(file_path, "rb") as f:
+                    compressed = f.read()
+                raw = lzma.decompress(compressed)
+                raw_arr = np.frombuffer(raw, dtype=np.uint8)
+                
+                # Numba decode
+                ts, p, v = decode_bi5_numba(raw_arr, hour_dt.timestamp(), divisor)
+                
+                if len(ts) > 0:
+                    day_ts.append(ts)
+                    day_prices.append(p)
+                    day_vols.append(v)
+            except Exception:
+                pass # Skip corrupt files silently or log if needed
+
+    # If no data for the whole day, return None
+    if not day_ts:
+        return None
+
+    # Fast Concatenation
+    full_ts = np.concatenate(day_ts)
+    full_price = np.concatenate(day_prices)
+    full_vol = np.concatenate(day_vols)
+
+    # Vectorized Timezone Conversion
+    # 1. Convert unix float to UTC Timestamp
+    dt_index = pd.to_datetime(full_ts, unit="s", utc=True)
+    # 2. Convert to Target TZ
+    dt_index = dt_index.tz_convert(target_tz_str).tz_localize(None)
+
+    # Create DataFrame ONCE per day
+    df = pd.DataFrame({
+        "price": full_price,
+        "volume": full_vol
+    }, index=dt_index)
+    
+    df.index.name = INDEX_NAME
+    df.sort_index(inplace=True)
+
+    # Resample ONCE per day
+    ohlc = df["price"].resample(timeframe_pd).ohlc()
+    vol = df["volume"].resample(timeframe_pd).sum()
+    ohlc["volume"] = vol
+    ohlc.dropna(inplace=True)
+
+    return ohlc
+
+# ------------------------------------------------------------
+# Main Controller
+# ------------------------------------------------------------
+def generate_ohlcv_multicore(config_path: str):
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    data_cfg = config["data_source"]
+    out_cfg = config["output"]
+
+    instrument = data_cfg["instrument"].upper()
+    timeframe = data_cfg["timeframe"]
+    target_tz_str = OUTPUT_TIMEZONE
+    
+    divisor = INSTRUMENT_DIVISOR_MAP.get(instrument, DEFAULT_PRICE_DIVISOR)
+    
+    start_date = datetime.strptime(str(data_cfg["start_date"]), "%Y-%m-%d")
+    end_date = datetime.strptime(str(data_cfg["end_date"]), "%Y-%m-%d")
+
+    # Resolve pandas timeframe
+    tf_pd = timeframe.lower() if timeframe.lower().endswith("h") else timeframe
+
+    print(f"--- Parallel OHLCV Gen: {instrument} ({timeframe}) ---")
+    
+    # Generate list of Days
+    days_to_process = []
+    curr = start_date
+    while curr <= end_date:
+        days_to_process.append(curr)
+        curr += timedelta(days=1)
+
+    total_days = len(days_to_process)
+    print(f"Processing {total_days} days on {os.cpu_count()} cores...")
+
+    # Prepare arguments for workers
+    # (instrument, day_dt, raw_root, divisor, target_tz_str, timeframe_pd)
+    worker_args = [
+        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str, tf_pd) 
+        for d in days_to_process
+    ]
+
+    results = []
+    
+    # Execute in Parallel
+    with ProcessPoolExecutor() as executor:
+        # Use simple counter for progress
+        for i, res in enumerate(executor.map(process_single_day, worker_args)):
+            if res is not None and not res.empty:
+                results.append(res)
+            
+            # Progress print
+            if i % 5 == 0 or i == total_days - 1:
+                print(f"Progress: {100*(i+1)/total_days:.1f}%", end="\r")
+
+    print("\nMerging data...")
+    if not results:
+        print(f"❌ No data found for {instrument}.")
+        return
+
+    final_ohlc = pd.concat(results)
+    final_ohlc.sort_index(inplace=True)
+
+    # Save
+    out_dir = out_cfg["directory"]
+    os.makedirs(out_dir, exist_ok=True)
+    
+    start_str = start_date.strftime("%Y%m%d")
+    end_str = end_date.strftime("%Y%m%d")
+    fmt = out_cfg["format"].lower()
+    
+    filename = f"{instrument}_{timeframe}_{start_str}_{end_str}.{fmt}"
+    path = os.path.join(out_dir, filename)
+
+    if fmt == "csv":
+        final_ohlc.to_csv(path, float_format="%.6f")
+    elif fmt == "parquet":
+        final_ohlc.to_parquet(path)
+
+    print(f"--- DONE ---")
+    print(f"Total Bars: {len(final_ohlc):,}")
+    print(f"Saved: {path}")
+
 if __name__ == "__main__":
-    # --- Set up PARAMETERS ---
-    INSTRUMENT = "deuidxeur"
-    START_DATE = datetime(2021, 1, 1, 0, 0, tzinfo=timezone.utc)
-    END_DATE = datetime(2023, 12, 31, 23, 0, tzinfo=timezone.utc) 
-    OUTPUT_DIRECTORY = "data/raw/dukascopy_bi5" 
-    MAX_CONCURRENT_WORKERS = 50 # Increased default
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_file", nargs="?", default=DEFAULT_CONFIG_PATH)
+    args = parser.parse_args()
     
-    download_and_save_bi5_files(
-        instrument=INSTRUMENT,
-        start_date=START_DATE,
-        end_date=END_DATE,
-        output_dir=OUTPUT_DIRECTORY,
-        max_workers=MAX_CONCURRENT_WORKERS
-    )
+    # Windows/MacOS safety for multiprocessing
+    try:
+        generate_ohlcv_multicore(args.config_file)
+    except Exception as e:
+        print(f"Error: {e}")

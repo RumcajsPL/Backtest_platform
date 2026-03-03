@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Backtesting & Optimization Framework
-**Version**: 1.0.0 — Initial (Phase 6)
-**Date**: 2026-03-02
+**Version**: 1.1.0
+**Date**: 2026-03-03
 **Audience**: Any developer working on any aspect of the backtester pipeline
 **Status**: Living document — update when module interfaces, contracts, or data flow change
 
@@ -54,22 +54,29 @@ configs/backtesting/
 └── backtest_template.yaml   ← Single source of truth for all pipeline config
 
 docs/backtesting/
+├── architecture/
+│   └── ARCHITECTURE.md      ← This file
 ├── TECHNICAL_SPEC.md        ← Contracts, decisions, module signatures, YAML schema
 ├── BACKTESTER_PLAN.md       ← Master requirements
 ├── FUNCTIONAL_SPEC.md       ← Plain-language 8-stage spec
 ├── SQLITE_SCHEMA.md         ← 9 tables, indexes, 10 query examples
-├── CHANGE_LOG.md            ← All changes + session handoff blocks
-└── ARCHITECTURE.md          ← This file
+└── CHANGE_LOG.md            ← All changes + session handoff blocks
 
 tests/backtesting/
-├── unit/                    ← Per-module unit tests (123 tests, all green)
+├── unit/                    ← Per-module unit tests (123 tests, Phase 2–4, all green)
 ├── integration/
-│   ├── test_live_pipeline.py    ← 17 tests (Phase 5)
-│   ├── test_sqlite_queries.py   ← 12 tests (Phase 5)
-│   ├── test_report_yaml.py      ← 19 tests (Phase 5)
-│   └── test_e2e_wbws_real_data.py ← E2E real data test (Phase 6)
+│   ├── test_live_pipeline.py        ← 17 tests (Phase 5) — full pipeline smoke tests
+│   ├── test_sqlite_queries.py       ← 12 tests (Phase 5) — store read/write contract
+│   ├── test_report_yaml.py          ← 19 tests (Phase 5) — HTML + YAML output
+│   ├── test_e2e_wbws_real_data.py   ← 13 tests (Phase 6 Block 0) — real OHLCV data
+│   ├── test_adversarial_suite.py    ← 8 tests  (Phase 6 Block 2) — overfit/adversarial
+│   ├── test_performance.py          ← 7 tests  (Phase 6 Block 3) — timing baselines
+│   ├── test_robustness.py           ← 12 tests (Phase 6 Block 4) — resume + isolation
+│   └── test_threshold_calibration.py← 22 tests (Phase 6 Block 5) — verdict grid
 └── benchmarks/
     └── bench_d01_strategy_speed.py ← Strategy call speed benchmark
+
+Total: 233 tests — all green as of 2026-03-03
 ```
 
 ---
@@ -99,6 +106,8 @@ flowchart TD
 ```
 
 **Checkpoint system**: After each stage completes, `set_checkpoint()` is called. On resume, the orchestrator skips all stages whose checkpoint is already recorded. This makes every stage boundary a safe interruption point.
+
+**Verified (Block 4)**: All 8 `Checkpoint` values tested — pipeline resumes correctly from any interruption point and always reaches `COMPLETE`.
 
 ---
 
@@ -211,7 +220,7 @@ flowchart LR
 
     subgraph STAGE7["Stage 7 — Report"]
         RNK7["store.rank_by_wfo(run_id, top_n=5)"]
-        VRD["verdict\n.compute_verdict(cid, wfo_score, mc_result, sensitivity, scenario, ...)\n→ VerdictResult"]
+        VRD["verdict\n.compute_verdict(cid, wfo_score, mc_result, sensitivity, scenario, oos_gate_enabled)\n→ VerdictResult"]
         WVRD["write_verdict(VerdictResult, run_id)"]
         YGEN["yaml_generator\n.generate_trading_yaml(candidate, verdict, run_meta, base_yaml, out)\n→ Path"]
         RPT["report_generator\n.generate_report(store, run_id, scenario, output_dir, formats)\n→ HTML + JSON + Parquet"]
@@ -243,8 +252,8 @@ All contracts are **frozen dataclasses** in `src/backtesting/contracts.py`. Neve
 | `FitnessResult` | `fitness` | `orchestrator` (→ store) | `fitness_score`, `passed_constraints`, `actual_*` |
 | `WFOWindow` | `window_generator` | `wfo_evaluator`, `ga_engine` | `window_id`, `start_date`, `end_date` |
 | `WFOWindowResult` | `wfo_evaluator` | `consistency_scorer`, store | `fitness_score`, `net_pnl`, `win_rate`, `oos_delta` |
-| `WFOConsistencyScore` | `consistency_scorer` | store, `verdict`, ranker | `composite_score`, `fraction_positive_windows` |
-| `MCResult` | `mc_engine` | store, `verdict` | `ruin_probability`, `avg_final_equity`, `p5_final_equity` |
+| `WFOConsistencyScore` | `consistency_scorer` | store, `verdict`, ranker | `composite_score`, `fraction_positive_windows`, `oos_gate_triggered`, `window_collapse_flag` |
+| `MCResult` | `mc_engine` | store, `verdict` | `ruin_probability`, `avg_final_equity`, `p5_final_equity`, `error` |
 | `SensitivityProfile` | `sensitivity` | store, `verdict` | `spike_detected`, `spike_parameters`, `profile_complete` |
 | `VerdictResult` | `verdict` | store, `yaml_generator`, `report_generator` | `verdict` (enum), `deployment_status`, `evidence_summary` |
 | `ScenarioProfile` | `scenario` | `fitness`, `wfo_evaluator`, `consistency_scorer`, `verdict`, `report_generator` | fitness weights, constraint thresholds, verdict floors |
@@ -252,6 +261,10 @@ All contracts are **frozen dataclasses** in `src/backtesting/contracts.py`. Neve
 | `CandidateRecord` | `orchestrator` | store | All stage data flattened to primitives for SQLite |
 
 **Constructor rule**: Always use `CandidateParameterSet.create(zone_name, parameters, generation)` — never construct directly.
+
+**`MCResult.error` field**: `run_mc` never raises. Failures are communicated via `MCResult(error="...", ruin_probability=None)`. `verdict.py` maps `ruin_probability=None` → `mc_pillar_no_go=True` → `NO_GO`. The orchestrator logs a warning and continues — the result is still written to the store.
+
+**`SensitivityProfile.profile_complete`**: `False` when >50% of perturbation evaluations failed for that candidate. Sets `sensitivity_profile_incomplete` modifier flag in verdict → demotes `AUTO_GO` to `BORDERLINE`. Pipeline never aborts — the profile is always written.
 
 ---
 
@@ -300,56 +313,133 @@ flowchart LR
 
 ---
 
-## 8. Verdict Logic
+## 8. Verdict Logic — Two-Pillar Model
+
+Confirmed by source review (verdict.py) and full calibration test suite (Block 5, 2026-03-03).
 
 ```mermaid
 flowchart TD
     WFO_SCORE["WFO composite_score"]
     MC_RUIN["MC deep ruin_probability"]
 
-    WFO_SCORE --> P1{"≥ go_wfo_floor\n(0.65)?"}
-    MC_RUIN --> P2{"≤ go_mc_ruin_ceiling\n(0.05)?"}
+    WFO_SCORE --> P1{"≥ go_wfo_floor?\n(inclusive)"}
+    WFO_SCORE --> P3{"≥ borderline_wfo_floor?\n(inclusive)"}
+    MC_RUIN --> MCNULL{"is None?"}
 
-    P1 -- Yes --> P2
-    P1 -- No --> P3{"≥ borderline_wfo_floor\n(0.40)?"}
-    P3 -- No --> NOGO["NO_GO"]
-    P3 -- Yes --> BORDER["BORDERLINE"]
+    MCNULL -- Yes --> NOGO["NO_GO\n(None = mc_pillar_no_go=True)"]
+    MCNULL -- No --> P2{"≤ go_mc_ruin_ceiling?\n(inclusive)"}
+    P2 -- No --> P4{"≤ borderline_mc_ruin_ceiling?\n(inclusive — strict > triggers no_go)"}
 
-    P2 -- Yes --> MODS{"Any modifier\nflag set?"}
-    P2 -- No --> P4{"≤ borderline_mc_ruin_ceiling\n(0.15)?"}
+    P1 -- No --> P3
+    P3 -- No --> NOGO
+    P3 -- Yes --> BORDER["BORDERLINE\n(WFO borderline zone)"]
+
+    P1 -- Yes --> BOTH{"Both pillars\npass go?"}
+    P2 -- Yes --> BOTH
     P4 -- No --> NOGO
     P4 -- Yes --> BORDER
+
+    BOTH -- No --> BORDER
+    BOTH -- Yes --> MODS{"Any modifier\nflag set?"}
 
     MODS -- No --> AUTOGO["AUTO_GO"]
     MODS -- Yes --> BORDER
 
-    subgraph FLAGS["Modifier flags (any → BORDERLINE)"]
-        F1["sensitivity_spike\n(|fitness_delta| > 0.15)"]
-        F2["oos_gate_triggered\n(enforce_oos_gate=true AND IS/OOS > 50%)"]
-        F3["window_collapse_flag\n(severe window performance collapse)"]
-        F4["sensitivity_profile_incomplete\n(>50% perturbations failed)"]
+    subgraph FLAGS["Modifier flags — any one → BORDERLINE\n(cannot override NO_GO)"]
+        F1["sensitivity_spike\nsensitivity.spike_detected=True"]
+        F2["oos_gate_triggered\noos_gate_enabled=True\nAND wfo_score.oos_gate_triggered=True\n(both conditions required)"]
+        F3["window_collapse_flag\nwfo_score.window_collapse_flag=True"]
+        F4["sensitivity_profile_incomplete\nnot sensitivity.profile_complete"]
     end
 
     FLAGS --> MODS
 
-    AUTOGO --> DEP["deployment_status:\nPAPER_TRADE_REQUIRED\n(LIVE_APPROVED = operator only)"]
+    AUTOGO --> DEP["deployment_status:\nPAPER_TRADE_REQUIRED\n(LIVE_APPROVED = operator-only action)"]
     BORDER --> DEP
+    NOGO --> DEP2["deployment_status:\nPAPER_TRADE_REQUIRED\n(field still required by contract)"]
 ```
 
-**Threshold values** are per-scenario, defined in `backtest_template.yaml → scenarios → verdict_thresholds`. The values shown above are `capital_accumulation` defaults (D-07 starting values — recalibrate after first real run).
+### Exact operators (from verdict.py source — do not approximate)
+
+```python
+wfo_pillar_go    = wfo_composite >= wfo_go_floor        # >= INCLUSIVE
+wfo_pillar_no_go = wfo_composite < wfo_borderline_floor  # < strictly less than
+
+mc_pillar_go    = ruin_prob <= mc_go_ceiling             # <= INCLUSIVE
+mc_pillar_no_go = ruin_prob > mc_borderline_ceiling      # > strictly greater than
+
+# ruin_prob is None → mc_pillar_no_go = True → NO_GO
+# (verdict.py logs WARNING for None — expected, not a bug)
+
+# oos_gate_triggered = oos_gate_enabled AND wfo_score.oos_gate_triggered
+# Either condition alone does NOT trigger the flag.
+
+# Verdict
+if wfo_pillar_no_go OR mc_pillar_no_go:          → NO_GO
+elif wfo_pillar_go AND mc_pillar_go AND no flags: → AUTO_GO
+else:                                             → BORDERLINE
+```
+
+### Confirmed verdict grid (Block 5, e2e_test scenario thresholds)
+
+```
+Thresholds: go_wfo>=0.55  borderline_wfo>=0.40  go_mc<=0.10  borderline_mc<=0.25
+
+WFO region              MC<go    MC=go    MC=bdr   MC>bdr   MC=None
+────────────────────────────────────────────────────────────────────
+wfo > 0.55 (ABOVE_GO)   AUTO_GO  AUTO_GO  BORDER   NO_GO    NO_GO
+wfo = 0.55 (AT_GO)      AUTO_GO  AUTO_GO  BORDER   NO_GO    NO_GO
+wfo = 0.47 (BORDERLINE) BORDER   BORDER   BORDER   NO_GO    NO_GO
+wfo = 0.30 (NO_GO)      NO_GO    NO_GO    NO_GO    NO_GO    NO_GO
+
+Modifier demotion (AUTO_GO base → one flag active):
+  spike=True           → BORDERLINE
+  collapse=True        → BORDERLINE
+  incomplete=True      → BORDERLINE
+  oos_gate (both)=True → BORDERLINE
+  All flags on NO_GO   → NO_GO  (flags cannot override)
+```
+
+**Note**: Threshold values above are the `e2e_test` scenario used in calibration tests.
+Production `capital_accumulation` scenario thresholds are defined in `backtest_template.yaml`
+and should be recalibrated after the first real run.
 
 ---
 
-## 9. ProcessPoolExecutor — Patch Rules
+## 9. ProcessPoolExecutor — Spawn Mode & Patch Rules
 
-Two modules use `ProcessPoolExecutor` (Windows spawn mode):
+Two modules use `ProcessPoolExecutor`. On Windows, the **spawn** start method is used (no fork). This has critical implications for both production behaviour and test design.
 
-| Module | Worker function | Correct patch target |
+### Production rules
+
+| Module | Worker function | Called by |
 |---|---|---|
-| `evaluation/sensitivity.py` | `_evaluate_perturbation` | `src.backtesting.evaluation.sensitivity._evaluate_perturbation` |
-| `monte_carlo/mc_engine.py` | `run_mc` (local import) | `src.backtesting.monte_carlo.mc_engine.run_mc` |
+| `evaluation/sensitivity.py` | `_evaluate_perturbation` | `evaluate_sensitivity()` via `ProcessPoolExecutor` |
+| `monte_carlo/mc_engine.py` | `run_mc` (local import) | `mc_engine` pool (if parallelised) |
 
-**Rule**: Patch where the name is **looked up at call time**, not where it is defined. Patching `orchestrator.run_mc` → `AttributeError`. Patching functions called *inside* a worker → patch does not cross spawn boundary.
+Workers must be picklable. Any object submitted to a worker must survive `pickle.dumps()`. `CandidateParameterSet`, `ScenarioProfile`, and all contracts are frozen dataclasses — they pickle correctly.
+
+### Test patch rules — Windows spawn constraint
+
+> **CRITICAL**: `unittest.mock.patch` decorates objects in the **parent process**. On Windows spawn mode, child processes are fresh Python interpreters — they import modules from scratch and do **not** inherit parent-process patches. Patching a worker function from a test has no effect on the child; the original function runs instead.
+
+```
+unittest.mock patches DO NOT cross the ProcessPoolExecutor spawn boundary on Windows.
+```
+
+| What you want to test | Wrong patch target | Correct patch target |
+|---|---|---|
+| Stage 6 loop behaviour (continue on failure, write profile, advance checkpoint) | `src.backtesting.evaluation.sensitivity._evaluate_perturbation` — patch silently ignored in worker | `src.backtesting.orchestrator.evaluate_sensitivity` — patches the whole Stage 6 call above the worker boundary |
+| Stage 5 MC result injection | `src.backtesting.orchestrator.run_mc` — AttributeError (not on orchestrator namespace) | `src.backtesting.monte_carlo.mc_engine.run_mc` — local import patched at module level |
+
+**Confirmed by Block 4 ROB-09:**
+```
+ERROR: Can't pickle <class 'unittest.mock.MagicMock'>:
+       it's not the same object as unittest.mock.MagicMock
+```
+Root cause: the mock object itself failed pickling when `ProcessPoolExecutor` attempted to send it to a worker process.
+
+**Rule**: Patch at or above the orchestrator boundary for Stage 6 tests. The unit under test is the stage's orchestration behaviour — loop, write, checkpoint advance — not the worker's internal execution. Worker-level tests belong in the sensitivity module's own unit tests where `ProcessPoolExecutor` is not involved.
 
 ---
 
@@ -372,7 +462,41 @@ Full DDL and 10 annotated query examples: `docs/backtesting/SQLITE_SCHEMA.md`
 
 ---
 
-## 11. Adding a New Stage or Module
+## 11. Performance Baseline — Stage Timing (Block 3, 2026-03-03, LOCKED)
+
+```
+Hardware:  Windows 10, 6 workers
+Config:    mc.deep.iterations=3000, mc.deep.input_count=10,
+           sens.input_count=5, sens.max_steps=2, max_workers=6
+
+Run 1:  Total=457.2s  Stage5=2.5s   Stage6=446.3s  Stage7=8.3s
+Run 2:  Total=337.2s  Stage5=0.3s   Stage6=332.6s  Stage7=4.4s
+        (Run 2 faster — warm pool / OS cache effects on Windows)
+
+Key findings:
+  Stage 5 MC Deep:     0.3–2.5s for 10 candidates × 3000 iters
+                       Fully vectorised (np.cumsum). Never the bottleneck.
+  Stage 6 Sensitivity: 333–446s for 5 candidates (~66–89s/candidate)
+                       Structural bottleneck. Windows ProcessPoolExecutor
+                       spawn mode pays per-worker startup cost per candidate.
+  Stage 7 Report:      4–8s. Acceptable.
+
+Budget: 337–457s of 14,400s daily budget (2.3–3.2%). Well within tolerance.
+```
+
+### Planned optimisations (Block 7)
+
+| ID | Description | Expected gain | File |
+|---|---|---|---|
+| OPT-01 | Reuse `ProcessPoolExecutor` pool across candidates in Stage 6 | 40–60% Stage 6 reduction | `evaluation/sensitivity.py` |
+| OPT-02 | Batch all perturbations for one candidate into a single worker task | Additional 15–25% | `evaluation/sensitivity.py` |
+| OPT-03 | Reduce `sensitivity.input_count` from 5 to 3 (YAML only) | ~130–180s saved | `backtest_template.yaml` |
+| OPT-04 | Stage 5 — no action needed until `input_count > 50` | Negligible | — |
+| OPT-05 | Clean up `evaluate_sensitivity` `max_workers` param after OPT-01 | Code quality | `evaluation/sensitivity.py` |
+
+---
+
+## 12. Adding a New Stage or Module
 
 1. Define a new contract in `contracts.py` (frozen dataclass, `__post_init__` validation)
 2. Add a write method to `CandidateStore` (enqueued, non-blocking)
@@ -385,13 +509,15 @@ Full DDL and 10 annotated query examples: `docs/backtesting/SQLITE_SCHEMA.md`
 
 ---
 
-## 12. Key Non-Negotiables (never override)
+## 13. Key Non-Negotiables (never override)
 
 | Rule | Why |
 |---|---|
 | Frozen dataclasses between every module | No mutable shared state; fail fast on bad data |
 | `CandidateParameterSet.create()` always | `candidate_id` is a SHA-256 hash of params — must be consistent |
 | `strategy_runner` never raises | Worker crashes must not kill the orchestrator |
+| `run_mc` never raises | MC failures surface via `MCResult(error=..., ruin_probability=None)` |
+| `evaluate_sensitivity` never raises | Profile written even when all perturbations fail |
 | `datetime.now(UTC)` not `datetime.utcnow()` | `utcnow()` deprecated in Python 3.12+ |
 | `pathlib.Path` + `src/utils/paths.py` | Windows compatibility |
 | `ProcessPoolExecutor` spawn mode | Windows: no fork |
@@ -401,8 +527,9 @@ Full DDL and 10 annotated query examples: `docs/backtesting/SQLITE_SCHEMA.md`
 
 ---
 
-## 13. Changelog
+## 14. Changelog
 
 | Version | Date | Change |
 |---|---|---|
 | 1.0.0 | 2026-03-02 | Initial — Phase 6. Full module map, data flow, contract table, verdict logic, store threading model. |
+| 1.1.0 | 2026-03-03 | Block 4: Added Windows spawn mock patching constraint (Section 9). Corrected patch targets table. Added confirmed verdict grid from Block 5 calibration. Fixed verdict diagram to match exact operators from verdict.py source (>= and <= inclusive at go thresholds; ruin=None → NO_GO path). Added performance baseline and OPT table (Section 11). Updated test file list in Section 2 (233 total). Added MCResult.error and SensitivityProfile.profile_complete behaviour notes to Section 6. |

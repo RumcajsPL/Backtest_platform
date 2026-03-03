@@ -1,83 +1,113 @@
-# NEXT SESSION PLAN — Block 4: Robustness
+# NEXT SESSION PLAN — Block 6: Final Documentation
 ## Status entering this session
-- Phase 6, Blocks 0–3 complete. 199 tests green.
-- Block 4 is the next task.
+- Phase 6, Blocks 0–5 complete. 233 tests green.
+- ARCHITECTURE.md v1.1.0 updated. One gap remains (see below).
+- Block 6 is documentation only. No new tests, no code changes.
 ---
-## Goal
-Verify the pipeline survives interruption at every possible checkpoint and that
-a single failing sensitivity worker does not abort the remaining candidates.
+## First upload — before anything else
+**`configs/backtesting/backtest_template.yaml`**
+Required to:
+1. Replace `e2e_test` threshold placeholder values in ARCHITECTURE.md Section 8
+   verdict grid with real `capital_accumulation` production values.
+2. Verify stage counts in Section 3 diagram (200/zone, 60 pop × 30 gen, etc.).
+3. Drive content for the Operator Runbook (stage input/output counts, seeds,
+   perturbation profile names, WFO window definitions).
 ---
-## Files to Upload at Session Start
-Upload both before writing any code:
-1. `src/backtesting/orchestrator.py` — to verify resume logic per checkpoint
-2. `src/backtesting/evaluation/sensitivity.py` — to verify worker error handling
-3. Confirm skill read, CONTEXT.md understood
----
-## Block 4 Test File
-`tests/backtesting/integration/test_robustness.py`
----
-## ROB Criteria (11 total)
-### Resume-after-interruption (8 criteria — one per Checkpoint value)
-For each checkpoint in `[NOT_STARTED, RUN_INITIALISED, RANDOM_SEARCH_COMPLETE,
-MC_PREFILTER_COMPLETE, GA_COMPLETE, WFO_COMPLETE, MONTE_CARLO_COMPLETE,
-SENSITIVITY_COMPLETE]`:
-Seed the store with the state that checkpoint implies (e.g. `WFO_COMPLETE` →
-inject WFO consistency scores). Set the checkpoint. Invoke the orchestrator.
-Assert the pipeline completes without exception and reaches `COMPLETE`.
-| ID | Checkpoint at interruption | Expected resumed stage |
+## Documents to upload and update (in order)
+
+| Order | File | What to update |
 |---|---|---|
-| ROB-01 | NOT_STARTED | Stage 0 (re-init) |
-| ROB-02 | RUN_INITIALISED | Stage 1 (random search — stub, skip to next) |
-| ROB-03 | RANDOM_SEARCH_COMPLETE | Stage 2 (MC prefilter — stub) |
-| ROB-04 | MC_PREFILTER_COMPLETE | Stage 3 (GA — stub) |
-| ROB-05 | GA_COMPLETE | Stage 4 (full WFO — stub) |
-| ROB-06 | WFO_COMPLETE | Stage 5 (MC Deep) |
-| ROB-07 | MONTE_CARLO_COMPLETE | Stage 6 (Sensitivity) |
-| ROB-08 | SENSITIVITY_COMPLETE | Stage 7 (Report) |
-### Worker isolation (3 criteria)
-| ID | Scenario | Expected outcome |
-|---|---|---|
-| ROB-09 | One sensitivity worker raises an unhandled exception | Remaining candidates complete; failing candidate has `sensitivity_profile_complete=False` |
-| ROB-10 | All sensitivity workers fail | Stage 6 completes without exception; Stage 7 runs; report notes zero sensitivity profiles |
-| ROB-11 | MC worker raises for one candidate | Remaining candidates complete; failing candidate has `mc_result.error` set |
+| 1 | `configs/backtesting/backtest_template.yaml` | Source — drives all below |
+| 2 | `docs/backtesting/architecture/ARCHITECTURE.md` | Section 8 production thresholds, Section 3 stage counts |
+| 3 | `docs/backtesting/TECHNICAL_SPEC.md` | D-07 boundary operators, Windows spawn note |
+| 4 | `docs/backtesting/FUNCTIONAL_SPEC.md` | Verify stages match implementation |
+| 5 | `docs/backtesting/BACKTESTER_PLAN.md` | Mark Phase 6 complete, add lessons learned |
+| 6 | `docs/backtesting/PROJECT_REPORT.md` | Update phase rows, test count to 233 |
+Upload each file before editing it. Confirm SKILL.md read and CONTEXT.md understood before starting.
 ---
-## Fixture Design Notes
-- Use `module` scope for the store + run setup; `function` scope per ROB test where
-  interruption state differs.
-- For ROB-06 through ROB-08: seed the store identically to the `perf_run` fixture
-  in `test_performance.py` (20 `CandidateRecord` + `WFOConsistencyScore` rows).
-- For ROB-09 / ROB-10: patch `_evaluate_perturbation` to raise on demand.
-  ```python
-  patch("src.backtesting.evaluation.sensitivity._evaluate_perturbation",
-        side_effect=RuntimeError("injected worker failure"))
-  ```
-- For ROB-11: patch `src.backtesting.monte_carlo.mc_engine.run_mc` similarly.
-- Stubs (Stages 1–4): orchestrator skips them and advances checkpoint automatically.
-  Verify the skip path does not raise.
+## ARCHITECTURE.md — remaining gap (Section 8)
+Current state: verdict grid shows e2e_test scenario values (0.55 / 0.40 / 0.10 / 0.25).
+Needed: replace with capital_accumulation production values from backtest_template.yaml.
+Note already in document: "recalibrate after the first real run" — keep this note,
+just update the displayed values to match the YAML defaults.
 ---
-## Pass Criteria Summary
-All 11 ROB criteria must pass. Informational `test_z_robustness_summary` (never fails)
-prints the checkpoint-to-resume mapping and any worker-error counts observed.
+## TECHNICAL_SPEC.md — specific changes needed
+- Decision D-07 (verdict thresholds): add confirmed boundary operators:
+    wfo_pillar_go    = composite >= go_floor       (>= INCLUSIVE — not >)
+    mc_pillar_go     = ruin_prob <= go_ceiling      (<= INCLUSIVE — not <)
+    ruin_prob = None → NO_GO (mc_pillar_no_go=True, not BORDERLINE)
+    oos_gate requires BOTH oos_gate_enabled=True AND wfo_score.oos_gate_triggered=True
+- Add note on Windows spawn mock patching constraint (cross-reference ARCHITECTURE.md §9).
 ---
-## After Block 4 Passes
-1. Update CONTEXT.md: Block 4 done, Block 5 next.
+## FUNCTIONAL_SPEC.md — verification checklist
+- Stage 6: confirm profile_complete=False path documented (>50% evals fail →
+  sensitivity_profile_incomplete modifier → BORDERLINE demotion).
+- Stage 7: confirm ruin_probability=None → NO_GO path documented.
+- Stage 5: confirm run_mc "never raises" contract documented.
+- Stage 0: confirm checkpoint resume logic described correctly for all 8 values.
+---
+## BACKTESTER_PLAN.md — additions
+- Mark Phase 6 Hardening & Delivery as complete.
+- Add lessons learned section:
+    L-01: Windows spawn mode — mock patches don't cross worker boundary.
+          Patching at orchestrator level is the correct isolation point.
+    L-02: Verdict boundary operators must be >= / <= (inclusive) at go thresholds.
+          Using > / < would incorrectly classify boundary-exact scores as BORDERLINE.
+    L-03: Stage 6 is the dominant runtime cost (333–446s).
+          Pool reuse (OPT-01) is the highest-value optimisation available.
+    L-04: Config fixture shape for tests must match load_scenario() nested structure.
+          Flat dicts fail at KeyError — always use nested fitness_weights, constraints, etc.
+---
+## New file: Operator Runbook (first read docs\backtesting\BACKTESTER_USER_GUIDE.md to keep any useful context )
+`docs/backtesting/OPERATOR_RUNBOOK.md`
+Sections:
+1. Pre-run checklist
+   - Config hash verification
+   - Scenario selection (capital_accumulation vs custom)
+   - WFO window date review
+   - Seed documentation (record all 5 seeds before launching)
+2. Launching a run
+   python -m src.backtesting.orchestrator configs/backtesting/backtest_template.yaml
+3. Monitoring progress
+   - Checkpoint log lines to watch
+   - Expected stage durations (from Block 3 baseline)
+   - How to query current checkpoint from SQLite
+4. Expected outputs per stage
+   - Stage 1: N candidates written (N = zones × random_search count)
+   - Stage 2: MC prefilter results, expect ~X% passing ruin threshold
+   - Stage 3: GA evolution candidates (60 pop × 30 gen per zone)
+   - Stage 4: WFO consistency scores for top 30
+   - Stage 5: MC deep results for top 10 by WFO score
+   - Stage 6: Sensitivity profiles for top 5 by WFO score
+   - Stage 7: Verdicts + HTML report + trading YAMLs for go/borderline
+5. Reading the verdict output
+   - AUTO_GO: both pillars pass, no modifier flags — ready for paper trading
+   - BORDERLINE: borderline zone on one or both pillars, or at least one flag
+   - NO_GO: one or both pillars in no-go zone — do not trade
+6. Promotion path
+   PAPER_TRADE_REQUIRED is always the initial status.
+   LIVE_APPROVED is a manual operator action — never set by code.
+   Minimum paper trading period before promotion: operator decision.
+7. Resume after interruption
+   All 8 checkpoints are safe interruption points (verified Block 4).
+   Simply re-run with the same config — pipeline resumes from last checkpoint.
+8. Performance tuning reference (OPT-01 to OPT-05 summary)
+---
+## Pass criteria for Block 6
+All 6 documents updated and internally consistent.
+Operator runbook peer-reviewed (readable by a new operator with no prior context).
+No regressions — all 233 tests still green after any incidental fixes.
+---
+## After Block 6 Completes
+1. Update CONTEXT.md: Block 6 done, Block 7 next.
 2. Append to CHANGE_LOG.md.
-3. Write NEXT_SESSION_PLAN.md for Block 5 (threshold calibration).
-4. Update PROJECT_SKILL.md test counts to 210.
+3. Write NEXT_SESSION_PLAN.md for Block 7 (OPT-01 + OPT-02).
+4. Update PROJECT_SKILL.md — documentation complete flag.
 ---
-## Block 5 Preview (if time allows)
-Threshold calibration: after the first real Stages 1–4 run produces actual WFO
-composite scores and MC ruin probabilities, validate that the
-`verdict_go_wfo_floor`, `verdict_borderline_wfo_floor`,
-`verdict_go_mc_ruin_ceiling`, `verdict_borderline_mc_ruin_ceiling` thresholds
-in `backtest_template.yaml` produce an appropriate verdict distribution.
-This is decision D-07 from TECHNICAL_SPEC.md.
----
-## Performance Optimisation Opportunities (Block 7 — do NOT start yet)
-Identified from Block 3 profiling. Context for planning:
-```
-OPT-01 [HIGH]: Pool reuse in evaluate_sensitivity() — 40–60% Stage 6 reduction
-OPT-02 [MEDIUM]: Batch perturbations per worker task — further 15–25% reduction
-OPT-03 [LOW]: sensitivity.input_count: 5 → 3 (YAML only, saves ~130–180s)
-OPT-04 [NEGLIGIBLE]: Stage 5 needs no action at current scale
+## Block 7 Preview — OPT-01 + OPT-02
+Pool reuse + batching in evaluate_sensitivity().
+Files to upload: src/backtesting/evaluation/sensitivity.py + test_performance.py.
+Re-run test_performance.py after changes — baseline must not regress.
+Expected: 40–60% Stage 6 reduction.
+Do not start until Block 6 is fully closed.
 ```

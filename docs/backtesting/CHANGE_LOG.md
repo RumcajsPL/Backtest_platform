@@ -662,4 +662,105 @@ PERF-06 design decision:
 - [x] PROJECT_SKILL.md updated
 ### Next
 Block 4 — Robustness. Upload `orchestrator.py` + `evaluation/sensitivity.py`.
+## Session 2026-03-03 — Blocks 4 and 5 complete + ARCHITECTURE.md v1.1.0
+
+### Block 4: Robustness — 12/12 ✅
+**Created**: `tests/backtesting/integration/test_robustness.py`
+
+ROB criteria implemented:
+| ID | Checkpoint / Scenario | Result |
+|---|---|---|
+| ROB-01 | NOT_STARTED | ✅ |
+| ROB-02 | RUN_INITIALISED | ✅ |
+| ROB-03 | RANDOM_SEARCH_COMPLETE | ✅ |
+| ROB-04 | MC_PREFILTER_COMPLETE | ✅ |
+| ROB-05 | GA_COMPLETE | ✅ |
+| ROB-06 | WFO_COMPLETE | ✅ |
+| ROB-07 | MONTE_CARLO_COMPLETE | ✅ |
+| ROB-08 | SENSITIVITY_COMPLETE | ✅ |
+| ROB-09 | Worker: 1 sensitivity candidate fails | ✅ |
+| ROB-10 | Worker: all sensitivity candidates fail | ✅ |
+| ROB-11 | Worker: 1 MC candidate returns error result | ✅ |
+| ROB-Z | Informational summary | ✅ (always passes) |
+
+Critical finding — Windows spawn mock constraint:
+ROB-09 initially failed:
+  ERROR: Can't pickle <class 'unittest.mock.MagicMock'>
+unittest.mock patches do not cross ProcessPoolExecutor spawn boundary on Windows.
+Fix: patch src.backtesting.orchestrator.evaluate_sensitivity (above worker boundary)
+instead of src.backtesting.evaluation.sensitivity._evaluate_perturbation (inside worker).
+
+Fixture bugs found and fixed this block:
+1. _make_config — flat dict raised KeyError; load_scenario() requires nested
+   fitness_weights, constraints, wfo_temporal_weights, verdict_thresholds.
+2. CandidateRecord — parameters_json (str), stage (str), recorded_at (datetime).
+   No parameters, win_rate, total_trades fields.
+3. MCResult — requires perturbation_profile_name, evaluated_at;
+   field is worst_drawdown_across_paths not worst_drawdown.
+4. WFOConsistencyScore — requires windows_total and all float metric fields.
+
+### Block 5: Threshold Calibration — 22/22 ✅
+**Created**: `tests/backtesting/integration/test_threshold_calibration.py`
+
+Sources reviewed: verdict.py, contracts.py, scenario.py.
+Tests are unit-level: compute_verdict() called directly, no store, no orchestrator.
+ScenarioProfile constructed directly (no YAML) via module-scoped fixture.
+
+THRESH criteria confirmed:
+| ID | Input | Expected | Result |
+|---|---|---|---|
+| THRESH-01 | wfo=0.60, ruin=0.05 | AUTO_GO | ✅ |
+| THRESH-02 | wfo=0.60, ruin=0.17 | BORDERLINE | ✅ |
+| THRESH-03 | wfo=0.60, ruin=0.35 | NO_GO | ✅ |
+| THRESH-04 | wfo=0.47, ruin=0.05 | BORDERLINE | ✅ |
+| THRESH-05 | wfo=0.47, ruin=0.17 | BORDERLINE | ✅ |
+| THRESH-06 | wfo=0.47, ruin=0.35 | NO_GO | ✅ |
+| THRESH-07 | wfo=0.30, ruin=0.05 | NO_GO | ✅ |
+| THRESH-08 | wfo=0.30, ruin=0.17 | NO_GO | ✅ |
+| THRESH-09 | wfo=0.30, ruin=0.35 | NO_GO | ✅ |
+| THRESH-10 | wfo=0.55 exactly | AUTO_GO (>= inclusive) | ✅ |
+| THRESH-11 | ruin=0.10 exactly | AUTO_GO (<= inclusive) | ✅ |
+| THRESH-12 | ruin=None | NO_GO | ✅ |
+| THRESH-12b | ruin=None, wfo borderline | NO_GO not BORDERLINE | ✅ |
+| THRESH-13 | spike=True | BORDERLINE | ✅ |
+| THRESH-14 | collapse=True | BORDERLINE | ✅ |
+| THRESH-15 | profile_complete=False | BORDERLINE | ✅ |
+| THRESH-OOS | oos_gate two-condition | AUTO_GO/AUTO_GO/BORDERLINE | ✅ |
+| field test | deployment_status | PAPER_TRADE_REQUIRED | ✅ |
+| field test | result fields wired | all correct | ✅ |
+| field test | None ruin in result | mc_deep_ruin_probability=None | ✅ |
+| NO_GO guard | all flags + no_go base | NO_GO | ✅ |
+| summary | test_z_threshold_summary | always passes | ✅ |
+
+Verdict grid locked (e2e_test thresholds):
+  go_wfo>=0.55  borderline_wfo>=0.40  go_mc<=0.10  borderline_mc<=0.25
+  WFO>go:   AUTO_GO / AUTO_GO / BORDER / NO_GO / NO_GO
+  WFO=go:   AUTO_GO / AUTO_GO / BORDER / NO_GO / NO_GO
+  WFO=bdr:  BORDER  / BORDER  / BORDER / NO_GO / NO_GO
+  WFO=no_go: NO_GO  / NO_GO   / NO_GO  / NO_GO / NO_GO
+
+Warning observed (expected — not a bug):
+  WARNING verdict.py:95 Candidate test-candida: MC ruin_probability is None
+  This is verdict.py's intentional log for the None ruin path. No action needed.
+
+### ARCHITECTURE.md v1.1.0
+**Updated**: `docs/backtesting/architecture/ARCHITECTURE.md`
+
+Changes from v1.0.0:
+- Section 2: Added all 4 missing test files with counts and phase labels. Total: 233.
+- Section 6: Added MCResult.error and SensitivityProfile.profile_complete notes.
+- Section 8: Corrected verdict diagram to match verdict.py source exactly.
+  Parallel two-pillar structure. ruin=None node. Exact operator block.
+  Confirmed verdict grid from Block 5. Capital_accumulation caveat preserved.
+- Section 9: Added Windows spawn mock patching constraint. Corrected patch
+  target table. Design rationale for orchestrator-level patching.
+- Section 11 (new): Performance baseline locked numbers. OPT-01 to OPT-05 table.
+- Section 13: Added run_mc never raises, evaluate_sensitivity never raises rules.
+- Section 14: v1.1.0 changelog entry.
+
+Remaining gap: production threshold values in verdict grid require
+backtest_template.yaml (not yet reviewed). Upload next session.
+
+### Test count
+233 total green (199 → 211 → 233 this session, +34).
 <!-- APPEND NEW SESSION BLOCKS BELOW THIS LINE -->
