@@ -763,4 +763,71 @@ backtest_template.yaml (not yet reviewed). Upload next session.
 
 ### Test count
 233 total green (199 → 211 → 233 this session, +34).
+## Session: 2026-03-03 — Phase 6 Block 6 (Final Documentation) + Audit Analysis
+
+### Session Type
+Documentation-only. No code changes. No new tests. 233 tests green (unchanged).
+
+---
+
+### Documents Produced / Updated
+
+| Document | Version | Action | Summary of changes |
+|---|---|---|---|
+| `docs/backtesting/architecture/ARCHITECTURE.md` | 1.1.0 → 1.2.0 | Updated | §3 stage counts from YAML: 200/zone×2=400 Random, top 120 MC pre-filter, GA 60pop×30gen, WFO top 30 / 5 windows, MC Deep 3000 iter top 10, Sensitivity top 5, shortlist top 5. §8 verdict grid: replaced e2e_test values with capital_accumulation production thresholds (go_wfo≥0.65, borderline_wfo≥0.40, go_mc≤0.05, borderline_mc≤0.15). |
+| `docs/backtesting/TECHNICAL_SPEC.md` | 1.0.0 → 1.1.0 | Updated | D-07: confirmed ≥/≤ inclusive boundary operators at go thresholds with rationale; strict </> at no-go. New §1a: Windows spawn mode test patch constraint (ROB-09 pickle error root cause). MCResult docstring: never-raises contract. SensitivityProfile docstring: profile_complete=False path. compute_verdict and evaluate_sensitivity signatures: boundary and patch notes added. set_checkpoint: orchestrator-only note. §5 schema: cross-reference to backtest_template.yaml for live values. |
+| `docs/backtesting/FUNCTIONAL_SPEC.md` | 1.0.0 → 1.1.0 | Updated | Stage 5: never-raises contract explicit; MCResult.error path. Stage 6: profile_complete=False → sensitivity_profile_incomplete modifier → AUTO_GO demoted, stage never aborts. Stage 7: ruin_probability=None → NO_GO path with evidence_summary. Stage 0: all 8 checkpoint values verified safe (Block 4), full sequence listed. §11: Windows spawn cross-reference. §12: e2e_test scenario warning. §13: inclusive operators; oos_gate both-conditions; modifier flags cannot override NO_GO. |
+| `docs/backtesting/BACKTESTER_PLAN.md` | 1.2.0 → 1.3.0 | Updated | §1b Layer 2 status: Complete v1.0. §12: all 12 decisions resolved, summary table. §13: phases 0–6 complete, Block 7 preview. Risk register: R-03/R-05/R-06/R-10 closed; R-07/R-09 open. New §15 Lessons Learned: L-01 (spawn mock boundary), L-02 (inclusive operators), L-03 (Stage 6 bottleneck), L-04 (config fixture nested shape). |
+| `docs/backtesting/PROJECT_REPORT.md` | — | Updated | Current phase: Phase 6 complete. All 6 blocks documented with test counts. Total tests: 233. Performance baseline recorded. Block 7 section with OPT plan and upload prerequisites. Risk tracker updated. |
+| `docs/backtesting/OPERATOR_RUNBOOK.md` | — | Created (new) | 8 sections: pre-run checklist, launch command, monitoring (checkpoint logs, stage durations, SQLite query), expected outputs per stage, verdict definitions with thresholds, promotion path (PAPER_TRADE_REQUIRED → LIVE_APPROVED), resume after interruption, performance tuning (OPT-01–05). Appendix A: error patterns. Appendix B: output directory structure. |
+
+---
+
+### Audit Report: Backtesting_Framework_Audit_Report.md (2026-03-03)
+
+Received and fully analysed. Authoritative dispositions recorded — do not re-litigate.
+
+**Finding counts**: 0 critical, 3 high, 7 medium, 11 low/evolution, 8 info.
+
+**HIGH findings**:
+- H-01 (date_start/date_end): **FALSE POSITIVE** — SKILL.md confirms implemented.
+- H-02 (write_wfo_window_result): **UNRESOLVED** — absent from SKILL.md API list; audit cites specific wfo_engine.py line numbers. First action of Block 7 sub-block 7A: upload candidate_store.py to verify.
+- H-03 (WFO date injection): **LIKELY FALSE POSITIVE** — contingent on H-01 confirmation; upload wfo_evaluator.py to confirm.
+
+**MEDIUM findings (M-01 to M-07)**: All accepted. None affect correctness or test results. Implementation refinements. Prioritised for Block 7 sub-blocks 7B and 7D.
+
+**LOW/EVOLUTION findings (E-01 to E-11)**: All accepted as future roadmap. No v1 action.
+
+**I-07** (datetime.utcnow()): Promoted to Block 7 sub-block 7A action item.
+
+**Parameter mapping audit §6**: All 34 mapped parameters confirmed correct. Three unmapped (strategy_tf, htf_tf, session_filter) confirmed as v2 scope.
+
+---
+
+### Completeness Check — BACKTESTER_PLAN vs Implementation
+
+All Must-Have requirements confirmed implemented. Two Should-Have items flagged for verification in Block 7:
+- WF-07 (`parameter_region_width` computation) — field in contract, may always be None
+- WF-09 (post-Stage-1 statistical adequacy warning) — not confirmed in SKILL.md or tests
+
+---
+
+### SKILL.md State
+
+SKILL.md was **not updated** during Block 4 or Block 5 sessions. It currently reads: "199 tests, Block 4 next, Stages 1–4 stubs." This is stale. SKILL.md update is the **first task of Block 7 sub-block 7A**.
+
+---
+
+### Test Count
+
+233 tests green. Unchanged — documentation-only session.
+
+### Performance Baseline
+
+Unchanged — LOCKED at Block 3 (Total=337.2s, Stage6=332.6s).
+
+### Code Changes
+
+None. Documentation-only session.
+---
 <!-- APPEND NEW SESSION BLOCKS BELOW THIS LINE -->

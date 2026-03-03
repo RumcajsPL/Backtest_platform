@@ -1,9 +1,9 @@
 # BACKTESTER_PLAN.md
 ## Backtesting & Optimization Framework
 **Project Charter · Requirements · High-Level Plan**
-**Version**: 1.1.0
-**Date**: 2026-02-27
-**Status**: Requirements Complete — Ready for Design Phase
+**Version**: 1.3.0
+**Date**: 2026-03-03
+**Status**: Phase 6 Complete — Ready for Block 7 (OPT-01 + OPT-02)
 ---
 ## Table of Contents
 1. [Project Charter](#1-project-charter)
@@ -20,6 +20,8 @@
 12. [Open Decisions for Design Phase](#12-open-decisions-for-design-phase)
 13. [High-Level Project Plan](#13-high-level-project-plan)
 14. [Risk Register](#14-risk-register)
+15. [Lessons Learned](#15-lessons-learned)
+
 ---
 ## 1. Project Charter
 ### 1.1 Purpose
@@ -48,7 +50,7 @@ The backtester is the second of four planned platform layers:
 | Layer | Description | Status |
 |---|---|---|
 | 1. Strategy Builder | WBWSStrategy architecture, signal generation, trade simulation, analytics | **Complete — v3.2.0** |
-| 2. Backtesting Framework | This project — systematic optimization and validation | **In design** |
+| 2. Backtesting Framework | This project — systematic optimization and validation | **Complete — v1.0** |
 | 3. Live Signal Platform | Strategy setup → demo account → signal/alert management, trading journal | Future |
 | 4. Algorithmic Trading | eToro API integration → automated order execution | Future (depends on broker API maturity) |
 ### Architectural Implication for v1
@@ -328,6 +330,8 @@ The `CandidateStore` (SQLite) is the backbone of the system. Every module writes
 
 ---
 ## 7. Pipeline Design
+*(unchanged from v1.2 — see that version for full stage detail)*
+
 ### 7.1 Pipeline Sequence
 ```
 Stage 0:  Validation & Initialisation
@@ -339,329 +343,112 @@ Stage 5:  Monte Carlo Deep        (full stress test on WFO-validated candidates 
 Stage 6:  Parameter Sensitivity   (sensitivity map — flat = robust, spike = borderline flag)
 Stage 7:  Final Report & Output
 ```
-**Why this order:**
-| Design Decision | Rationale |
-|---|---|
-| MC Pre-Filter before GA | Eliminates structurally fragile candidates cheaply before expensive GA cycles. Low iterations, 2 perturbation types. A candidate with 30% ruin probability is not worth evolving. |
-| GA uses randomly sampled WFO windows per generation | Prevents GA from overfitting to a fixed window pair. Each generation sees a different 2-window sample from the full WFO window list, producing candidates that generalise across time rather than performing well on two specific periods. |
-| GA includes diversity penalty | Prevents premature convergence on narrow parameter clusters. Candidates too similar to existing elites are penalised, preserving exploration across the parameter space. |
-| Full WFO after GA | Confirmation of temporal consistency across all configured windows. Most fragile candidates already gone. This stage is evidence collection, not discovery. |
-| MC Deep after WFO | Full stress test (all iterations, all perturbation types) applied to a small already-robust population. Maximum information per CPU-hour at this stage. |
-| Parameter Sensitivity last | For each top candidate, perturb each parameter ±1 and ±2 steps. Flat fitness landscape = robust deployment. Sharp spike = borderline flag added regardless of other scores. |
-
-### 7.2 Stage Detail
-```
-Stage 0: Validation & Initialisation
-  └─ Validate backtest_template.yaml (schema, scenario key, zone definitions)
-  └─ Validate strategy data files exist and are readable
-  └─ Validate WFO window date ranges are within data bounds and non-overlapping
-  └─ Validate minimum WFO window count is sufficient for GA random sampling (min 3 windows required)
-  └─ Initialise CandidateStore, write run metadata (config hash, scenario, timestamp, all random seeds)
-  └─ Checkpoint: RUN_INITIALISED
-
-Stage 1: Random Search
-  └─ ParameterSampler expands zones → candidate parameter sets
-  └─ LHS or random sampling selects N candidates per zone
-  └─ StrategyRunner evaluates each candidate (parallel, core mode)
-  └─ Statistical significance guard: < min_trades → REJECTED_INSUFFICIENT_TRADES (before fitness)
-  └─ Hard constraint filter (scenario thresholds): failed → REJECTED_CONSTRAINTS
-  └─ FitnessEvaluator scores passing candidates (scenario-weighted)
-  └─ All candidates written to CandidateStore with stage=RANDOM
-  └─ [POST-STAGE-1] Orchestrator logs statistical adequacy warning if configured MC iterations
-       or WFO window count is likely insufficient given observed trade frequency and return variance.
-       Warning only — pipeline continues regardless.
-  └─ Checkpoint: RANDOM_SEARCH_COMPLETE
-
-Stage 2: MC Pre-Filter
-  └─ Ranker selects top N from RANDOM stage
-  └─ MCEngine runs lightweight screen (low iterations, spread_noise + shuffle_trades only)
-  └─ Candidates with ruin_probability > scenario.mc_prefilter_threshold → MC_PREFILTER_FAIL
-  └─ Survivors written to CandidateStore with stage=MC_PREFILTER_PASS
-  └─ Checkpoint: MC_PREFILTER_COMPLETE
-
-Stage 3: Genetic Algorithm (WFO-aware fitness, random window sampling, diversity penalty)
-  └─ GAEngine seeds initial population from MC_PREFILTER_PASS candidates
-  └─ Per-generation window selection: randomly sample 2 windows from full WFO window list
-  └─ Per-generation fitness: each candidate evaluated on the 2 sampled WFO windows
-  └─ Diversity penalty applied: candidates within configurable distance of existing elites penalised
-  └─ Generation fitness = weighted(single_run_score, 2-window WFO consistency, diversity_penalty)
-  └─ Elites (top elite_fraction) preserved unchanged each generation
-  └─ Crossover + mutation produce valid CandidateParameterSets within zone boundaries
-  └─ All GA candidates written to CandidateStore with stage=GA, generation=N
-  └─ Checkpoint: GA_COMPLETE
-
-Stage 4: Full Walk-Forward Optimization
-  └─ Ranker selects top M candidates from (RANDOM + GA) pool combined
-  └─ WFOEngine evaluates each candidate on all configured date windows
-  └─ WFOEvaluator computes temporal consistency metrics:
-       - median window return
-       - window-to-window return variance
-       - worst-window drawdown
-       - fraction of positive windows
-       → combined into WFO consistency score (composite, scenario-weighted)
-  └─ IS/OOS delta computed and stored as informational metric
-       If enforce_oos_gate: true AND degradation > 50% → borderline flag added
-  └─ Window-collapse pattern → borderline flag (not auto-rejection)
-  └─ WFO results written to CandidateStore with stage=WFO
-  └─ Checkpoint: WFO_COMPLETE
-
-Stage 5: Monte Carlo Deep
-  └─ Ranker selects top K candidates ranked by WFO consistency score
-  └─ MCEngine runs full stress test (full iterations, all perturbation types)
-  └─ MCMetrics computes: avg final equity, worst drawdown across paths, ruin probability,
-       5th percentile final equity
-  └─ MC results written to CandidateStore with stage=MC_DEEP
-  └─ Checkpoint: MONTE_CARLO_COMPLETE
-
-Stage 6: Parameter Sensitivity Map
-  └─ For each top candidate: hold all parameters fixed, vary each ±1 step, ±2 steps
-  └─ StrategyRunner evaluates each perturbation (parallel)
-  └─ FitnessDelta computed per parameter per step — produces per-candidate sensitivity profile
-  └─ Flat profile → robustness confirmed. Sharp spike → borderline flag added
-  └─ Sensitivity results written to CandidateStore with stage=SENSITIVITY
-  └─ Checkpoint: SENSITIVITY_COMPLETE
-
-Stage 7: Final Report & Output
-  └─ Verdict engine applies two-pillar verdict (WFO consistency score + MC ruin probability)
-  └─ Sensitivity spike flags applied (spike → borderline even if both pillars pass)
-  └─ Optional IS/OOS gate applied if enforce_oos_gate: true
-  └─ Scenario-framed composite ranking produced
-  └─ VerdictResult produced with deployment_status: PAPER_TRADE_REQUIRED for all go/borderline
-  └─ BacktestReportGenerator produces all output formats
-  └─ Adversarial checklist template generated for each borderline candidate
-  └─ Top candidate trading-ready YAML generated and validated against StrategyConfig schema
-  └─ YAML metadata includes: scenario name, run_id, config_hash, deployment_status
-  └─ Checkpoint: COMPLETE
-```
-
-### 7.3 Statistical Significance Guard
-Before fitness scoring or constraint evaluation, every candidate evaluation must pass a minimum trade count check. This is a **data quality gate**, not a business constraint — it prevents the fitness function from operating on statistically meaningless results. Configurable independently from `min_trades_per_week`. Rejections recorded as `REJECTED_INSUFFICIENT_TRADES` in the CandidateStore.
-
-### 7.4 Resume Logic
-On startup, the orchestrator reads `run_metadata` from the CandidateStore. If a prior run is found and is not in `COMPLETE` state, resume is offered. Resume skips all completed stages (by checkpoint) and restarts from the last incomplete stage. Within a stage, already-stored candidates (by parameter hash) are not re-evaluated.
-
-### 7.5 Parallelism Model
-Independent candidate evaluations within Stages 1, 2, 3, and 6 are parallelised using `ProcessPoolExecutor` (Windows `spawn` mode — no `fork`-dependent code). Each worker receives a `CandidateParameterSet`, builds a temporary strategy YAML, calls the strategy pipeline in `core` mode, and returns a result contract. The CandidateStore write is serialised to prevent corruption.
-Stage 4 (WFO): parallelised per candidate — each candidate's windows run in a worker pool.
-Stage 5 (MC Deep): parallelised per candidate — each candidate's iterations run vectorised within a single worker.
 
 ---
-## 8. Module Responsibilities
-### `orchestrator.py`
-Loads config and active scenario, initialises the CandidateStore, runs 8 stages in sequence, handles resume logic, reads/writes checkpoints, calls stage modules. Does not evaluate candidates. Does not compute metrics. Writes run metadata (config hash, seeds, scenario) at run start; enforces that post-run config changes create a new run record.
-### `parameter_space.py`
-Reads zone definitions from YAML. Expands ranges to discrete candidate parameter sets. Validates all generated combinations are within zone boundaries. Knows nothing about strategy internals or scenario.
-### `sampler.py`
-Receives the expanded parameter space. Applies Random or Latin Hypercube Sampling. Returns a list of `CandidateParameterSet` contracts. Does not call the strategy.
-### `strategy_runner.py`
-Receives a `CandidateParameterSet`. Builds a temporary strategy YAML. Calls the strategy pipeline in `core` mode. Applies the statistical significance guard (minimum trades check) before returning. Returns a `CandidateResult` contract containing the `MetricsReport` and `TradeResult`. Handles per-candidate errors — logs and returns a failed result contract, never raises to the caller.
-### `fitness.py`
-Receives a `MetricsReport` and the active `ScenarioProfile`. Applies scenario-specific hard constraints first. If passed, computes the scenario-weighted fitness score. Returns a `FitnessResult` contract. Stateless.
-### `scenario.py`
-Loads and validates scenario definitions from YAML. Returns a `ScenarioProfile` contract (fitness weights, constraint thresholds, report emphasis). Built once at run start, passed to `fitness.py`, `ranker.py`, `verdict.py`, and `report_generator.py`.
-### `candidate_store.py`
-SQLite-backed persistent store. WAL mode for concurrent writes. Accepts `CandidateRecord` writes. Provides efficient reads for ranking and stage transitions. Provides run metadata read/write including checkpoint state and immutable artifact storage (config hash, seeds, perturbation profile name). Single source of truth for all pipeline state.
-### `ranker.py`
-Reads from `CandidateStore`. Sorts, filters, and returns ranked candidate lists for GA seeding, WFO input, MC input, sensitivity input, and final report. Stateless — receives a query spec, returns a ranked list.
-### `ga/ga_engine.py`
-Orchestrates the GA evolution loop. At the start of each generation, randomly samples 2 windows from the full WFO window list for that generation's fitness evaluation. Applies diversity penalty in fitness computation. Calls `population.py`, `selection.py`, `crossover.py`, `mutation.py` in sequence per generation. Does not evaluate candidates directly.
-### `ga/population.py`, `selection.py`, `crossover.py`, `mutation.py`
-Each handles exactly one GA operation. All respect zone boundaries. All produce valid `CandidateParameterSet` contracts.
-### `ga/diversity.py`
-Computes diversity penalty for a candidate given the current elite population. Returns a penalty scalar. Configurable distance threshold and penalty weight via YAML.
-### `wfo/wfo_engine.py`
-Orchestrates WFO across candidate list and window list. Calls `wfo_evaluator.py` per candidate-window pair. Used in full mode (Stage 4) and lightweight mode (Stage 3 GA fitness). In lightweight mode, receives the pre-sampled 2-window list from `ga_engine.py`.
-### `wfo/window_generator.py`
-Reads fixed window definitions from YAML. Returns a list of `WFOWindow` contracts. Used by `wfo_engine.py` and by `ga_engine.py` for random window sampling.
-### `wfo/wfo_evaluator.py`
-Evaluates one candidate on one WFO window. Calls `strategy_runner.py` for the window period. Computes per-window fitness and IS/OOS delta. Returns `WFOWindowResult` contract.
-### `wfo/consistency_scorer.py`
-Aggregates `WFOWindowResult` records for a single candidate into the four temporal consistency metrics (median window return, variance, worst-window drawdown, fraction of positive windows) and combines them into the composite WFO consistency score using scenario weights. Returns a `WFOConsistencyScore` contract.
-### `monte_carlo/mc_engine.py`
-Orchestrates MC in two modes: lightweight pre-filter (Stage 2, low iterations, 2 perturbation types) and deep stress test (Stage 5, full iterations, all perturbation types). Mode is passed as a parameter. Records perturbation profile name in run metadata.
-### `monte_carlo/equity_simulator.py`
-Simulates equity paths from a `TradeResult` trade list. Applies perturbations from `perturbation.py`.
-### `monte_carlo/perturbation.py`
-Applies configured noise to trade results: spread noise, risk noise, slippage, execution delay, trade shuffling, return resampling. References named perturbation profiles from YAML.
-### `monte_carlo/mc_metrics.py`
-Computes MC summary metrics: avg final equity, worst drawdown across paths, ruin probability, 5th percentile final equity. Returns `MCResult` contract.
-### `evaluation/sensitivity.py`
-For each top candidate, perturbs each parameter ±1 step and ±2 steps while holding all others fixed. Calls `strategy_runner.py` for each perturbation. Computes fitness delta per parameter per step. Returns `SensitivityProfile` contract. Flags candidates with sharp fitness spikes as borderline.
-### `evaluation/verdict.py`
-Reads final pipeline results per candidate. Applies two-pillar verdict: (1) WFO consistency score, (2) MC deep ruin probability. Sensitivity spike flags applied as a third modifier. IS/OOS gate applied if configured. Sets `deployment_status: PAPER_TRADE_REQUIRED` on all go and borderline verdicts. IS/OOS delta attached as informational evidence. Returns `VerdictResult` contract with full evidence summary and scenario-framed assessment.
-### `report_generator.py`
-Reads from `CandidateStore` across all stages. Scenario-framed output: report leads with the metrics most relevant to the active scenario. Produces HTML report, JSON/Parquet files per candidate, final ranking table, and adversarial checklist template for each borderline candidate. Distinct from the existing strategy `ReportGenerator`.
-### `yaml_generator.py`
-Takes the top-ranked candidate's `CandidateParameterSet`. Merges parameter values into the base `strategy_template.yaml`. Validates the output against `StrategyConfig` schema. Embeds in YAML metadata: scenario name, run_id, config_hash, `deployment_status: PAPER_TRADE_REQUIRED`. Writes the trading-ready YAML — the handoff artifact for the future live trading layer.
-
----
-## 9. Integration with Strategy Architecture
-### 9.1 Integration Mode Decision
-The exact mechanism by which the backtester calls the strategy (direct orchestrator call vs. subprocess vs. module-level) is deferred to the design phase. This is a significant architectural decision with performance, isolation, and maintainability trade-offs that require benchmarking and analysis of the Windows process model before committing.
-### 9.2 What Is Fixed (Not Redesigned)
-The following strategy architecture components are consumed as-is, without modification:
-- `StrategyConfig.from_yaml()` — config loading and validation
-- `CacheManager` and `clear_all_caches()` — cache management between runs
-- `MetricsReport` — the primary fitness input (all fields are available)
-- `TradeResult` — available for Monte Carlo (raw trade list for shuffling/resampling)
-- Execution mode `core` — mandatory for all backtester runs (analytics mode is not used inside the backtester loop)
-### 9.3 Parameter Space to StrategyConfig Mapping
-The backtester's parameter space YAML maps to `StrategyConfig` fields. The `strategy_runner.py` is responsible for this mapping — it reads a `CandidateParameterSet` and writes valid field values into a temporary strategy YAML. This is the only place where strategy config field names appear in the backtester code.
-
----
-## 10. Output and Analytics Layer
-### 10.1 Output Formats
-| Format | Content | Primary Use |
-|---|---|---|
-| HTML Report | Full pipeline summary, all stages, candidate rankings, charts | Human review, go/no-go decision |
-| Borderline Checklist | Per-borderline-candidate adversarial review template | Human sign-off before any live deployment |
-| JSON/Parquet | One file per candidate, full pipeline data | Notebook analysis, programmatic what-if |
-| SQLite | All candidates, all stages, all metrics, queryable | Ad-hoc SQL analysis, future ML feature store |
-| Strategy YAML | Top candidate config, `deployment_status: PAPER_TRADE_REQUIRED` | Paper trading → live trading (after operator approval) |
-### 10.2 SQLite Schema Design Principles (ML-Ready)
-The SQLite schema must be designed at the start of implementation — not retrofitted. Design principles:
-- **One row per candidate per stage** — not denormalised blobs. Each stage result is a separate table row with foreign key to the candidate.
-- **All numeric metrics are individual columns** — not JSON-serialised. This allows direct `SELECT`, `GROUP BY`, `WHERE` queries without parsing.
-- **Parameter values are individual columns** — one column per optimizable parameter. Enables `WHERE rsi_overbought > 70 AND atr_multiplier < 2.0` queries.
-- **Timestamps on all rows** — enables time-series analysis of the optimization run itself.
-- **No information destroyed** — if `MetricsReport` has 17 fields, all 17 are columns. The ML layer will decide which are features.
-- **Run artifact columns in `runs` table** — config_hash, seed values, perturbation_profile_name stored immutably per run.
-- **WFO consistency sub-metrics are individual columns** — median_window_return, window_variance, worst_window_drawdown, fraction_positive_windows all stored separately alongside the composite consistency_score.
-### 10.3 Future ML Hook
-The SQLite database is the ML data source. No ML code is implemented in v1. The schema is designed so that:
-- A future ML model can `SELECT * FROM candidates WHERE stage = 'MC_DEEP' AND verdict != 'REJECTED'` and immediately have a feature matrix
-- Feature engineering (ratios, normalizations) can be done in a view or at query time — no schema changes needed
-- A future AI assistant can query the database with natural language → SQL and get answers about any historical run
-
----
-## 11. Non-Functional Requirements
-### 11.1 Performance
-| Requirement | Target |
-|---|---|
-| Full pipeline runtime | ≤ 4 hours on Windows PC with up to 6 parallel workers. This is a hard physical constraint for the single-PC operator model — not a soft target. |
-| Single candidate evaluation (core mode) | Consistent with current strategy `core` mode performance |
-| Candidate store write throughput | Sufficient for 6 parallel workers without lock contention |
-| Resume overhead | < 30 seconds to reconstruct state and resume |
-### 11.2 Reliability
-- Individual candidate failures do not propagate to the pipeline (isolated worker processes)
-- All failures are logged with full diagnostic context before the candidate is marked as failed
-- The pipeline does not produce partial output — each stage either completes fully or checkpoints cleanly
-### 11.3 Windows Compatibility
-- `ProcessPoolExecutor` with `spawn` start method (Windows default) — no `fork`-dependent code
-- All file paths use `pathlib.Path` — no hardcoded Unix separators
-- All file writes use explicit encoding (`utf-8`) — no platform-default encoding assumptions
-- Temporary files written to a configurable temp directory, cleaned up after each candidate
-### 11.4 Observability
-- Structured logging (reusing `structured_logger.py` from the strategy architecture)
-- Log levels configurable in YAML per component
-- Progress reporting: current stage, candidates completed / total, estimated time remaining
-- On run completion: summary table printed to console and log (stage, candidates evaluated, time taken, top fitness score)
-### 11.5 Audit and Reproducibility
-- All run artifacts (config hash, seeds, perturbation profile name, generated YAMLs) stored immutably in SQLite
-- Any post-run config change creates a new run record — overwriting is not permitted
-- Verdicts are reproducible: given the same config hash and seeds, the pipeline produces the same verdicts
+## 8–11. Module Responsibilities / Integration / Output Layer / Non-Functional Requirements
+*(unchanged from v1.2)*
 
 ---
 ## 12. Open Decisions for Design Phase
-These questions are explicitly deferred. They must be answered and documented in the functional/technical specification before implementation begins.
-| ID | Decision | Options | Implication |
-|---|---|---|---|
-| D-01 | Strategy integration mode | Direct orchestrator call / subprocess / module-level | Performance vs. isolation vs. Windows process model; requires timing prototype in Phase 1 |
-| D-02 | Candidate store write concurrency | SQLite WAL mode / single-writer queue / per-candidate file then merge | Throughput and reliability under 6 parallel workers; prototype required in Phase 2 |
-| D-03 | Temporary YAML lifecycle | One per run (overwritten) / one per candidate (named by hash) | Debuggability vs. disk usage |
-| D-04 | GA population seeding | Top-N from MC_PREFILTER_PASS only / top-N + diversity-selected | Genetic diversity vs. convergence speed |
-| ~~D-05~~ | ~~GA lightweight WFO window selection~~ | **RESOLVED**: Randomly sample 2 windows from full WFO window list at the start of each generation. Requires minimum 3 WFO windows configured. Validated in Stage 0. | Prevents window-specific overfitting during GA evolution |
-| D-06 | Candidate counts at each stage transition | How many proceed from Random→MC Pre-filter, MC Pre-filter→GA, GA→Full WFO, WFO→MC Deep, MC Deep→Sensitivity | Runtime budget allocation; must sum to ≤ 4 hours |
-| D-07 | Composite verdict thresholds | What WFO consistency score constitutes go vs. borderline; what ruin probability ceiling triggers borderline vs. fail | Central to the go/no-go logic; calibrate against first real run in Phase 6 |
-| D-08 | Sensitivity map scope | All optimizable parameters / top-3 by fitness impact only | Runtime cost of Stage 6 vs. coverage |
-| D-09 | Parquet vs. JSON per candidate | Both / one or the other / configurable | Storage size vs. compatibility |
-| D-10 | HTML report generator | Extend existing `ReportGenerator` / build new | Code reuse vs. clean separation; the backtester report is structurally different (multi-candidate, multi-stage) |
-| D-11 | GA diversity penalty distance metric | Euclidean distance in normalized parameter space / Hamming distance for discrete params / hybrid | Correctness for mixed continuous/discrete parameter spaces |
-| D-12 | IS/OOS gate default configuration | `enforce_oos_gate` default on or off; default degradation threshold if enabled | Operator experience vs. validation stringency |
+All decisions D-01 through D-12 are resolved. See TECHNICAL_SPEC.md Section 1 for full resolutions and rationale.
+
+| ID | Decision | Status |
+|---|---|---|
+| D-01 | Strategy integration mode | ✅ Direct Python call |
+| D-02 | SQLite write concurrency | ✅ WAL + single-writer queue |
+| D-03 | Temporary YAML lifecycle | ✅ Named by hash, deleted in finally |
+| D-04 | GA population seeding | ✅ Top-N from MC_PREFILTER_PASS |
+| D-05 | GA WFO window selection | ✅ Random sample 2 per generation |
+| D-06 | Stage transition candidate counts | ✅ Defaults in YAML, profiled Phase 3/6 |
+| D-07 | Composite verdict thresholds | ✅ Confirmed boundary operators; starting values in YAML |
+| D-08 | Sensitivity map scope | ✅ All optimizable parameters |
+| D-09 | Parquet vs JSON | ✅ Both, configurable |
+| D-10 | HTML report generator | ✅ New report_generator.py |
+| D-11 | GA diversity distance metric | ✅ Hybrid Euclidean/Hamming |
+| D-12 | IS/OOS gate default | ✅ Off by default |
 
 ---
 ## 13. High-Level Project Plan
-### Phase 1 — Design
-**Deliverables**: Functional specification, technical specification, all inter-module contracts as frozen dataclasses, SQLite schema, integration mode decision (with benchmark data)
-**Key activities**:
-- Resolve all open decisions (Section 12) — D-01 and D-02 require prototype benchmarks; D-05 already resolved
-- Define all contracts: `CandidateParameterSet`, `CandidateResult`, `FitnessResult`, `ScenarioProfile`, `WFOWindow`, `WFOWindowResult`, `WFOConsistencyScore`, `MCResult`, `SensitivityProfile`, `VerdictResult`
-- Design SQLite schema (all tables, columns, foreign keys, indexes) — ML-ready from day one, immutable artifact columns included
-- Define scenario profile structure and built-in scenarios (capital_accumulation, swing_trading, conservative)
-- Write `backtest_template.yaml` full specification (all valid keys, types, defaults, constraints)
-- Benchmark strategy integration options and select one
-### Phase 2 — Core Infrastructure
-**Deliverables**: `candidate_store.py`, `parameter_space.py`, `sampler.py`, `scenario.py`, `strategy_runner.py`, `fitness.py`, `ranker.py`, `orchestrator.py` (skeleton with all 8 stage stubs)
-**Key activities**:
-- Implement and test CandidateStore first — everything else depends on it
-- Implement immutable run artifact storage (config hash, seeds, perturbation profile name)
-- Implement parameter expansion, LHS sampling, and zone validation
-- Implement scenario loading and profile building
-- Implement strategy integration (single candidate, end-to-end, with significance guard)
-- Implement fitness scoring with scenario weights and scenario-specific constraints
-- Implement orchestrator skeleton with stage sequencing, checkpointing, and resume logic
-- Integration test: single candidate, full round trip, stored in SQLite with correct stage label
-### Phase 3 — Optimization Engines
-**Deliverables**: `ga/` package (6 modules including `diversity.py`), `wfo/` package (4 modules including `consistency_scorer.py`), MC pre-filter mode in `monte_carlo/mc_engine.py`
-**Key activities**:
-- Implement WFO engine first (required by GA for WFO-aware fitness)
-- Implement `consistency_scorer.py` — four temporal metrics combined into composite score
-- Implement GA engine with random window sampling per generation and diversity penalty
-- Implement MC pre-filter mode (lightweight, 2 perturbation types)
-- Validate GA random window sampling: confirm per-generation window selection is independent
-- Validate GA diversity penalty: confirm population does not collapse to narrow cluster over 100+ generations
-- Validate WFO consistency score is stable and meaningful against known reference data
-- Integration test: Random → MC Pre-filter → GA → Full WFO end-to-end, all results in SQLite
-### Phase 4 — Monte Carlo Deep and Verdict
-**Deliverables**: `monte_carlo/` complete package (4 modules, both modes), `evaluation/sensitivity.py`, `evaluation/verdict.py`
-**Key activities**:
-- Implement full MC stress test (all perturbation types, vectorised equity path simulation)
-- Implement perturbation profile naming and versioning
-- Implement parameter sensitivity map (Stage 6 — perturb ±1/±2 steps, compute fitness delta)
-- Implement composite verdict engine with two-pillar logic, sensitivity spike modifier, and optional IS/OOS gate
-- Implement `deployment_status: PAPER_TRADE_REQUIRED` in `VerdictResult` and YAML metadata
-- Integration test: full 8-stage pipeline on real data, verdict produced for top candidates
-### Phase 5 — Output Layer
-**Deliverables**: `report_generator.py`, `yaml_generator.py`, HTML report (scenario-framed), borderline adversarial checklist template, JSON/Parquet output, SQLite query validation suite
-**Key activities**:
-- Implement scenario-framed HTML report (leads with scenario-relevant metrics)
-- Implement borderline adversarial checklist template generation
-- Implement JSON/Parquet per-candidate export
-- Validate SQLite schema supports required ad-hoc queries (write and run a query suite)
-- Implement trading-ready YAML generation with scenario metadata, run_id, config_hash, and `deployment_status`
-- End-to-end system test: full pipeline run on real WBWS data, all outputs produced and validated
-### Phase 6 — Hardening and Delivery
-**Deliverables**: Full test suite including adversarial challenge harness, performance validation report, Windows compatibility certification, complete documentation
-**Key activities**:
-- **Adversarial challenge suite** (required for delivery):
-  - AV-01: Random-signal baseline — signals replaced with coin flips, pipeline must return no-go
-  - AV-02: Overfit-injection test — curve-fit strategy must be flagged borderline or auto-rejected
-  - AV-03: Meta-config stability — >80% verdict stability under seed and iteration perturbation
-- Validate full pipeline completes within 4-hour target on target hardware
-- Profile and resolve bottlenecks if over budget (tuning levers: sample counts, MC iterations, stage transition candidate counts)
-- Validate resume-after-interruption at each of the 8 checkpoints
-- Validate parallel worker isolation: kill one worker mid-run, confirm pipeline continues
-- Calibrate verdict thresholds against first real run results (D-07)
-- Final documentation: module reference, YAML configuration guide, scenario authoring guide, output format guide, SQLite query cookbook, paper trading protocol
+
+| Phase | Name | Status | Key Deliverable |
+|---|---|---|---|
+| 0 | Planning & Requirements | ✅ Complete | BACKTESTER_PLAN.md v1.2 |
+| 1 | Design | ✅ Complete | Contracts, schema, all 12 decisions resolved |
+| 2 | Core Infrastructure | ✅ Complete | CandidateStore, StrategyRunner, Orchestrator skeleton |
+| 3 | Optimization Engines | ✅ Complete | GA, WFO (both modes), MC pre-filter |
+| 4 | Monte Carlo Deep & Verdict | ✅ Complete | MC deep, Sensitivity, Verdict engine |
+| 5 | Output Layer | ✅ Complete | report_generator.py, yaml_generator.py, all formats |
+| 6 | Hardening & Delivery | ✅ Complete | 233 tests green, adversarial suite, performance baseline, documentation |
+| 7 | Performance Optimisation | 🔵 Next | OPT-01 (pool reuse) + OPT-02 (batching) in sensitivity.py |
+
+### Phase 6 — Hardening & Delivery ✅ Complete (2026-03-03)
+
+**Completed deliverables:**
+- Block 0: E2E test on real WBWS data (13 tests — `test_e2e_wbws_real_data.py`)
+- Block 1: User guide (`BACKTESTER_USER_GUIDE.md`)
+- Block 2: Adversarial suite — AV-02 overfit-injection confirmed no_go; AV-03 position stability 100% across 3 seeds (8 tests — `test_adversarial_suite.py`)
+- Block 3: Performance baseline locked — Total=337s, Stage6=333s, 2.3% of daily budget (7 tests — `test_performance.py`)
+- Block 4: Resume validation at all 8 checkpoints; worker isolation confirmed; Windows spawn mock patching constraint documented (12 tests — `test_robustness.py`)
+- Block 5: Verdict threshold calibration — full 22-test grid against e2e_test scenario; boundary operators confirmed >= / <= inclusive (22 tests — `test_threshold_calibration.py`)
+- Block 6: Final documentation — ARCHITECTURE.md v1.2, TECHNICAL_SPEC.md v1.1, FUNCTIONAL_SPEC.md v1.1, BACKTESTER_PLAN.md v1.3, PROJECT_REPORT.md updated, OPERATOR_RUNBOOK.md created
+
+**Total tests green**: 233
 
 ---
 ## 14. Risk Register
-| ID | Risk | Probability | Impact | Mitigation |
-|---|---|---|---|---|
-| R-01 | Strategy integration mode chosen in Design phase proves too slow for 4-hour target | Medium | High | Benchmark all three options in Phase 1 before committing; design phase must include a timing prototype |
-| R-02 | SQLite write contention under 6 parallel workers causes corruption or slowdown | Medium | High | Prototype SQLite WAL mode with 6 concurrent writers in Phase 2 before full implementation |
-| R-03 | Windows `ProcessPoolExecutor` spawn overhead is prohibitive for large candidate counts | Low | High | Measure worker spawn cost in Phase 2; consider process pool reuse pattern if needed |
-| R-04 | GA evolves into parameter regions that produce valid YAMLs but invalid strategy runs | Medium | Medium | `strategy_runner.py` must treat all strategy failures as candidate failures — never propagates |
-| R-05 | GA WFO-aware fitness with random window sampling pushes total runtime over 4-hour target | Medium | High | Primary risk from revised GA design. Mitigate: reduce GA generations, reduce GA population size. Profile in Phase 3 before accepting. Random window sampling adds negligible overhead over fixed windows. |
-| R-06 | Full pipeline runtime exceeds 4-hour target | Medium | Medium | Phase 6 profiling; primary levers: reduce sample counts, GA generations, MC iterations, stage transition candidate counts. All configurable in YAML — no code changes needed. |
-| R-07 | Verdict thresholds (D-07) are set incorrectly on first production use | Medium | Medium | Thresholds are YAML-configurable, not hardcoded. Phase 6 calibration run on real data. Document recommended starting values in configuration guide. |
-| R-08 | SQLite schema designed in Phase 1 is insufficient for ML use cases discovered later | Low | Medium | ML schema review in Phase 1 design; adding columns is safe, removing is not. All numeric fields as individual columns from day one. |
-| R-09 | GA diversity penalty weight miscalibrated — too high suppresses convergence, too low has no effect | Medium | Low | Diversity penalty weight is YAML-configurable. Default calibrated in Phase 3 against reference data. Observable in CandidateStore: monitor population parameter spread per generation. |
-| R-10 | Adversarial challenge suite (AV-01/AV-02) reveals structural pipeline flaw late in Phase 6 | Low | High | Run AV-01 (random signal baseline) as a smoke test at the end of Phase 4, before the full output layer is built. Early failure detection reduces rework cost. |
+
+| ID | Risk | Status | Notes |
+|---|---|---|---|
+| R-01 | Integration mode too slow | ✅ Resolved | Benchmark passed Phase 2 |
+| R-02 | SQLite write contention | ✅ Resolved | WAL + single-writer queue confirmed Phase 2 |
+| R-03 | ProcessPoolExecutor spawn overhead | ✅ Resolved | Structural bottleneck confirmed and documented (Stage 6, ~66–89s/candidate). OPT-01 planned Block 7. |
+| R-04 | GA invalid strategy runs | ✅ Resolved | strategy_runner.py never raises |
+| R-05 | GA WFO-aware fitness over 4hr budget | ✅ Resolved | Total run 337–457s (2.3–3.2% of daily budget) |
+| R-06 | Full pipeline over 4hr target | ✅ Resolved | Well within budget on 3-month slice |
+| R-07 | Verdict thresholds miscalibrated | 🟡 Open | Starting values in YAML; recalibrate after first real run (D-07) |
+| R-08 | SQLite schema insufficient for ML | ✅ Resolved | ML-ready schema confirmed Phase 1 |
+| R-09 | GA diversity penalty miscalibration | 🟡 Open | Weight YAML-configurable; monitor population spread in first real run |
+| R-10 | Adversarial suite finding flaw late | ✅ Resolved | AV-01 passed Phase 4; AV-02/03 passed Phase 6 Block 2 |
 
 ---
-*Document produced from design session on 2026-02-27.*
+## 15. Lessons Learned
+
+Recorded at Phase 6 completion. These represent confirmed implementation constraints that future developers must be aware of.
+
+**L-01 — Windows spawn mode: mock patches do not cross the worker boundary**
+
+`unittest.mock.patch` decorates objects in the parent process. On Windows `ProcessPoolExecutor` spawn mode, child processes are fresh Python interpreters — they re-import modules from scratch and do not inherit parent-process patches. Patching a worker function from a test has no effect on the worker; the original function runs instead.
+
+The correct isolation point for integration tests that exercise Stage 6 loop behaviour (continue on failure, write profile, advance checkpoint) is to patch at the orchestrator level — specifically `src.backtesting.orchestrator.evaluate_sensitivity` — not the worker function `_evaluate_perturbation`. The unit under test is the stage's orchestration behaviour, not the worker's internal logic. Worker-level tests belong in the sensitivity module's own unit tests where `ProcessPoolExecutor` is not involved.
+
+Confirmed failure mode (Block 4, ROB-09): `Can't pickle <class 'unittest.mock.MagicMock'>` — the mock object itself failed pickling when the executor attempted to transmit it to a worker process.
+
+**L-02 — Verdict boundary operators must be >= / <= (inclusive) at go thresholds**
+
+The go thresholds in the verdict engine use inclusive operators: `wfo_composite >= go_wfo_floor` and `ruin_prob <= go_mc_ruin_ceiling`. Using strict `>` / `<` would incorrectly classify candidates scoring exactly at the go threshold as BORDERLINE rather than AUTO_GO. The go threshold is intended as a pass line — meeting the standard exactly is sufficient.
+
+The no-go boundaries use strict operators in the opposite direction: `wfo_composite < borderline_wfo_floor` and `ruin_prob > borderline_mc_ruin_ceiling`. This creates a well-defined three-zone partition with no ambiguous boundary cases.
+
+Confirmed and locked from `verdict.py` source review (Block 5). Do not change to strict inequality at go thresholds.
+
+**L-03 — Stage 6 is the dominant runtime cost; pool reuse is the highest-value optimisation**
+
+The performance baseline (Block 3) confirmed that Stage 6 (Sensitivity) accounts for 332–446s of a 337–457s total run — over 97% of end-to-end time. The root cause is Windows `ProcessPoolExecutor` spawn mode: each candidate's perturbation batch creates a new pool, paying per-worker startup cost (a fresh Python interpreter spawn) for every candidate.
+
+Pool reuse across candidates (OPT-01) eliminates the per-candidate startup cost and is expected to reduce Stage 6 by 40–60%. This is the single highest-value optimisation available. Stage 5 (MC Deep) at 0.3–2.5s for fully vectorised 3000-iteration simulation is not a bottleneck and requires no optimisation until `input_count > 50`.
+
+OPT-01 is planned for Block 7. Do not start it until Block 6 documentation is fully closed.
+
+**L-04 — Config fixture shape for tests must match load_scenario() nested structure**
+
+`scenario.py`'s `load_scenario()` reads a nested config dict: `config["scenarios"][name]["fitness_weights"]`, `config["scenarios"][name]["constraints"]`, etc. Tests that construct config fixtures as flat dicts (e.g. `{"fitness_weights": {...}}` at the top level) fail with `KeyError` at the nested key access.
+
+The correct fixture shape wraps the scenario data under `scenarios → name → subsection`, matching the structure of `backtest_template.yaml`. This constraint applies to any test that calls `load_scenario()` directly or exercises code that calls it transitively (orchestrator init, verdict calibration tests).
+
+Confirmed across multiple test failures during Phase 6 Blocks 0 and 5.
+
+---
 *v1.0 — Initial version produced 2026-02-27.*
-*v1.1 — Updated 2026-02-27: corrected evidence pillars (MC robustness + multi-period WFO only), added scenario-based backtesting (Section 2.4, Section 4.10), revised pipeline sequence to Random → MC Pre-Filter → GA (WFO-aware) → Full WFO → MC Deep → Sensitivity → Report, added long-term platform context (Section 1b), updated all dependent sections.*
-*v1.2 — Updated 2026-02-27: incorporated accepted items from independent adversarial review. Changes: (1) D-05 resolved — GA WFO window selection changed to random sampling per generation (GA-06); (2) GA diversity penalty added as Should-Have requirement (GA-07) with new `ga/diversity.py` module; (3) WFO consistency score redefined as composite of four orthogonal temporal metrics — `wfo/consistency_scorer.py` added (WF-04 updated); (4) `VerdictResult` gains `deployment_status` field defaulting to `PAPER_TRADE_REQUIRED` (Section 1b, 2.2, verdict.py, yaml_generator.py); (5) Adversarial validation requirements added as new Section 4.11 (AV-01 through AV-05); (6) Architecture Principle 10 added — Immutable Run Artifacts; (7) CS-07 added — config hash, seeds, perturbation profile name stored immutably in CandidateStore; (8) WF-06 updated — IS/OOS gate now optional via `enforce_oos_gate` YAML flag (informational by default; >50% degradation = borderline when enabled); (9) WF-09 added — post-Stage-1 statistical adequacy warning log; (10) New open decisions D-11 and D-12 added; (11) Scope clarified: regime-aware MC profiles, true global sensitivity pass, and pre-run power analysis gating explicitly out of scope for v1 with rationale; (12) R-09 and R-10 added to risk register; (13) Phase 3 and Phase 6 updated to reflect new modules and adversarial suite.*
-*Next step: Design Phase — resolve open decisions D-01 through D-04, D-06 through D-12, define contracts, produce functional and technical specification.*
+*v1.1 — Updated 2026-02-27: corrected evidence pillars, added scenario-based backtesting, revised pipeline sequence, added platform context.*
+*v1.2 — Updated 2026-02-27: incorporated accepted items from adversarial review. D-05 resolved, GA diversity penalty, WFO consistency composite, VerdictResult deployment_status, AV requirements, Architecture Principle 10, CS-07, WF-06 updated, WF-09 added, D-11/D-12 added.*
+*v1.3 — Updated 2026-03-03: Phase 6 marked complete. Section 13 plan table updated. All open decisions summary table added (Section 12). R-03/R-05/R-06/R-10 closed in risk register. Section 15 Lessons Learned added (L-01 through L-04). Sections 7–11 reference v1.2 for unchanged content.*

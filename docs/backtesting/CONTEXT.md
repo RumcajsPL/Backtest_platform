@@ -1,206 +1,107 @@
-# PROJECT CONTEXT — Backtesting & Optimization Framework
-## Identity
-**Project**: Backtesting & Optimization Framework for WBWSStrategy
-**Operator**: Single quantitative retail trader, Windows 10, eToro broker
-**Stage**: Phase 6 in progress — Blocks 0–5 complete (233 green). Start Block 6.
-**Last session ended**: 2026-03-03 — Blocks 4 and 5 closed. ARCHITECTURE.md v1.1.0 updated.
+# CONTEXT.md — Backtesting & Optimization Framework
+**Updated**: 2026-03-03 (end of Phase 6 Block 6 / start of Block 7)
 ---
-## Non-Negotiables (Architecture — never override)
-1. **Contracts are the interface** — frozen dataclasses between every module. No raw dicts.
-2. **Single responsibility** — one module, one concern. Orchestrator orchestrates only.
-3. **Fail fast** — invalid config raises at construction. No silent fallbacks.
-4. **Single source of truth** — all config from `backtest_template.yaml`.
-5. **Immutability** — `frozen=True` on all contracts.
-6. **Windows compatibility** — `pathlib.Path`, `ProcessPoolExecutor` spawn mode, `utf-8`.
-7. **Code hygiene** — no print statements, no debug flags, no MagicMocks in production.
-8. **CacheManager** — reuse existing. `clear_all_caches()` between runs.
-9. **Immutable run artifacts** — config hash, all seeds, perturbation profile name stored.
+## Current State
+**Phase 6 complete. All 6 blocks done. 233 tests green.**
+An independent audit report was received and fully analysed this session. Block 7 scope is expanded beyond the original OPT-01/02 plan to include audit remediation. Sub-block sequence and file upload order are in NEXT_SESSION_PLAN.md.
+**Next action**: Block 7 — upload source files in the order listed below, then work through 7A → 7D.
 ---
-## Project Reference Files
-| File | Purpose | Location |
+## Phase 6 — What Was Completed (All Blocks)
+| Block | Deliverable | Tests added |
 |---|---|---|
-| `BACKTESTER_PLAN.md` | Master requirements v1.2 | `docs/backtesting/` |
-| `FUNCTIONAL_SPEC.md` | Plain-language 8-stage spec | `docs/backtesting/` |
-| `TECHNICAL_SPEC.md` | Contracts, decisions, module signatures, YAML schema | `docs/backtesting/` |
-| `SQLITE_SCHEMA.md` | 9 tables, CREATE TABLE, indexes, 10 query examples | `docs/backtesting/` |
-| `CHANGE_LOG.md` | All changes + session handoff blocks | `docs/backtesting/` |
-| `PROJECT_REPORT.md` | Phase progress tracker | `docs/backtesting/` |
-| `ARCHITECTURE.md` | Architecture v1.1.0 — updated this session | `docs/backtesting/architecture/` |
-| `backtest_template.yaml` | Backtester config template | `configs/backtesting/` |
+| Block 0 | E2E test on real WBWS data | +13 (`test_e2e_wbws_real_data.py`) |
+| Block 1 | `BACKTESTER_USER_GUIDE.md` | 0 |
+| Block 2 | Adversarial suite — AV-02 no_go confirmed; AV-03 100% stable | +8 (`test_adversarial_suite.py`) |
+| Block 3 | Performance baseline locked — Total=337s, Stage6=333s | +7 (`test_performance.py`) |
+| Block 4 | Resume at all 8 checkpoints; worker isolation confirmed | +12 (`test_robustness.py`) |
+| Block 5 | Verdict threshold calibration; boundary operators confirmed ≥/≤ | +22 (`test_threshold_calibration.py`) |
+| Block 6 | Final documentation (6 docs updated + OPERATOR_RUNBOOK.md created) | 0 |
 ---
-## Pipeline (DO NOT REORDER)
-```
-Stage 0: Validation & Init
-Stage 1: Random Search         (LHS, significance guard, constraint filter)
-Stage 2: MC Pre-Filter         (cheap — 2 perturbation types, ruin screen)
-Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty)
-Stage 4: Full WFO              (all windows, 4-metric composite consistency score)
-Stage 5: MC Deep               (full iterations, all perturbation types, WFO survivors only)
-Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline)
-Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
-```
----
-## Test Counts
-| Scope | Tests | Status |
+## This Session (Block 6) — Documents Produced
+| Document | Version | Key changes |
 |---|---|---|
-| Phase 2–4 cumulative | 123 | ✅ All green |
-| test_live_pipeline.py | 17 | ✅ All green |
-| test_sqlite_queries.py | 12 | ✅ All green |
-| test_report_yaml.py | 19 | ✅ All green |
-| test_e2e_wbws_real_data.py | 13 | ✅ All green |
-| test_adversarial_suite.py | 8 | ✅ All green |
-| test_performance.py | 7 | ✅ All green |
-| test_robustness.py | 12 | ✅ All green |
-| test_threshold_calibration.py | 22 | ✅ All green |
-| **Total green** | **233** | ✅ |
+| ARCHITECTURE.md | 1.2.0 | Section 3 stage counts from YAML; Section 8 capital_accumulation production verdict grid |
+| TECHNICAL_SPEC.md | 1.1.0 | D-07 boundary operators confirmed (≥/≤ inclusive at go thresholds); Windows spawn patch constraint §1a |
+| FUNCTIONAL_SPEC.md | 1.1.0 | Stage 5 never-raises; Stage 6 profile_complete=False path; Stage 7 ruin=None→NO_GO; Stage 0 resume coverage; e2e_test warning |
+| BACKTESTER_PLAN.md | 1.3.0 | Phase 6 complete; §12 all decisions resolved; §15 Lessons Learned L-01–L-04 |
+| PROJECT_REPORT.md | — | Phase 6 complete; 233 tests; Block 7 preview |
+| OPERATOR_RUNBOOK.md | 1.0.0 | New — 8-section operator guide covering pre-run, monitoring, verdict, promotion, resume, tuning |
+**Note**: SKILL.md was NOT updated during Block 4 and Block 5 sessions. It still reads "199 tests, Block 4 next, Stages 1–4 stubs." SKILL.md update is the **first task of sub-block 7A**.
 ---
-## Current Phase Status
+## Audit Analysis Summary (Backtesting_Framework_Audit_Report.md, 2026-03-03)
+### HIGH Findings
+| ID | Finding | Verdict | Rationale |
+|---|---|---|---|
+| H-01 | `strategy_runner.evaluate()` missing `date_start`/`date_end` | **FALSE POSITIVE** | SKILL.md (Block 3 state): "Accepts date_start/date_end." Audit read TECHNICAL_SPEC simplified signature, not source. |
+| H-02 | `CandidateStore` missing `write_wfo_window_result` / `flag_candidate_wfo_insufficient` | **UNRESOLVED** | Absent from SKILL.md store API list. Audit quotes specific line numbers in wfo_engine.py. SKILL.md may just be stale on this point. **First source file to upload in Block 7.** If missing, HIGH priority fix before other work. |
+| H-03 | WFO date range not passed to strategy runner | **LIKELY FALSE POSITIVE** | Contingent on H-01. `wfo_evaluator.py` receives `WFOWindow`; if it passes `window.start_date`/`end_date` to `strategy_runner.evaluate()`, finding is resolved. Confirm by uploading `wfo_evaluator.py`. |
+### MEDIUM Findings — All Accepted, Prioritised
+| ID | Finding | P | Action in Block 7 |
+|---|---|---|---|
+| M-05 | No Stage 0 param name validation vs `_PARAM_KEY_MAP` | 1 | Add `_validate_parameter_names()` to orchestrator Stage 0 |
+| M-04 | MC zero-equity drawdown understatement | 2 | Fix numpy path in `mc_metrics.py` |
+| M-03 | Hardcoded WFO collapse threshold (0.40) | 2 | Add to `ScenarioProfile`, update `consistency_scorer.py` |
+| M-02 | Hardcoded fitness normalisation constants | 2 | Add to `ScenarioProfile`, update `fitness.py` |
+| M-01 | `median_oos_delta` always None | 3 | Compute in `consistency_scorer.py`, propagate to `VerdictResult` |
+| M-06 | Hardcoded mutation std dev (2 steps) | 3 | Add `mutation_std_steps` to YAML + `mutation.py` |
+| M-07 | Hardcoded chart dimensions | 4 | Make configurable or use responsive sizing |
+### LOW/Evolution (E-01–E-11) — All accepted as future roadmap. No v1 action.
+### I-07 — `datetime.utcnow()` in Phase 2/3 modules — fix in Block 7 sub-block 7A.
+---
+## Completeness Check Against BACKTESTER_PLAN
+All Must-Have requirements confirmed implemented. Two Should-Have items with uncertain implementation status — verify by uploading source:
+| Item | Requirement | Status |
+|---|---|---|
+| WF-07 | `parameter_region_width` actually computed | Uncertain — field in contract, may always be None |
+| WF-09 | Post-Stage-1 statistical adequacy warning | Uncertain — not mentioned in SKILL.md or test list |
+---
+## Performance Baseline (LOCKED — Block 3)
 ```
-PHASE:      Phase 6 — Hardening & Delivery
-COMPLETED:  Blocks 0, 1, 2, 3, 4, 5
-NEXT:       Block 6 — Final Documentation
+Windows 10, 6 workers, 3-month WBWS data slice
+Run 2 (canonical): Total=337.2s  Stage5=0.3s  Stage6=332.6s  Stage7=4.4s
+Daily budget: 14,400s → 2.3% consumed
+Stage 6 dominates (98.7%). Root cause: Windows spawn mode per-worker pool startup.
+OPT-01 target: Stage 6 ≤ 200s via pool reuse across candidates.
 ```
 ---
-## Block 3 Performance Baseline (LOCKED — 2026-03-03)
-```
-Hardware:  Windows 10, 6 workers
-Config:    mc.deep.iterations=3000, mc.deep.input_count=10,
-           sens.input_count=5, sens.max_steps=2, max_workers=6
-Run 1:  Total=457.2s  Stage5=2.5s   Stage6=446.3s  Stage7=8.3s
-Run 2:  Total=337.2s  Stage5=0.3s   Stage6=332.6s  Stage7=4.4s
-Budget: 337–457s of 14,400s (2.3–3.2%) ✅
-PERF-06: Stage 6 dominance is expected (not a bug).
-```
+## Test Inventory
+| File | Count | Phase | Status |
+|---|---|---|---|
+| unit/ (Phases 2–4) | 123 | 2–4 | ✅ |
+| test_live_pipeline.py | 17 | 5 | ✅ |
+| test_sqlite_queries.py | 12 | 5 | ✅ |
+| test_report_yaml.py | 19 | 5 | ✅ |
+| test_e2e_wbws_real_data.py | 13 | 6 Blk 0 | ✅ |
+| test_adversarial_suite.py | 8 | 6 Blk 2 | ✅ |
+| test_performance.py | 7 | 6 Blk 3 | ✅ |
+| test_robustness.py | 12 | 6 Blk 4 | ✅ |
+| test_threshold_calibration.py | 22 | 6 Blk 5 | ✅ |
+| **Total** | **233** | | **✅** |
 ---
-## Performance Optimisation Opportunities (Block 7)
-```
-OPT-01  [HIGH]      Pool reuse across candidates in Stage 6 — 40–60% reduction
-OPT-02  [MEDIUM]    Batch perturbations per worker task — further 15–25%
-OPT-03  [LOW]       sensitivity.input_count: 5→3, YAML only, saves ~130–180s
-OPT-04  [NEGLIGIBLE] Stage 5 no action until input_count > 50
-OPT-05  [LOW]       Clean up evaluate_sensitivity max_workers when OPT-01 lands
-All files: src/backtesting/evaluation/sensitivity.py
-```
+## Files to Upload at Start of Block 7 (in order)
+| # | File | Why first |
+|---|---|---|
+| 1 | `src/backtesting/candidate_store.py` | H-02 verification — does `write_wfo_window_result` exist? |
+| 2 | `src/backtesting/wfo/wfo_evaluator.py` | H-03 verification — does it pass window dates? |
+| 3 | `src/backtesting/evaluation/sensitivity.py` | OPT-01/02 implementation target |
+| 4 | `tests/backtesting/integration/test_performance.py` | Regression guard — run before/after OPT |
+| 5 | `src/backtesting/fitness.py` | M-02 normalisation |
+| 6 | `src/backtesting/wfo/consistency_scorer.py` | M-03 collapse threshold |
+| 7 | `src/backtesting/monte_carlo/mc_metrics.py` | M-04 zero-equity drawdown |
+| 8 | `src/backtesting/orchestrator.py` | WF-07/WF-09 verification; M-05 Stage 0 validation |
 ---
-## Verdict Engine Logic (LOCKED — confirmed Block 5, 2026-03-03)
+## Architecture Constraints (Non-Negotiable)
+
 ```python
-wfo_pillar_go    = wfo_composite >= wfo_go_floor        # >= INCLUSIVE
-wfo_pillar_no_go = wfo_composite < wfo_borderline_floor  # < strictly less
-mc_pillar_go    = ruin_prob <= mc_go_ceiling             # <= INCLUSIVE
-mc_pillar_no_go = ruin_prob > mc_borderline_ceiling      # > strictly greater
-# ruin_prob is None → mc_pillar_no_go=True → NO_GO always
-# verdict.py logs WARNING for None — expected behaviour, not a bug
-# oos_gate_triggered = oos_gate_enabled AND wfo_score.oos_gate_triggered
-# Either condition alone does NOT trigger the flag
-if wfo_pillar_no_go OR mc_pillar_no_go:          → NO_GO
-elif wfo_pillar_go AND mc_pillar_go AND no flags: → AUTO_GO
-else:                                             → BORDERLINE
+# Contracts: frozen dataclasses — never raw dicts between modules
+# CandidateParameterSet.create()  — always use factory, never construct directly
+# strategy_runner, run_mc, evaluate_sensitivity — never raise to caller
+# datetime.now(timezone.utc)      — never datetime.utcnow() (deprecated)
+# pathlib.Path + src/utils/paths.py — never hardcoded separators
+# ProcessPoolExecutor spawn mode  — no fork-dependent code
+# LIVE_APPROVED                   — never set in code, operator-only
+# store.close()                   — always in finally block
+# mode_override="core"            — not mode="core"
+# Stage 6 integration test patch  — patch at orchestrator boundary, not inside worker
+# e2e_test scenario               — never for production optimization runs
 ```
-## Verdict Grid (LOCKED — Block 5, e2e_test thresholds)
-```
-go_wfo>=0.55  borderline_wfo>=0.40  go_mc<=0.10  borderline_mc<=0.25
-           MC<go    MC=go   MC=bdr   MC>bdr  MC=None
-WFO>go:   AUTO_GO  AUTO_GO  BORDER   NO_GO   NO_GO
-WFO=go:   AUTO_GO  AUTO_GO  BORDER   NO_GO   NO_GO
-WFO=bdr:  BORDER   BORDER   BORDER   NO_GO   NO_GO
-WFO=ng:   NO_GO    NO_GO    NO_GO    NO_GO   NO_GO
-Modifier demotion (AUTO_GO base):
-  spike / collapse / incomplete / oos_gate(both) → BORDERLINE
-  All flags on NO_GO base → NO_GO (cannot override)
-```
----
-## Windows Spawn Mode — Mock Patching Constraint (CRITICAL — confirmed Block 4)
-```
-unittest.mock patches DO NOT cross ProcessPoolExecutor spawn boundary on Windows.
-Consequence for tests:
-  - Never patch _evaluate_perturbation via unittest.mock.patch
-  - Patch evaluate_sensitivity at: src.backtesting.orchestrator.evaluate_sensitivity
-  - This is the correct isolation boundary for Stage 6 orchestration tests
-Confirmed by Block 4 ROB-09:
-  ERROR: Can't pickle <class 'unittest.mock.MagicMock'>
-```
----
-## Critical Patch Targets
-```python
-patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)          # Stage 5 CORRECT
-patch("src.backtesting.orchestrator.run_mc", ...)                   # WRONG — AttributeError
-patch("src.backtesting.orchestrator.evaluate_sensitivity", ...)     # Stage 6 CORRECT
-patch("src.backtesting.evaluation.sensitivity._evaluate_perturbation", ...)  # WRONG Windows
-```
----
-## Test Import Convention (CRITICAL)
-```python
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-from src.utils.paths import PROJECT_ROOT
-from src.backtesting.contracts import (...)      # contracts BEFORE candidate_store
-from src.backtesting.candidate_store import CandidateStore
-```
----
-## CandidateStore Write API
-```python
-store.write_candidate(record: CandidateRecord)   # ONE arg — fitness embedded in record
-store.query_mc_results(run_id, "deep")           # mode is str not MCMode enum
-# NO write_fitness_result() method
-```
----
-## CandidateRecord Constructor
-```python
-# parameters_json (str) not parameters (dict)
-# stage = CandidateStage.RANDOM.value (str)
-# recorded_at = datetime.now(UTC)
-# All 30+ fields explicit — no defaults except verdict group
-# NO fields: win_rate, profit_factor, total_trades, expectancy, max_drawdown
-```
----
-## MCResult Constructor
-```python
-# Required: perturbation_profile_name (str), evaluated_at (datetime)
-# Field: worst_drawdown_across_paths — NOT worst_drawdown
-# error=None if valid; error="..." and ruin_probability=None if failed
-```
----
-## Config Shape for Tests
-```python
-# load_scenario() requires nested sub-dicts — flat dict raises KeyError
-"scenarios": { "e2e_test": {
-    "description": "...",
-    "fitness_weights": { "net_pnl":0.25, "expectancy":0.25, "max_drawdown":0.20,
-                         "win_rate":0.15, "trade_frequency":0.10, "profit_factor":0.05 },
-    "constraints": { "min_win_rate":0.0, "max_drawdown":1.0, "max_losing_streak":9999,
-                     "min_trades_per_week":0.0, "min_expectancy":-9999.0,
-                     "min_profit_factor":0.0 },
-    "mc_prefilter_ruin_threshold": 1.0,
-    "wfo_temporal_weights": { "median_return":0.40, "variance":0.20,
-                               "worst_drawdown":0.20, "fraction_positive":0.20 },
-    "verdict_thresholds": { "go_wfo_floor":0.55, "borderline_wfo_floor":0.40,
-                            "go_mc_ruin_ceiling":0.10, "borderline_mc_ruin_ceiling":0.25,
-                            "sensitivity_spike_threshold":0.15 },
-    "report_emphasis": [],
-}}
-# fitness weights sum == 1.0; wfo_temporal weights sum == 1.0
-# borderline_wfo_floor < go_wfo_floor
-# go_mc_ruin_ceiling < borderline_mc_ruin_ceiling
-```
----
-## Platform Notes
-- Windows 10, Python 3.13.12
-- `pathlib.Path`, spawn mode, `utf-8` explicit everywhere
-- `strategy_runner.run()` kwarg: `mode_override="core"` NOT `mode="core"`
-- Timestamps: pipeline UTC, OHLCV/signals CET/CEST
----
-## Phase 6 Blocks
-```
-Block 0 (done):  E2E real data — 13/13 ✅
-Block 1 (done):  _PARAM_KEY_MAP audit — frozen V1 ✅
-Block 2 (done):  Adversarial suite — 8/8 ✅
-Block 3 (done):  Performance — 7/7 ✅ Baseline locked. OPT-01–05 identified.
-Block 4 (done):  Robustness — 12/12 ✅ Windows spawn constraint documented.
-Block 5 (done):  Threshold calibration — 22/22 ✅ Verdict grid locked.
-Block 6 (NEXT):  Final documentation
-                 Upload first: backtest_template.yaml (for ARCHITECTURE.md
-                 production threshold values + stage counts in Section 3)
-Block 7:         OPT-01 + OPT-02 — expected 40–60% Stage 6 reduction
-```
-<!-- END CONTEXT.md -->

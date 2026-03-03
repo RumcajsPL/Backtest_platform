@@ -1,5 +1,5 @@
 # ARCHITECTURE.md — Backtesting & Optimization Framework
-**Version**: 1.1.0
+**Version**: 1.2.0
 **Date**: 2026-03-03
 **Audience**: Any developer working on any aspect of the backtester pipeline
 **Status**: Living document — update when module interfaces, contracts, or data flow change
@@ -89,13 +89,13 @@ flowchart TD
 
     subgraph ORCH["orchestrator.py — Pipeline Sequencer"]
         S0["Stage 0\nValidation & Init"]
-        S1["Stage 1\nRandom Search\n(LHS/random, 200/zone)"]
-        S2["Stage 2\nMC Pre-Filter\n(cheap, 300 iters, ruin screen)"]
-        S3["Stage 3\nGA Evolution\n(60 pop × 30 gen)"]
-        S4["Stage 4\nFull WFO\n(all windows, top 30)"]
-        S5["Stage 5\nMC Deep\n(3000 iters, top 10 by WFO)"]
-        S6["Stage 6\nSensitivity\n(±1/±2 steps, top 5)"]
-        S7["Stage 7\nReport & Output"]
+        S1["Stage 1\nRandom Search\n(LHS/random, 200/zone, 2 zones → 400 total)"]
+        S2["Stage 2\nMC Pre-Filter\n(300 iters, top 120 by fitness, ruin screen)"]
+        S3["Stage 3\nGA Evolution\n(60 pop × 30 gen, seeded from MC_PREFILTER_PASS)"]
+        S4["Stage 4\nFull WFO\n(5 windows, top 30 from Random+GA pool)"]
+        S5["Stage 5\nMC Deep\n(3000 iters, top 10 by WFO score)"]
+        S6["Stage 6\nSensitivity\n(±1/±2 steps, top 5 by WFO score)"]
+        S7["Stage 7\nReport & Output\n(shortlist top 5)"]
 
         S0 --> S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
     end
@@ -380,16 +380,16 @@ elif wfo_pillar_go AND mc_pillar_go AND no flags: → AUTO_GO
 else:                                             → BORDERLINE
 ```
 
-### Confirmed verdict grid (Block 5, e2e_test scenario thresholds)
+### Confirmed verdict grid (Block 5, capital_accumulation scenario — production thresholds)
 
 ```
-Thresholds: go_wfo>=0.55  borderline_wfo>=0.40  go_mc<=0.10  borderline_mc<=0.25
+Thresholds: go_wfo>=0.65  borderline_wfo>=0.40  go_mc<=0.05  borderline_mc<=0.15
 
 WFO region              MC<go    MC=go    MC=bdr   MC>bdr   MC=None
 ────────────────────────────────────────────────────────────────────
-wfo > 0.55 (ABOVE_GO)   AUTO_GO  AUTO_GO  BORDER   NO_GO    NO_GO
-wfo = 0.55 (AT_GO)      AUTO_GO  AUTO_GO  BORDER   NO_GO    NO_GO
-wfo = 0.47 (BORDERLINE) BORDER   BORDER   BORDER   NO_GO    NO_GO
+wfo > 0.65 (ABOVE_GO)   AUTO_GO  AUTO_GO  BORDER   NO_GO    NO_GO
+wfo = 0.65 (AT_GO)      AUTO_GO  AUTO_GO  BORDER   NO_GO    NO_GO
+wfo = 0.52 (BORDERLINE) BORDER   BORDER   BORDER   NO_GO    NO_GO
 wfo = 0.30 (NO_GO)      NO_GO    NO_GO    NO_GO    NO_GO    NO_GO
 
 Modifier demotion (AUTO_GO base → one flag active):
@@ -400,9 +400,10 @@ Modifier demotion (AUTO_GO base → one flag active):
   All flags on NO_GO   → NO_GO  (flags cannot override)
 ```
 
-**Note**: Threshold values above are the `e2e_test` scenario used in calibration tests.
-Production `capital_accumulation` scenario thresholds are defined in `backtest_template.yaml`
-and should be recalibrated after the first real run.
+**Note**: Threshold values above are the `capital_accumulation` production scenario defaults from
+`backtest_template.yaml`. These should be recalibrated after the first real run (see D-07 in
+`TECHNICAL_SPEC.md`). For the `e2e_test` scenario thresholds used in calibration tests, see
+`test_threshold_calibration.py`.
 
 ---
 
@@ -533,3 +534,4 @@ Budget: 337–457s of 14,400s daily budget (2.3–3.2%). Well within tolerance.
 |---|---|---|
 | 1.0.0 | 2026-03-02 | Initial — Phase 6. Full module map, data flow, contract table, verdict logic, store threading model. |
 | 1.1.0 | 2026-03-03 | Block 4: Added Windows spawn mock patching constraint (Section 9). Corrected patch targets table. Added confirmed verdict grid from Block 5 calibration. Fixed verdict diagram to match exact operators from verdict.py source (>= and <= inclusive at go thresholds; ruin=None → NO_GO path). Added performance baseline and OPT table (Section 11). Updated test file list in Section 2 (233 total). Added MCResult.error and SensitivityProfile.profile_complete behaviour notes to Section 6. |
+| 1.2.0 | 2026-03-03 | Block 6: Section 3 stage counts updated to match backtest_template.yaml (200/zone, 2 zones→400 total; MC prefilter top 120; GA 60 pop × 30 gen; WFO 5 windows top 30; MC Deep 3000 iters top 10; Sensitivity top 5; shortlist top 5). Section 8 verdict grid replaced e2e_test scenario values with capital_accumulation production thresholds (go_wfo>=0.65, borderline_wfo>=0.40, go_mc<=0.05, borderline_mc<=0.15). Cross-reference added to test_threshold_calibration.py for e2e_test values. |

@@ -1,8 +1,8 @@
 # FUNCTIONAL_SPEC.md
 ## Backtesting & Optimization Framework — Functional Specification
-**Version**: 1.0.0
-**Date**: 2026-02-27
-**Phase**: Phase 1 — Design
+**Version**: 1.1.0
+**Date**: 2026-03-03
+**Phase**: Phase 1 — Design → Phase 6 — Hardening & Delivery
 **Status**: Complete
 
 ---
@@ -68,7 +68,14 @@ The orchestrator validates that all referenced data files exist and are readable
 
 If all validations pass, the orchestrator initialises the `CandidateStore`. It writes a `RunMetadata` record containing: a unique run ID (UUID), a SHA-256 hash of the full `backtest_template.yaml` content, the active scenario name, the start timestamp, all random seeds (one per stage that uses randomness), the perturbation profile name for MC, and the initial checkpoint state `RUN_INITIALISED`.
 
-On startup, before any validation, the orchestrator checks the `CandidateStore` for a prior incomplete run. If one exists (checkpoint state is not `COMPLETE`), the operator is asked whether to resume or start fresh. If resume is selected, Stage 0 validation is still re-run to confirm the config has not changed (the stored config hash is compared to the current file hash). If the config has changed, resume is rejected and a new run must be started.
+**Resume logic**: On startup, before any validation, the orchestrator checks the `CandidateStore` for a prior incomplete run. If one exists (checkpoint state is not `COMPLETE`), the operator is asked whether to resume or start fresh. If resume is selected, Stage 0 validation is still re-run to confirm the config has not changed (the stored config hash is compared to the current file hash). If the config has changed, resume is rejected and a new run must be started.
+
+**Checkpoint resume coverage**: All 8 `Checkpoint` values have been verified as safe interruption points (Block 4, 2026-03-03). The orchestrator correctly skips already-completed stages based on the stored checkpoint and resumes from the first incomplete stage. A run interrupted at any of the following checkpoints will always reach `COMPLETE` on resume with an identical config:
+
+```
+RUN_INITIALISED → RANDOM_SEARCH_COMPLETE → MC_PREFILTER_COMPLETE → GA_COMPLETE
+→ WFO_COMPLETE → MC_DEEP_COMPLETE → SENSITIVITY_COMPLETE → COMPLETE
+```
 
 **Checkpoint written**: `RUN_INITIALISED`
 
@@ -204,9 +211,11 @@ The `MCMetrics` module computes:
 
 All MC results are written to the `CandidateStore` with stage `MC_DEEP`. The perturbation profile name is stored with each record.
 
+**"Never raises" contract**: `run_mc` never raises to its caller. If a candidate fails MC simulation for any reason (e.g. no trades, degenerate equity path, unexpected error), the failure is returned as `MCResult(error="...", ruin_probability=None)`. The orchestrator logs a WARNING and continues — the result is still written to the store. `verdict.py` maps `ruin_probability=None` → `mc_pillar_no_go=True` → `NO_GO`. The pipeline is never aborted by a Stage 5 MC failure.
+
 **Checkpoint written**: `MONTE_CARLO_COMPLETE`
 
-**Failure behaviour**: Individual candidate MC failures are isolated. A candidate that fails MC simulation (e.g. no trades, degenerate equity path) is recorded as `MC_DEEP_FAIL` with the error logged. It is excluded from Stage 6 and the final report's ranked shortlist, but appears in the full pipeline report with its failure reason.
+**Failure behaviour**: As above — individual candidate MC failures surface via `MCResult.error`. No candidate failure stops the stage. A failed candidate is excluded from the final report's ranked shortlist but appears in the full pipeline report with its failure reason and NO_GO verdict.
 
 ---
 
@@ -218,7 +227,7 @@ All MC results are written to the `CandidateStore` with stage `MC_DEEP`. The per
 
 For each of the top candidates (after MC Deep, typically 3–5), the `SensitivityEvaluator` holds all parameters fixed and varies each optimizable parameter independently, one at a time, at ±1 step and ±2 steps from its current value. The step size for each parameter is the same as defined in the YAML parameter space.
 
-Each perturbation produces a new `CandidateParameterSet`. The `StrategyRunner` evaluates each perturbed candidate in parallel. The fitness delta for each parameter at each step is computed: `delta = perturbed_fitness - baseline_fitness`.
+Each perturbation produces a new `CandidateParameterSet`. The `StrategyRunner` evaluates each perturbed candidate in parallel using `ProcessPoolExecutor` (Windows spawn mode). The fitness delta for each parameter at each step is computed: `delta = perturbed_fitness - baseline_fitness`.
 
 The resulting `SensitivityProfile` shows, for each parameter, how much fitness changes as that parameter moves away from its optimised value. A flat profile (small deltas across all parameters and steps) indicates robustness. A sharp spike (one or two parameters where ±1 step produces large fitness collapse) indicates a parameter cliff — the candidate is sensitive to that parameter's exact value.
 
@@ -226,9 +235,11 @@ Any candidate whose sensitivity profile shows a spike above the configured `spik
 
 All sensitivity results are written to the `CandidateStore` with stage `SENSITIVITY`, with one row per candidate per parameter per step.
 
+**`profile_complete=False` path**: If more than 50% of a candidate's perturbation evaluations fail (e.g. parameter boundary violations, strategy errors on perturbed configs), the `SensitivityProfile` is written with `profile_complete=False`. This sets the `sensitivity_profile_incomplete` modifier flag in `verdict.py`, which demotes any `AUTO_GO` verdict to `BORDERLINE`. The pipeline never aborts — the profile is always written to the store even when incomplete, and Stage 6 always advances to the next candidate and ultimately writes the `SENSITIVITY_COMPLETE` checkpoint.
+
 **Checkpoint written**: `SENSITIVITY_COMPLETE`
 
-**Failure behaviour**: Individual perturbation evaluation failures are isolated. If a specific parameter's perturbation fails to evaluate (e.g. a ±2 step pushes the parameter outside a valid strategy range), that data point is recorded as missing and excluded from the spike calculation for that parameter. If more than half of a candidate's perturbations fail, the entire sensitivity profile is marked as `INCOMPLETE` and the candidate receives a borderline flag by default.
+**Failure behaviour**: Individual perturbation evaluation failures are isolated. If a specific parameter's perturbation fails to evaluate, that data point is recorded as missing and excluded from the spike calculation. If more than half of a candidate's perturbations fail, the profile is marked `profile_complete=False` as described above. The stage does not abort — it continues to the next candidate. `evaluate_sensitivity` never raises to the orchestrator.
 
 ---
 
@@ -238,7 +249,9 @@ All sensitivity results are written to the `CandidateStore` with stage `SENSITIV
 
 **What happens**:
 
-The `VerdictEngine` reads all stage results for each candidate from the `CandidateStore` and applies the verdict logic (described in Section 13). Each candidate receives a `VerdictResult` with verdict (`go` / `borderline` / `no_go`), both pillar scores, all modifier flags, and a plain-language evidence summary.
+The `VerdictEngine` reads all stage results for each candidate from the `CandidateStore` and applies the verdict logic (described in Section 13). Each candidate receives a `VerdictResult` with verdict (`auto_go` / `borderline` / `no_go`), both pillar scores, all modifier flags, and a plain-language evidence summary.
+
+**`ruin_probability=None` → NO_GO path**: Before computing verdicts, the verdict engine checks each `MCResult`. If `ruin_probability` is `None` (indicating a Stage 5 MC failure), the MC pillar is treated as failed (`mc_pillar_no_go=True`), producing a `NO_GO` verdict. The `evidence_summary` records the MC failure as the reason. This path is expected and not a bug — it is the correct conservative treatment of candidates where the MC simulation could not complete.
 
 The `BacktestReportGenerator` produces the following outputs:
 
@@ -250,7 +263,7 @@ The `BacktestReportGenerator` produces the following outputs:
 
 **SQLite database**: The same `CandidateStore` used throughout the run — all tables, all stages, all metrics — is the final deliverable database. No data is transformed or summarised into a separate file. The database is the complete record of the run.
 
-**Trading-ready strategy YAML**: Generated for the top-ranked candidate (or the top-ranked `go` verdict candidate if the top candidate is `borderline`). This file is a fully valid, self-contained `StrategyConfig`-compatible YAML that can be passed directly to the live strategy runner. Its metadata section includes: the scenario name, run ID, config hash, generation timestamp, and `deployment_status: PAPER_TRADE_REQUIRED`.
+**Trading-ready strategy YAML**: Generated for the top-ranked candidate (or the top-ranked `auto_go` verdict candidate if the top candidate is `borderline`). This file is a fully valid, self-contained `StrategyConfig`-compatible YAML that can be passed directly to the live strategy runner. Its metadata section includes: the scenario name, run ID, config hash, generation timestamp, and `deployment_status: PAPER_TRADE_REQUIRED`.
 
 **Checkpoint written**: `COMPLETE`
 
@@ -267,8 +280,12 @@ The orchestrator maintains a progress state that is updated after each candidate
 ### Resume
 Resume is idempotent. Running the orchestrator against a completed (`COMPLETE`) run is a no-op — it logs that the run is already complete and exits. Running against an incomplete run offers resume. Within a stage, candidates already in the `CandidateStore` (matched by parameter hash) are skipped. A candidate is only re-evaluated if it is absent from the store.
 
+All 8 checkpoint states have been verified as safe resume points (Block 4, 2026-03-03). See Stage 0 for the full checkpoint sequence.
+
 ### Parallelism
 All parallel execution uses `ProcessPoolExecutor` with the `spawn` start method. No code anywhere in the backtester uses `multiprocessing.Pool` or `fork`-dependent constructs. Each worker is a clean process that receives a serialised `CandidateParameterSet` and returns a serialised result contract. The strategy's `CacheManager.clear_all_caches()` is called in the `finally` block of every worker evaluation.
+
+**Windows spawn mode test constraint**: `unittest.mock.patch` decorators applied in the parent process do not propagate to spawned worker processes. Tests that exercise stage-level loop behaviour (Stage 5, Stage 6) must patch at the orchestrator boundary, not inside worker functions. See ARCHITECTURE.md §9 and TECHNICAL_SPEC.md §1a for confirmed patch targets and the specific failure mode (pickle error, Block 4 ROB-09).
 
 ### Temporary Files
 Each candidate evaluation produces a temporary `strategy_template.yaml` named by the candidate's parameter hash. The lifecycle of these files (cleanup timing and location) is resolved in D-03.
@@ -290,7 +307,7 @@ Each scenario defines:
 - **Report emphasis**: which metrics appear prominently in the HTML report
 - **Objective description**: a plain-language statement of what this scenario is optimising for
 
-Three built-in scenarios are defined (concrete values in Section 5 of NEXT_SESSION_PLAN.md and in `backtest_template.yaml`): `capital_accumulation`, `swing_trading`, `conservative`.
+Four built-in scenarios are defined: `capital_accumulation`, `swing_trading`, `conservative`, and `e2e_test`. The `e2e_test` scenario has intentionally loose constraints for pipeline validation only — its thresholds are calibrated to pass real strategy output regardless of quality. It must never be used for production optimization runs.
 
 Custom scenarios can be added by appending a new entry to the `scenarios:` section of `backtest_template.yaml`. No code changes are required. The system validates the new scenario against the scenario schema at Stage 0.
 
@@ -302,27 +319,28 @@ The active scenario is selected via the top-level `scenario: name` key in `backt
 
 Each candidate receives exactly one verdict from the following three outcomes:
 
-**auto_go**: The candidate passes both mandatory pillars with scores above the configured `go` thresholds (D-07), has no sensitivity spike flag, and no active modifier flags. No human review required.
+**auto_go**: The candidate passes both mandatory pillars with scores at or above the configured `go` thresholds (both operators are inclusive — `>=` and `<=` respectively), has no sensitivity spike flag, and no active modifier flags. No human review required.
 
 **borderline**: The candidate passes the constraint phase (otherwise it would never reach verdicting) but at least one of the following is true:
-- WFO consistency score is below the `go` threshold but above the `borderline` floor
-- MC deep ruin probability is above the `go` ceiling but below the `borderline` ceiling
+- WFO consistency score is below the `go_wfo_floor` but at or above the `borderline_wfo_floor`
+- MC deep ruin probability is above the `go_mc_ruin_ceiling` but at or below the `borderline_mc_ruin_ceiling`
 - A sensitivity spike flag is set (regardless of pillar scores)
-- `enforce_oos_gate: true` is set and IS/OOS degradation exceeds 50%
-- The `WFO_INCONSISTENT` flag is set (window collapse pattern)
-- The sensitivity profile is marked `INCOMPLETE`
+- `enforce_oos_gate: true` is set AND `wfo_score.oos_gate_triggered` is True (both conditions required)
+- The `window_collapse_flag` is set (`wfo_score.window_collapse_flag=True`)
+- The sensitivity profile is marked `profile_complete=False` (`sensitivity_profile_incomplete` modifier)
 
 Borderline candidates require human review using the generated adversarial checklist. They cannot be deployed without operator sign-off.
 
 **no_go**: Either of the following:
+- WFO consistency score is strictly below the `borderline_wfo_floor` (the `<` operator — strictly less than)
+- MC deep ruin probability is strictly above the `borderline_mc_ruin_ceiling` (the `>` operator — strictly greater than)
+- `ruin_probability` is `None` (MC failure) — treated as `mc_pillar_no_go=True`
 - A hard constraint failure at any stage (recorded as `REJECTED_CONSTRAINTS`)
-- MC deep ruin probability above the `no_go` ceiling (above the `borderline` ceiling)
-- WFO consistency score below the `borderline` floor
 - `MC_PREFILTER_FAIL` (ruin probability exceeded in Stage 2)
 
-**Pillar independence**: The two pillars are independent. A candidate can fail on either pillar alone and still receive `no_go`. Both pillars must pass at or above their respective `go` thresholds for an `auto_go` verdict.
+**Pillar independence**: The two pillars are independent. A candidate can fail on either pillar alone and still receive `no_go`. Both pillars must pass at or above their respective `go` thresholds for an `auto_go` verdict. Modifier flags cannot override a `no_go` verdict — they can only demote `auto_go` to `borderline`.
 
-**Threshold configuration**: All verdict thresholds are configurable in the YAML and scenario-specific. Initial values are calibrated in Phase 6 against the first real run. They are never hardcoded.
+**Threshold configuration**: All verdict thresholds are configurable in the YAML and scenario-specific. Initial values for `capital_accumulation` are: `go_wfo_floor=0.65`, `borderline_wfo_floor=0.40`, `go_mc_ruin_ceiling=0.05`, `borderline_mc_ruin_ceiling=0.15`. These are D-07 starting values — recalibrate after the first real run. They are never hardcoded.
 
 ---
 
@@ -330,8 +348,17 @@ Borderline candidates require human review using the generated adversarial check
 
 The `deployment_status` field on `VerdictResult` and in the trading-ready YAML metadata implements the operational gate between pipeline output and live capital.
 
-**`PAPER_TRADE_REQUIRED`**: The default status for all `go` and `borderline` verdicts. The trading-ready YAML is valid and deployable to a paper/demo account. It must not be used with real capital.
+**`PAPER_TRADE_REQUIRED`**: The default status for all `auto_go` and `borderline` verdicts. The trading-ready YAML is valid and deployable to a paper/demo account. It must not be used with real capital.
 
 **`LIVE_APPROVED`**: Set manually by the operator after the paper trading period is completed. The paper trading period is: minimum 3 months or 500 trades, whichever comes later, with live slippage and P&L within pre-specified tolerances of the backtested values. This field change is the operator's documented sign-off.
 
 The `deployment_status` field is stored in the `verdicts` table of the SQLite database. The YAML file itself is regenerated with the updated status when the operator promotes a candidate. The prior YAML (with `PAPER_TRADE_REQUIRED`) is retained in the run artifacts for audit.
+
+---
+
+## Changelog
+
+| Version | Date | Change |
+|---|---|---|
+| 1.0.0 | 2026-02-27 | Initial — Phase 1 design. Full 8-stage functional spec, scenario system, verdict logic, deployment gate. |
+| 1.1.0 | 2026-03-03 | Block 6 verification: (1) Stage 6 — added `profile_complete=False` path: >50% eval failures → `sensitivity_profile_incomplete` modifier → `AUTO_GO` demoted to `BORDERLINE`; stage never aborts, checkpoint always advances. (2) Stage 7 — added `ruin_probability=None` → `NO_GO` path: MC pillar treated as failed, evidence_summary records MC failure reason. (3) Stage 5 — added explicit "never raises" contract: all failures returned as `MCResult(error=..., ruin_probability=None)`, orchestrator logs WARNING and continues, result written to store. (4) Stage 0 — added checkpoint resume coverage statement: all 8 values verified safe (Block 4, 2026-03-03), full sequence listed. (5) Section 11 — added Windows spawn mode test constraint cross-reference. (6) Section 12 — added `e2e_test` scenario documentation and warning. (7) Section 13 — clarified inclusive boundary operators (`>=`/`<=` at go thresholds, `<`/`>` at no-go boundaries); clarified oos_gate_triggered requires both conditions; clarified modifier flags cannot override NO_GO. |

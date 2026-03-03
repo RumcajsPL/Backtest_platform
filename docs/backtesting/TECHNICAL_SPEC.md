@@ -1,8 +1,8 @@
 # TECHNICAL_SPEC.md
 ## Backtesting & Optimization Framework — Technical Specification
-**Version**: 1.0.0
-**Date**: 2026-02-27
-**Phase**: Phase 1 — Design
+**Version**: 1.1.0
+**Date**: 2026-03-03
+**Phase**: Phase 1 — Design → Phase 6 — Hardening & Delivery
 **Status**: Complete
 
 ---
@@ -78,15 +78,40 @@
 ---
 
 ### D-07 — Composite Verdict Thresholds (Starting Values)
-**Resolution**: The following are starting values for Phase 6 calibration. They are YAML-configurable, never hardcoded. After the first real pipeline run on WBWSStrategy data, these will be recalibrated.
+**Resolution**: The following are starting values for Phase 6 calibration. They are YAML-configurable per scenario, never hardcoded. After the first real pipeline run on WBWSStrategy data, these will be recalibrated.
 
-| Threshold | go | borderline floor | no_go |
+| Threshold | go | borderline zone | no_go |
 |---|---|---|---|
 | WFO consistency score | ≥ 0.65 | 0.40 – 0.65 | < 0.40 |
 | MC deep ruin probability | ≤ 0.05 (5%) | 0.05 – 0.15 | > 0.15 (15%) |
-| Sensitivity spike delta | < 0.15 fitness drop | 0.15 – 0.30 | N/A (spike = borderline always) |
+| Sensitivity spike delta | < 0.15 fitness drop | — | N/A (spike = borderline always) |
 
-**Note**: The WFO consistency score is a composite on a [0, 1] scale produced by `consistency_scorer.py`. Its exact calibration depends on the scenario's temporal weights. Phase 6 will validate these starting values and document recommended adjustments.
+**Confirmed boundary operators** (from `verdict.py` source, verified Block 5, 2026-03-03):
+
+```python
+# WFO pillar
+wfo_pillar_go    = wfo_composite >= go_wfo_floor        # >= INCLUSIVE at go threshold
+wfo_pillar_no_go = wfo_composite < borderline_wfo_floor  # < strictly less than
+
+# MC pillar
+mc_pillar_go    = ruin_prob <= go_mc_ruin_ceiling        # <= INCLUSIVE at go threshold
+mc_pillar_no_go = ruin_prob > borderline_mc_ruin_ceiling  # > strictly greater than
+
+# ruin_prob is None → mc_pillar_no_go = True → NO_GO
+# (verdict.py logs WARNING — expected, not a bug)
+
+# oos_gate_triggered = oos_gate_enabled AND wfo_score.oos_gate_triggered
+# Either condition alone does NOT trigger the flag.
+
+# Final verdict
+if wfo_pillar_no_go OR mc_pillar_no_go:          → NO_GO
+elif wfo_pillar_go AND mc_pillar_go AND no flags: → AUTO_GO
+else:                                             → BORDERLINE
+```
+
+**Why inclusive operators at go thresholds matter**: Using `>` instead of `>=` at the go floor would incorrectly classify a candidate scoring exactly at the go threshold as BORDERLINE rather than AUTO_GO. The go thresholds are intended as inclusive gates — a candidate that meets the standard exactly passes. Confirmed and locked; do not change to strict inequality.
+
+**Note**: The `capital_accumulation` production scenario thresholds are `go_wfo_floor=0.65`, `borderline_wfo_floor=0.40`, `go_mc_ruin_ceiling=0.05`, `borderline_mc_ruin_ceiling=0.15`. These are D-07 starting values — recalibrate after the first real run. All thresholds are scenario-specific and live in `backtest_template.yaml`.
 
 ---
 
@@ -114,6 +139,29 @@
 
 ### D-12 — IS/OOS Gate Default Configuration
 **Resolution**: `enforce_oos_gate: false` by default. Threshold when enabled: > 50% degradation triggers borderline flag. The default is off because IS/OOS delta is sensitive to window placement artefacts that can produce spurious borderline flags for genuinely robust strategies. Operators who want this gate can enable it in the YAML.
+
+---
+
+## 1a. Windows Spawn Mode — Test Patch Constraint
+
+> **Cross-reference**: ARCHITECTURE.md §9 for full patch rules table and confirmed error message.
+
+On Windows, `ProcessPoolExecutor` uses the `spawn` start method. Child worker processes are fresh Python interpreters — they import modules from scratch and do **not** inherit any `unittest.mock.patch` decorators applied in the parent process.
+
+**Rule**: `unittest.mock patches DO NOT cross the ProcessPoolExecutor spawn boundary on Windows.`
+
+This has two concrete consequences for test design:
+
+**Stage 6 (Sensitivity)** — tests that exercise the orchestrator's Stage 6 loop behaviour (continue on failure, write profile, advance checkpoint) must patch `src.backtesting.orchestrator.evaluate_sensitivity`, not the worker function `src.backtesting.evaluation.sensitivity._evaluate_perturbation`. Patching the worker function is silently ignored — the original runs in the child process.
+
+**Stage 5 (MC Deep)** — `run_mc` is a local import inside `_run_stage_5_mc_deep`. Patch it at `src.backtesting.monte_carlo.mc_engine.run_mc` (module level), not `src.backtesting.orchestrator.run_mc` (AttributeError — not on orchestrator's namespace).
+
+**Confirmed failure mode (Block 4, ROB-09)**:
+```
+ERROR: Can't pickle <class 'unittest.mock.MagicMock'>:
+       it's not the same object as unittest.mock.MagicMock
+```
+Root cause: the mock object failed pickling when `ProcessPoolExecutor` attempted to transmit it to a worker process. The fix is to patch above the worker boundary, not inside it.
 
 ---
 
@@ -262,10 +310,10 @@ class ScenarioProfile:
     wfo_weight_fraction_positive: float
 
     # Verdict thresholds
-    verdict_go_wfo_floor: float               # e.g. 0.65 — consistency score at or above = go pillar passed
-    verdict_borderline_wfo_floor: float       # e.g. 0.40 — below this = no_go on WFO pillar
-    verdict_go_mc_ruin_ceiling: float         # e.g. 0.05 — ruin prob at or below = go pillar passed
-    verdict_borderline_mc_ruin_ceiling: float # e.g. 0.15 — above this = no_go on MC pillar
+    verdict_go_wfo_floor: float               # e.g. 0.65 — consistency score >= this → WFO pillar passes (INCLUSIVE)
+    verdict_borderline_wfo_floor: float       # e.g. 0.40 — below this (strictly <) → no_go on WFO pillar
+    verdict_go_mc_ruin_ceiling: float         # e.g. 0.05 — ruin prob <= this → MC pillar passes (INCLUSIVE)
+    verdict_borderline_mc_ruin_ceiling: float # e.g. 0.15 — above this (strictly >) → no_go on MC pillar
     verdict_sensitivity_spike_threshold: float # e.g. 0.15 — fitness delta above this = borderline flag
 
     # Report emphasis — ordered list of metric names to lead the HTML report with
@@ -508,6 +556,11 @@ class WFOConsistencyScore:
 class MCResult:
     """
     Monte Carlo simulation summary for one candidate in one mode.
+
+    run_mc() never raises. Failures are returned as MCResult(error="...",
+    ruin_probability=None). verdict.py maps ruin_probability=None →
+    mc_pillar_no_go=True → NO_GO. The orchestrator logs a WARNING and
+    continues — the result is still written to the store.
     """
     candidate_id: str
     mode: MCMode
@@ -551,6 +604,11 @@ class ParameterSensitivity:
 class SensitivityProfile:
     """
     Full sensitivity map for one candidate across all parameters and steps.
+
+    profile_complete=False when >50% of perturbation evaluations failed for
+    this candidate. This sets the sensitivity_profile_incomplete modifier flag
+    in verdict.py → demotes AUTO_GO to BORDERLINE. The pipeline never aborts —
+    the profile is always written to the store even when incomplete.
     """
     candidate_id: str
     baseline_fitness: float
@@ -755,6 +813,10 @@ def write_candidate(record: CandidateRecord) -> None:
 
 def get_checkpoint(run_id: str) -> Checkpoint:
 def set_checkpoint(run_id: str, checkpoint: Checkpoint) -> None:
+    """
+    set_checkpoint() is called ONLY by orchestrator.py.
+    All other modules read checkpoints — none write them.
+    """
 
 def query_candidates(
     run_id: str,
@@ -834,7 +896,11 @@ def run_mc(
     config: dict,
     seed: int,
 ) -> MCResult:
-    """Runs MC simulation in the specified mode. Never raises — errors returned in MCResult."""
+    """
+    Runs MC simulation in the specified mode. Never raises — errors returned
+    in MCResult(error="...", ruin_probability=None).
+    verdict.py maps ruin_probability=None → mc_pillar_no_go=True → NO_GO.
+    """
 
 # ── evaluation/sensitivity.py ────────────────────────────────
 def evaluate_sensitivity(
@@ -847,7 +913,15 @@ def evaluate_sensitivity(
     spike_threshold: float,
     max_steps: int = 2,
 ) -> SensitivityProfile:
-    """Perturbs each parameter ±1..max_steps steps, computes fitness deltas."""
+    """
+    Perturbs each parameter ±1..max_steps steps, computes fitness deltas.
+    Never raises — failures surface as SensitivityProfile with
+    profile_complete=False when >50% of perturbations fail.
+    Uses ProcessPoolExecutor (Windows spawn mode).
+    PATCH NOTE: patch at orchestrator level for integration tests —
+    do not patch _evaluate_perturbation (worker function, spawn boundary).
+    See ARCHITECTURE.md §9 and D-07 Windows spawn note above.
+    """
 
 # ── evaluation/verdict.py ────────────────────────────────────
 def compute_verdict(
@@ -858,7 +932,15 @@ def compute_verdict(
     scenario: ScenarioProfile,
     oos_gate_enabled: bool,
 ) -> VerdictResult:
-    """Applies two-pillar logic + modifiers. Returns VerdictResult."""
+    """
+    Applies two-pillar logic + modifiers. Returns VerdictResult. Never raises.
+    Boundary operators (confirmed from source, Block 5):
+      wfo_pillar_go    = composite >= go_wfo_floor        (>= INCLUSIVE)
+      wfo_pillar_no_go = composite < borderline_wfo_floor  (< strictly less than)
+      mc_pillar_go     = ruin_prob <= go_mc_ruin_ceiling   (<= INCLUSIVE)
+      mc_pillar_no_go  = ruin_prob > borderline_mc_ruin_ceiling (> strictly greater)
+      ruin_prob=None   → mc_pillar_no_go=True → NO_GO
+    """
 
 # ── report_generator.py ──────────────────────────────────────
 def generate_report(
@@ -890,7 +972,7 @@ def generate_trading_yaml(
 
 ## 5. Configuration Schema Reference
 
-Full schema of `backtest_template.yaml`. All keys listed. Types and defaults specified. Required keys have no default.
+Full schema of `backtest_template.yaml`. All keys listed. Types and defaults specified. Required keys have no default. For the current production values of all scenario thresholds and zone definitions, see `configs/backtesting/backtest_template.yaml` — it is the single source of truth.
 
 ```yaml
 # backtest_template.yaml — full schema
@@ -948,20 +1030,14 @@ genetic:
 # ── Walk-Forward Optimisation ─────────────────────────────────
 walk_forward:
   input_count: 30                   # int — top N from combined Random + GA pool
-  enforce_oos_gate: false           # bool, default false
+  enforce_oos_gate: false           # bool, default false (D-12)
   oos_degradation_threshold: 0.50   # float [0, 1] — only used if enforce_oos_gate: true
 
-  windows:                          # list, minimum 3 entries required
+  windows:                          # list, minimum 3 entries required (Stage 0 enforced)
     - id: "W01"
-      start: "2022-01-01"           # date string YYYY-MM-DD
-      end: "2022-06-30"
-    - id: "W02"
-      start: "2022-07-01"
-      end: "2022-12-31"
-    - id: "W03"
-      start: "2023-01-01"
-      end: "2023-06-30"
-    # ... additional windows
+      start: "YYYY-MM-DD"           # date string
+      end: "YYYY-MM-DD"
+    # ... minimum 3 windows
 
 # ── Monte Carlo Deep ──────────────────────────────────────────
 monte_carlo:
@@ -976,7 +1052,7 @@ monte_carlo:
 sensitivity:
   input_count: 5                    # int — top N from MC Deep
   max_steps: 2                      # int — perturb ±1 and ±2 steps
-  spike_threshold: 0.15             # float — |fitness_delta| above this = spike
+  spike_threshold: 0.15             # float — |fitness_delta| above this = spike flag
 
 # ── Output ────────────────────────────────────────────────────
 output:
@@ -1002,165 +1078,43 @@ perturbation_profiles:
     execution_delay_bars: 0         # int — 0 = no delay simulation
 
 # ── Scenarios ─────────────────────────────────────────────────
-# Built-in scenarios below. Custom scenarios appended here.
-scenarios:
-  capital_accumulation:
-    description: "Steadily grow account balance with controlled risk"
-    fitness_weights:
-      net_pnl: 0.20
-      expectancy: 0.25
-      max_drawdown: 0.20          # penalising weight
-      win_rate: 0.15
-      trade_frequency: 0.10
-      profit_factor: 0.10
-    constraints:
-      min_win_rate: 0.45
-      max_drawdown: 0.15
-      max_losing_streak: 7
-      min_trades_per_week: 3.0
-      min_expectancy: 0.4
-      min_profit_factor: 1.3
-    mc_prefilter_ruin_threshold: 0.25
-    wfo_temporal_weights:
-      median_return: 0.30
-      variance: 0.30              # inverted
-      worst_drawdown: 0.20        # inverted
-      fraction_positive: 0.20
-    verdict_thresholds:
-      go_wfo_floor: 0.65
-      borderline_wfo_floor: 0.40
-      go_mc_ruin_ceiling: 0.05
-      borderline_mc_ruin_ceiling: 0.15
-      sensitivity_spike_threshold: 0.15
-    report_emphasis:
-      - wfo_consistency_score
-      - fraction_positive_windows
-      - actual_trades_per_week
-      - mc_deep_ruin_probability
-      - actual_max_drawdown
-
-  swing_trading:
-    description: "Maximise R:R on high-quality directional signals"
-    fitness_weights:
-      net_pnl: 0.15
-      expectancy: 0.35
-      max_drawdown: 0.15
-      win_rate: 0.10
-      trade_frequency: 0.05
-      profit_factor: 0.20
-    constraints:
-      min_win_rate: 0.38
-      max_drawdown: 0.20
-      max_losing_streak: 10
-      min_trades_per_week: 1.0
-      min_expectancy: 0.8
-      min_profit_factor: 1.5
-    mc_prefilter_ruin_threshold: 0.30
-    wfo_temporal_weights:
-      median_return: 0.40
-      variance: 0.25
-      worst_drawdown: 0.20
-      fraction_positive: 0.15
-    verdict_thresholds:
-      go_wfo_floor: 0.60
-      borderline_wfo_floor: 0.38
-      go_mc_ruin_ceiling: 0.07
-      borderline_mc_ruin_ceiling: 0.18
-      sensitivity_spike_threshold: 0.18
-    report_emphasis:
-      - actual_expectancy
-      - actual_profit_factor
-      - wfo_consistency_score
-      - mc_deep_ruin_probability
-      - median_window_return
-
-  conservative:
-    description: "Preserve capital; avoid ruin above all else"
-    fitness_weights:
-      net_pnl: 0.10
-      expectancy: 0.15
-      max_drawdown: 0.35
-      win_rate: 0.25
-      trade_frequency: 0.05
-      profit_factor: 0.10
-    constraints:
-      min_win_rate: 0.52
-      max_drawdown: 0.10
-      max_losing_streak: 5
-      min_trades_per_week: 2.0
-      min_expectancy: 0.3
-      min_profit_factor: 1.2
-    mc_prefilter_ruin_threshold: 0.15
-    wfo_temporal_weights:
-      median_return: 0.20
-      variance: 0.35
-      worst_drawdown: 0.30
-      fraction_positive: 0.15
-    verdict_thresholds:
-      go_wfo_floor: 0.70
-      borderline_wfo_floor: 0.50
-      go_mc_ruin_ceiling: 0.03
-      borderline_mc_ruin_ceiling: 0.10
-      sensitivity_spike_threshold: 0.12
-    report_emphasis:
-      - mc_deep_ruin_probability
-      - actual_max_drawdown
-      - wfo_worst_window_drawdown
-      - actual_win_rate
-      - wfo_consistency_score
+# Built-in scenarios: capital_accumulation, swing_trading, conservative, e2e_test
+# For current production values see backtest_template.yaml (single source of truth)
+#
+# Verdict threshold operators (confirmed from verdict.py source, Block 5):
+#   wfo_pillar_go    = composite >= go_wfo_floor        (>= INCLUSIVE)
+#   wfo_pillar_no_go = composite < borderline_wfo_floor  (< strictly less than)
+#   mc_pillar_go     = ruin_prob <= go_mc_ruin_ceiling   (<= INCLUSIVE)
+#   mc_pillar_no_go  = ruin_prob > borderline_mc_ruin_ceiling (> strictly greater than)
+#   ruin_prob=None   → NO_GO
+#
+# capital_accumulation defaults (D-07 starting values — recalibrate after first run):
+#   go_wfo_floor: 0.65
+#   borderline_wfo_floor: 0.40
+#   go_mc_ruin_ceiling: 0.05
+#   borderline_mc_ruin_ceiling: 0.15
+#   sensitivity_spike_threshold: 0.15
 
 # ── Parameter Zones ───────────────────────────────────────────
+# For current zone definitions see backtest_template.yaml.
 # Structure for each zone:
 # - name: zone identifier ("safe" | "exploration" | "discovery")
 # - enabled: bool
 # - parameters: dict of parameter_name → definition
 #   - type: "int" | "float" | "choice"
-#   - min, max, step (for int/float)
+#   - min, max, step (for int/float — both bounds inclusive, step-aligned grid)
 #   - choices: list (for choice)
-
-zones:
-  safe:
-    enabled: true
-    parameters:
-      rsi_period:         {type: int,    min: 10, max: 20, step: 2}
-      rsi_overbought:     {type: int,    min: 65, max: 80, step: 5}
-      rsi_oversold:       {type: int,    min: 20, max: 35, step: 5}
-      adx_threshold:      {type: int,    min: 20, max: 30, step: 5}
-      atr_length:         {type: int,    min: 10, max: 20, step: 2}
-      atr_multiplier:     {type: float,  min: 1.5, max: 2.5, step: 0.25}
-      rr_target:          {type: float,  min: 1.5, max: 2.5, step: 0.25}
-      risk_percentile:    {type: float,  min: 0.5, max: 1.5, step: 0.25}
-      strategy_tf:        {type: choice, choices: ["H1", "H4"]}
-      htf_tf:             {type: choice, choices: ["H4", "D1"]}
-      session_filter:     {type: choice, choices: ["london", "new_york", "london_new_york"]}
-
-  exploration:
-    enabled: true
-    parameters:
-      rsi_period:         {type: int,    min: 8,  max: 24, step: 2}
-      rsi_overbought:     {type: int,    min: 60, max: 85, step: 5}
-      rsi_oversold:       {type: int,    min: 15, max: 40, step: 5}
-      adx_threshold:      {type: int,    min: 15, max: 35, step: 5}
-      atr_length:         {type: int,    min: 7,  max: 28, step: 3}
-      atr_multiplier:     {type: float,  min: 1.0, max: 3.0, step: 0.25}
-      rr_target:          {type: float,  min: 1.0, max: 3.0, step: 0.25}
-      risk_percentile:    {type: float,  min: 0.25, max: 2.0, step: 0.25}
-      strategy_tf:        {type: choice, choices: ["M30", "H1", "H4"]}
-      htf_tf:             {type: choice, choices: ["H4", "D1", "W1"]}
-      session_filter:     {type: choice, choices: ["london", "new_york", "london_new_york", "asian", "all"]}
-
-  discovery:
-    enabled: false                  # Disabled by default — high-risk, wide ranges
-    parameters:
-      rsi_period:         {type: int,    min: 5,  max: 30, step: 1}
-      rsi_overbought:     {type: int,    min: 55, max: 90, step: 5}
-      rsi_oversold:       {type: int,    min: 10, max: 45, step: 5}
-      adx_threshold:      {type: int,    min: 10, max: 40, step: 5}
-      atr_length:         {type: int,    min: 5,  max: 35, step: 2}
-      atr_multiplier:     {type: float,  min: 0.75, max: 4.0, step: 0.25}
-      rr_target:          {type: float,  min: 0.75, max: 4.0, step: 0.25}
-      risk_percentile:    {type: float,  min: 0.1, max: 3.0, step: 0.25}
-      strategy_tf:        {type: choice, choices: ["M15", "M30", "H1", "H4", "D1"]}
-      htf_tf:             {type: choice, choices: ["H1", "H4", "D1", "W1"]}
-      session_filter:     {type: choice, choices: ["london", "new_york", "london_new_york", "asian", "tokyo", "all"]}
+#
+# Parameter NAMES must exactly match _PARAM_KEY_MAP in strategy_runner.py.
+# Adding a new optimizable parameter requires: (1) add to zone in YAML,
+# (2) add mapping in _PARAM_KEY_MAP. No other code changes required.
 ```
+
+---
+
+## Changelog
+
+| Version | Date | Change |
+|---|---|---|
+| 1.0.0 | 2026-02-27 | Initial — Phase 1 design. All 12 decisions resolved. Full contracts, signatures, schema. |
+| 1.1.0 | 2026-03-03 | Block 6: Added D-07 confirmed boundary operators (`>=`/`<=` inclusive at go thresholds) with rationale. Added Windows spawn mode test patch constraint (Section 1a). Added `run_mc` never-raises contract note to MCResult docstring. Added `SensitivityProfile.profile_complete=False` behaviour to SensitivityProfile docstring. Added `set_checkpoint` orchestrator-only note. Added boundary operator summary comments to `compute_verdict` and `evaluate_sensitivity` signatures. Updated Section 5 schema to cross-reference backtest_template.yaml for current values. |
