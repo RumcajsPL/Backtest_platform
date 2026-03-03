@@ -32,10 +32,21 @@ asset:
 # -----------------------------------------------------------------------------
 data:
   paths:
-    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20240101_20260207.parquet"
-    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1H_20240101_20260207.parquet"
-    ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20240101_20260207.parquet"
-    artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260207.parquet"
+    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260301.parquet"
+    # -----------------------------------------------------------------------------
+    # Existing data files:
+    #   - data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_5min_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_10min_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_15min_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_30min_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_1h_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_4h_20221201_20260301.parquet
+    #   - data/processed/ohlcv/DEUIDXEUR_1d_20221201_20260301.parquet
+    # -----------------------------------------------------------------------------
+    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1h_20221201_20260301.parquet"
+    ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20230101_20260301.parquet"
+    artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet"
     
 
   date_range:

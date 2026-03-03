@@ -22,7 +22,7 @@ INSTRUMENT_DIVISOR_MAP = {
 DEFAULT_PRICE_DIVISOR = 100000.0
 RAW_DATA_ROOT = "data/raw/dukascopy_bi5"
 INDEX_NAME = "timestamp"
-DEFAULT_CONFIG_PATH = "configs/data_aggregator.yaml"
+DEFAULT_CONFIG_PATH = "configs/data/data_aggregator.yaml"
 OUTPUT_TIMEZONE = "Europe/Berlin"
 
 # ------------------------------------------------------------
