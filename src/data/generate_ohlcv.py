@@ -26,6 +26,27 @@ DEFAULT_CONFIG_PATH = "configs/data/data_aggregator.yaml"
 OUTPUT_TIMEZONE = "Europe/Berlin"
 
 # ------------------------------------------------------------
+# Helper function to standardize timestamps
+# ------------------------------------------------------------
+def standardize_timestamp_index(index, timeframe, market_close_hour=23, market_close_minute=59):
+    """
+    Standardize index to have consistent timestamp format with time component.
+    
+    For monthly/weekly/daily data, adds market close time.
+    For intraday data, keeps existing time.
+    """
+    # Convert PeriodIndex to DatetimeIndex if needed
+    if isinstance(index, pd.PeriodIndex):
+        index = index.to_timestamp(how='end')
+    
+    # Add time component for date-only timeframes
+    if timeframe.endswith(("ME", "MS", "W", "D")):
+        # Set to market close time
+        index = index.normalize() + pd.Timedelta(hours=market_close_hour, minutes=market_close_minute)
+    
+    return index
+
+# ------------------------------------------------------------
 # Optimized Numba Decoder (Returns Arrays, not Lists)
 # ------------------------------------------------------------
 @njit(cache=True)
@@ -68,14 +89,14 @@ def decode_bi5_numba(raw_data, base_ts, divisor):
     return out_ts[:count], out_price[:count], out_vol[:count]
 
 # ------------------------------------------------------------
-# Worker Function (Runs in parallel process)
+# Worker Function - Now always returns 1min data
 # ------------------------------------------------------------
 def process_single_day(args):
     """
     Processes all 24 hourly files for a single day.
-    Returns a resampled DataFrame for that day (or None).
+    Returns 1-minute resampled data for that day.
     """
-    instrument, day_dt, raw_root, divisor, target_tz_str, timeframe_pd = args
+    instrument, day_dt, raw_root, divisor, target_tz_str = args
     
     # Storage for the whole day (list of arrays is faster than appending to DF)
     day_ts, day_prices, day_vols = [], [], []
@@ -106,7 +127,7 @@ def process_single_day(args):
                     day_prices.append(p)
                     day_vols.append(v)
             except Exception:
-                pass # Skip corrupt files silently or log if needed
+                pass # Skip corrupt files silently
 
     # If no data for the whole day, return None
     if not day_ts:
@@ -118,12 +139,10 @@ def process_single_day(args):
     full_vol = np.concatenate(day_vols)
 
     # Vectorized Timezone Conversion
-    # 1. Convert unix float to UTC Timestamp
     dt_index = pd.to_datetime(full_ts, unit="s", utc=True)
-    # 2. Convert to Target TZ
     dt_index = dt_index.tz_convert(target_tz_str).tz_localize(None)
 
-    # Create DataFrame ONCE per day
+    # Create DataFrame
     df = pd.DataFrame({
         "price": full_price,
         "volume": full_vol
@@ -132,13 +151,13 @@ def process_single_day(args):
     df.index.name = INDEX_NAME
     df.sort_index(inplace=True)
 
-    # Resample ONCE per day
-    ohlc = df["price"].resample(timeframe_pd).ohlc()
-    vol = df["volume"].resample(timeframe_pd).sum()
-    ohlc["volume"] = vol
-    ohlc.dropna(inplace=True)
+    # ALWAYS resample to 1min first (base unit)
+    ohlc_1min = df["price"].resample("1min").ohlc()
+    vol_1min = df["volume"].resample("1min").sum()
+    ohlc_1min["volume"] = vol_1min
+    ohlc_1min.dropna(inplace=True)
 
-    return ohlc
+    return ohlc_1min
 
 # ------------------------------------------------------------
 # Main Controller
@@ -174,10 +193,9 @@ def generate_ohlcv_multicore(config_path: str):
     total_days = len(days_to_process)
     print(f"Processing {total_days} days on {os.cpu_count()} cores...")
 
-    # Prepare arguments for workers
-    # (instrument, day_dt, raw_root, divisor, target_tz_str, timeframe_pd)
+    # Prepare arguments for workers - removed timeframe_pd
     worker_args = [
-        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str, tf_pd) 
+        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str) 
         for d in days_to_process
     ]
 
@@ -185,22 +203,42 @@ def generate_ohlcv_multicore(config_path: str):
     
     # Execute in Parallel
     with ProcessPoolExecutor() as executor:
-        # Use simple counter for progress
         for i, res in enumerate(executor.map(process_single_day, worker_args)):
             if res is not None and not res.empty:
                 results.append(res)
             
-            # Progress print
             if i % 5 == 0 or i == total_days - 1:
                 print(f"Progress: {100*(i+1)/total_days:.1f}%", end="\r")
 
-    print("\nMerging data...")
+    print("\nMerging 1min data...")
     if not results:
         print(f"❌ No data found for {instrument}.")
         return
 
-    final_ohlc = pd.concat(results)
-    final_ohlc.sort_index(inplace=True)
+    # Concatenate all 1min data
+    full_1min_df = pd.concat(results)
+    full_1min_df.sort_index(inplace=True)
+
+    # Define aggregation rules
+    agg_rules = {
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }
+
+    # Perform FINAL aggregation to user requested timeframe
+    print(f"Aggregating to {timeframe}...")
+    
+    if tf_pd == "1min" or tf_pd == "1t":
+        final_ohlc = full_1min_df
+    else:
+        final_ohlc = full_1min_df.resample(tf_pd).agg(agg_rules)
+        final_ohlc.dropna(inplace=True)
+
+    # Standardize timestamps
+    final_ohlc.index = standardize_timestamp_index(final_ohlc.index, timeframe)
 
     # Save
     out_dir = out_cfg["directory"]
@@ -214,20 +252,27 @@ def generate_ohlcv_multicore(config_path: str):
     path = os.path.join(out_dir, filename)
 
     if fmt == "csv":
-        final_ohlc.to_csv(path, float_format="%.6f")
+        # Ensure consistent datetime format
+        final_ohlc_copy = final_ohlc.copy()
+        final_ohlc_copy.index = final_ohlc_copy.index.strftime("%Y-%m-%d %H:%M:%S")
+        final_ohlc_copy.to_csv(path, float_format="%.6f")
     elif fmt == "parquet":
         final_ohlc.to_parquet(path)
 
     print(f"--- DONE ---")
     print(f"Total Bars: {len(final_ohlc):,}")
     print(f"Saved: {path}")
+    
+    # Show sample
+    print("\nSample of generated data:")
+    print(final_ohlc.head())
+    print(f"\nDate range: {final_ohlc.index.min()} to {final_ohlc.index.max()}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("config_file", nargs="?", default=DEFAULT_CONFIG_PATH)
     args = parser.parse_args()
     
-    # Windows/MacOS safety for multiprocessing
     try:
         generate_ohlcv_multicore(args.config_file)
     except Exception as e:

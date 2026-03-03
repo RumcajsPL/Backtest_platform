@@ -18,8 +18,8 @@ from src.utils.paths import PROCESSED_DATA_DIR, ensure_dir
 # ============================================================================
 
 # Files to compare (relative to PROCESSED_DATA_DIR/ohlcv/)
-FILE1 = "DEUIDXEUR_1min_20240101_20260207.parquet"
-FILE2 = "DEUIDXEUR_1min_20221201_20260301.parquet"
+FILE1 = "DEUIDXEUR_1ME_20210101_20260207.parquet"
+FILE2 = "DEUIDXEUR_1ME_20210101_20260301.parquet"
 
 # Number of bars to compare
 N_BARS = 100
