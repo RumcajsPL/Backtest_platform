@@ -79,7 +79,7 @@ filters:
 
   technical_filters:
     rsi_filter:
-      enabled: true
+      enabled: false
       length: 14
       overbought: 70
       oversold: 30
@@ -97,7 +97,7 @@ filters:
       filter_multiplier: 0.5
 
     choppiness_filter:
-      enabled: false
+      enabled: true
       length: 14
       threshold: 61.8
 
@@ -124,7 +124,7 @@ filters:
       signal_length: 9
 
     ma_filter:
-      enabled: true
+      enabled: false
       ma_type: "TEMA"
       length: 25
       slope_length: 10

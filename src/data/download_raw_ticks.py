@@ -9,14 +9,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_URL = "https://datafeed.dukascopy.com/datafeed"
 
-# --- UTILITY: SESSION WITH RETRIES ---
+# --- UTILITY: SESSION WITH RETRIES & POOLING ---
 
-def get_requests_session():
-    """Sets up a requests session with retries for robust downloading."""
+def get_requests_session(pool_size=50):
+    """
+    Sets up a requests session with retries and increased connection pool size.
+    This ensures that 50 threads can actually have 50 open connections.
+    """
     session = requests.Session()
-    # Retry on specific status codes (5xx)
     retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-    session.mount("https://", HTTPAdapter(max_retries=retry))
+    
+    # OPTIMIZATION: Match pool_connections and pool_maxsize to your max_workers
+    adapter = HTTPAdapter(
+        max_retries=retry,
+        pool_connections=pool_size,
+        pool_maxsize=pool_size
+    )
+    
+    session.mount("https://", adapter)
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
@@ -26,16 +36,12 @@ def get_requests_session():
 
 def get_bi5_url(instrument: str, dt: datetime) -> str:
     """Generates the URL for a specific hourly .bi5 file."""
-    # Dukascopy uses zero-based month index in the URL (00 for January)
     month_index = dt.month - 1
-    
-    # URL pattern: BASE_URL / INSTRUMENT / YEAR / MONTH(00-11) / DAY / HOUR(00-23)h_ticks.bi5
     url_path = f"{instrument.upper()}/{dt.year}/{month_index:02d}/{dt.day:02d}/{dt.hour:02d}h_ticks.bi5"
     return f"{BASE_URL}/{url_path}"
 
 def get_local_filepath(instrument: str, dt: datetime, base_dir: str) -> str:
     """Generates the local file path for a specific hourly .bi5 file."""
-    # Structure: base_dir/<instrument>/2023/12/01/01h_ticks.bi5
     dir_path = os.path.join(
         base_dir, 
         instrument.upper(), 
@@ -50,28 +56,24 @@ def get_local_filepath(instrument: str, dt: datetime, base_dir: str) -> str:
 
 def download_single_hour(instrument: str, dt: datetime, base_dir: str, session: requests.Session) -> str:
     """Downloads a single hourly .bi5 file and saves it locally."""
-    url = get_bi5_url(instrument, dt)
+    # We construct the path again here to ensure safety, though it's slightly redundant
     local_path = get_local_filepath(instrument, dt, base_dir)
+    url = get_bi5_url(instrument, dt)
     
-    # Check if file already exists to enable resume capability
-    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-        return f"✅ Exists: {local_path}"
+    # Redundant check removed here because we do it in the main loop now for speed
 
     try:
         response = session.get(url, timeout=30)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status() 
 
-        # Ensure the directory exists
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         
-        # Save the raw compressed binary content
         with open(local_path, 'wb') as f:
             f.write(response.content)
             
         return f"✅ Downloaded: {local_path}"
         
     except requests.exceptions.HTTPError as e:
-        # 404 Not Found is common for non-trading hours or holidays
         if response.status_code == 404:
              return f"⚠️ Missing (404): {url}"
         return f"❌ HTTP Error {response.status_code}: {e}"
@@ -80,7 +82,7 @@ def download_single_hour(instrument: str, dt: datetime, base_dir: str, session: 
     except Exception as e:
         return f"❌ Unexpected Error: {e}"
 
-def download_and_save_bi5_files(instrument: str, start_date: datetime, end_date: datetime, output_dir: str, max_workers: int = 15):
+def download_and_save_bi5_files(instrument: str, start_date: datetime, end_date: datetime, output_dir: str, max_workers: int = 50):
     """
     Concurrently downloads raw Dukascopy .bi5 tick files for a date range.
     """
@@ -99,36 +101,55 @@ def download_and_save_bi5_files(instrument: str, start_date: datetime, end_date:
         current_dt += timedelta(hours=1)
         
     total_files = len(hours_to_download)
-    print(f"Total {total_files} hourly files to process.")
+    print(f"Total range covers {total_files} hours.")
 
-    session = get_requests_session()
+    # Pass max_workers to session to size the pool correctly
+    session = get_requests_session(pool_size=max_workers)
+    
+    futures_list = {}
+    skipped_count = 0
+    
+    print("Checking existing files (this might take a moment)...")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_hour = {
-            executor.submit(download_single_hour, instrument, hour, output_dir, session): hour 
-            for hour in hours_to_download
-        }
+        for hour in hours_to_download:
+            # OPTIMIZATION: Check existence BEFORE submitting the thread.
+            # This saves massive overhead on "resume" runs.
+            local_path = get_local_filepath(instrument, hour, output_dir)
+            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                skipped_count += 1
+                continue
+            
+            # Only submit if file doesn't exist
+            future = executor.submit(download_single_hour, instrument, hour, output_dir, session)
+            futures_list[future] = hour
+
+        if skipped_count > 0:
+            print(f"Skipped {skipped_count} existing files.")
+        
+        files_to_download = len(futures_list)
+        print(f"Starting download for {files_to_download} new files with {max_workers} workers...")
         
         count = 0
-        for future in as_completed(future_to_hour):
+        for future in as_completed(futures_list):
             count += 1
             try:
                 result = future.result()
-                # Simple progress update
-                if count % (total_files // 100 + 1) == 0 or count == total_files:
-                    print(f"Progress: {count}/{total_files} ({count/total_files:.1%})", end='\r')
+                # Progress update
+                if count % 100 == 0 or count == files_to_download:
+                    print(f"Progress: {count}/{files_to_download} ({count/files_to_download:.1%})", end='\r')
             except Exception as exc:
-                print(f"\nError processing hour: {future_to_hour[future].strftime('%Y-%m-%d %H:%M')}, Exception: {exc}")
+                print(f"\nError processing hour: {futures_list[future].strftime('%Y-%m-%d %H:%M')}, Exception: {exc}")
 
     print("\n--- Download Complete ---")
     
 if __name__ == "__main__":
-    # --- Set up PARAMETERS: instrument (ducascopy names), date range, output directory ---
+    # --- Set up PARAMETERS ---
     INSTRUMENT = "deuidxeur"
     START_DATE = datetime(2021, 1, 1, 0, 0, tzinfo=timezone.utc)
     END_DATE = datetime(2023, 12, 31, 23, 0, tzinfo=timezone.utc) 
     OUTPUT_DIRECTORY = "data/raw/dukascopy_bi5" 
-    MAX_CONCURRENT_WORKERS = 15
+    MAX_CONCURRENT_WORKERS = 50 # Increased default
     
     download_and_save_bi5_files(
         instrument=INSTRUMENT,
