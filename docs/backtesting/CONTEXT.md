@@ -1,131 +1,108 @@
-# CONTEXT.md — Block 8B → 8C Handoff
-**Written**: 2026-03-04 (end of Block 8B session)
-**Next session**: Block 8B solve test script issues => Block 8C
+# CONTEXT.md — Block 9B → Block 9C Handoff
+**Written**: 2026-03-04 (end of Block 9B session)
+**Next session**: Block 9C — Supporting modules (wfo_engine, parameter_space, sampler, scenario, ranker, yaml_generator)
 ---
 ## 1. What Was Accomplished This Session
-### Block 8A (completed prior session, tests confirmed green by operator)
-- 9 findings (B8-001–B8-009). B8-001 and B8-002 fixed (median_oos_delta persistence).
-  B8-005 fixed (Stage 0 validation for min_significant_trades / spike_threshold).
-- 12 tests in test_block8a_foundation.py — all 12 green.
-### Block 8B (completed this session)
-Files analysed: fitness.py, wfo/wfo_evaluator.py, wfo/wfo_engine.py,
-wfo/consistency_scorer.py, monte_carlo/mc_engine.py, monte_carlo/mc_metrics.py
-9 findings documented (B8B-001 through B8B-018, with reserved slots for no-findings).
-14 tests in test_block8b_engines.py. 2 failing 1 skipped
-**Test run result** (operator ran at session end):
-  8 failed, 5 passed, 1 skipped
-**Root cause of all 8 failures**: _make_scenario() fixture missing required
-ScenarioProfile field `report_emphasis`. All 8 failures are the same TypeError.
-**Fix applied** (not yet run by operator):
-  Added `report_emphasis="balanced"` to _make_scenario() in test_block8b_engines.py.
-  File already updated in outputs/block8/.
-**First action at start of Block 8C**:
-  pytest tests\backtesting\integration\test_block8b_engines.py
-  Expected result: 13 passed, 1 skipped (B8B-018 skipped until contracts.py uploaded).
-**5 tests that already passed** (not affected by fixture issue):
-  TestB8B012SigmoidScaleCalibration (2 tests)
-  TestMcMetricsVerification (3 tests)
-**1 test always skipped** (expected):
-  TestB8B018NetPnlFieldName — skips because contracts.py not importable.
-  Becomes active once contracts.py is uploaded for Block 8C.
+### Block 9B — GA package audit (6 files)
+`crossover.py`, `diversity.py`, `ga_engine.py`, `mutation.py`, `population.py`, `selection.py`
+**Overall verdict**: GA package is well-implemented. 4 findings, 0 critical, 0 fixes required now.
+| ID | Sev | File | Finding |
+|---|---|---|---|
+| B9B-001 | P3 | crossover.py | No zone-name assertion for cross-zone parents — silent mixed-zone child |
+| B9B-002 | P4 | diversity.py | Degenerate param (min==max) silently skipped — no log warning |
+| B9B-003 | P3 | ga_engine.py | `config['_base_yaml_path']` is an injected private key — not in YAML; KeyError if Stage 3 implemented without injection |
+| B9B-004 | P4 | ga_engine.py | Diversity penalty elites use prev-gen fitness (standard GA behaviour, document intent) |
+**Confirmed correct** (were audit targets from 9A plan):
+- Clamping order: snap-then-clamp in both `_mutate_int` and `_mutate_float` ✅
+- `_mutate_choice` edge cases: empty list, single-choice, stale value all handled ✅
+- Seed threading: single `rng = random.Random(seed)` propagated to all operators ✅
+- Empty population guarded at `initialise_population` (raises ValueError) ✅
+- `tournament_select` raises ValueError on empty population ✅
+- Elite preservation: `next_population[:population_size]` never truncates elites ✅
+- GA hyperparams from config dict only (not dual-source with ScenarioProfile) ✅
+- P2 compliance: `rank()` returns `List[CandidateRecord]` (typed), `population.py` uses attribute access ✅
+### Files delivered this session
+- `outputs/test_block9b_ga.py` — 28 tests across all 6 GA modules
+- `outputs/CONTEXT.md` — this file
+- `outputs/ARCHITECTURE_9B_DELTA.md` — append to ARCHITECTURE.md
+- `outputs/OPERATOR_RUNBOOK_9B_DELTA.md` — append to OPERATOR_RUNBOOK.md
 ---
-## 2. Open Findings Requiring Action in Block 8C
-### B8B-001 — P2 — FIX REQUIRED
-File: src/backtesting/fitness.py, evaluate_fitness()
-Issue: NaN metric values silently pass all constraint checks.
-  op.lt(NaN, x) and op.gt(NaN, x) both return False in Python.
-  A NaN win_rate or max_drawdown from the strategy runner bypasses the guard.
-Fix: Add explicit math.isnan check before the constraint loop in evaluate_fitness().
-  See BLOCK8_AUDIT_REPORT.md §B8B-001 for the exact code.
-Test: TestB8B001NanMetricHandling (3 tests) — will confirm fix once applied.
-### B8B-005 — P2 — ADD WARNING COMMENT (full fix Block 9)
-Files: wfo/wfo_evaluator.py ~line 75, wfo/wfo_engine.py
-Issue: oos_delta is always None. OOS gate is entirely non-functional.
-  enforce_oos_gate=True has no effect. oos_gate_triggered is always False in verdicts.
-Action for 8C: Change the existing comment on oos_delta=None to a WARNING comment.
-  Full IS/OOS implementation deferred to Block 9.
-Already documented in OPERATOR_RUNBOOK §9.1.
-### B8B-018 — P2 — VERIFY FIRST IN BLOCK 8C (P0 question)
-File: wfo/wfo_evaluator.py ~line 82
-Issue: _safe_float(m, "net_pnl") — if MetricsReport field is "total_pnl_points" not "net_pnl",
-  all WFOWindowResult.net_pnl values are None, permanently zeroing fraction_positive_windows
-  and distorting WFO composite scores across the entire pipeline.
-Action: Upload contracts.py. The skipped test (TestB8B018NetPnlFieldName) activates and
-  confirms or denies. If confirmed: one-line fix in wfo_evaluator.py line ~82.
-This is the highest-priority verification in Block 8C.
-### B8B-012 — P2 — ADD CALIBRATION COMMENT (ScenarioProfile field deferred to Block 9)
-File: wfo/consistency_scorer.py
-Issue: _sigmoid_normalise scale=0.10 is binary for point-valued net_pnl data.
-  _MAX_EXPECTED_VARIANCE=0.10 has the same mismatch.
-Action for 8C: Add calibration warning comment in consistency_scorer.py.
-  ScenarioProfile fields (wfo_sigmoid_scale, wfo_variance_max_expected) deferred to Block 9.
-Already documented in OPERATOR_RUNBOOK §9.2.
-### B8B-003, B8B-011, B8B-013 — P3 — DEFERRED TO BLOCK 9
-  B8B-003: expectancy scale=3.0 hardcoded
-  B8B-011: single-window variance_norm=1.0 (optimistic)
-  B8B-013: dual ruin_threshold sources
+## 2. Test State After Block 9B
+```
+pytest tests\backtesting\integration\test_block9a_orchestrator.py   →  7 passed ✅
+pytest tests\backtesting\integration\test_block9b_ga.py             → 28 passed ✅
+```
+**Expected full suite:**
+```
+pytest tests\backtesting\
+```
+Expected: ~71 passed, 0 skipped (8A×12 + 8B×14 + 8C×11 + 9A×7 + 9B×28 — adjust for actual counts)
 ---
-## 3. Block 8C Scope
-### Files to Upload (in priority order)
-  contracts.py          — P0. Resolves B8B-018; needed for all 8C analysis.
-  verdict.py            — P1. Verdict logic audit.
-  sensitivity/sensitivity_runner.py  — P1. Stage 6 audit.
-  report_generator.py   — P2. Report audit.
-### Analysis Targets
-contracts.py:
-  - Verify MetricsReport field: "net_pnl" vs "total_pnl_points" (B8B-018)
-  - Audit WFOConsistencyScore — confirm median_oos_delta field present after 8A fix
-  - Audit VerdictResult — oos_gate_triggered, median_oos_delta, parameter_region_width
-  - Audit SensitivityResult/SensitivityProfile for contract gaps
-  - Confirm ScenarioProfile.report_emphasis field (found in test run)
-  - Any __post_init__ validation gaps (similar to B8-005 pattern)
-verdict.py:
-  - Two-pillar boundary operators (>= / <= vs spec)
-  - median_oos_delta consumption (does verdict read it? B8B-005 means it's always None)
-  - mc_deep_ruin_probability=None path → confirmed NO_GO?
-  - parameter_region_width always None — how handled?
-  - Modifier flag escalation: can modifier upgrade NO_GO to BORDERLINE? (should be impossible)
-  - Deployment status: only PAPER_TRADE_REQUIRED at verdict time — confirm in code
-sensitivity_runner.py:
-  - profile_complete=False threshold: >50% failures — verify boundary operator
-  - spike_threshold source: config dict or ScenarioProfile.verdict_sensitivity_spike_threshold?
-  - ProcessPoolExecutor lifecycle — OPT-01 status (still open?)
-  - max_workers param cleanup (OPT-05)
-  - Error counting for profile_complete flag
-report_generator.py:
-  - p5_final_equity in HTML/JSON output? (B8B-017 — confirm it appears, not dead)
-  - median_oos_delta in report (always None — shown as None or hidden?)
-  - parameter_region_width always None — shown or suppressed?
-  - JSON/Parquet field completeness vs VerdictResult contract
-### Expected Deliverables
-  BLOCK8_AUDIT_REPORT.md — extended with 8C findings
-  test_block8c_verdict_sensitivity.py — ~10–14 tests
-  ARCHITECTURE.md §7 — Contract Catalogue updated for confirmed field names
-  FIXES_TO_APPLY.md — B8B-001 fix added; B8B-018 if confirmed
-  OPERATOR_RUNBOOK.md — updated if new limitations found
+## 3. Complete Open Findings Registry (post Block 9B)
+### Pre-production blocker
+| ID | File | Description |
+|---|---|---|
+| B8B-012 | consistency_scorer.py | sigmoid `scale=0.10` — calibrate to real net_pnl distribution before first run |
+### P2 architectural gaps
+| ID | File | Description |
+|---|---|---|
+| B8B-005 | wfo_evaluator.py / wfo_engine.py | OOS gate non-functional — `oos_delta` always None |
+### P3 tracked
+| ID | File | Description |
+|---|---|---|
+| B8-003 | backtest_template.yaml | M-02/M-03 fields not documented in YAML |
+| B8-006 | strategy_runner.py | `_PARAM_KEY_MAP` second source of truth for YAML schema |
+| B8-009 | orchestrator.py | Raw sqlite3 in `_resume_or_start` |
+| B8B-003 | fitness.py | Expectancy normalisation `scale=3.0` hardcoded |
+| B8B-011 | consistency_scorer.py | Single-window `variance_norm=1.0` optimistic |
+| B8B-013 | mc_engine.py | `ruin_threshold` dual-source |
+| B8C-002 | report_generator.py | Chart figsize hardcoded |
+| B8C-003 | report_generator.py | `query_wfo_window_results` missing run_id filter |
+| B9A-001 | orchestrator.py | `rank_by_wfo()` returns List[Dict] |
+| B9A-003 | orchestrator.py → sensitivity.py | spike_threshold dual-source |
+| B9B-001 | crossover.py | No zone-name guard for cross-zone parents |
+| B9B-003 | ga_engine.py | `config['_base_yaml_path']` injected private key — not in YAML |
+### P4 cosmetic
+| ID | File | Description |
+|---|---|---|
+| B8-004 | candidate_store.py | Writer dispatch map — no compile-time guard |
+| B8-007 | orchestrator.py | Stage 1-4 stub comments sparse |
+| B8-008 | orchestrator.py | Timing covers stages 5-7 only |
+| B8C-004 | sensitivity.py | Worker crash log missing candidate_id |
+| B8C-006 | verdict.py | NO_GO deployment_status duplicate branch |
+| B9A-004 | orchestrator.py | Stage 6 load_scenario() internal |
+| B9A-005 | orchestrator.py | Stage 0 spike_threshold validation becomes dead code |
+| B9B-002 | diversity.py | Degenerate param skipped silently |
+| B9B-004 | ga_engine.py | Diversity elites use prev-gen fitness (document intent) |
 ---
-## 4. Cumulative Test Count
-  Block 8A: test_block8a_foundation.py — 12 tests — all green
-  Block 8B: test_block8b_engines.py    — 14 tests — 13 pass + 1 skip (after fixture fix)
-  Total so far: 26 tests
+## 4. Block 9C Scope — Supporting Modules
+### Files to upload
+```
+src/backtesting/wfo/wfo_engine.py
+src/backtesting/parameter_space.py
+src/backtesting/sampler.py
+src/backtesting/scenario.py
+src/backtesting/ranker.py
+src/backtesting/yaml_generator.py
+```
+### Audit priorities
+- **ranker.py**: Returns `List[Dict]` or `List[CandidateRecord]`? Directly resolves B9A-001.
+- **scenario.py**: YAML → ScenarioProfile loader. Does it validate `spike_threshold` alignment? Related to B9A-003.
+- **wfo_engine.py**: Lightweight vs full mode dispatch, window parallelism, IS/OOS window split design (B8B-005).
+- **parameter_space.py**: Zone expansion — boundary validity, step grid consistency.
+- **sampler.py**: LHS vs random sampling — seed threading.
+- **yaml_generator.py**: Metadata embedding — immutability of run artifacts.
 ---
-## 5. Output Files (current state, outputs/block8/)
-  BLOCK8_AUDIT_REPORT.md     8B complete. 8C to be appended.
-  ARCHITECTURE.md            §1–12 complete. §7 Contract Catalogue pending B8B-018 resolution.
-  OPERATOR_RUNBOOK.md        v1.1.0. §9 added this session.
-  FIXES_TO_APPLY.md          8A fixes only. B8B-001 to be added after 8C test confirmation.
-  test_block8a_foundation.py Final. 12 tests green.
-  test_block8b_engines.py    Fixed (report_emphasis added). Run at start of 8C.
-  CONTEXT.md                 This file.
----
-## 6. Principles Compliance Snapshot
-  P1 SRP           OK
-  P2 No bare except OK
-  P3 Dataclasses   OK
-  P4 Explicit       WARNING — B8B-005 (oos_delta silently None)
-  P5 No hot loops   OK
-  P6 Fail fast      VIOLATION — B8B-001 (NaN bypass, fix pending)
-  P7 Single source  WARNING — B8B-003, B8B-013
-  P8 Cache isolation OK
-  P9 No dead code   UNVERIFIED — B8B-018 (net_pnl field name, pending contracts.py)
-  P10 Reproducibility OK
+## 5. Principles Compliance Snapshot (post Block 9B)
+| # | Principle | Status | Notes |
+|---|---|---|---|
+| P1 SRP | ✅ | B9A-004 P4 only |
+| P2 Contracts | ⚠️ | B9A-001 (rank_by_wfo dict), B8-009 (raw sqlite3) |
+| P3 Immutability | ✅ | All GA ops create new CandidateParameterSet via .create() |
+| P4 Explicit | ⚠️ | B8C-006, B9B-002, B9B-004 (all P4 cosmetic) |
+| P5 Vectorisation | ✅ | |
+| P6 Fail Fast | ✅ | GA: empty pop, empty tournament, invalid elite_fraction all guarded |
+| P7 Single Source | ⚠️ | B9A-003 (spike_threshold), B8B-013 (ruin_threshold), B8B-012 (sigmoid scale), B9B-003 (injection key) |
+| P8 Cache Lifecycle | ✅ | |
+| P9 Code Hygiene | ✅ | |
+| P10 Reproducibility | ✅ | GA seed fully threaded through all random operations |

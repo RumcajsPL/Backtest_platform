@@ -9,6 +9,11 @@ Responsibilities (orchestrate only):
 
 Stages 1–4 remain stubs pending their respective phase implementations.
 Stages 0, 5, 6, and 7 are fully implemented.
+
+Block 9A fixes applied:
+  B9A-002: Stage 1 stub now advances checkpoint to RANDOM_SEARCH_COMPLETE.
+           Previously the checkpoint was never advanced, causing Stage 1 to
+           re-run on every pipeline resume.
 """
 from __future__ import annotations
 
@@ -206,6 +211,7 @@ def _execute_pipeline(
     # into the DB. This is a known temporary state. See OPERATOR_RUNBOOK §3.
     if store.get_checkpoint(run_id).value < Checkpoint.RANDOM_SEARCH_COMPLETE.value:
         _run_stage_1_random_search(config, store, run_metadata)
+        store.set_checkpoint(run_id, Checkpoint.RANDOM_SEARCH_COMPLETE)  # B9A-002
     else:
         logger.info("Stage 1 (Random Search) already complete — skipping")
 
@@ -258,6 +264,9 @@ def _execute_pipeline(
 
     _elapsed_total = _elapsed_5 + _elapsed_6 + _elapsed_7
     _budget = 14400.0
+    # NOTE (B8-008): Timing covers stages 5–7 only. Stages 1–4 are stubs and
+    # contribute negligible elapsed time. When stubs are replaced, move
+    # _t_total to the top of this function and sum all stage durations.
     logger.info(
         "TIMING stage_5_mc_deep elapsed=%.1fs", _elapsed_5,
     )
@@ -316,8 +325,11 @@ def _run_stage_0_init(
             f"got {min_significant_trades}. A value of 0 disables the significance guard."
         )
 
-    # B8-005: Validate spike_threshold is strictly between 0 and 1.
-    # 0.0 would flag every parameter as a spike; >= 1.0 would never flag any.
+    # NOTE (B9A-003, B9A-005): spike_threshold is currently validated here from the
+    # config dict. Once B9A-003 is applied (Stage 6 reads spike_threshold from
+    # ScenarioProfile.verdict_sensitivity_spike_threshold instead), this validation
+    # becomes redundant — ScenarioProfile.__post_init__ owns the guard.
+    # Remove this block when B9A-003 is applied.
     spike_threshold_val = config.get("sensitivity", {}).get("spike_threshold", 0.15)
     if not (0.0 < spike_threshold_val < 1.0):
         raise ValueError(
@@ -327,7 +339,7 @@ def _run_stage_0_init(
 
     zones = config.get("zones", {})
     enabled_zones = [name for name, zdef in zones.items() if zdef.get("enabled", True)]
-    if not enabled_zones:    
+    if not enabled_zones:
         raise ValueError(
             "Stage 0: No parameter zones are enabled. "
             "Enable at least one zone under 'zones' in the config."
@@ -519,6 +531,15 @@ def _run_stage_6_sensitivity(
     OPT-01: A single ProcessPoolExecutor is opened for all candidates and passed
     to evaluate_sensitivity() via the pool= kwarg. The pool stays warm between
     candidates — spawn overhead is paid once instead of once per candidate.
+
+    NOTE (B9A-003): spike_threshold is currently read from config dict
+    (sensitivity.spike_threshold). It should instead be read from
+    scenario.verdict_sensitivity_spike_threshold so that the detection threshold
+    and the verdict flagging threshold are always identical. Deferred to Block 9B.
+    When fixed, also remove the Stage 0 spike_threshold validation (B9A-005).
+
+    NOTE (B9A-004): load_scenario() is called here rather than receiving the
+    already-loaded ScenarioProfile as a parameter. Minor SRP friction — deferred.
     """
     from src.backtesting.evaluation.sensitivity import evaluate_sensitivity
     from src.backtesting.scenario import load_scenario
@@ -527,7 +548,7 @@ def _run_stage_6_sensitivity(
     run_id = run_metadata.run_id
     sens_config = config.get("sensitivity", {})
     input_count: int = sens_config.get("input_count", 5)
-    spike_threshold: float = sens_config.get("spike_threshold", 0.15)
+    spike_threshold: float = sens_config.get("spike_threshold", 0.15)  # B9A-003: see NOTE above
     max_steps: int = sens_config.get("max_steps", 2)
     max_workers: int = config.get("run", {}).get("max_workers", 6)
     min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
@@ -537,7 +558,7 @@ def _run_stage_6_sensitivity(
     temp_dir = Path(config["run"]["temp_dir"])
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    scenario = load_scenario(config)
+    scenario = load_scenario(config)  # B9A-004: should be passed as parameter
     parameter_space_def: dict = config.get("zones", {})
 
     logger.info(
@@ -616,6 +637,10 @@ def _run_stage_7_report(
       - Per-borderline adversarial checklist HTML
       - JSON per-candidate records
       - Parquet per-candidate records (if pandas available)
+
+    NOTE (B9A-001): rank_by_wfo() returns List[Dict] — raw dicts crossing the
+    store↔orchestrator boundary. record['candidate_id'] is untyped dict-key access.
+    Fix: rank_by_wfo() should return List[CandidateRecord]. Deferred to Block 9B.
     """
     run_id = run_metadata.run_id
     sens_config = config.get("sensitivity", {})
@@ -641,7 +666,7 @@ def _run_stage_7_report(
     # ── 7a: Verdicts ──────────────────────────────────────────────────────────
     verdicts_written = 0
     for record in top_records:
-        candidate_id: str = record["candidate_id"]
+        candidate_id: str = record["candidate_id"]  # B9A-001: dict access — see NOTE above
 
         wfo_score: Optional[WFOConsistencyScore] = store.get_wfo_consistency_score(candidate_id)
         mc_result: Optional[MCResult] = store.get_mc_result(candidate_id, mode=MCMode.DEEP)
@@ -750,6 +775,10 @@ def _record_to_candidate(record: Dict[str, Any]) -> CandidateParameterSet:
     """
     Reconstruct a CandidateParameterSet from a rank_by_wfo record dict.
     Supports both 'parameters' (dict) and 'parameters_json' (JSON string) keys.
+
+    NOTE: candidate_id is deterministic (SHA-256 of parameters dict) — reconstructing
+    from the same parameters always yields the same ID as stored in the DB.
+    No candidate_id field needs to be passed explicitly.
     """
     import json
 
