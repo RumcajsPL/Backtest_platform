@@ -14,6 +14,11 @@ The four metrics (per TECHNICAL_SPEC.md and FUNCTIONAL_SPEC.md Stage 4):
 
 Each metric is normalised to [0, 1] before weighting (higher = better for all four).
 For variance and worst_drawdown, normalisation inverts the raw value.
+
+Block 7B change (M-03): window_collapse_flag threshold is now read from
+ScenarioProfile.wfo_collapse_drawdown_threshold instead of hardcoded 0.40.
+Default on ScenarioProfile is 0.40, preserving prior behaviour for all existing
+scenarios that do not set this field explicitly.
 """
 from __future__ import annotations
 
@@ -49,7 +54,8 @@ def compute_consistency(
     Args:
         window_results:            All WFOWindowResult instances for this candidate.
         windows_total:             Total number of configured windows (including failed).
-        scenario:                  Active scenario profile (provides temporal weights).
+        scenario:                  Active scenario profile (provides temporal weights and
+                                   wfo_collapse_drawdown_threshold).
         oos_gate_enabled:          Whether IS/OOS gate is active.
         oos_degradation_threshold: IS/OOS degradation fraction above which gate triggers.
 
@@ -121,15 +127,28 @@ def compute_consistency(
     if oos_gate_enabled:
         oos_gate_triggered = _check_oos_gate(valid_results, oos_degradation_threshold)
 
-    # ── Window collapse flag ─────────────────────────────────────────────────
-    # Flag if any valid window shows drawdown ≥ 40% (severe collapse)
+    # ── Median OOS delta (M-01) ───────────────────────────────────────────────
+    # Compute here while valid_results are in scope. verdict.py reads directly
+    # from wfo_score.median_oos_delta — no second query to the store required.
+    oos_deltas = [r.oos_delta for r in valid_results if r.oos_delta is not None]
+    median_oos_delta: Optional[float] = (
+        statistics.median(oos_deltas) if oos_deltas else None
+    )
+
+    # ── Window collapse flag (M-03) ──────────────────────────────────────────
+    # Flag if any valid window shows drawdown >= scenario threshold.
+    # Previously hardcoded as 0.40. Now reads from ScenarioProfile so that
+    # conservative scenario (threshold 0.20) can flag collapses that
+    # capital_accumulation (threshold 0.40) would not.
+    collapse_threshold: float = scenario.wfo_collapse_drawdown_threshold
     window_collapse_flag = any(
-        (r.max_drawdown or 0.0) >= 0.40 for r in valid_results
+        (r.max_drawdown or 0.0) >= collapse_threshold for r in valid_results
     )
 
     logger.debug(
         "Consistency score candidate=%s windows=%d/%d composite=%.3f "
-        "(median_ret=%.3f var=%.3f worst_dd=%.3f frac_pos=%.3f)",
+        "(median_ret=%.3f var=%.3f worst_dd=%.3f frac_pos=%.3f collapse_threshold=%.2f "
+        "median_oos_delta=%s)",
         candidate_id[:12],
         windows_evaluated,
         windows_total,
@@ -138,6 +157,8 @@ def compute_consistency(
         variance_norm,
         worst_dd_norm,
         fraction_positive,
+        collapse_threshold,
+        f"{median_oos_delta:.4f}" if median_oos_delta is not None else "None",
     )
 
     return WFOConsistencyScore(
@@ -151,6 +172,7 @@ def compute_consistency(
         composite_score=float(composite),
         oos_gate_triggered=oos_gate_triggered,
         window_collapse_flag=window_collapse_flag,
+        median_oos_delta=median_oos_delta,
     )
 
 

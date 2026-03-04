@@ -28,6 +28,12 @@ Public interface
     compute_verdict(
         candidate_id, wfo_score, mc_result, sensitivity, scenario, oos_gate_enabled
     ) -> VerdictResult
+
+Block 7D change (M-01):
+    median_oos_delta is now read from wfo_score.median_oos_delta (populated by
+    consistency_scorer.py) instead of always returning None from a local helper.
+    The dead _compute_median_oos_delta() helper has been removed — it was a
+    documented placeholder that was never implemented.
 """
 
 from __future__ import annotations
@@ -150,14 +156,18 @@ def compute_verdict(
     )
 
     # ── Informational fields ──────────────────────────────────────────────────
-    median_oos_delta: Optional[float] = _compute_median_oos_delta(wfo_score)
+    # M-01: Read median_oos_delta from wfo_score (computed by consistency_scorer.py).
+    # Previously this was always None from a local dead helper. Now populated when
+    # oos_gate is enabled and windows carry oos_delta values.
+    median_oos_delta: Optional[float] = wfo_score.median_oos_delta
 
     logger.info(
-        "Verdict for candidate %s: %s (WFO=%.3f, ruin=%.3f, flags=%s)",
+        "Verdict for candidate %s: %s (WFO=%.3f, ruin=%s, median_oos_delta=%s, flags=%s)",
         candidate_id[:12],
         verdict.value,
         wfo_composite,
-        ruin_prob if ruin_prob is not None else -1.0,
+        f"{ruin_prob:.3f}" if ruin_prob is not None else "None",
+        f"{median_oos_delta:.4f}" if median_oos_delta is not None else "None",
         _active_flags(sensitivity_spike, oos_gate_triggered, window_collapse_flag, sensitivity_profile_incomplete),
     )
 
@@ -173,8 +183,8 @@ def compute_verdict(
         window_collapse_flag=window_collapse_flag,
         sensitivity_profile_incomplete=sensitivity_profile_incomplete,
         median_oos_delta=median_oos_delta,
-        parameter_region_width=None,  # informational — computed by future ML layer
-        yaml_output_path=None,         # set by yaml_generator after this call
+        parameter_region_width=None,  # informational — not yet computed; deferred to Block 8
+        yaml_output_path=None,        # set by yaml_generator after this call
         evidence_summary=evidence_summary,
     )
 
@@ -238,15 +248,6 @@ def _build_evidence_summary(
         parts.append("No modifier flags.")
 
     return " ".join(parts)
-
-
-def _compute_median_oos_delta(wfo_score: WFOConsistencyScore) -> Optional[float]:
-    """
-    The WFOConsistencyScore does not directly expose per-window oos_delta values —
-    that data lives in the individual WFOWindowResults in the store.
-    Return None here; the orchestrator can compute and set this from store data if needed.
-    """
-    return None
 
 
 def _active_flags(

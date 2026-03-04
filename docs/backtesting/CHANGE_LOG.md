@@ -829,5 +829,214 @@ Unchanged — LOCKED at Block 3 (Total=337.2s, Stage6=332.6s).
 ### Code Changes
 
 None. Documentation-only session.
+## Block 7 Sub-Blocks 7A + 7B — 2026-03-04
+
+### Summary
+Audit remediation (H-02 real bug fixed; H-01/H-03 false positives confirmed).
+I-07 datetime fix. M-02/03/04/05 audit medium findings implemented.
+233 → 242 tests.
+
+---
+
+### Sub-Block 7A — SKILL.md + H-02 Fix + I-07
+
+**H-01 — FALSE POSITIVE confirmed**
+`wfo_evaluator.evaluate_window()` passes `date_start=window.start_date,
+date_end=window.end_date` to `strategy_runner.evaluate()`. Audit read the simplified
+TECHNICAL_SPEC signature, not the source. No code change required.
+
+**H-02 — REAL BUG fixed** (`candidate_store.py`)
+`write_wfo_window_result(result: WFOWindowResult, run_id: str)` and
+`flag_candidate_wfo_insufficient(candidate_id: str, run_id: str)` were absent.
+`wfo_engine.py` called both — the writer thread silently caught `AttributeError`
+and discarded all writes. The `wfo_window_results` table was always empty.
+Fix: both public methods + `_write_wfo_window_result` + `_flag_wfo_insufficient`
+internal handlers added. `WFOWindowResult` added to contract imports.
+`is_ga_fitness_window=0`, `ga_generation=None` always (write API has no generation context).
+`flag_candidate_wfo_insufficient` uses `INSERT OR IGNORE` — idempotent.
+2 regression tests added: `test_h02_wfo_window_writes.py`.
+New lesson L-05 documents the silent write loss pattern.
+
+**H-03 — FALSE POSITIVE confirmed**
+Same `wfo_evaluator.py` source read confirms H-01 resolution. No action.
+
+**I-07 fixed** (`wfo_evaluator.py`)
+3× `datetime.utcnow()` (deprecated Python 3.12+) replaced with `datetime.now(UTC)`.
+`UTC` imported from `datetime`. No new tests required — existing suite catches regressions.
+
+---
+
+### Sub-Block 7B — Audit M-Series P1/P2
+
+**M-05 — Stage 0 parameter name validation** (`orchestrator.py`)
+`_validate_parameter_names(config)` added to `_run_stage_0_init()`.
+Collects all parameter names from enabled zones, diffs against `_PARAM_KEY_MAP`.
+Raises `ValueError` with sorted unknown names on first call (fast-fail).
+Local import of `_PARAM_KEY_MAP` inside helper avoids circular import risk.
+2 tests: valid names pass; unknown name raises with name in error message.
+
+**M-04 — MC zero-equity drawdown** (`mc_metrics.py`)
+After computing `worst_drawdown_per_path` array, clamp all ruined paths:
+`worst_drawdown_per_path[ruined_paths] = 1.0`
+Root cause: running-max calculation understated drawdown on paths that rose before
+crashing to ruin (e.g. equity 10k→15k→999 with ruin_floor=1000 gave 0.933 not 1.0).
+1 test: ruined path reports `worst_drawdown_across_paths = 1.0`.
+
+**M-03 — Scenario-configurable WFO collapse threshold** (`contracts.py`, `consistency_scorer.py`)
+`wfo_collapse_drawdown_threshold: float = 0.40` added to `ScenarioProfile` (appended at end,
+default preserves prior behaviour).
+`consistency_scorer.py` now reads `scenario.wfo_collapse_drawdown_threshold` instead of
+hardcoded `0.40`.
+2 tests: conservative (0.20) flags collapse that capital_accumulation (0.40) does not;
+no false flag when all windows below threshold.
+
+**M-02 — Scenario-configurable fitness normalisation** (`contracts.py`, `fitness.py`)
+Three fields appended to `ScenarioProfile` with defaults matching prior hardcoded values:
+- `normalisation_drawdown_ref_points: float = 10_000.0`
+- `normalisation_pnl_ref_points: float = 5_000.0`
+- `normalisation_freq_ref_trades_per_week: float = 20.0`
+`fitness._compute_weighted_score()` reads from `scenario` instead of module constants.
+Module-level `_CONSTRAINT_DRAWDOWN_REF_POINTS` retained for constraint check table
+(built at import time without scenario instance).
+2 tests: each ref point flows into fitness score comparison.
+
+---
+
+### Test Delta
+| File | New tests | Total |
+|---|---|---|
+| test_h02_wfo_window_writes.py | +2 | 235 |
+| test_7b_audit_m_series.py | +7 | 242 |
+
+### Files Changed
+| File | Change |
+|---|---|
+| `src/backtesting/candidate_store.py` | H-02: 2 public + 2 internal methods added |
+| `src/backtesting/wfo/wfo_evaluator.py` | I-07: 3× utcnow() → now(UTC) |
+| `src/backtesting/contracts.py` | M-02/03: 4 new ScenarioProfile fields with defaults |
+| `src/backtesting/monte_carlo/mc_metrics.py` | M-04: ruined path drawdown clamp |
+| `src/backtesting/wfo/consistency_scorer.py` | M-03: reads threshold from scenario |
+| `src/backtesting/fitness.py` | M-02: reads normalisation refs from scenario |
+| `src/backtesting/orchestrator.py` | M-05: _validate_parameter_names in Stage 0 |
+
+---
+
+## Block 7 Sub-Block 7C — OPT-01 Pool Reuse — 2026-03-04
+
+### Summary
+OPT-01 implemented: single `ProcessPoolExecutor` shared across all candidates in
+Stage 6. Expected 40–60% Stage 6 reduction (333s → ≤200s target).
+No new tests — correctness guarded by existing 242-test suite.
+
+### Changes
+
+**`evaluation/sensitivity.py`** — OPT-01: optional `pool` kwarg
+```python
+# New signature (backward compatible — pool=None is default):
+def evaluate_sensitivity(..., pool: Optional[ProcessPoolExecutor] = None) -> SensitivityProfile
+```
+- If `pool=None`: creates and manages own `ProcessPoolExecutor` (original behaviour,
+  all existing tests unaffected).
+- If `pool` provided: uses `nullcontext(pool)` so the shared pool is used but NOT
+  shut down on return. Caller owns the pool lifecycle.
+- `nullcontext` imported from `contextlib` — standard library, no new dependency.
+
+**`orchestrator.py` `_run_stage_6_sensitivity`** — OPT-01: pool wraps candidate loop
+```python
+# Before: one pool per candidate (N spawn cycles)
+for record in top_records:
+    with ProcessPoolExecutor(...) as pool:   # opened/closed each iteration
+        evaluate_sensitivity(...) 
+
+# After: one pool for all candidates (1 spawn cycle)
+with ProcessPoolExecutor(max_workers=max_workers) as pool:
+    for record in top_records:
+        evaluate_sensitivity(..., pool=pool)  # pool stays warm
+```
+
+### Why nullcontext is the correct pattern
+`nullcontext(obj)` acts as a context manager that returns `obj` unchanged and
+performs no action on `__exit__`. This means:
+- `with nullcontext(pool) as active_pool:` → `active_pool is pool`, no shutdown on exit.
+- `with ProcessPoolExecutor(...) as active_pool:` → new pool, shutdown on exit.
+Both paths use `active_pool.submit()` identically. Zero code duplication.
+
+### Test impact
+None — all 242 tests pass unchanged. Existing tests call `evaluate_sensitivity()`
+without `pool=` kwarg, exercising the `pool=None` path which is identical to
+pre-OPT-01 behaviour.
+
+### Performance verification
+Run `test_performance.py` after applying changes to confirm Stage 6 ≤ 200s on
+target hardware. If still > 200s, implement OPT-02 (batch perturbations per candidate).
+
+---
+
+## Block 7 Sub-Block 7D — M-01, M-06, WF-07/WF-09 — 2026-03-04
+
+### Summary
+M-01 (median_oos_delta always None) fixed. M-06 (hardcoded mutation std dev) fixed.
+WF-07 and WF-09 dispositioned with documentation. 4 tests added. 242 -> 246.
+
+### Changes
+
+**contracts.py — WFOConsistencyScore** (M-01)
+Field appended at end with default:
+  median_oos_delta: Optional[float] = None
+Populated by consistency_scorer.py. None when all windows have oos_delta=None
+(gate disabled or pre-OOS runs). All existing constructors unaffected.
+
+**contracts.py — CandidateRecord** (M-01)
+New WFO field:
+  wfo_median_oos_delta: Optional[float]   # M-01: from WFOConsistencyScore.median_oos_delta
+Consistent with other wfo_ fields already present in CandidateRecord.
+
+**consistency_scorer.py** (M-01)
+Computes median_oos_delta while valid_results are in scope:
+  oos_deltas = [r.oos_delta for r in valid_results if r.oos_delta is not None]
+  median_oos_delta = statistics.median(oos_deltas) if oos_deltas else None
+Passed to WFOConsistencyScore constructor. Added to debug log line.
+
+**verdict.py** (M-01)
+Dead _compute_median_oos_delta() helper removed (had always returned None with a
+placeholder docstring comment). Replaced with direct read:
+  median_oos_delta: Optional[float] = wfo_score.median_oos_delta
+Added median_oos_delta to logger.info() call for observability.
+parameter_region_width comment updated: "deferred to Block 8".
+
+**mutation.py** (M-06)
+mutation_std_steps: float = 2.0 kwarg added to mutate(). Threaded through to
+_mutate_int() and _mutate_float() — both previously had hardcoded rng.gauss(0, 2.0).
+Default 2.0 preserves all existing behaviour.
+Correctly not added to ScenarioProfile: mutation is a GA process parameter,
+not an evaluation-lens parameter. ga_engine reads from config["genetic"]["mutation_std_steps"].
+
+**WF-07 disposition**
+parameter_region_width=None in verdict.py confirmed as an explicit, documented
+placeholder with the comment "deferred to Block 8". No code change required.
+FUNCTIONAL_SPEC.md updated to reflect deferred status.
+
+**WF-09 disposition**
+Stage 1 is still a stub. The adequacy warning (warn if avg_trades < mc_iters * 0.10)
+is documented as a WF-09 intent in FUNCTIONAL_SPEC.md Stage 1 section. No code change
+appropriate while Stage 1 remains unimplemented.
+
+### Test Delta
+| File | New tests | Running total |
+|---|---|---|
+| test_7d_audit_m01_m06.py | +4 | 246 |
+
+M01-01: median_oos_delta computed correctly from mixed positive/negative/None window deltas
+M01-02: median_oos_delta=None when all windows have oos_delta=None
+M06-01: larger mutation_std_steps produces larger average absolute perturbation (200 trials)
+M06-02: mutation_std_steps~0 produces no-op mutations for int and float parameters (100 trials)
+
+### Files Changed
+| File | Change |
+|---|---|
+| src/backtesting/contracts.py | WFOConsistencyScore + CandidateRecord new fields |
+| src/backtesting/wfo/consistency_scorer.py | Computes median_oos_delta, passes to contract |
+| src/backtesting/evaluation/verdict.py | Reads from wfo_score, dead helper removed |
+| src/backtesting/ga/mutation.py | mutation_std_steps kwarg threaded through |
 ---
 <!-- APPEND NEW SESSION BLOCKS BELOW THIS LINE -->

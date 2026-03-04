@@ -18,12 +18,19 @@ Unit normalisation (MetricsReport → scenario threshold space):
                Normalised by dividing by 100 before comparison and storage.
 - max_drawdown: MetricsReport stores negative points (e.g. -1490.0).
                Scenarios use positive fractions (e.g. 0.15 = 15% drawdown).
-               Normalised by abs(points) / MAX_DRAWDOWN_REF_POINTS.
-               MAX_DRAWDOWN_REF_POINTS is a calibration constant representing
-               a "100% drawdown" reference equity in points. Recalibrate in
-               Phase 6 Block 5 after first real run results are available.
+               Normalised by abs(points) / scenario.normalisation_drawdown_ref_points.
+               This reference constant is now scenario-configurable (M-02).
                Default: 10_000 pts (conservative — errs toward passing the
                constraint rather than rejecting valid candidates).
+
+Block 7B change (M-02): Fitness normalisation constants previously hardcoded
+as module-level constants are now read from ScenarioProfile:
+  - MAX_DRAWDOWN_REF_POINTS     → scenario.normalisation_drawdown_ref_points
+  - 5000.0 (PnL ceiling)        → scenario.normalisation_pnl_ref_points
+  - 20.0   (freq ceiling)       → scenario.normalisation_freq_ref_trades_per_week
+The module-level MAX_DRAWDOWN_REF_POINTS constant is retained for the
+_normalise_max_drawdown helper used in the constraint check table, where
+the scenario is not yet available. The scoring path uses scenario fields.
 """
 from __future__ import annotations
 
@@ -37,13 +44,14 @@ from src.backtesting.contracts import (
     ScenarioProfile,
 )
 
-# ── Drawdown normalisation reference ─────────────────────────────────────────
-# MetricsReport.max_drawdown is in points (negative). Scenario max_drawdown
-# thresholds are fractions in [0, 1]. This constant converts points → fraction.
-# Interpretation: MAX_DRAWDOWN_REF_POINTS represents "100% drawdown" equity.
-# Recalibrate in Phase 6 Block 5. Default is deliberately conservative (large)
-# so that borderline candidates are not incorrectly rejected during validation.
-MAX_DRAWDOWN_REF_POINTS: float = 10_000.0
+# ── Drawdown normalisation reference (constraint path only) ──────────────────
+# Used in _CONSTRAINT_CHECKS to normalise MetricsReport.max_drawdown (negative
+# points) to a fraction in [0, 1] for threshold comparison.
+# The fitness scoring path reads scenario.normalisation_drawdown_ref_points.
+# This module-level constant is intentionally kept for the constraint check
+# table which is built at import time without a scenario instance.
+# Value must stay in sync with ScenarioProfile.normalisation_drawdown_ref_points default.
+_CONSTRAINT_DRAWDOWN_REF_POINTS: float = 10_000.0
 
 
 def _normalise_win_rate(win_rate_pct: Optional[float]) -> Optional[float]:
@@ -53,16 +61,16 @@ def _normalise_win_rate(win_rate_pct: Optional[float]) -> Optional[float]:
     return win_rate_pct / 100.0
 
 
-def _normalise_max_drawdown(max_drawdown_points: Optional[float]) -> Optional[float]:
+def _normalise_max_drawdown_constraint(max_drawdown_points: Optional[float]) -> Optional[float]:
     """
     Convert max_drawdown from negative points to positive fraction in [0, 1].
-    MetricsReport.max_drawdown is negative (e.g. -1490.0 pts).
-    Scenario threshold is positive fraction (e.g. 0.15).
+    Uses the module-level constraint reference constant.
+    Used in constraint checks only — not in fitness scoring.
     None-safe.
     """
     if max_drawdown_points is None:
         return None
-    return min(1.0, abs(max_drawdown_points) / MAX_DRAWDOWN_REF_POINTS)
+    return min(1.0, abs(max_drawdown_points) / _CONSTRAINT_DRAWDOWN_REF_POINTS)
 
 
 # ── Constraint check table ────────────────────────────────────────────────────
@@ -71,7 +79,7 @@ def _normalise_max_drawdown(max_drawdown_points: Optional[float]) -> Optional[fl
 # normaliser: optional callable applied to the raw metric value before comparison.
 
 _CONSTRAINT_CHECKS: Tuple = (
-    ("max_drawdown",    "max_drawdown",      "max_drawdown",        op.gt, _normalise_max_drawdown),
+    ("max_drawdown",    "max_drawdown",      "max_drawdown",        op.gt, _normalise_max_drawdown_constraint),
     ("win_rate",        "win_rate",          "min_win_rate",        op.lt, _normalise_win_rate),
     ("losing_streak",   "losing_streak",     "max_losing_streak",   op.gt, None),
     ("trades_per_week", "trades_per_week",   "min_trades_per_week", op.lt, None),
@@ -117,14 +125,13 @@ def evaluate_fitness(
     # Extract and normalise constraint actuals.
     # Stored in normalised units (0–1 fractions) to match scenario thresholds.
     actual_win_rate         = _normalise_win_rate(_get(m, "win_rate"))
-    actual_max_drawdown     = _normalise_max_drawdown(_get(m, "max_drawdown"))
+    actual_max_drawdown     = _normalise_max_drawdown_constraint(_get(m, "max_drawdown"))
     actual_losing_streak    = _get(m, "losing_streak")
     actual_trades_per_week  = _get(m, "trades_per_week")
     actual_expectancy       = _get(m, "expectancy_points")
     actual_profit_factor    = _get(m, "profit_factor")
 
     # Evaluate constraints in order — return on first failure.
-    # Normalised values are used for comparison so units match scenario thresholds.
     for label, metric_attr, threshold_attr, comparator, normaliser in _CONSTRAINT_CHECKS:
         raw = _get(m, metric_attr)
         actual = normaliser(raw) if (normaliser is not None) else raw
@@ -178,28 +185,35 @@ def _compute_weighted_score(metrics, scenario: ScenarioProfile) -> float:
     Compute the composite fitness score in [0, 1] by normalising each metric
     and combining with scenario weights.
 
-    All inputs are taken from MetricsReport in their native units and normalised
-    here. win_rate and max_drawdown normalisation matches _CONSTRAINT_CHECKS above.
+    All normalisation reference constants are read from ScenarioProfile (M-02).
+    Defaults on ScenarioProfile reproduce the prior hardcoded behaviour exactly.
 
     Drawdown is inverted: lower drawdown → higher contribution.
     """
     # win_rate: normalise from 0–100 → 0–1
     win_rate_norm = _clamp(_normalise_win_rate(_get(metrics, "win_rate")) or 0.0, 0.0, 1.0)
 
-    # expectancy_points: use expectancy_points (points per trade)
+    # expectancy_points: normalise to [0, 1] with fixed scale of 3.0 pts per unit
+    # (not yet scenario-configurable — deferred to Block 8 calibration)
     expectancy_norm = _clamp((_get(metrics, "expectancy_points") or 0.0) / 3.0, 0.0, 1.0)
 
     profit_factor_norm = _clamp(((_get(metrics, "profit_factor") or 1.0) - 1.0) / 4.0, 0.0, 1.0)
 
-    # max_drawdown: normalise from points → fraction, then invert
-    drawdown_frac = _normalise_max_drawdown(_get(metrics, "max_drawdown")) or 0.0
+    # max_drawdown: normalise from points → fraction using scenario ref, then invert
+    dd_points = _get(metrics, "max_drawdown")
+    drawdown_frac = (
+        min(1.0, abs(dd_points) / scenario.normalisation_drawdown_ref_points)
+        if dd_points is not None else 0.0
+    )
     drawdown_norm = _clamp(1.0 - drawdown_frac, 0.0, 1.0)
 
+    # net P&L: normalise using scenario ref (M-02)
     net_pnl_raw = _get(metrics, "total_pnl_points") or 0.0
-    net_pnl_norm = _clamp(net_pnl_raw / 5000.0, 0.0, 1.0)  # ~5000 pts as "excellent"
+    net_pnl_norm = _clamp(net_pnl_raw / scenario.normalisation_pnl_ref_points, 0.0, 1.0)
 
+    # trade frequency: normalise using scenario ref (M-02)
     freq_raw = _get(metrics, "trades_per_week") or 0.0
-    trade_freq_norm = _clamp(freq_raw / 20.0, 0.0, 1.0)     # ~20 trades/week as ceiling
+    trade_freq_norm = _clamp(freq_raw / scenario.normalisation_freq_ref_trades_per_week, 0.0, 1.0)
 
     score = (
         scenario.weight_net_pnl           * net_pnl_norm

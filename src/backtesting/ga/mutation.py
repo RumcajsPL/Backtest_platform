@@ -9,6 +9,13 @@ Strategy per parameter type (from D-11 and FUNCTIONAL_SPEC.md Stage 3):
 
 Zone boundaries are strictly enforced — no mutated parameter ever leaves its valid range.
 Mutation rate applies per-parameter (not per-candidate).
+
+Block 7D change (M-06): mutation_std_steps parameter added to mutate() and threaded
+through to _mutate_int() and _mutate_float(). Previously hardcoded as 2.0. Default
+value 2.0 preserves all existing behaviour. ga_engine reads from
+config["genetic"]["mutation_std_steps"] and passes the value here.
+This is a YAML/config-level parameter, not a ScenarioProfile field —
+mutation is a GA process parameter, not an evaluation-lens parameter.
 """
 from __future__ import annotations
 
@@ -24,6 +31,7 @@ def mutate(
     parameter_space_def: dict,
     rng: random.Random,
     generation: Optional[int] = None,
+    mutation_std_steps: float = 2.0,
 ) -> CandidateParameterSet:
     """
     Apply per-parameter mutation to produce a new CandidateParameterSet.
@@ -35,6 +43,11 @@ def mutate(
                              Must contain 'parameters' key with parameter specs.
         rng:                 Seeded Random instance.
         generation:          GA generation for the offspring.
+        mutation_std_steps:  Standard deviation of Gaussian noise in step units for
+                             int/float parameters. Default 2.0 (prior hardcoded value).
+                             Read from config["genetic"]["mutation_std_steps"] by ga_engine.
+                             Larger values → more aggressive exploration. Use lower values
+                             (e.g. 0.5) for fine-tuning near a known good region.
 
     Returns:
         A new CandidateParameterSet (mutated or identical if no mutations triggered).
@@ -56,9 +69,9 @@ def mutate(
         if param_type == "choice":
             mutated[param_name] = _mutate_choice(current_value, param_def, rng)
         elif param_type == "int":
-            mutated[param_name] = _mutate_int(current_value, param_def, rng)
+            mutated[param_name] = _mutate_int(current_value, param_def, rng, mutation_std_steps)
         elif param_type == "float":
-            mutated[param_name] = _mutate_float(current_value, param_def, rng)
+            mutated[param_name] = _mutate_float(current_value, param_def, rng, mutation_std_steps)
 
     return CandidateParameterSet.create(
         zone_name=candidate.zone_name,
@@ -78,17 +91,22 @@ def _mutate_choice(current_value: Any, param_def: dict, rng: random.Random) -> A
     return rng.choice(alternatives)
 
 
-def _mutate_int(current_value: int, param_def: dict, rng: random.Random) -> int:
+def _mutate_int(
+    current_value: int,
+    param_def: dict,
+    rng: random.Random,
+    mutation_std_steps: float,
+) -> int:
     """
     Gaussian perturbation on the step grid for integer parameters.
-    Standard deviation = 2 steps (allows meaningful drift without giant jumps).
+    Standard deviation = mutation_std_steps (in step units).
     """
     low: int = param_def["min"]
     high: int = param_def["max"]
     step: int = param_def.get("step", 1)
 
     # Gaussian noise in step units, rounded to nearest step
-    noise_steps = rng.gauss(0, 2.0)
+    noise_steps = rng.gauss(0, mutation_std_steps)
     noise = int(round(noise_steps)) * step
 
     new_value = current_value + noise
@@ -97,16 +115,21 @@ def _mutate_int(current_value: int, param_def: dict, rng: random.Random) -> int:
     return max(low, min(high, snapped))
 
 
-def _mutate_float(current_value: float, param_def: dict, rng: random.Random) -> float:
+def _mutate_float(
+    current_value: float,
+    param_def: dict,
+    rng: random.Random,
+    mutation_std_steps: float,
+) -> float:
     """
     Gaussian perturbation on the step grid for float parameters.
-    Standard deviation = 2 steps.
+    Standard deviation = mutation_std_steps (in step units).
     """
     low: float = param_def["min"]
     high: float = param_def["max"]
     step: float = param_def.get("step", 0.1)
 
-    noise_steps = rng.gauss(0, 2.0)
+    noise_steps = rng.gauss(0, mutation_std_steps)
     noise = noise_steps * step
 
     new_value = current_value + noise

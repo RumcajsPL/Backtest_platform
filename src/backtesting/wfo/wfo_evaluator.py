@@ -11,8 +11,7 @@ All failures surface as WFOWindowResult with error set and fitness_score=None.
 from __future__ import annotations
 
 import logging
-from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -69,7 +68,7 @@ def evaluate_window(
             return WFOWindowResult(
                 candidate_id=candidate.candidate_id,
                 window_id=window.window_id,
-                evaluated_at=datetime.utcnow(),
+                evaluated_at=datetime.now(UTC),
                 fitness_score=None,
                 total_trades=candidate_result.total_trades,
                 net_pnl=None,
@@ -87,7 +86,7 @@ def evaluate_window(
         return WFOWindowResult(
             candidate_id=candidate.candidate_id,
             window_id=window.window_id,
-            evaluated_at=datetime.utcnow(),
+            evaluated_at=datetime.now(UTC),
             fitness_score=fitness_result.fitness_score,
             total_trades=candidate_result.total_trades,
             net_pnl=_safe_float(m, "net_pnl"),
@@ -110,7 +109,7 @@ def evaluate_window(
         return WFOWindowResult(
             candidate_id=candidate.candidate_id,
             window_id=window.window_id,
-            evaluated_at=datetime.utcnow(),
+            evaluated_at=datetime.now(UTC),
             fitness_score=None,
             total_trades=None,
             net_pnl=None,

@@ -135,6 +135,7 @@ def _make_candidate_record(
         wfo_windows_evaluated=None,
         wfo_oos_gate_triggered=None,
         wfo_window_collapse_flag=None,
+        wfo_median_oos_delta=None,  # Added to fix TypeError: missing 'wfo_median_oos_delta'
         mc_prefilter_ruin_probability=None,
         mc_prefilter_avg_final_equity=None,
         mc_prefilter_iterations=None,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -117,6 +117,16 @@ class ScenarioProfile:
     """
     The active scenario's evaluation lens. Built once at run start.
     Passed to FitnessEvaluator, Ranker, VerdictEngine, and ReportGenerator.
+
+    Field additions (Block 7B audit remediation):
+      M-02: normalisation_drawdown_ref_points, normalisation_pnl_ref_points,
+            normalisation_freq_ref_trades_per_week — fitness normalisation constants
+            previously hardcoded in fitness.py. Defaults reproduce prior behaviour.
+      M-03: wfo_collapse_drawdown_threshold — WFO window collapse flag threshold
+            previously hardcoded as 0.40 in consistency_scorer.py.
+            Default 0.40 reproduces prior behaviour.
+    All new fields have defaults and are appended at the end so existing
+    YAML loaders and test fixtures require no changes.
     """
     name: str
     description: str
@@ -154,6 +164,23 @@ class ScenarioProfile:
 
     report_emphasis: Tuple[str, ...]
 
+    # ── M-03: WFO collapse threshold (was hardcoded 0.40 in consistency_scorer.py) ──
+    # Any valid window with max_drawdown >= this value triggers window_collapse_flag.
+    # conservative scenario should use a lower value (e.g. 0.20) to flag earlier.
+    wfo_collapse_drawdown_threshold: float = 0.40
+
+    # ── M-02: Fitness normalisation reference constants (were hardcoded in fitness.py) ──
+    # normalisation_drawdown_ref_points: "100% drawdown" reference equity in points.
+    #   MetricsReport.max_drawdown (negative points) / this value → fraction in [0,1].
+    #   Recalibrate after first real run. Default 10_000 is conservatively large.
+    normalisation_drawdown_ref_points: float = 10_000.0
+    # normalisation_pnl_ref_points: net P&L value considered "excellent" for fitness scoring.
+    #   net_pnl / this value → normalised contribution. Default 5_000 pts.
+    normalisation_pnl_ref_points: float = 5_000.0
+    # normalisation_freq_ref_trades_per_week: trade frequency ceiling for fitness scoring.
+    #   trades_per_week / this value → normalised contribution. Default 20 trades/week.
+    normalisation_freq_ref_trades_per_week: float = 20.0
+
     def __post_init__(self):
         fitness_weights = (
             self.weight_net_pnl + self.weight_expectancy + self.weight_max_drawdown
@@ -182,6 +209,26 @@ class ScenarioProfile:
         if self.verdict_go_mc_ruin_ceiling >= self.verdict_borderline_mc_ruin_ceiling:
             raise ValueError(
                 "verdict_go_mc_ruin_ceiling must be strictly less than verdict_borderline_mc_ruin_ceiling"
+            )
+        if not (0.0 < self.wfo_collapse_drawdown_threshold <= 1.0):
+            raise ValueError(
+                f"wfo_collapse_drawdown_threshold must be in (0, 1]; "
+                f"got {self.wfo_collapse_drawdown_threshold}"
+            )
+        if self.normalisation_drawdown_ref_points <= 0.0:
+            raise ValueError(
+                f"normalisation_drawdown_ref_points must be positive; "
+                f"got {self.normalisation_drawdown_ref_points}"
+            )
+        if self.normalisation_pnl_ref_points <= 0.0:
+            raise ValueError(
+                f"normalisation_pnl_ref_points must be positive; "
+                f"got {self.normalisation_pnl_ref_points}"
+            )
+        if self.normalisation_freq_ref_trades_per_week <= 0.0:
+            raise ValueError(
+                f"normalisation_freq_ref_trades_per_week must be positive; "
+                f"got {self.normalisation_freq_ref_trades_per_week}"
             )
 
 
@@ -350,7 +397,13 @@ class WFOWindowResult:
 
 @dataclass(frozen=True)
 class WFOConsistencyScore:
-    """Composite WFO consistency score across all windows for one candidate."""
+    """Composite WFO consistency score across all windows for one candidate.
+
+    Block 7D change (M-01): median_oos_delta field added.
+    Computed in consistency_scorer.py from per-window oos_delta values.
+    None when oos_gate is disabled or no windows have oos_delta populated.
+    Default None so all existing constructors remain valid.
+    """
     candidate_id: str
     windows_evaluated: int
     windows_total: int
@@ -361,6 +414,11 @@ class WFOConsistencyScore:
     composite_score: float
     oos_gate_triggered: bool
     window_collapse_flag: bool
+
+    # M-01: Median IS/OOS delta across all valid windows.
+    # Negative value = OOS underperforms IS. Populated by consistency_scorer.
+    # None when no windows carry oos_delta (gate disabled or pre-OOS runs).
+    median_oos_delta: Optional[float] = None
 
     def __post_init__(self):
         if not self.candidate_id:
@@ -527,6 +585,7 @@ class CandidateRecord:
     wfo_windows_evaluated: Optional[int]
     wfo_oos_gate_triggered: Optional[bool]
     wfo_window_collapse_flag: Optional[bool]
+    wfo_median_oos_delta: Optional[float]       # M-01: from WFOConsistencyScore.median_oos_delta
 
     # MC pre-filter
     mc_prefilter_ruin_probability: Optional[float]

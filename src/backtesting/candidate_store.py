@@ -35,6 +35,7 @@ from src.backtesting.contracts import (
     Verdict,
     VerdictResult,
     WFOConsistencyScore,
+    WFOWindowResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -292,6 +293,21 @@ class CandidateStore:
         """Update checkpoint in runs table. Blocks until written."""
         self._queue.put(("_set_checkpoint", (run_id, checkpoint)))
         self._queue.join()
+
+    def write_wfo_window_result(self, result: WFOWindowResult, run_id: str) -> None:
+        """Enqueue a WFOWindowResult write. Non-blocking."""
+        self._queue.put(("_write_wfo_window_result", (result, run_id)))
+
+    def flag_candidate_wfo_insufficient(self, candidate_id: str, run_id: str) -> None:
+        """
+        Flag a candidate as WFO_INSUFFICIENT_WINDOWS. Non-blocking.
+
+        Writes a sentinel wfo_consistency_scores row (windows_evaluated=0,
+        window_collapse_flag=1) so the candidate is identifiable in queries
+        and excluded from Stages 5+. INSERT OR IGNORE — safe if a valid score
+        row already exists (no-op in that case).
+        """
+        self._queue.put(("_flag_wfo_insufficient", (candidate_id, run_id)))
 
     def write_wfo_consistency_score(self, score: WFOConsistencyScore, run_id: str) -> None:
         """Enqueue a WFOConsistencyScore write. Non-blocking."""
@@ -835,6 +851,67 @@ class CandidateStore:
             ),
         )
         self._conn.commit()
+
+    def _write_wfo_window_result(self, args: tuple) -> None:
+        """Write one WFOWindowResult row. Called by writer thread only."""
+        result, run_id = args
+        self._conn.execute(
+            """INSERT OR REPLACE INTO wfo_window_results (
+                result_id, candidate_id, run_id, window_id,
+                is_ga_fitness_window, ga_generation, recorded_at,
+                fitness_score, total_trades, net_pnl, max_drawdown,
+                win_rate, expectancy, profit_factor, oos_delta, evaluation_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(uuid.uuid4()),
+                result.candidate_id,
+                run_id,
+                result.window_id,
+                0,       # is_ga_fitness_window — always 0; write API has no generation context
+                None,    # ga_generation — always None for same reason
+                _ts(result.evaluated_at),
+                result.fitness_score,
+                result.total_trades,
+                result.net_pnl,
+                result.max_drawdown,
+                result.win_rate,
+                result.expectancy,
+                result.profit_factor,
+                result.oos_delta,
+                result.error,
+            ),
+        )
+        self._conn.commit()
+        logger.debug(
+            "WFOWindowResult written: candidate=%s window=%s fitness=%s",
+            result.candidate_id[:12],
+            result.window_id,
+            f"{result.fitness_score:.4f}" if result.fitness_score is not None else "N/A",
+        )
+
+    def _flag_wfo_insufficient(self, args: tuple) -> None:
+        """
+        Write a sentinel wfo_consistency_scores row for a candidate that failed
+        >50% of WFO windows. windows_evaluated=0, window_collapse_flag=1.
+        INSERT OR IGNORE — no-op if a valid score row already exists.
+        Called by writer thread only.
+        """
+        candidate_id, run_id = args
+        self._conn.execute(
+            """INSERT OR IGNORE INTO wfo_consistency_scores (
+                candidate_id, run_id, recorded_at,
+                median_window_return, window_return_variance,
+                worst_window_drawdown, fraction_positive_windows,
+                wfo_consistency_score, windows_evaluated, windows_total,
+                oos_gate_triggered, window_collapse_flag
+            ) VALUES (?, ?, ?, 0.0, 0.0, 1.0, 0.0, 0.0, 0, 0, 0, 1)""",
+            (candidate_id, run_id, _now_ts()),
+        )
+        self._conn.commit()
+        logger.warning(
+            "Candidate %s flagged WFO_INSUFFICIENT_WINDOWS (run=%s)",
+            candidate_id[:12], run_id,
+        )
 
     def _write_wfo_consistency_score(self, args: tuple) -> None:
         score, run_id = args

@@ -13,12 +13,13 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-03)**: Phase 6 complete. All stages fully wired. 233 tests green.
-Block 7 next: audit remediation + OPT-01/02 pool reuse.
+**Current status (2026-03-04)**: Phase 6 complete. Block 7 sub-block 7A in progress.
+233 tests green. H-02 fix applied (write_wfo_window_result + flag_candidate_wfo_insufficient).
+I-07 fixed (datetime.utcnow() removed from wfo_evaluator.py). Sub-blocks 7B/7C/7D next.
 ---
 ## Pipeline (in order — do not reorder)
 ```
-Stage 0: Validation & Init     (min 3 WFO windows; param name validation vs _PARAM_KEY_MAP)
+Stage 0: Validation & Init     (min 3 WFO windows; param name validation vs _PARAM_KEY_MAP — M-05, 7B)
 Stage 1: Random Search         (LHS/random, significance guard, constraint filter)
 Stage 2: MC Pre-Filter         (cheap — 2 perturbation types, ruin screen)
 Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty)
@@ -27,7 +28,8 @@ Stage 5: MC Deep               (full iterations, all perturbation types, WFO sur
 Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline)
 Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
 ```
-All stages fully wired in orchestrator.py. No stubs remain.
+All stages fully wired in orchestrator.py. Stages 1–4 are currently stubs pending
+their respective phase implementations. Stages 0, 5, 6, 7 fully implemented.
 ---
 ## Verdict Model
 **Two mandatory pillars**: (1) WFO composite score, (2) MC deep ruin probability.
@@ -73,11 +75,13 @@ Full values: TECHNICAL_SPEC.md §5 and backtest_template.yaml.
 # store.close(): always in finally block
 ```
 ---
-## CandidateStore Write API (verified from source 2026-03-03)
+## CandidateStore Write API (verified from source 2026-03-04)
 ```python
 # write_candidate takes ONE argument: a CandidateRecord
 # Fitness data is EMBEDDED in CandidateRecord fields — not written separately
 store.write_candidate(record: CandidateRecord)
+store.write_wfo_window_result(result: WFOWindowResult, run_id: str)   # H-02 FIXED 7A
+store.flag_candidate_wfo_insufficient(candidate_id: str, run_id: str) # H-02 FIXED 7A
 store.write_wfo_consistency_score(score: WFOConsistencyScore, run_id: str)
 store.write_mc_result(result: MCResult, run_id: str)
 store.write_sensitivity_profile(profile: SensitivityProfile, run_id: str)
@@ -88,8 +92,32 @@ store.flush()
 store.close()
 # There is NO write_fitness_result() method
 # query_mc_results: mode is plain string "deep"/"pre_filter" — NOT MCMode enum
-# BLOCK 7 NOTE: verify write_wfo_window_result exists (H-02 audit finding)
-#   If missing: add before other Block 7 work
+# write_wfo_window_result: non-blocking (enqueue). is_ga_fitness_window=0, ga_generation=None always.
+# flag_candidate_wfo_insufficient: non-blocking. INSERT OR IGNORE — idempotent.
+#   Writes sentinel wfo_consistency_scores row: windows_evaluated=0, window_collapse_flag=1.
+```
+---
+## Audit Finding Dispositions (2026-03-04 — FINAL)
+```
+H-01: FALSE POSITIVE — confirmed from wfo_evaluator.py source.
+      strategy_runner.evaluate() DOES accept date_start/date_end.
+      wfo_evaluator.evaluate_window() passes window.start_date/end_date explicitly.
+      Audit read simplified TECHNICAL_SPEC signature, not source. No action needed.
+H-02: REAL BUG — FIXED in sub-block 7A.
+      write_wfo_window_result and flag_candidate_wfo_insufficient were absent from
+      candidate_store.py. wfo_engine.py called both — writer thread silently logged
+      AttributeError and discarded all wfo_window_results rows.
+      Fix: both public methods + internal handlers added. 2 regression tests added.
+H-03: FALSE POSITIVE — confirmed from wfo_evaluator.py source (same read as H-01).
+      evaluate_window() passes date_start=window.start_date, date_end=window.end_date.
+      No action needed.
+I-07: FIXED in sub-block 7A.
+      wfo_evaluator.py had 3× datetime.utcnow() calls (all in WFOWindowResult construction).
+      Replaced with datetime.now(UTC). UTC imported from datetime. No new tests needed.
+M-01 to M-07: Accepted. Prioritised for 7B/7D — see sub-block plan below.
+E-01 to E-11: Accepted as future roadmap. No v1 action.
+WF-07 (parameter_region_width): Uncertain — verdict.py not yet uploaded. Defer to 7D.
+WF-09 (post-Stage-1 adequacy warning): Absent (Stage 1 is a stub). Defer to 7D.
 ```
 ---
 ## Test Import Convention (CRITICAL — violating causes circular import at collection)
@@ -109,45 +137,49 @@ from src.backtesting.candidate_store import CandidateStore
 ## Module Map
 ### Phase 2 — Core Infrastructure ✓
 ```
-orchestrator.py       — sequences all 8 stages. Fully wired. Per-stage timing. close() in finally.
+orchestrator.py       — sequences all 8 stages. Fully wired (Stages 0,5,6,7). 1-4 stubs.
+                        Per-stage timing. close() in finally.
 parameter_space.py    — expands YAML zones. No strategy knowledge.
 sampler.py            — LHS or random selection. No evaluation.
 scenario.py           — loads ScenarioProfile from YAML.
-strategy_runner.py    — single candidate eval. Accepts date_start/date_end. Never raises.
-                        CRITICAL: _PARAM_KEY_MAP maps zone param names → strategy YAML paths.
+strategy_runner.py    — single candidate eval. Accepts date_start/date_end (H-01 confirmed).
+                        Never raises. CRITICAL: _PARAM_KEY_MAP maps zone param names → strategy YAML paths.
                         run() kwarg is mode_override="core", NOT mode="core".
 fitness.py            — stateless. MetricsReport + ScenarioProfile → FitnessResult.
-                        NOTE (M-02): normalisation constants may be hardcoded — verify Block 7.
+                        NOTE (M-02): normalisation constants hardcoded — fix in 7B.
 candidate_store.py    — SQLite WAL + single-writer queue. Thread-safe.
-                        NOTE (H-02): verify write_wfo_window_result exists — Block 7.
+                        H-02 FIXED: write_wfo_window_result + flag_candidate_wfo_insufficient added.
 ranker.py             — stateless. Query spec in → ranked list out.
 ```
 ### Phase 3 — Optimization Engines ✓
 ```
 wfo/window_generator.py    — YAML → sorted WFOWindow list. Min 3, no overlaps.
 wfo/wfo_evaluator.py       — one candidate, one window → WFOWindowResult. Never raises.
-                              Passes window.start_date/end_date to strategy_runner. (H-03 confirm)
+                              I-07 FIXED: datetime.now(UTC) throughout (was utcnow()).
+                              H-03 CONFIRMED: passes window.start_date/end_date to strategy_runner.
 wfo/wfo_engine.py          — "lightweight" (GA) + "full" (Stage 4) modes.
+                              Calls write_wfo_window_result (now fixed) and
+                              flag_candidate_wfo_insufficient (now fixed).
 wfo/consistency_scorer.py  — WFOWindowResults → 4 metrics → composite [0,1].
-                              NOTE (M-03): collapse threshold 0.40 may be hardcoded — verify Block 7.
+                              NOTE (M-03): collapse threshold 0.40 hardcoded — fix in 7B.
 ga/population.py           — init from MC_PREFILTER_PASS. Elite extraction.
 ga/selection.py            — tournament selection.
 ga/crossover.py            — uniform crossover. zone_name from parent_a.
 ga/mutation.py             — Gaussian on step grid. Strictly clamped to zone bounds.
-                              NOTE (M-06): mutation std dev 2 steps may be hardcoded — verify Block 7.
+                              NOTE (M-06): mutation std dev 2 steps hardcoded — fix in 7D.
 ga/diversity.py            — hybrid Euclidean/Hamming distance penalty.
 ga/ga_engine.py            — full evolution. rng.sample(windows, k=2) per generation.
 monte_carlo/perturbation.py    — named profiles from YAML.
 monte_carlo/equity_simulator.py — vectorised np.cumsum. No Python loops over paths.
 monte_carlo/mc_metrics.py      — avg_equity, worst_dd, ruin_prob, p5_equity. Vectorised.
-                                  NOTE (M-04): zero-equity paths may understate drawdown — fix Block 7.
+                                  NOTE (M-04): zero-equity paths understate drawdown — fix in 7B.
 monte_carlo/mc_engine.py       — pre-filter + deep dispatch. Never raises.
 ```
 ### Phase 4 — Evaluation Layer ✓
 ```
 evaluation/sensitivity.py — ±1/±2 steps. Parallel via ProcessPoolExecutor.
                             profile_complete=False if >50% failed → BORDERLINE modifier.
-                            OPTIMIZATION TARGET: OPT-01 pool reuse (Block 7 sub-block 7C).
+                            OPTIMIZATION TARGET: OPT-01 pool reuse (sub-block 7C).
 evaluation/verdict.py     — two-pillar + modifier flags. Never sets LIVE_APPROVED.
 yaml_generator.py         — merges params into base YAML. Embeds backtester_metadata.
 report_generator.py       — self-contained HTML. Inline charts. JSON + Parquet output.
@@ -177,7 +209,7 @@ Stage 7 (Report):     4–8s — fine.
 PERF-06 ceiling: 99% (Stage 6 structural dominance is expected, not a bug).
 OPT-01 target: Stage 6 ≤ 200s (40% reduction via pool reuse across candidates).
 ```
-## Performance Optimisation (Block 7 sub-block 7C)
+## Performance Optimisation (sub-block 7C)
 ```
 OPT-01 [HIGH]:   Pool reuse in evaluate_sensitivity() — 40–60% Stage 6 reduction
                  Change: one ProcessPoolExecutor wrapping ALL candidates, not one per candidate
@@ -201,7 +233,8 @@ OPT-05 [CLEANUP]: max_workers param cleanup after OPT-01
 | test_performance.py | 7 | 6 Blk 3 | ✅ |
 | test_robustness.py | 12 | 6 Blk 4 | ✅ |
 | test_threshold_calibration.py | 22 | 6 Blk 5 | ✅ |
-| **Total** | **233** | | **✅ All green** |
+| test_h02_wfo_window_writes.py | 2 | 7 Blk 7A | ✅ |
+| **Total** | **235** | | **✅ All green** |
 ---
 ## Adversarial Suite (results locked)
 - **AV-01**: Random signal baseline → no_go. Confirmed Phase 4.
@@ -213,40 +246,38 @@ OPT-05 [CLEANUP]: max_workers param cleanup after OPT-01
 L-01: Windows spawn mode — mock patches don't cross worker boundary.
       For Stage 6 integration tests: patch at orchestrator level.
       Failure mode: "Can't pickle <class 'unittest.mock.MagicMock'>" (ROB-09).
-
 L-02: Verdict boundary operators must be >= / <= (inclusive) at go thresholds.
       Using > / < incorrectly classifies boundary-exact scores as BORDERLINE.
       Confirmed from verdict.py source, Block 5.
-
 L-03: Stage 6 is the dominant runtime (333–446s = 98.7% of total).
       Root cause: Windows spawn mode creates a fresh pool per candidate.
       OPT-01 (pool reuse) is the highest-value optimisation available.
-
 L-04: Config fixture shape for tests must match load_scenario() nested structure.
       Correct: config["scenarios"][name]["fitness_weights"][...].
       Wrong (KeyError): config["fitness_weights"][...] at top level.
+L-05: Silent write loss from missing store methods. H-02 (write_wfo_window_result,
+      flag_candidate_wfo_insufficient absent) meant wfo_engine.py enqueued writes
+      that the writer thread dispatched via getattr() — AttributeError was caught,
+      logged, and silently discarded. The wfo_window_results table was always empty.
+      Lesson: always verify store write API completeness against all call sites
+      before trusting DB output.
 ```
 ---
-## Block 7 Plan (Next)
+## Block 7 Sub-Block Status
 ```
-First: upload source files (candidate_store.py, wfo_evaluator.py, sensitivity.py,
-       test_performance.py, fitness.py, consistency_scorer.py, mc_metrics.py, orchestrator.py)
-
-Sub-Block 7A: SKILL.md update + H-02/H-03 verification + datetime.utcnow() fix
-Sub-Block 7B: Audit M P1/P2 — M-05 (Stage 0 param validation), M-04 (zero-equity DD),
-              M-03 (collapse threshold), M-02 (fitness normalisation)
-Sub-Block 7C: OPT-01 pool reuse + OPT-02 batching → Stage 6 ≤ 200s
-Sub-Block 7D: M P3+ (M-01 median_oos_delta, M-06 mutation std) + WF-07/WF-09 + docs
+7A — SKILL.md + H-02 fix + H-03 confirm + I-07 fix   ✅ COMPLETE
+     - H-01: FALSE POSITIVE confirmed (wfo_evaluator.py passes window dates)
+     - H-02: REAL BUG fixed (2 methods added, 2 tests, 233→235 tests)
+     - H-03: FALSE POSITIVE confirmed (same source read)
+     - I-07: FIXED (3× datetime.utcnow() → datetime.now(UTC) in wfo_evaluator.py)
+     - SKILL.md updated to current state
+7B — Audit M P1/P2 — M-05, M-04, M-03, M-02                    ✅COMPLETE
+     Files to modify: orchestrator.py, mc_metrics.py, consistency_scorer.py,
+                      fitness.py, contracts.py (ScenarioProfile), scenario YAMLs
+7C — OPT-01 pool reuse + OPT-02 batching → Stage 6 ≤ 200s      ✅ COMPLETE
+     File to modify: evaluation/sensitivity.py
+7D — M-01, M-06, WF-07/WF-09 + full documentation update    ✅ COMPLETE   
 ```
----
-## Independent Audit Summary (2026-03-03)
-H-01: FALSE POSITIVE — strategy_runner already accepts date_start/date_end.
-H-02: UNRESOLVED — write_wfo_window_result absent from SKILL.md API list; verify source in 7A.
-H-03: LIKELY FALSE POSITIVE — contingent on H-01; confirm wfo_evaluator passes window dates.
-M-01 to M-07: All accepted. None affect correctness. Prioritised for Block 7 7B/7D.
-E-01 to E-11: All accepted as future roadmap. No v1 action.
-I-07 (datetime.utcnow()): Promoted to 7A action item.
-Parameter mapping §6: All 34 confirmed correct. 3 unmapped are v2 scope.
 ---
 ## What NOT To Do
 - Do not modify `src/strategies/` — strategy architecture is frozen
@@ -259,7 +290,7 @@ Parameter mapping §6: All 34 confirmed correct. 3 unmapped are v2 scope.
 - Do not use `Candidate` type — use `CandidateParameterSet`
 - Do not patch functions called inside ProcessPoolExecutor workers (spawn boundary)
 - Do not use `e2e_test` scenario for production optimization runs
-- Do not start OPT-01 before 7A verification is complete
+- Do not start OPT-01 before 7A verification is complete (7A is now complete ✅)
 ---
 ## Platform Notes
 - **OS**: Windows 10, Python 3.13.12

@@ -14,14 +14,27 @@ Public interface
 ────────────────
     evaluate_sensitivity(
         candidate, baseline_fitness, parameter_space_def,
-        base_yaml_path, temp_dir, scenario, spike_threshold, max_steps=2
+        base_yaml_path, temp_dir, scenario, spike_threshold, max_steps=2,
+        max_workers=6, min_significant_trades=30,
+        pool=None,
     ) -> SensitivityProfile
+
+Block 7C change (OPT-01): Optional `pool` parameter added.
+- If pool is None (default, standalone/test call): function creates and owns its
+  own ProcessPoolExecutor — identical behaviour to pre-OPT-01.
+- If pool is provided (from orchestrator Stage 6): function uses the shared pool
+  and does NOT close it. The pool stays warm across all candidates in the loop,
+  paying the Windows spawn cost only once instead of once per candidate.
+  With N=5 candidates and ~9 parameters ×4 steps per candidate, this eliminates
+  4 of 5 pool startup cycles — expected 40–60% Stage 6 reduction.
+Existing tests require no changes — they call without pool kwarg (pool=None path).
 """
 
 from __future__ import annotations
 
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -152,6 +165,7 @@ def evaluate_sensitivity(
     max_steps: int = 2,
     max_workers: int = 6,
     min_significant_trades: int = 30,
+    pool: Optional[ProcessPoolExecutor] = None,
 ) -> SensitivityProfile:
     """
     Perturbs each parameter in the candidate's zone at ±1..max_steps steps.
@@ -167,8 +181,12 @@ def evaluate_sensitivity(
     scenario             : Active ScenarioProfile (for constraint + fitness evaluation).
     spike_threshold      : |fitness_delta| above this value triggers a spike flag.
     max_steps            : Maximum number of steps to perturb in each direction (default 2).
-    max_workers          : ProcessPoolExecutor worker count.
+    max_workers          : ProcessPoolExecutor worker count. Used only when pool=None.
     min_significant_trades: Minimum trade count to accept an evaluation.
+    pool                 : Optional shared ProcessPoolExecutor. If provided, the pool is
+                           used as-is and NOT shut down on return — the caller owns the
+                           pool lifecycle. If None, a new pool is created and managed
+                           internally (backward-compatible default).
 
     Returns
     ───────
@@ -182,7 +200,6 @@ def evaluate_sensitivity(
     for param_name, current_value in current_params.items():
         param_def = _get_param_def(param_name, zone_def)
         if param_def is None:
-            # Parameter not in zone definition — skip (structural params may not be in space)
             logger.debug(
                 "Parameter '%s' not found in zone '%s' definition — skipping sensitivity.",
                 param_name, candidate.zone_name,
@@ -192,7 +209,6 @@ def evaluate_sensitivity(
         for step_offset in _step_offsets(max_steps):
             perturbed = _perturb_value(current_value, step_offset, param_def)
             if perturbed is None:
-                # Out of bounds — skip this step
                 logger.debug(
                     "Parameter '%s' step %+d out of bounds — skipping.",
                     param_name, step_offset,
@@ -209,7 +225,6 @@ def evaluate_sensitivity(
     )
 
     if total_perturbations == 0:
-        # No perturbable parameters (all at bounds or all choice with single option)
         return SensitivityProfile(
             candidate_id=candidate.candidate_id,
             baseline_fitness=baseline_fitness,
@@ -220,12 +235,19 @@ def evaluate_sensitivity(
         )
 
     # ── Execute perturbations in parallel ────────────────────────────────────
-    # Map (param_name, step_offset) → ParameterSensitivity result
+    # OPT-01: if a shared pool is provided, use it directly (no context manager).
+    # If no pool is provided, create and own a local pool (original behaviour).
     results_by_key: Dict[Tuple[str, int], ParameterSensitivity] = {}
 
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+    pool_cm = (
+        nullcontext(pool)
+        if pool is not None
+        else ProcessPoolExecutor(max_workers=max_workers)
+    )
+
+    with pool_cm as active_pool:
         future_map = {
-            pool.submit(
+            active_pool.submit(
                 _evaluate_perturbation,
                 candidate,
                 param_name,

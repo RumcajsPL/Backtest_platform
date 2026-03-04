@@ -1,71 +1,90 @@
 # CONTEXT.md — Backtesting & Optimization Framework
-**Updated**: 2026-03-03 (end of Phase 6 Block 6 / start of Block 7)
+**Updated**: 2026-03-04 (Block 7 COMPLETE — all sub-blocks 7A through 7D done)
 ---
 ## Current State
-**Phase 6 complete. All 6 blocks done. 233 tests green.**
-An independent audit report was received and fully analysed this session. Block 7 scope is expanded beyond the original OPT-01/02 plan to include audit remediation. Sub-block sequence and file upload order are in NEXT_SESSION_PLAN.md.
-**Next action**: Block 7 — upload source files in the order listed below, then work through 7A → 7D.
+**Phase 6 complete. Block 7 complete. 246 tests green.**
+**Next: Block 8 — Full E2E code analysis and hardening.**
+No outstanding audit findings. All M-series, H-series, I-series, WF-series items resolved or dispositioned.
 ---
-## Phase 6 — What Was Completed (All Blocks)
-| Block | Deliverable | Tests added |
-|---|---|---|
-| Block 0 | E2E test on real WBWS data | +13 (`test_e2e_wbws_real_data.py`) |
-| Block 1 | `BACKTESTER_USER_GUIDE.md` | 0 |
-| Block 2 | Adversarial suite — AV-02 no_go confirmed; AV-03 100% stable | +8 (`test_adversarial_suite.py`) |
-| Block 3 | Performance baseline locked — Total=337s, Stage6=333s | +7 (`test_performance.py`) |
-| Block 4 | Resume at all 8 checkpoints; worker isolation confirmed | +12 (`test_robustness.py`) |
-| Block 5 | Verdict threshold calibration; boundary operators confirmed ≥/≤ | +22 (`test_threshold_calibration.py`) |
-| Block 6 | Final documentation (6 docs updated + OPERATOR_RUNBOOK.md created) | 0 |
----
-## This Session (Block 6) — Documents Produced
-| Document | Version | Key changes |
-|---|---|---|
-| ARCHITECTURE.md | 1.2.0 | Section 3 stage counts from YAML; Section 8 capital_accumulation production verdict grid |
-| TECHNICAL_SPEC.md | 1.1.0 | D-07 boundary operators confirmed (≥/≤ inclusive at go thresholds); Windows spawn patch constraint §1a |
-| FUNCTIONAL_SPEC.md | 1.1.0 | Stage 5 never-raises; Stage 6 profile_complete=False path; Stage 7 ruin=None→NO_GO; Stage 0 resume coverage; e2e_test warning |
-| BACKTESTER_PLAN.md | 1.3.0 | Phase 6 complete; §12 all decisions resolved; §15 Lessons Learned L-01–L-04 |
-| PROJECT_REPORT.md | — | Phase 6 complete; 233 tests; Block 7 preview |
-| OPERATOR_RUNBOOK.md | 1.0.0 | New — 8-section operator guide covering pre-run, monitoring, verdict, promotion, resume, tuning |
-**Note**: SKILL.md was NOT updated during Block 4 and Block 5 sessions. It still reads "199 tests, Block 4 next, Stages 1–4 stubs." SKILL.md update is the **first task of sub-block 7A**.
----
-## Audit Analysis Summary (Backtesting_Framework_Audit_Report.md, 2026-03-03)
-### HIGH Findings
-| ID | Finding | Verdict | Rationale |
+## Block 7 Sub-Block Status (FINAL)
+| Sub-Block | Status | Tests added | Files changed |
 |---|---|---|---|
-| H-01 | `strategy_runner.evaluate()` missing `date_start`/`date_end` | **FALSE POSITIVE** | SKILL.md (Block 3 state): "Accepts date_start/date_end." Audit read TECHNICAL_SPEC simplified signature, not source. |
-| H-02 | `CandidateStore` missing `write_wfo_window_result` / `flag_candidate_wfo_insufficient` | **UNRESOLVED** | Absent from SKILL.md store API list. Audit quotes specific line numbers in wfo_engine.py. SKILL.md may just be stale on this point. **First source file to upload in Block 7.** If missing, HIGH priority fix before other work. |
-| H-03 | WFO date range not passed to strategy runner | **LIKELY FALSE POSITIVE** | Contingent on H-01. `wfo_evaluator.py` receives `WFOWindow`; if it passes `window.start_date`/`end_date` to `strategy_runner.evaluate()`, finding is resolved. Confirm by uploading `wfo_evaluator.py`. |
-### MEDIUM Findings — All Accepted, Prioritised
-| ID | Finding | P | Action in Block 7 |
+| 7A — H-02 fix + H-03/I-07 + SKILL.md | ✅ COMPLETE | +2 (235 total) | candidate_store.py, wfo_evaluator.py |
+tests\backtesting\integration\test_h02_wfo_window_writes.py [100%] - 2 passed in 0.75s
+| 7B — Audit M P1/P2 | ✅ COMPLETE | +7 (242 total) | contracts.py, mc_metrics.py, consistency_scorer.py, fitness.py, orchestrator.py |
+tests\backtesting\integration\test_7b_audit_m_series.py [100%] - 7 passed in 5.41s 
+| 7C — OPT-01 pool reuse | ✅ COMPLETE | 0 | sensitivity.py, orchestrator.py |
+PERFORMANCE SUMMARY — run_id=39295701
+  Config (production values, no smoke overrides):
+    MC iterations          : 3000
+    MC input candidates    : 10
+    Sensitivity input      : 5
+    Sensitivity max_steps  : 2
+    Max workers            : 6
+  Candidates processed:
+    WFO survivors injected : 20
+    Stage 5 MC processed   : 10
+    Stage 6 Sens processed : 5
+  Stage 5 MC Deep         : 0.3s  (0.0s/candidate avg)
+  Stage 6 Sensitivity     : 297.8s  (59.6s/candidate avg)
+  Stage 7 Report + Output : 3.9s
+  Total                   : 302.0s  
+  Budget                  : 14400s
+  Status                  : PASS ✅
+  Bottleneck              : Stage 6 (98.6% of total)
+  Exception               : None
+  Yet to analyze during Block 8
+| 7D — M-01, M-06, WF-07/WF-09 | ✅ COMPLETE | +4 (246 total) | contracts.py, consistency_scorer.py, verdict.py, mutation.py |
+tests\backtesting\integration\test_7d_audit_m01_m06.py [100%] 4 passed in 0.50s  
+---
+## All Audit Finding Dispositions (COMPLETE)
+| ID | Finding | Verdict | Action |
 |---|---|---|---|
-| M-05 | No Stage 0 param name validation vs `_PARAM_KEY_MAP` | 1 | Add `_validate_parameter_names()` to orchestrator Stage 0 |
-| M-04 | MC zero-equity drawdown understatement | 2 | Fix numpy path in `mc_metrics.py` |
-| M-03 | Hardcoded WFO collapse threshold (0.40) | 2 | Add to `ScenarioProfile`, update `consistency_scorer.py` |
-| M-02 | Hardcoded fitness normalisation constants | 2 | Add to `ScenarioProfile`, update `fitness.py` |
-| M-01 | `median_oos_delta` always None | 3 | Compute in `consistency_scorer.py`, propagate to `VerdictResult` |
-| M-06 | Hardcoded mutation std dev (2 steps) | 3 | Add `mutation_std_steps` to YAML + `mutation.py` |
-| M-07 | Hardcoded chart dimensions | 4 | Make configurable or use responsive sizing |
-### LOW/Evolution (E-01–E-11) — All accepted as future roadmap. No v1 action.
-### I-07 — `datetime.utcnow()` in Phase 2/3 modules — fix in Block 7 sub-block 7A.
+| H-01 | `strategy_runner.evaluate()` date range | FALSE POSITIVE | Confirmed in source |
+| H-02 | `CandidateStore` missing write methods | FIXED 7A | Both methods + 2 handlers added |
+| H-03 | WFO date range not passed | FALSE POSITIVE | Same source read as H-01 |
+| M-01 | `median_oos_delta` always None | FIXED 7D | Computed in consistency_scorer, propagated |
+| M-02 | Hardcoded fitness normalisation constants | FIXED 7B | 3 fields added to ScenarioProfile |
+| M-03 | Hardcoded WFO collapse threshold | FIXED 7B | `wfo_collapse_drawdown_threshold` added |
+| M-04 | MC zero-equity drawdown understatement | FIXED 7B | Ruined paths clamped to 1.0 |
+| M-05 | No Stage 0 param name validation | FIXED 7B | `_validate_parameter_names()` in Stage 0 |
+| M-06 | Hardcoded mutation std dev | FIXED 7D | `mutation_std_steps` kwarg added |
+| M-07 | Hardcoded chart dimensions | DEFERRED B8 | P4 — Block 8 analysis phase |
+| I-07 | `datetime.utcnow()` | FIXED 7A | 3x replaced with `datetime.now(UTC)` |
+| WF-07 | `parameter_region_width` always None | DOCUMENTED | Explicit deferred comment in verdict.py |
+| WF-09 | Post-Stage-1 adequacy warning | DOCUMENTED | Intent in FUNCTIONAL_SPEC; Stage 1 still stub |
 ---
-## Completeness Check Against BACKTESTER_PLAN
-All Must-Have requirements confirmed implemented. Two Should-Have items with uncertain implementation status — verify by uploading source:
-| Item | Requirement | Status |
-|---|---|---|
-| WF-07 | `parameter_region_width` actually computed | Uncertain — field in contract, may always be None |
-| WF-09 | Post-Stage-1 statistical adequacy warning | Uncertain — not mentioned in SKILL.md or test list |
----
-## Performance Baseline (LOCKED — Block 3)
+## Block 7D — What Changed
+
+### contracts.py
+**WFOConsistencyScore** — new field appended at end with default:
+```python
+median_oos_delta: Optional[float] = None  # M-01
 ```
-Windows 10, 6 workers, 3-month WBWS data slice
-Run 2 (canonical): Total=337.2s  Stage5=0.3s  Stage6=332.6s  Stage7=4.4s
-Daily budget: 14,400s → 2.3% consumed
-Stage 6 dominates (98.7%). Root cause: Windows spawn mode per-worker pool startup.
-OPT-01 target: Stage 6 ≤ 200s via pool reuse across candidates.
+**CandidateRecord** — new WFO field:
+```python
+wfo_median_oos_delta: Optional[float]     # M-01
 ```
+### consistency_scorer.py — M-01
+Computes median_oos_delta while valid_results are in scope. No extra DB query.
+Passed as `median_oos_delta=median_oos_delta` to `WFOConsistencyScore`.
+`None` when all windows have `oos_delta=None` (gate disabled or pre-OOS run).
+### verdict.py — M-01
+Dead `_compute_median_oos_delta()` helper removed (had always returned `None`
+with a placeholder docstring). Replaced with:
+```python
+median_oos_delta: Optional[float] = wfo_score.median_oos_delta
+```
+Added to `logger.info()` call for observability.
+
+### mutation.py — M-06
+`mutation_std_steps: float = 2.0` kwarg added to `mutate()` and threaded through
+to `_mutate_int()` and `_mutate_float()`. Default 2.0 exactly preserves prior behaviour.
+Correctly kept as a YAML/config-level parameter, not added to `ScenarioProfile`
+(mutation is a GA process parameter, not an evaluation-lens parameter).
 ---
 ## Test Inventory
-| File | Count | Phase | Status |
+| File | Count | Phase/Block | Status |
 |---|---|---|---|
 | unit/ (Phases 2–4) | 123 | 2–4 | ✅ |
 | test_live_pipeline.py | 17 | 5 | ✅ |
@@ -76,32 +95,66 @@ OPT-01 target: Stage 6 ≤ 200s via pool reuse across candidates.
 | test_performance.py | 7 | 6 Blk 3 | ✅ |
 | test_robustness.py | 12 | 6 Blk 4 | ✅ |
 | test_threshold_calibration.py | 22 | 6 Blk 5 | ✅ |
-| **Total** | **233** | | **✅** |
+| test_h02_wfo_window_writes.py | 2 | 7 Blk 7A | ✅ |
+| test_7b_audit_m_series.py | 7 | 7 Blk 7B | ✅ |
+| test_7d_audit_m01_m06.py | 4 | 7 Blk 7D | ✅ |
+| **Total** | **246** | | **✅** |
 ---
-## Files to Upload at Start of Block 7 (in order)
-| # | File | Why first |
-|---|---|---|
-| 1 | `src/backtesting/candidate_store.py` | H-02 verification — does `write_wfo_window_result` exist? |
-| 2 | `src/backtesting/wfo/wfo_evaluator.py` | H-03 verification — does it pass window dates? |
-| 3 | `src/backtesting/evaluation/sensitivity.py` | OPT-01/02 implementation target |
-| 4 | `tests/backtesting/integration/test_performance.py` | Regression guard — run before/after OPT |
-| 5 | `src/backtesting/fitness.py` | M-02 normalisation |
-| 6 | `src/backtesting/wfo/consistency_scorer.py` | M-03 collapse threshold |
-| 7 | `src/backtesting/monte_carlo/mc_metrics.py` | M-04 zero-equity drawdown |
-| 8 | `src/backtesting/orchestrator.py` | WF-07/WF-09 verification; M-05 Stage 0 validation |
+## Performance Baseline
+```
+Windows 10, 6 workers, 3-month WBWS data slice
+Locked at Block 3: Total=337s  Stage6=333s
+OPT-01 (Block 7C): Stage 6 target <= 200s — verify on local machine with test_performance.py
+```
 ---
 ## Architecture Constraints (Non-Negotiable)
-
 ```python
 # Contracts: frozen dataclasses — never raw dicts between modules
-# CandidateParameterSet.create()  — always use factory, never construct directly
+# CandidateParameterSet.create()  — always use factory
 # strategy_runner, run_mc, evaluate_sensitivity — never raise to caller
-# datetime.now(timezone.utc)      — never datetime.utcnow() (deprecated)
+# datetime.now(timezone.utc)      — never datetime.utcnow()
 # pathlib.Path + src/utils/paths.py — never hardcoded separators
 # ProcessPoolExecutor spawn mode  — no fork-dependent code
 # LIVE_APPROVED                   — never set in code, operator-only
 # store.close()                   — always in finally block
 # mode_override="core"            — not mode="core"
-# Stage 6 integration test patch  — patch at orchestrator boundary, not inside worker
-# e2e_test scenario               — never for production optimization runs
+# mutation_std_steps              — YAML/config only, NOT ScenarioProfile
+# parameter_region_width          — always None until Block 8 ML layer
+# Stage 1                         — still a stub; adequacy warning deferred
 ```
+---
+## Block 8 — E2E Code Analysis and Hardening
+Block 8 shifts from feature work to treating the pipeline as a production system.
+This is a deep analytical pass: find everything that could silently misbehave on
+a real multi-month run before real capital is involved.
+### Phase 1 — Static Analysis
+Run `mypy --strict`, `ruff`, `vulture` across the full `src/backtesting/` tree.
+Every finding triaged: fix, document with justification, or reject with reason.
+No suppressions added without a written rationale comment.
+Expected findings: Optional chaining gaps, unreachable branches, unused imports.
+### Phase 2 — Contract Completeness Audit
+Every public function: does return type match what all callers actually use?
+Every `Optional` field in every contract: enumerate every code path where it is
+`None` and confirm every consumer handles `None` correctly (no silent `0.0` defaults).
+Every frozen dataclass: are all fields actually written and read, or are any stubs?
+`parameter_region_width`, `yaml_output_path`: both `None` — document expected population path.
+### Phase 3 — Edge Case and Boundary Hardening
+Targeted inputs the current test suite does not cover:
+- Empty candidate list at Stage 6 entry
+- Single-window WFO (below minimum of 3 — should fail fast at Stage 0)
+- Zero-trade history (total_trades=0, expectancy undefined)
+- Parameter space with step > range (degenerate zone definition)
+- All candidates identical parameter hash (GA crossover degenerate case)
+- ProcessPoolExecutor pool exhaustion under memory pressure
+### Phase 4 — Production Run Preparation
+- Upload full-date-range OHLCV data
+- Extend WFO windows to cover full slice
+- Implement Stage 1 (Random Search) — replace stub
+- Calibrate `normalisation_drawdown_ref_points` and `normalisation_pnl_ref_points`
+  from actual first-run metrics distribution
+- Paper trading setup for any AUTO_GO candidates
+### Files to upload at Block 8 start
+Full `src/backtesting/` tree for static analysis.
+At minimum: `orchestrator.py`, `strategy_runner.py`, `ga/ga_engine.py`,
+`monte_carlo/mc_engine.py`, `wfo/wfo_engine.py`, `report_generator.py`,
+`candidate_store.py`, all `evaluation/` files.

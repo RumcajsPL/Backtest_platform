@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from concurrent.futures import ProcessPoolExecutor
 import time
 import uuid
 from datetime import UTC, datetime
@@ -278,16 +279,19 @@ def _execute_pipeline(
 # ── Stage 0: Validation & Init ────────────────────────────────────────────────
 
 def _run_stage_0_init(
-    config: dict,
-    store: CandidateStore,
-    run_metadata: RunMetadata,
+    config,
+    store,
+    run_metadata,
 ) -> None:
     """
-    Validate configuration, scenario, WFO windows, and enabled zones.
+    Validate configuration, scenario, WFO windows, parameter names, and enabled zones.
     Raises ValueError on any validation failure.
     """
+    import logging
+    logger = logging.getLogger(__name__)
     logger.info("Stage 0: Validation & Init — run_id=%s", run_metadata.run_id)
 
+    from src.backtesting.scenario import load_scenario
     try:
         scenario = load_scenario(config)
         logger.debug("Scenario '%s' loaded successfully", scenario.name)
@@ -295,6 +299,10 @@ def _run_stage_0_init(
         raise ValueError(f"Stage 0: Scenario validation failed: {exc}") from exc
 
     _validate_wfo_windows(config.get("walk_forward", {}).get("windows", []))
+
+    # M-05: Validate that all enabled zone parameter names exist in _PARAM_KEY_MAP.
+    # Catches typos and unsupported parameter names before any evaluation begins.
+    _validate_parameter_names(config)
 
     zones = config.get("zones", {})
     enabled_zones = [name for name, zdef in zones.items() if zdef.get("enabled", True)]
@@ -340,6 +348,40 @@ def _validate_wfo_windows(windows_config: list) -> None:
                 f"WFO window '{window_id}': start ({start}) must be before end ({end})"
             )
 
+def _validate_parameter_names(config: dict) -> None:
+    """
+    Validate that all parameter names in enabled zones exist in strategy_runner._PARAM_KEY_MAP.
+
+    Raises ValueError listing all unknown parameter names (sorted, for deterministic
+    test assertions) if any are found. Only enabled zones are checked — disabled zones
+    may contain experimental parameters that are not yet mapped.
+
+    Called from _run_stage_0_init (M-05 audit remediation).
+    """
+    import logging
+    from src.backtesting.strategy_runner import _PARAM_KEY_MAP
+    logger = logging.getLogger(__name__)
+
+    zones = config.get("zones", {})
+    enabled_param_names = {
+        param_name
+        for zone_name, zone_def in zones.items()
+        if zone_def.get("enabled", True)
+        for param_name in zone_def.get("parameters", {})
+    }
+
+    unknown = enabled_param_names - set(_PARAM_KEY_MAP.keys())
+    if unknown:
+        raise ValueError(
+            f"Stage 0: Zone parameters not in strategy_runner._PARAM_KEY_MAP: "
+            f"{sorted(unknown)}. "
+            f"Check for typos or add mappings to _PARAM_KEY_MAP before running."
+        )
+
+    logger.debug(
+        "Parameter name validation passed — %d unique params checked against _PARAM_KEY_MAP",
+        len(enabled_param_names),
+    )
 
 # ── Stages 1–4: Stubs ─────────────────────────────────────────────────────────
 
@@ -442,8 +484,8 @@ def _run_stage_5_mc_deep(
 
 def _run_stage_6_sensitivity(
     config: dict,
-    store: CandidateStore,
-    run_metadata: RunMetadata,
+    store,
+    run_metadata,
 ) -> None:
     """
     Stage 6: Parameter sensitivity analysis.
@@ -452,7 +494,15 @@ def _run_stage_6_sensitivity(
     evaluates fitness at each perturbation, and writes a SensitivityProfile
     per candidate. profile_complete=False auto-triggers the
     sensitivity_profile_incomplete modifier flag in Stage 7 verdict computation.
+
+    OPT-01: A single ProcessPoolExecutor is opened for all candidates and passed
+    to evaluate_sensitivity() via the pool= kwarg. The pool stays warm between
+    candidates — spawn overhead is paid once instead of once per candidate.
     """
+    from src.backtesting.evaluation.sensitivity import evaluate_sensitivity
+    from src.backtesting.scenario import load_scenario
+    from src.backtesting.contracts import SensitivityProfile
+
     run_id = run_metadata.run_id
     sens_config = config.get("sensitivity", {})
     input_count: int = sens_config.get("input_count", 5)
@@ -461,11 +511,12 @@ def _run_stage_6_sensitivity(
     max_workers: int = config.get("run", {}).get("max_workers", 6)
     min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
 
+    from src.utils.paths import CONFIGS_DIR
     base_yaml_path = _resolve_base_yaml(config)
     temp_dir = Path(config["run"]["temp_dir"])
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    scenario: ScenarioProfile = load_scenario(config)
+    scenario = load_scenario(config)
     parameter_space_def: dict = config.get("zones", {})
 
     logger.info(
@@ -479,45 +530,49 @@ def _run_stage_6_sensitivity(
         return
 
     processed = 0
-    for record in top_records:
-        candidate = _record_to_candidate(record)
-        baseline_fitness = store.get_fitness_score(candidate.candidate_id)
 
-        if baseline_fitness is None:
-            logger.warning(
-                "Stage 6: No baseline fitness for candidate %s — skipping",
-                candidate.candidate_id[:12],
+    # OPT-01: Open one shared pool for all candidates.
+    # Pool stays warm across the loop — spawn cost paid once, not per candidate.
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        for record in top_records:
+            candidate = _record_to_candidate(record)
+            baseline_fitness = store.get_fitness_score(candidate.candidate_id)
+
+            if baseline_fitness is None:
+                logger.warning(
+                    "Stage 6: No baseline fitness for candidate %s — skipping",
+                    candidate.candidate_id[:12],
+                )
+                continue
+
+            sensitivity: SensitivityProfile = evaluate_sensitivity(
+                candidate=candidate,
+                baseline_fitness=baseline_fitness,
+                parameter_space_def=parameter_space_def,
+                base_yaml_path=base_yaml_path,
+                temp_dir=temp_dir,
+                scenario=scenario,
+                spike_threshold=spike_threshold,
+                max_steps=max_steps,
+                max_workers=max_workers,
+                min_significant_trades=min_significant_trades,
+                pool=pool,   # OPT-01: shared pool — evaluate_sensitivity does NOT close it
             )
-            continue
 
-        sensitivity: SensitivityProfile = evaluate_sensitivity(
-            candidate=candidate,
-            baseline_fitness=baseline_fitness,
-            parameter_space_def=parameter_space_def,
-            base_yaml_path=base_yaml_path,
-            temp_dir=temp_dir,
-            scenario=scenario,
-            spike_threshold=spike_threshold,
-            max_steps=max_steps,
-            max_workers=max_workers,
-            min_significant_trades=min_significant_trades,
-        )
+            store.write_sensitivity_profile(sensitivity, run_id)
+            processed += 1
 
-        store.write_sensitivity_profile(sensitivity, run_id)
-        processed += 1
-
-        logger.debug(
-            "Stage 6: candidate %s — spike=%s  complete=%s  params_tested=%d",
-            candidate.candidate_id[:12],
-            sensitivity.spike_detected,
-            sensitivity.profile_complete,
-            len(sensitivity.parameter_sensitivities),
-        )
+            logger.debug(
+                "Stage 6: candidate %s — spike=%s  complete=%s  params_tested=%d",
+                candidate.candidate_id[:12],
+                sensitivity.spike_detected,
+                sensitivity.profile_complete,
+                len(sensitivity.parameter_sensitivities),
+            )
 
     store.flush()
     logger.info("Stage 6: Sensitivity complete — %d/%d candidates processed",
                 processed, len(top_records))
-
 
 # ── Stage 7: Report & Output ──────────────────────────────────────────────────
 
