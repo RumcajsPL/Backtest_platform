@@ -253,6 +253,7 @@ L-05: Silent write loss from missing store methods. H-02 (write_wfo_window_resul
 ```
 ---
 ## What NOT To Do
+- Do not guess, reconstruct pieces of code not avialable, instead ask for any code to fill the gap 
 - Do not modify `src/strategies/` — strategy architecture is frozen
 - Do not use `analytics` mode — `core` mode only (`mode_override="core"`)
 - Do not add `print()` — use `logger.info`
