@@ -31,9 +31,15 @@ as module-level constants are now read from ScenarioProfile:
 The module-level MAX_DRAWDOWN_REF_POINTS constant is retained for the
 _normalise_max_drawdown helper used in the constraint check table, where
 the scenario is not yet available. The scoring path uses scenario fields.
+
+Block 8B change (B8B-001): NaN guard added before constraint loop.
+IEEE 754 semantics mean op.lt(NaN, x) and op.gt(NaN, x) both return False,
+causing NaN metric values to silently pass all constraints. The explicit
+math.isnan check short-circuits with a clean EVALUATION_ERROR rejection.
 """
 from __future__ import annotations
 
+import math
 import operator as op
 from typing import Optional, Tuple
 
@@ -77,6 +83,10 @@ def _normalise_max_drawdown_constraint(max_drawdown_points: Optional[float]) -> 
 # (field_label, metrics_attr, scenario_threshold_attr, comparator, normaliser)
 # Ordered cheapest/most-rejecting first.
 # normaliser: optional callable applied to the raw metric value before comparison.
+#
+# Boundary semantics: all lower-bound constraints use op.lt (reject when
+# actual < threshold), so a value exactly equal to the threshold is ACCEPTED
+# (implements >= semantics). All upper-bound constraints use op.gt (implements <=).
 
 _CONSTRAINT_CHECKS: Tuple = (
     ("max_drawdown",    "max_drawdown",      "max_drawdown",        op.gt, _normalise_max_drawdown_constraint),
@@ -130,6 +140,30 @@ def evaluate_fitness(
     actual_trades_per_week  = _get(m, "trades_per_week")
     actual_expectancy       = _get(m, "expectancy_points")
     actual_profit_factor    = _get(m, "profit_factor")
+
+    # B8B-001: NaN guard — must precede constraint loop.
+    # IEEE 754 semantics: op.lt(NaN, x) and op.gt(NaN, x) are both False, so a NaN
+    # actual value passes every constraint silently. An explicit math.isnan check
+    # short-circuits here with a clean EVALUATION_ERROR rejection before NaN can
+    # propagate into _compute_weighted_score or trigger ValueError in __post_init__.
+    _nan_actuals = [actual_win_rate, actual_max_drawdown, actual_losing_streak,
+                    actual_trades_per_week, actual_expectancy, actual_profit_factor]
+    if any(isinstance(v, float) and math.isnan(v) for v in _nan_actuals if v is not None):
+        return FitnessResult(
+            candidate_id=result.candidate_id,
+            scenario_name=scenario.name,
+            fitness_score=None,
+            passed_constraints=False,
+            rejection_reason=RejectionReason.EVALUATION_ERROR.value,
+            failing_constraint="nan_metric",
+            failing_value=None,
+            actual_win_rate=actual_win_rate,
+            actual_max_drawdown=actual_max_drawdown,
+            actual_losing_streak=actual_losing_streak,
+            actual_trades_per_week=actual_trades_per_week,
+            actual_expectancy=actual_expectancy,
+            actual_profit_factor=actual_profit_factor,
+        )
 
     # Evaluate constraints in order — return on first failure.
     for label, metric_attr, threshold_attr, comparator, normaliser in _CONSTRAINT_CHECKS:
@@ -194,7 +228,7 @@ def _compute_weighted_score(metrics, scenario: ScenarioProfile) -> float:
     win_rate_norm = _clamp(_normalise_win_rate(_get(metrics, "win_rate")) or 0.0, 0.0, 1.0)
 
     # expectancy_points: normalise to [0, 1] with fixed scale of 3.0 pts per unit
-    # (not yet scenario-configurable — deferred to Block 8 calibration)
+    # (not yet scenario-configurable — deferred to Block 9 calibration; B8B-003)
     expectancy_norm = _clamp((_get(metrics, "expectancy_points") or 0.0) / 3.0, 0.0, 1.0)
 
     profit_factor_norm = _clamp(((_get(metrics, "profit_factor") or 1.0) - 1.0) / 4.0, 0.0, 1.0)

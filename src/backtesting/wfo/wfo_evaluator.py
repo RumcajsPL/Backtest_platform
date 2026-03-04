@@ -7,6 +7,13 @@ Single responsibility: one candidate × one window → WFOWindowResult.
 This module is called by wfo_engine.py in both lightweight (GA) and full (Stage 4) modes.
 It is also the innermost callable dispatched to worker processes — it must NEVER raise.
 All failures surface as WFOWindowResult with error set and fitness_score=None.
+
+Block 8 fix (B8B-018): Two _safe_float field name mismatches corrected:
+  - "net_pnl"   → "total_pnl_points"  (MetricsReport has no 'net_pnl' attribute)
+  - "expectancy" → "expectancy_points" (MetricsReport has no 'expectancy' attribute)
+Both fields were silently None on every window evaluation, causing:
+  - WFO median_return_norm and fraction_positive_windows permanently zeroed
+  - WFO composite scores systematically understated on those two sub-metrics
 """
 from __future__ import annotations
 
@@ -89,12 +96,14 @@ def evaluate_window(
             evaluated_at=datetime.now(UTC),
             fitness_score=fitness_result.fitness_score,
             total_trades=candidate_result.total_trades,
-            net_pnl=_safe_float(m, "net_pnl"),
+            net_pnl=_safe_float(m, "total_pnl_points"),   # B8B-018: was "net_pnl"
             max_drawdown=_safe_float(m, "max_drawdown"),
             win_rate=_safe_float(m, "win_rate"),
-            expectancy=_safe_float(m, "expectancy"),
+            expectancy=_safe_float(m, "expectancy_points"),  # B8B-018: was "expectancy"
             profit_factor=_safe_float(m, "profit_factor"),
-            oos_delta=None,  # Populated by wfo_engine if IS/OOS gate is enabled
+            oos_delta=None,  # WARNING (B8B-005): always None — IS/OOS gate not yet implemented.
+                             # wfo_engine.run_wfo() does not post-populate this field.
+                             # enforce_oos_gate=True in config has no effect until Block 9.
             error=None,
         )
 

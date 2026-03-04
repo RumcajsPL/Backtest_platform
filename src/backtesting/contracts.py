@@ -127,6 +127,12 @@ class ScenarioProfile:
             Default 0.40 reproduces prior behaviour.
     All new fields have defaults and are appended at the end so existing
     YAML loaders and test fixtures require no changes.
+
+    Block 8C change (B8C-001): report_emphasis validated as non-empty sequence
+    in __post_init__. A scalar string (e.g. "balanced") would be accepted by the
+    type hint but silently cause _render_scenario_metrics to iterate over individual
+    characters. The validation produces a clear error message pointing to the
+    correct YAML format.
     """
     name: str
     description: str
@@ -162,6 +168,9 @@ class ScenarioProfile:
     verdict_borderline_mc_ruin_ceiling: float
     verdict_sensitivity_spike_threshold: float
 
+    # Report metric emphasis — must be a non-empty tuple of metric name strings.
+    # Controls the order and selection of per-candidate metrics in the HTML report.
+    # Example YAML: report_emphasis: [wfo_consistency_score, mc_deep_ruin_probability]
     report_emphasis: Tuple[str, ...]
 
     # ── M-03: WFO collapse threshold (was hardcoded 0.40 in consistency_scorer.py) ──
@@ -229,6 +238,17 @@ class ScenarioProfile:
             raise ValueError(
                 f"normalisation_freq_ref_trades_per_week must be positive; "
                 f"got {self.normalisation_freq_ref_trades_per_week}"
+            )
+        # B8C-001: report_emphasis must be a non-empty sequence of metric name strings.
+        # A scalar string (e.g. "balanced") is accepted by the type hint but causes
+        # _render_scenario_metrics in report_generator.py to iterate over individual
+        # characters instead of metric names, producing garbage HTML cells silently.
+        # Validation here produces a clear error at construction time (fail fast — P6).
+        if not isinstance(self.report_emphasis, (list, tuple)) or len(self.report_emphasis) == 0:
+            raise ValueError(
+                "report_emphasis must be a non-empty list or tuple of metric name strings; "
+                f"got {type(self.report_emphasis).__name__}: {self.report_emphasis!r}. "
+                "Example YAML: report_emphasis: [wfo_consistency_score, mc_deep_ruin_probability]"
             )
 
 
