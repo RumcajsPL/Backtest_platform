@@ -158,7 +158,8 @@ CREATE TABLE IF NOT EXISTS wfo_consistency_scores (
     windows_evaluated           INTEGER,
     windows_total               INTEGER,
     oos_gate_triggered          INTEGER,
-    window_collapse_flag        INTEGER
+    window_collapse_flag        INTEGER,
+    median_oos_delta            REAL
 );
 CREATE INDEX IF NOT EXISTS idx_wfo_scores_run
     ON wfo_consistency_scores(run_id, wfo_consistency_score DESC);
@@ -380,8 +381,9 @@ class CandidateStore:
             """SELECT candidate_id, windows_evaluated, windows_total,
                       median_window_return, window_return_variance,
                       worst_window_drawdown, fraction_positive_windows,
-                      wfo_consistency_score, oos_gate_triggered, window_collapse_flag
-               FROM wfo_consistency_scores WHERE candidate_id = ?""",
+                      wfo_consistency_score, oos_gate_triggered, window_collapse_flag,
+                      median_oos_delta
+               FROM wfo_consistency_scores WHERE candidate_id = ?""",               
             (candidate_id,),
         ).fetchone()
         if row is None:
@@ -389,9 +391,9 @@ class CandidateStore:
         (
             cid, windows_evaluated, windows_total,
             median_return, variance, worst_dd, frac_pos,
-            composite, oos_gate, collapse,
+            composite, oos_gate, collapse, median_oos_delta,
         ) = row
-        return WFOConsistencyScore(
+        return WFOConsistencyScore(        
             candidate_id=cid,
             windows_evaluated=windows_evaluated or 0,
             windows_total=windows_total or 0,
@@ -402,7 +404,8 @@ class CandidateStore:
             composite_score=composite or 0.0,
             oos_gate_triggered=bool(oos_gate) if oos_gate is not None else False,
             window_collapse_flag=bool(collapse) if collapse is not None else False,
-        )
+            median_oos_delta=median_oos_delta,  # B8-001: read persisted M-01 value
+        )           
 
     def get_mc_result(self, candidate_id: str, mode: MCMode) -> Optional[MCResult]:
         """Return the MCResult for a candidate and mode, or None if not found."""
@@ -598,7 +601,7 @@ class CandidateStore:
                 wcs.median_window_return, wcs.window_return_variance,
                 wcs.worst_window_drawdown, wcs.fraction_positive_windows,
                 wcs.wfo_consistency_score, wcs.windows_evaluated,
-                wcs.oos_gate_triggered, wcs.window_collapse_flag,
+                wcs.oos_gate_triggered, wcs.window_collapse_flag, wcs.median_oos_delta,
                 mc_pre.ruin_probability, mc_pre.avg_final_equity, mc_pre.iterations,
                 mc_deep.ruin_probability, mc_deep.avg_final_equity,
                 mc_deep.worst_drawdown_across_paths, mc_deep.p5_final_equity,
@@ -921,8 +924,8 @@ class CandidateStore:
                 median_window_return, window_return_variance,
                 worst_window_drawdown, fraction_positive_windows,
                 wfo_consistency_score, windows_evaluated, windows_total,
-                oos_gate_triggered, window_collapse_flag
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                oos_gate_triggered, window_collapse_flag, median_oos_delta
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",               
             (
                 score.candidate_id,
                 run_id,
@@ -936,10 +939,11 @@ class CandidateStore:
                 score.windows_total,
                 int(score.oos_gate_triggered),
                 int(score.window_collapse_flag),
+                score.median_oos_delta,   # B8-001: persist M-01 computed value
             ),
         )
         self._conn.commit()
-        logger.debug("WFO score written: candidate=%s  score=%.4f",
+        logger.debug("WFO score written: candidate=%s  score=%.4f",        
                      score.candidate_id[:12], score.composite_score)
 
     def _write_mc_result(self, args: tuple) -> None:
@@ -1087,7 +1091,7 @@ class CandidateStore:
             actual_win_rate, actual_max_drawdown, actual_losing_streak,
             actual_trades_per_week, actual_expectancy, actual_profit_factor,
             wfo_median, wfo_variance, wfo_worst_dd, wfo_frac_pos,
-            wfo_score, wfo_evaluated, wfo_oos_gate, wfo_collapse,
+            wfo_score, wfo_evaluated, wfo_oos_gate, wfo_collapse, wfo_median_oos_delta,
             mc_pre_ruin, mc_pre_equity, mc_pre_iters,
             mc_deep_ruin, mc_deep_equity, mc_deep_worst_dd, mc_deep_p5, mc_deep_iters,
             sens_spike, sens_spike_params, sens_complete,
@@ -1121,7 +1125,8 @@ class CandidateStore:
             wfo_windows_evaluated=wfo_evaluated,
             wfo_oos_gate_triggered=bool(wfo_oos_gate) if wfo_oos_gate is not None else None,
             wfo_window_collapse_flag=bool(wfo_collapse) if wfo_collapse is not None else None,
-            mc_prefilter_ruin_probability=mc_pre_ruin,
+            wfo_median_oos_delta=wfo_median_oos_delta,  # B8-002
+            mc_prefilter_ruin_probability=mc_pre_ruin,            
             mc_prefilter_avg_final_equity=mc_pre_equity,
             mc_prefilter_iterations=mc_pre_iters,
             mc_deep_ruin_probability=mc_deep_ruin,

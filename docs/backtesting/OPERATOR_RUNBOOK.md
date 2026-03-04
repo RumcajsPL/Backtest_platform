@@ -1,7 +1,10 @@
 # OPERATOR_RUNBOOK.md — Backtesting & Optimization Framework
-**Version**: 1.0.0
-**Date**: 2026-03-03
+**Version**: 1.1.0
+**Date**: 2026-03-04
 **Audience**: Operators launching, monitoring, and acting on pipeline runs
+> **Change log**:
+> - v1.0.0 (2026-03-03): Initial release (Block 8A)
+> - v1.1.0 (2026-03-04): Added §9 Known Limitations, updated Appendix A with Block 8B error patterns
 ---
 ## 1. Pre-Run Checklist
 Complete every item before launching a run. Do not skip steps.
@@ -16,6 +19,7 @@ print(hashlib.sha256(data).hexdigest()[:16])
 "
 ```
 Record the hash in your run log before launching. If a run fails and you need to resume, verify the hash matches before restarting.
+
 ### 1.2 Scenario Selection
 The active scenario is set at the top of `backtest_template.yaml`:
 ```yaml
@@ -169,29 +173,27 @@ Both pillars pass their go thresholds AND no modifier flags are active. This can
 - No sensitivity spikes, no window collapse, complete sensitivity profile, OOS gate not triggered
 Ready for paper trading. Deployment status is always `PAPER_TRADE_REQUIRED`.
 **`BORDERLINE`**
-One or both pillars are in the borderline zone, OR at least one modifier flag is active. This candidate requires additional scrutiny before paper trading. Common causes:
-- WFO score between `borderline_wfo_floor` (0.40) and `go_wfo_floor` (0.65) — acceptable but not strong
+One or both pillars are in the borderline zone, OR at least one modifier flag is active. Common causes:
+- WFO score between `borderline_wfo_floor` (0.40) and `go_wfo_floor` (0.65)
 - Ruin probability between `go_mc_ruin_ceiling` (0.05) and `borderline_mc_ruin_ceiling` (0.15)
-- A parameter sensitivity spike was detected (`sensitivity_spike=True`)
-- The WFO OOS gate was triggered (when `enforce_oos_gate: true`)
+- A parameter sensitivity spike was detected
+- The WFO OOS gate was triggered (when `enforce_oos_gate: true`) — **NOTE: currently non-functional, see §9.1**
 - A WFO window collapse was flagged
-- >50% of sensitivity evaluations failed (`sensitivity_profile_incomplete=True`)
-The `evidence_summary` field of the VerdictResult documents which conditions triggered BORDERLINE. Always review this before paper trading a BORDERLINE candidate.
+- >50% of sensitivity evaluations failed
 **`NO_GO`**
-One or both pillars failed their go AND borderline thresholds. This candidate must not be traded:
-- WFO composite score < `borderline_wfo_floor` (0.40) — inconsistent across time
-- MC ruin probability > `borderline_mc_ruin_ceiling` (0.15) — unacceptable ruin risk
-- MC result was `None` (strategy runner error during MC) — treat as maximum risk
-Modifier flags cannot override NO_GO. A NO_GO is final.
+One or both pillars failed their go AND borderline thresholds. Must not be traded:
+- WFO composite score < `borderline_wfo_floor` (0.40)
+- MC ruin probability > `borderline_mc_ruin_ceiling` (0.15)
+- MC result was `None` — treat as maximum risk
 ### Threshold Reference (`capital_accumulation` defaults)
 ```
-go_wfo_floor:              0.65   (WFO composite ≥ 0.65 → WFO pillar passes)
-borderline_wfo_floor:      0.40   (WFO composite ≥ 0.40 → borderline zone)
-go_mc_ruin_ceiling:        0.05   (ruin prob ≤ 0.05 → MC pillar passes)
-borderline_mc_ruin_ceiling: 0.15  (ruin prob ≤ 0.15 → borderline zone)
-sensitivity_spike_threshold: 0.15 (|fitness_delta| > 0.15 → spike flag)
+go_wfo_floor:              0.65
+borderline_wfo_floor:      0.40
+go_mc_ruin_ceiling:        0.05
+borderline_mc_ruin_ceiling: 0.15
+sensitivity_spike_threshold: 0.15
 ```
-> **Calibration note**: These are D-07 starting values. Recalibrate after the first real pipeline run once you have a distribution of WFO scores and ruin probabilities from real candidates.
+> **Calibration note**: These are D-07 starting values. Recalibrate after the first real pipeline run.
 ---
 ## 6. Promotion Path
 ```
@@ -203,63 +205,108 @@ Pipeline verdict → PAPER_TRADE_REQUIRED
                         ↓
                   LIVE_APPROVED          ← Operator sets this manually. NEVER set by code.
 ```
-**`PAPER_TRADE_REQUIRED`** is the initial status for all AUTO_GO and BORDERLINE verdicts. The pipeline never sets `LIVE_APPROVED` — this is a manual operator action only, taken after a satisfactory paper trading period.
-**Minimum paper trading period**: Operator decision. No minimum is enforced by the system. Recommended: at least one full WFO window equivalent (approximately 3 weeks for the current config) under live market conditions.
-**What to monitor during paper trading**:
-- Actual win rate vs `min_win_rate` constraint
-- Actual drawdown vs `max_drawdown` constraint
-- Trades per week vs `min_trades_per_week` constraint
-- Any parameter or market regime shifts since the backtest period
+**`PAPER_TRADE_REQUIRED`** is the initial status for all AUTO_GO and BORDERLINE verdicts. The pipeline never sets `LIVE_APPROVED`.
+**Minimum paper trading period**: Operator decision. Recommended: at least one full WFO window equivalent (~3 weeks) under live market conditions.
 ---
 ## 7. Resume After Interruption
-All 8 checkpoints are verified safe interruption points (Block 4 robustness tests). If a run is interrupted for any reason, simply re-run with the same config:
 ```bash
 python -m src.backtesting.orchestrator --config configs/backtesting/backtest_template.yaml
 ```
-The orchestrator reads the current checkpoint from `backtester.db` and skips all already-completed stages.
 **Checkpoint sequence**:
 ```
 INITIALIZED → RANDOM_SEARCH_COMPLETE → MC_PREFILTER_COMPLETE → GA_COMPLETE
             → WFO_COMPLETE → MC_DEEP_COMPLETE → SENSITIVITY_COMPLETE → COMPLETE
 ```
-**Important**: Resume only works when the config file is byte-for-byte identical to the original run (same config hash). If you modify the config, a new `run_id` is generated and the pipeline starts from scratch.
-**Confirming resume point**:
-```python
-# Query current checkpoint before resuming
-import sqlite3
-con = sqlite3.connect("outputs/backtesting/backtester.db")
-row = con.execute(
-    "SELECT run_id, checkpoint, config_hash FROM runs ORDER BY created_at DESC LIMIT 1"
-).fetchone()
-print(f"run_id={row[0]}  checkpoint={row[1]}  config_hash={row[2][:16]}")
-con.close()
-```
+Resume only works when the config file is byte-for-byte identical to the original run (same config hash).
 ---
 ## 8. Performance Tuning Reference
 | ID | Description | Expected saving | How to apply |
 |---|---|---|---|
-| OPT-01 | Pool reuse in `evaluate_sensitivity()` — reuse `ProcessPoolExecutor` across candidates | 40–60% Stage 6 | Code change — Block 7 |
-| OPT-02 | Batch all perturbations per candidate into one worker task | Additional 15–25% Stage 6 | Code change — Block 7 |
-| OPT-03 | Reduce `sensitivity.input_count` from 5 to 3 | ~130–180s Stage 6 | Change `sensitivity.input_count: 3` in YAML |
-| OPT-04 | Stage 5 MC Deep — no action needed | Negligible (< 3s already) | N/A |
-| OPT-05 | Clean up `max_workers` param in `evaluate_sensitivity()` after OPT-01 | Code quality only | Code change — Block 7 |
-**Current performance baseline** (Windows 10, 6 workers, locked 2026-03-03):
+| OPT-01 | Pool reuse in `evaluate_sensitivity()` | 40–60% Stage 6 | Code change — Block 7 |
+| OPT-02 | Batch all perturbations per candidate | Additional 15–25% Stage 6 | Code change — Block 7 |
+| OPT-03 | Reduce `sensitivity.input_count` from 5 to 3 | ~130–180s Stage 6 | Change YAML |
+| OPT-04 | Stage 5 MC Deep — no action needed | Negligible | N/A |
+**Current performance baseline** (Windows 10, 6 workers, 2026-03-03):
 ```
 Run 2 (canonical): Total=337.2s  Stage5=0.3s  Stage6=332.6s  Stage7=4.4s
 Daily budget: 14,400s → 2.3% consumed
 ```
-Stage 6 dominates total run time. OPT-03 is the only YAML-level optimisation available before Block 7; all others require code changes.
+## 9. Known Limitations and Non-Functional Features
+### 9.1 OOS Gate — Non-Functional (B8B-005)
+`enforce_oos_gate: true` in `backtest_template.yaml` **currently has no effect**.
+The IS/OOS delta computation (`oos_delta` on each `WFOWindowResult`) is never populated
+in the current pipeline. `wfo_evaluator.evaluate_window()` always returns `oos_delta=None`,
+and `wfo_engine.run_wfo()` does not post-process results to set it.
+**Consequences**:
+- `oos_gate_triggered` in every `VerdictResult` is `False` — not "gate passed" but "gate not evaluated"
+- `median_oos_delta` in every `WFOConsistencyScore` is `None`
+- The `oos_gate_triggered` modifier flag in BORDERLINE verdicts is permanently silent
+**Workaround**: None. The OOS gate requires a structural design decision on IS/OOS window
+splitting (run the strategy on in-sample vs out-of-sample portions of each window separately).
+Scheduled for implementation in Block 9.
+**Do not rely on `enforce_oos_gate: true`** to filter candidates for OOS degradation.
+Manual review of per-window fitness scores in the HTML report is the current alternative.
 ---
-## Appendix A — Common Error Patterns
+### 9.2 WFO Sigmoid Scale — Calibration Required Before First Real Run (B8B-012)
+`consistency_scorer._sigmoid_normalise` uses `scale=0.10`, which was calibrated for
+unit returns (fractions like 0.05, -0.12). Real strategy `net_pnl` values are in currency
+points (e.g. −1,200 pts to +8,000 pts depending on instrument and window length).
+With `scale=0.10`, any per-window P&L greater than ~5 points maps to `median_return_norm ≈ 1.0`.
+The WFO `median_return` sub-metric is effectively binary (positive window = 1.0,
+negative window = 0.0) with no differentiation by magnitude.
+**Action required before first production run**:
+1. Run the pipeline on real data once (even with `e2e_test` scenario)
+2. Check the distribution of per-window `net_pnl` in `wfo_window_results` table:
+   ```sql
+   SELECT window_id, AVG(net_pnl), STDEV(net_pnl), MIN(net_pnl), MAX(net_pnl)
+   FROM wfo_window_results
+   WHERE run_id = '<your_run_id>'
+   GROUP BY window_id;
+   ```
+3. Set `wfo_sigmoid_scale ≈ 10% of median expected per-window P&L` in `ScenarioProfile`
+   (field to be added in Block 9 — currently requires code change to `consistency_scorer.py`)
+4. Similarly calibrate `wfo_variance_max_expected` (currently 0.10) to the actual
+   variance range of per-window net_pnl
+Until calibrated, WFO composite scores rank candidates primarily by fraction of positive
+windows rather than by P&L magnitude. Relative ranking is still meaningful within a run;
+absolute score thresholds in `verdict_go_wfo_floor` / `verdict_borderline_wfo_floor`
+may need adjustment.
+---
+### 9.3 net_pnl Field Name — Verify Before First Real WFO Run (B8B-018)
+`wfo_evaluator.py` reads the per-window P&L as `_safe_float(m, "net_pnl")` from the
+`MetricsReport` object. `fitness.py` reads the same value as `total_pnl_points`.
+If `MetricsReport` exposes the field only as `total_pnl_points` (not `net_pnl`), then:
+- All `WFOWindowResult.net_pnl` values will be `None`
+- WFO consistency scores will have `median_return_norm = 0.5` and `fraction_positive = 0.0`
+- WFO composite scores will be systematically lower than expected
+**Verify** by running `test_block8b_engines.py::test_net_pnl_field_name_matches_metrics_report`
+after uploading `contracts.py` in Block 8C. If the test fails, apply the one-line fix
+in `wfo_evaluator.py` line ~82.
+---
+### 9.4 Previously Documented Limitations (from Block 8A)
+| Limitation | Status | Block |
+|---|---|---|
+| `median_oos_delta` never persisted | Fixed (B8-001) | 8A |
+| `CandidateRecord.wfo_median_oos_delta` never populated in queries | Fixed (B8-002) | 8A |
+| Stages 1–4 stubs — pipeline does no real work before Stage 5 | Open | 8A |
+| `parameter_region_width` always `None` | Open | 8A |
+| `_resume_or_start` opens raw sqlite3 (bypasses store contract) | Open, B9 | 8A |
+| Timing covers Stages 5–7 only | Open, extends when 1–4 implemented | 8A |
+| OOS gate non-functional | Open (B8B-005) | 8B |
+| WFO sigmoid scale uncalibrated for real data | Open (B8B-012) | 8B |
+| `net_pnl` vs `total_pnl_points` field name — needs verification | Verify in 8C | 8B |
+| Expectancy normalisation scale hardcoded at 3.0 | Open, B9 | 8B |
+| `mc_prefilter_ruin_threshold` dual-source (config dict + ScenarioProfile) | Open, B9 | 8B |
+---
+## Appendix A Updates
+Add to the Common Error Patterns table:
 | Symptom | Likely cause | Resolution |
 |---|---|---|
-| `Stage 0 validation error: fewer than 3 WFO windows` | `walk_forward.windows` has < 3 entries | Add windows to YAML |
-| `Stage 0 validation error: overlapping windows` | Two window date ranges overlap | Adjust dates — windows must be non-overlapping |
-| `WARNING: MCResult ruin_probability=None for candidate {id}` | Strategy runner error during MC deep | Expected if strategy errors — candidate will be NO_GO |
-| `WARNING: SensitivityProfile profile_complete=False` | >50% perturbation evals failed | May indicate strategy instability near parameter boundaries |
-| `ERROR: Can't pickle <class 'unittest.mock.MagicMock'>` | Test is patching inside ProcessPoolExecutor worker boundary | Patch at orchestrator level — see ARCHITECTURE.md §9 |
-| Config hash mismatch on resume | YAML was modified between runs | Either restore original YAML or start a fresh run |
-| `KeyError` in fitness or scenario evaluation | Config fixture uses flat dict instead of nested | Use nested structure: `fitness_weights`, `constraints`, etc. |
+| All `WFOConsistencyScore.median_oos_delta` are `None` | B8B-005: OOS gate not implemented | Expected — see §9.1 |
+| All `VerdictResult.oos_gate_triggered` are `False` | B8B-005: OOS delta never set | Expected — see §9.1 |
+| WFO scores consistently lower than expected; `fraction_positive_windows` always 0.0 | B8B-018: `net_pnl` field name mismatch | Run B8B-018 test; fix `wfo_evaluator.py` line ~82 |
+| WFO composite scores cluster near 0.5 regardless of strategy quality | B8B-012: sigmoid scale=0.10 binary for real data | Calibrate `wfo_sigmoid_scale` — see §9.2 |
+| NaN fitness_score crashes `FitnessResult.__post_init__` | B8B-001 (pre-fix): NaN metric bypassed constraint guard | Fixed in Block 8B — verify NaN guard is applied |
 ---
 ## Appendix B — Output Directory Structure
 ```
@@ -267,10 +314,10 @@ outputs/backtesting/
 ├── backtester.db              ← SQLite WAL — all stage results, 9 tables
 ├── report.html                ← Self-contained HTML report with inline charts
 ├── json/
-│   └── {run_id}_report.json  ← Full verdict + evidence for all shortlisted candidates
+│   └── {run_id}_report.json
 ├── parquet/
-│   └── {run_id}_results.parquet ← Columnar export of candidate metrics
+│   └── {run_id}_results.parquet
 └── trading_yamls/
-    └── {candidate_id}_{verdict}.yaml  ← Trading-ready strategy YAML (AUTO_GO + BORDERLINE only)
+    └── {candidate_id}_{verdict}.yaml  ← Trading-ready YAML (AUTO_GO + BORDERLINE only)
 ```
-Trading YAMLs embed `backtester_metadata` block containing: `run_id`, `config_hash`, `verdict`, `wfo_consistency_score`, `mc_ruin_probability`, `sensitivity_spike_detected`, and all 5 seeds. This block is for audit purposes — the strategy runner ignores it.
+Trading YAMLs embed `backtester_metadata` block containing: `run_id`, `config_hash`, `verdict`, `wfo_consistency_score`, `mc_ruin_probability`, `sensitivity_spike_detected`, and all 5 seeds.

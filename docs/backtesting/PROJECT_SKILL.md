@@ -13,9 +13,8 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-04)**: Phase 6 complete. Block 7 sub-block 7A in progress.
-233 tests green. H-02 fix applied (write_wfo_window_result + flag_candidate_wfo_insufficient).
-I-07 fixed (datetime.utcnow() removed from wfo_evaluator.py). Sub-blocks 7B/7C/7D next.
+**Current status (2026-03-04)**: Block 8B in progress. 2 tests fails, 1 test skipped, 11 tests green 
+(SKILL to be updated to th current status - to do with next session)
 ---
 ## Pipeline (in order — do not reorder)
 ```
@@ -30,35 +29,6 @@ Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
 ```
 All stages fully wired in orchestrator.py. Stages 1–4 are currently stubs pending
 their respective phase implementations. Stages 0, 5, 6, 7 fully implemented.
----
-## Verdict Model
-**Two mandatory pillars**: (1) WFO composite score, (2) MC deep ruin probability.
-**Three outcomes**: auto_go | borderline | no_go
-**Confirmed boundary operators** (from verdict.py source, Block 5 — DO NOT change):
-```python
-wfo_pillar_go    = wfo_composite >= go_wfo_floor        # >= INCLUSIVE at go threshold
-wfo_pillar_no_go = wfo_composite < borderline_wfo_floor  # < strictly less than
-mc_pillar_go    = ruin_prob <= go_mc_ruin_ceiling        # <= INCLUSIVE at go threshold
-mc_pillar_no_go = ruin_prob > borderline_mc_ruin_ceiling  # > strictly greater than
-ruin_prob = None → mc_pillar_no_go = True → NO_GO       # MC failure = conservative NO_GO
-oos_gate_triggered = oos_gate_enabled AND wfo_score.oos_gate_triggered  # BOTH required
-```
-Modifier flags (any → borderline, cannot override NO_GO):
-`sensitivity_spike`, `oos_gate_triggered` (when enforce_oos_gate=True AND wfo triggered),
-`window_collapse_flag`, `sensitivity_profile_incomplete` (profile_complete=False).
-`deployment_status`: always `PAPER_TRADE_REQUIRED` for go/borderline.
-`__post_init__` raises if `LIVE_APPROVED` is set. Operator-only manual promotion.
----
-## Scenario System
-One active scenario per run. Four defined:
-- `capital_accumulation` — grow account, controlled risk (default production scenario)
-- `swing_trading` — maximize R:R on directional signals
-- `conservative` — preserve capital above all else
-- `e2e_test` — **pipeline validation only — NEVER for trading.** Loose constraints calibrated
-  to pass real strategy output (13% win rate, negative expectancy). Do not use for optimization.
-D-07 starting values for capital_accumulation (recalibrate after first real run):
-  go_wfo_floor=0.65, borderline_wfo_floor=0.40, go_mc_ruin_ceiling=0.05, borderline_mc_ruin_ceiling=0.15
-Full values: TECHNICAL_SPEC.md §5 and backtest_template.yaml.
 ---
 ## Architecture Rules (non-negotiable)
 ```python
@@ -191,7 +161,6 @@ report_generator.py       — self-contained HTML. Inline charts. JSON + Parquet
 patch("src.backtesting.orchestrator.evaluate_sensitivity", ...)   # CORRECT for integration tests
 # DO NOT: patch("src.backtesting.evaluation.sensitivity._evaluate_perturbation", ...)
 #   Reason: spawn mode — mock does not cross process boundary. Causes pickle error (ROB-09).
-
 # Stage 5: run_mc is a LOCAL import inside _run_stage_5_mc_deep
 patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)       # CORRECT
 # DO NOT: patch("src.backtesting.orchestrator.run_mc", ...)       # AttributeError
@@ -207,7 +176,7 @@ Stage 5 (MC Deep):    <3s — fully vectorised, NEVER the bottleneck.
 Stage 6 (Sensitivity): ~333–446s — structural bottleneck on Windows spawn mode.
 Stage 7 (Report):     4–8s — fine.
 PERF-06 ceiling: 99% (Stage 6 structural dominance is expected, not a bug).
-OPT-01 target: Stage 6 ≤ 200s (40% reduction via pool reuse across candidates).
+OPT-01 target (not achived): Stage 6 ≤ 200s (40% reduction via pool reuse across candidates).
 ```
 ## Performance Optimisation (sub-block 7C)
 ```
@@ -274,9 +243,13 @@ L-05: Silent write loss from missing store methods. H-02 (write_wfo_window_resul
 7B — Audit M P1/P2 — M-05, M-04, M-03, M-02                    ✅COMPLETE
      Files to modify: orchestrator.py, mc_metrics.py, consistency_scorer.py,
                       fitness.py, contracts.py (ScenarioProfile), scenario YAMLs
-7C — OPT-01 pool reuse + OPT-02 batching → Stage 6 ≤ 200s      ✅ COMPLETE
+7C — OPT-01 pool reuse + OPT-02 batching → Stage 6 ≤ 200s      🟡 Stage 6 > 300s
      File to modify: evaluation/sensitivity.py
-7D — M-01, M-06, WF-07/WF-09 + full documentation update    ✅ COMPLETE   
+7D — M-01, M-06, WF-07/WF-09 + full documentation update    ✅ COMPLETE
+8A - ✅ COMPLETE
+8B - In Progress 🟡 Test lailed
+8C - to start yet
+...
 ```
 ---
 ## What NOT To Do
@@ -290,7 +263,7 @@ L-05: Silent write loss from missing store methods. H-02 (write_wfo_window_resul
 - Do not use `Candidate` type — use `CandidateParameterSet`
 - Do not patch functions called inside ProcessPoolExecutor workers (spawn boundary)
 - Do not use `e2e_test` scenario for production optimization runs
-- Do not start OPT-01 before 7A verification is complete (7A is now complete ✅)
+- Do not start OPT-01 before 7A verification is complete (7A is now complete 🟡 objective not achieved)
 ---
 ## Platform Notes
 - **OS**: Windows 10, Python 3.13.12

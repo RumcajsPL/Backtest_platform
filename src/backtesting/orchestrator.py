@@ -201,9 +201,11 @@ def _execute_pipeline(
         logger.info("Stage 0 already complete — skipping")
 
     # ── Stage 1: Random Search ────────────────────────────────────────────────
+    # NOTE (B8-007): Stages 1–4 are stubs — they advance checkpoints without
+    # producing output. Stages 5–7 will consume data from a prior run loaded
+    # into the DB. This is a known temporary state. See OPERATOR_RUNBOOK §3.
     if store.get_checkpoint(run_id).value < Checkpoint.RANDOM_SEARCH_COMPLETE.value:
         _run_stage_1_random_search(config, store, run_metadata)
-        store.set_checkpoint(run_id, Checkpoint.RANDOM_SEARCH_COMPLETE)
     else:
         logger.info("Stage 1 (Random Search) already complete — skipping")
 
@@ -304,9 +306,28 @@ def _run_stage_0_init(
     # Catches typos and unsupported parameter names before any evaluation begins.
     _validate_parameter_names(config)
 
+    # B8-005: Validate min_significant_trades >= 1. A value of 0 disables the
+    # significance guard in strategy_runner.evaluate() silently, allowing zero-trade
+    # candidates with undefined metrics to enter the pipeline.
+    min_significant_trades = config.get("random_search", {}).get("min_significant_trades", 30)
+    if min_significant_trades < 1:
+        raise ValueError(
+            f"Stage 0: random_search.min_significant_trades must be >= 1; "
+            f"got {min_significant_trades}. A value of 0 disables the significance guard."
+        )
+
+    # B8-005: Validate spike_threshold is strictly between 0 and 1.
+    # 0.0 would flag every parameter as a spike; >= 1.0 would never flag any.
+    spike_threshold_val = config.get("sensitivity", {}).get("spike_threshold", 0.15)
+    if not (0.0 < spike_threshold_val < 1.0):
+        raise ValueError(
+            f"Stage 0: sensitivity.spike_threshold must be in (0, 1); "
+            f"got {spike_threshold_val}."
+        )
+
     zones = config.get("zones", {})
     enabled_zones = [name for name, zdef in zones.items() if zdef.get("enabled", True)]
-    if not enabled_zones:
+    if not enabled_zones:    
         raise ValueError(
             "Stage 0: No parameter zones are enabled. "
             "Enable at least one zone under 'zones' in the config."

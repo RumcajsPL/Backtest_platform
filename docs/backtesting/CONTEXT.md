@@ -1,160 +1,167 @@
-# CONTEXT.md — Backtesting & Optimization Framework
-**Updated**: 2026-03-04 (Block 7 COMPLETE — all sub-blocks 7A through 7D done)
----
-## Current State
-**Phase 6 complete. Block 7 complete. 246 tests green.**
-**Next: Block 8 — Full E2E code analysis and hardening.**
-No outstanding audit findings. All M-series, H-series, I-series, WF-series items resolved or dispositioned.
----
-## Block 7 Sub-Block Status (FINAL)
-| Sub-Block | Status | Tests added | Files changed |
-|---|---|---|---|
-| 7A — H-02 fix + H-03/I-07 + SKILL.md | ✅ COMPLETE | +2 (235 total) | candidate_store.py, wfo_evaluator.py |
-tests\backtesting\integration\test_h02_wfo_window_writes.py [100%] - 2 passed in 0.75s
-| 7B — Audit M P1/P2 | ✅ COMPLETE | +7 (242 total) | contracts.py, mc_metrics.py, consistency_scorer.py, fitness.py, orchestrator.py |
-tests\backtesting\integration\test_7b_audit_m_series.py [100%] - 7 passed in 5.41s 
-| 7C — OPT-01 pool reuse | ✅ COMPLETE | 0 | sensitivity.py, orchestrator.py |
-PERFORMANCE SUMMARY — run_id=39295701
-  Config (production values, no smoke overrides):
-    MC iterations          : 3000
-    MC input candidates    : 10
-    Sensitivity input      : 5
-    Sensitivity max_steps  : 2
-    Max workers            : 6
-  Candidates processed:
-    WFO survivors injected : 20
-    Stage 5 MC processed   : 10
-    Stage 6 Sens processed : 5
-  Stage 5 MC Deep         : 0.3s  (0.0s/candidate avg)
-  Stage 6 Sensitivity     : 297.8s  (59.6s/candidate avg)
-  Stage 7 Report + Output : 3.9s
-  Total                   : 302.0s  
-  Budget                  : 14400s
-  Status                  : PASS ✅
-  Bottleneck              : Stage 6 (98.6% of total)
-  Exception               : None
-  Yet to analyze during Block 8
-| 7D — M-01, M-06, WF-07/WF-09 | ✅ COMPLETE | +4 (246 total) | contracts.py, consistency_scorer.py, verdict.py, mutation.py |
-tests\backtesting\integration\test_7d_audit_m01_m06.py [100%] 4 passed in 0.50s  
----
-## All Audit Finding Dispositions (COMPLETE)
-| ID | Finding | Verdict | Action |
-|---|---|---|---|
-| H-01 | `strategy_runner.evaluate()` date range | FALSE POSITIVE | Confirmed in source |
-| H-02 | `CandidateStore` missing write methods | FIXED 7A | Both methods + 2 handlers added |
-| H-03 | WFO date range not passed | FALSE POSITIVE | Same source read as H-01 |
-| M-01 | `median_oos_delta` always None | FIXED 7D | Computed in consistency_scorer, propagated |
-| M-02 | Hardcoded fitness normalisation constants | FIXED 7B | 3 fields added to ScenarioProfile |
-| M-03 | Hardcoded WFO collapse threshold | FIXED 7B | `wfo_collapse_drawdown_threshold` added |
-| M-04 | MC zero-equity drawdown understatement | FIXED 7B | Ruined paths clamped to 1.0 |
-| M-05 | No Stage 0 param name validation | FIXED 7B | `_validate_parameter_names()` in Stage 0 |
-| M-06 | Hardcoded mutation std dev | FIXED 7D | `mutation_std_steps` kwarg added |
-| M-07 | Hardcoded chart dimensions | DEFERRED B8 | P4 — Block 8 analysis phase |
-| I-07 | `datetime.utcnow()` | FIXED 7A | 3x replaced with `datetime.now(UTC)` |
-| WF-07 | `parameter_region_width` always None | DOCUMENTED | Explicit deferred comment in verdict.py |
-| WF-09 | Post-Stage-1 adequacy warning | DOCUMENTED | Intent in FUNCTIONAL_SPEC; Stage 1 still stub |
----
-## Block 7D — What Changed
+# CONTEXT.md — Block 8B → 8C Handoff
+**Written**: 2026-03-04 (end of Block 8B session)
+**Next session**: Block 8C
 
-### contracts.py
-**WFOConsistencyScore** — new field appended at end with default:
-```python
-median_oos_delta: Optional[float] = None  # M-01
-```
-**CandidateRecord** — new WFO field:
-```python
-wfo_median_oos_delta: Optional[float]     # M-01
-```
-### consistency_scorer.py — M-01
-Computes median_oos_delta while valid_results are in scope. No extra DB query.
-Passed as `median_oos_delta=median_oos_delta` to `WFOConsistencyScore`.
-`None` when all windows have `oos_delta=None` (gate disabled or pre-OOS run).
-### verdict.py — M-01
-Dead `_compute_median_oos_delta()` helper removed (had always returned `None`
-with a placeholder docstring). Replaced with:
-```python
-median_oos_delta: Optional[float] = wfo_score.median_oos_delta
-```
-Added to `logger.info()` call for observability.
+---
 
-### mutation.py — M-06
-`mutation_std_steps: float = 2.0` kwarg added to `mutate()` and threaded through
-to `_mutate_int()` and `_mutate_float()`. Default 2.0 exactly preserves prior behaviour.
-Correctly kept as a YAML/config-level parameter, not added to `ScenarioProfile`
-(mutation is a GA process parameter, not an evaluation-lens parameter).
+## 1. What Was Accomplished This Session
+
+### Block 8A (completed prior session, tests confirmed green by operator)
+- 9 findings (B8-001–B8-009). B8-001 and B8-002 fixed (median_oos_delta persistence).
+  B8-005 fixed (Stage 0 validation for min_significant_trades / spike_threshold).
+- 12 tests in test_block8a_foundation.py — all 12 green.
+
+### Block 8B (completed this session)
+Files analysed: fitness.py, wfo/wfo_evaluator.py, wfo/wfo_engine.py,
+wfo/consistency_scorer.py, monte_carlo/mc_engine.py, monte_carlo/mc_metrics.py
+
+9 findings documented (B8B-001 through B8B-018, with reserved slots for no-findings).
+14 tests in test_block8b_engines.py.
+
+**Test run result** (operator ran at session end):
+  8 failed, 5 passed, 1 skipped
+
+**Root cause of all 8 failures**: _make_scenario() fixture missing required
+ScenarioProfile field `report_emphasis`. All 8 failures are the same TypeError.
+
+**Fix applied** (not yet run by operator):
+  Added `report_emphasis="balanced"` to _make_scenario() in test_block8b_engines.py.
+  File already updated in outputs/block8/.
+
+**First action at start of Block 8C**:
+  pytest tests\backtesting\integration\test_block8b_engines.py
+  Expected result: 13 passed, 1 skipped (B8B-018 skipped until contracts.py uploaded).
+
+**5 tests that already passed** (not affected by fixture issue):
+  TestB8B012SigmoidScaleCalibration (2 tests)
+  TestMcMetricsVerification (3 tests)
+
+**1 test always skipped** (expected):
+  TestB8B018NetPnlFieldName — skips because contracts.py not importable.
+  Becomes active once contracts.py is uploaded for Block 8C.
+
 ---
-## Test Inventory
-| File | Count | Phase/Block | Status |
-|---|---|---|---|
-| unit/ (Phases 2–4) | 123 | 2–4 | ✅ |
-| test_live_pipeline.py | 17 | 5 | ✅ |
-| test_sqlite_queries.py | 12 | 5 | ✅ |
-| test_report_yaml.py | 19 | 5 | ✅ |
-| test_e2e_wbws_real_data.py | 13 | 6 Blk 0 | ✅ |
-| test_adversarial_suite.py | 8 | 6 Blk 2 | ✅ |
-| test_performance.py | 7 | 6 Blk 3 | ✅ |
-| test_robustness.py | 12 | 6 Blk 4 | ✅ |
-| test_threshold_calibration.py | 22 | 6 Blk 5 | ✅ |
-| test_h02_wfo_window_writes.py | 2 | 7 Blk 7A | ✅ |
-| test_7b_audit_m_series.py | 7 | 7 Blk 7B | ✅ |
-| test_7d_audit_m01_m06.py | 4 | 7 Blk 7D | ✅ |
-| **Total** | **246** | | **✅** |
+
+## 2. Open Findings Requiring Action in Block 8C
+
+### B8B-001 — P2 — FIX REQUIRED
+File: src/backtesting/fitness.py, evaluate_fitness()
+Issue: NaN metric values silently pass all constraint checks.
+  op.lt(NaN, x) and op.gt(NaN, x) both return False in Python.
+  A NaN win_rate or max_drawdown from the strategy runner bypasses the guard.
+Fix: Add explicit math.isnan check before the constraint loop in evaluate_fitness().
+  See BLOCK8_AUDIT_REPORT.md §B8B-001 for the exact code.
+Test: TestB8B001NanMetricHandling (3 tests) — will confirm fix once applied.
+
+### B8B-005 — P2 — ADD WARNING COMMENT (full fix Block 9)
+Files: wfo/wfo_evaluator.py ~line 75, wfo/wfo_engine.py
+Issue: oos_delta is always None. OOS gate is entirely non-functional.
+  enforce_oos_gate=True has no effect. oos_gate_triggered is always False in verdicts.
+Action for 8C: Change the existing comment on oos_delta=None to a WARNING comment.
+  Full IS/OOS implementation deferred to Block 9.
+Already documented in OPERATOR_RUNBOOK §9.1.
+
+### B8B-018 — P2 — VERIFY FIRST IN BLOCK 8C (P0 question)
+File: wfo/wfo_evaluator.py ~line 82
+Issue: _safe_float(m, "net_pnl") — if MetricsReport field is "total_pnl_points" not "net_pnl",
+  all WFOWindowResult.net_pnl values are None, permanently zeroing fraction_positive_windows
+  and distorting WFO composite scores across the entire pipeline.
+Action: Upload contracts.py. The skipped test (TestB8B018NetPnlFieldName) activates and
+  confirms or denies. If confirmed: one-line fix in wfo_evaluator.py line ~82.
+This is the highest-priority verification in Block 8C.
+
+### B8B-012 — P2 — ADD CALIBRATION COMMENT (ScenarioProfile field deferred to Block 9)
+File: wfo/consistency_scorer.py
+Issue: _sigmoid_normalise scale=0.10 is binary for point-valued net_pnl data.
+  _MAX_EXPECTED_VARIANCE=0.10 has the same mismatch.
+Action for 8C: Add calibration warning comment in consistency_scorer.py.
+  ScenarioProfile fields (wfo_sigmoid_scale, wfo_variance_max_expected) deferred to Block 9.
+Already documented in OPERATOR_RUNBOOK §9.2.
+
+### B8B-003, B8B-011, B8B-013 — P3 — DEFERRED TO BLOCK 9
+  B8B-003: expectancy scale=3.0 hardcoded
+  B8B-011: single-window variance_norm=1.0 (optimistic)
+  B8B-013: dual ruin_threshold sources
+
 ---
-## Performance Baseline
-```
-Windows 10, 6 workers, 3-month WBWS data slice
-Locked at Block 3: Total=337s  Stage6=333s
-OPT-01 (Block 7C): Stage 6 target <= 200s — verify on local machine with test_performance.py
-```
+
+## 3. Block 8C Scope
+
+### Files to Upload (in priority order)
+  contracts.py          — P0. Resolves B8B-018; needed for all 8C analysis.
+  verdict.py            — P1. Verdict logic audit.
+  sensitivity/sensitivity_runner.py  — P1. Stage 6 audit.
+  report_generator.py   — P2. Report audit.
+
+### Analysis Targets
+
+contracts.py:
+  - Verify MetricsReport field: "net_pnl" vs "total_pnl_points" (B8B-018)
+  - Audit WFOConsistencyScore — confirm median_oos_delta field present after 8A fix
+  - Audit VerdictResult — oos_gate_triggered, median_oos_delta, parameter_region_width
+  - Audit SensitivityResult/SensitivityProfile for contract gaps
+  - Confirm ScenarioProfile.report_emphasis field (found in test run)
+  - Any __post_init__ validation gaps (similar to B8-005 pattern)
+
+verdict.py:
+  - Two-pillar boundary operators (>= / <= vs spec)
+  - median_oos_delta consumption (does verdict read it? B8B-005 means it's always None)
+  - mc_deep_ruin_probability=None path → confirmed NO_GO?
+  - parameter_region_width always None — how handled?
+  - Modifier flag escalation: can modifier upgrade NO_GO to BORDERLINE? (should be impossible)
+  - Deployment status: only PAPER_TRADE_REQUIRED at verdict time — confirm in code
+
+sensitivity_runner.py:
+  - profile_complete=False threshold: >50% failures — verify boundary operator
+  - spike_threshold source: config dict or ScenarioProfile.verdict_sensitivity_spike_threshold?
+  - ProcessPoolExecutor lifecycle — OPT-01 status (still open?)
+  - max_workers param cleanup (OPT-05)
+  - Error counting for profile_complete flag
+
+report_generator.py:
+  - p5_final_equity in HTML/JSON output? (B8B-017 — confirm it appears, not dead)
+  - median_oos_delta in report (always None — shown as None or hidden?)
+  - parameter_region_width always None — shown or suppressed?
+  - JSON/Parquet field completeness vs VerdictResult contract
+
+### Expected Deliverables
+  BLOCK8_AUDIT_REPORT.md — extended with 8C findings
+  test_block8c_verdict_sensitivity.py — ~10–14 tests
+  ARCHITECTURE.md §7 — Contract Catalogue updated for confirmed field names
+  FIXES_TO_APPLY.md — B8B-001 fix added; B8B-018 if confirmed
+  OPERATOR_RUNBOOK.md — updated if new limitations found
+
 ---
-## Architecture Constraints (Non-Negotiable)
-```python
-# Contracts: frozen dataclasses — never raw dicts between modules
-# CandidateParameterSet.create()  — always use factory
-# strategy_runner, run_mc, evaluate_sensitivity — never raise to caller
-# datetime.now(timezone.utc)      — never datetime.utcnow()
-# pathlib.Path + src/utils/paths.py — never hardcoded separators
-# ProcessPoolExecutor spawn mode  — no fork-dependent code
-# LIVE_APPROVED                   — never set in code, operator-only
-# store.close()                   — always in finally block
-# mode_override="core"            — not mode="core"
-# mutation_std_steps              — YAML/config only, NOT ScenarioProfile
-# parameter_region_width          — always None until Block 8 ML layer
-# Stage 1                         — still a stub; adequacy warning deferred
-```
+
+## 4. Cumulative Test Count
+
+  Block 8A: test_block8a_foundation.py — 12 tests — all green
+  Block 8B: test_block8b_engines.py    — 14 tests — 13 pass + 1 skip (after fixture fix)
+  Total so far: 26 tests
+
 ---
-## Block 8 — E2E Code Analysis and Hardening
-Block 8 shifts from feature work to treating the pipeline as a production system.
-This is a deep analytical pass: find everything that could silently misbehave on
-a real multi-month run before real capital is involved.
-### Phase 1 — Static Analysis
-Run `mypy --strict`, `ruff`, `vulture` across the full `src/backtesting/` tree.
-Every finding triaged: fix, document with justification, or reject with reason.
-No suppressions added without a written rationale comment.
-Expected findings: Optional chaining gaps, unreachable branches, unused imports.
-### Phase 2 — Contract Completeness Audit
-Every public function: does return type match what all callers actually use?
-Every `Optional` field in every contract: enumerate every code path where it is
-`None` and confirm every consumer handles `None` correctly (no silent `0.0` defaults).
-Every frozen dataclass: are all fields actually written and read, or are any stubs?
-`parameter_region_width`, `yaml_output_path`: both `None` — document expected population path.
-### Phase 3 — Edge Case and Boundary Hardening
-Targeted inputs the current test suite does not cover:
-- Empty candidate list at Stage 6 entry
-- Single-window WFO (below minimum of 3 — should fail fast at Stage 0)
-- Zero-trade history (total_trades=0, expectancy undefined)
-- Parameter space with step > range (degenerate zone definition)
-- All candidates identical parameter hash (GA crossover degenerate case)
-- ProcessPoolExecutor pool exhaustion under memory pressure
-### Phase 4 — Production Run Preparation
-- Upload full-date-range OHLCV data
-- Extend WFO windows to cover full slice
-- Implement Stage 1 (Random Search) — replace stub
-- Calibrate `normalisation_drawdown_ref_points` and `normalisation_pnl_ref_points`
-  from actual first-run metrics distribution
-- Paper trading setup for any AUTO_GO candidates
-### Files to upload at Block 8 start
-Full `src/backtesting/` tree for static analysis.
-At minimum: `orchestrator.py`, `strategy_runner.py`, `ga/ga_engine.py`,
-`monte_carlo/mc_engine.py`, `wfo/wfo_engine.py`, `report_generator.py`,
-`candidate_store.py`, all `evaluation/` files.
+
+## 5. Output Files (current state, outputs/block8/)
+
+  BLOCK8_AUDIT_REPORT.md     8B complete. 8C to be appended.
+  ARCHITECTURE.md            §1–12 complete. §7 Contract Catalogue pending B8B-018 resolution.
+  OPERATOR_RUNBOOK.md        v1.1.0. §9 added this session.
+  FIXES_TO_APPLY.md          8A fixes only. B8B-001 to be added after 8C test confirmation.
+  test_block8a_foundation.py Final. 12 tests green.
+  test_block8b_engines.py    Fixed (report_emphasis added). Run at start of 8C.
+  CONTEXT.md                 This file.
+
+---
+
+## 6. Principles Compliance Snapshot
+
+  P1 SRP           OK
+  P2 No bare except OK
+  P3 Dataclasses   OK
+  P4 Explicit       WARNING — B8B-005 (oos_delta silently None)
+  P5 No hot loops   OK
+  P6 Fail fast      VIOLATION — B8B-001 (NaN bypass, fix pending)
+  P7 Single source  WARNING — B8B-003, B8B-013
+  P8 Cache isolation OK
+  P9 No dead code   UNVERIFIED — B8B-018 (net_pnl field name, pending contracts.py)
+  P10 Reproducibility OK

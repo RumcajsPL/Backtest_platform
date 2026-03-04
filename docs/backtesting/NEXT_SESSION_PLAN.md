@@ -43,7 +43,7 @@ From the project architecture document — verified against each module's actual
 | P9 | Code Hygiene | Any debug flag, print statement, commented-out block, or MagicMock in production code? |
 | P10 | Immutable Run Artifacts | Any post-run config mutation? Any seed or config hash that can be changed after run initialisation? Any YAML rewrite that doesn't create a new run record? |
 ---
-## Sub-Block 8A — Foundation Layer
+## Sub-Block 8A — Foundation Layer **DONE**
 **Files**: `contracts.py`, `candidate_store.py`, `strategy_runner.py`, `orchestrator.py`
 **Principles focus**: P2, P3, P4, P7, P10
 **Document output**: Bootstrap `BLOCK8_AUDIT_REPORT.md`. Write `ARCHITECTURE.md` §1–3
@@ -100,7 +100,7 @@ src/backtesting/orchestrator.py        (full file — post M-05 fix)
 Target: ~8–12 new tests covering contract None-path gaps and store schema completeness.
 File: `test_block8a_foundation.py`
 ---
-## Sub-Block 8B — Evaluation Engines
+## Sub-Block 8B — Evaluation Engines **IN PROGRESS**
 **Files**: `fitness.py`, `wfo/wfo_engine.py`, `wfo/consistency_scorer.py`,
            `monte_carlo/mc_engine.py`, `monte_carlo/mc_metrics.py`
 **Principles focus**: P1, P5, P6, P8
@@ -170,6 +170,14 @@ src/backtesting/monte_carlo/mc_metrics.py          (post M-04 fix)
 ### 8B Test additions
 Target: ~10–14 new tests covering boundary conditions and vectorisation correctness.
 File: `test_block8b_engines.py`
+Test result:
+================================================ short test summary info ================================================= 
+FAILED tests/backtesting/integration/test_block8b_engines.py::TestB8B001NanMetricHandling::test_nan_win_rate_rejected_not_passed - AssertionError: B8B-001: NaN win_rate silently passed constraints. NaN comparisons return False in Python, making op.l...
+FAILED tests/backtesting/integration/test_block8b_engines.py::TestB8B001NanMetricHandling::test_nan_expectancy_rejected_not_passed - AssertionError: B8B-001: NaN expectancy silently passed constraints.
+======================================== 2 failed, 11 passed, 1 skipped in 0.96s =========================================
+Analysis:
+The failing tests (test_nan_win_rate_rejected_not_passed and test_nan_expectancy_rejected_not_passed) correctly detect that NaN values in key metrics are silently passing the constraint checks in evaluate_fitness (from fitness.py), resulting in passed_constraints=True when it should be False.
+The skipped test is TestB8B018NetPnlFieldName.test_net_pnl_field_name_matches_metrics_report, due to ImportError when trying to from src.backtesting.contracts import MetricsReport.
 ---
 ## Sub-Block 8C — GA, Sensitivity, Verdict, Output
 **Files**: `ga/ga_engine.py`, `ga/mutation.py`, `evaluation/sensitivity.py`,
