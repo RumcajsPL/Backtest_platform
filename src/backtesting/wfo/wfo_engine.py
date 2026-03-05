@@ -15,6 +15,13 @@ collect results, invoke consistency_scorer, write to store.
 
 Parallelism: ProcessPoolExecutor (Windows spawn-safe). Each worker call is
 `evaluate_window` from wfo_evaluator.py — it never raises.
+
+Block 9D fix (B9C-004): Added empty candidates guard before ProcessPoolExecutor entry.
+Block 9E fix (B8B-005): oos_gate_enabled now passed through to evaluate_window in the
+  pool.submit call. Previously the engine received the flag but silently discarded it —
+  workers always saw oos_gate_enabled=False (the default), so oos_delta was always None
+  regardless of config. Now workers receive the correct flag, enabling IS/OOS sub-evaluation
+  in evaluate_window when enforce_oos_gate=True is set in backtest_template.yaml.
 """
 from __future__ import annotations
 
@@ -66,8 +73,10 @@ def run_wfo(
         mode:                     "full" or "lightweight".
         max_workers:              ProcessPoolExecutor worker count.
         min_significant_trades:   Significance guard (passed to evaluator).
-        oos_gate_enabled:         Whether IS/OOS gate check is active.
-        oos_degradation_threshold: IS/OOS degradation threshold.
+        oos_gate_enabled:         Whether IS/OOS gate check is active. When True,
+                                  each worker performs IS+OOS sub-evaluation to
+                                  populate WFOWindowResult.oos_delta.
+        oos_degradation_threshold: IS/OOS degradation threshold (passed to scorer).
 
     Returns:
         Dict mapping candidate_id → WFOConsistencyScore.
@@ -75,12 +84,20 @@ def run_wfo(
     if mode not in ("full", "lightweight"):
         raise ValueError(f"WFO mode must be 'full' or 'lightweight'; got '{mode}'")
 
+    # B9C-004: Guard against empty candidates list — avoids spawning a
+    # ProcessPoolExecutor with no work, and returns a clear empty dict
+    # rather than silently succeeding with zero entries.
+    if not candidates:
+        logger.warning("run_wfo called with empty candidates list — returning {}")
+        return {}
+
     windows_total = len(windows)
     logger.info(
-        "WFO run starting: mode=%s candidates=%d windows=%d",
+        "WFO run starting: mode=%s candidates=%d windows=%d oos_gate=%s",
         mode,
         len(candidates),
         windows_total,
+        oos_gate_enabled,
     )
 
     # Build all (candidate, window) pairs for parallel dispatch
@@ -105,6 +122,7 @@ def run_wfo(
                 temp_dir,
                 scenario,
                 min_significant_trades,
+                oos_gate_enabled,          # B8B-005: was missing — workers saw default False
             ): (candidate.candidate_id, window.window_id)
             for candidate, window in tasks
         }

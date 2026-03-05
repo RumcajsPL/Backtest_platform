@@ -54,7 +54,7 @@ def sample_random(
     seed: int,
 ) -> List[CandidateParameterSet]:
     """
-    Uniform random sampling with replacement from each zone's expanded space.
+    Uniform random sampling without replacement from each zone's expanded space.
     """
     rng = stdlib_random.Random(seed)
     results: List[CandidateParameterSet] = []
@@ -115,7 +115,15 @@ def _lhs_sample(
             if key not in seen_set:
                 seen_set.add(key)
                 seen.append(v)
-        param_value_universe[name] = sorted(seen, key=lambda x: (str(type(x)), str(x)))
+        # B9C-007: sort numerically so LHS strata respect the actual value ordering.
+        # The prior sort key (str(type(x)), str(x)) is lexicographic for numeric types,
+        # which breaks space-filling for any range with values >= 10 (e.g. [9,10,11]
+        # sorted as [10,11,9] under the old key). float() converts both int and float
+        # values correctly; str() fallback handles choice strings.
+        try:
+            param_value_universe[name] = sorted(seen, key=lambda x: float(x))
+        except (TypeError, ValueError):
+            param_value_universe[name] = sorted(seen, key=lambda x: str(x))
 
     # For each parameter, assign stratified samples
     # Divide the value list into n equal strata, pick one from each

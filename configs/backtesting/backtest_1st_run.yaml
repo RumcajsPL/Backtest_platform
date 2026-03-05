@@ -1,0 +1,416 @@
+# =============================================================================
+# backtest_template.yaml — Backtesting & Optimization Framework
+# Version: 1.0.0
+# Date: 2026-03-05  (revised for Block 9F first run — see CHANGES below)
+#
+# Source of truth: docs/backtesting/TECHNICAL_SPEC.md
+# Schema reference: TECHNICAL_SPEC.md Section 5
+#
+# USAGE (orchestrator has no __main__ block — use runner script):
+#   python scripts/runners/run_backtester.py
+#
+# CHANGES FROM 2026-03-02 ORIGINAL:
+#   exploration.enabled:          true  → false    [B9F-001 BLOCKER — see note]
+#   random_search.samples_per_zone: 200 → 50       [first-run conservative]
+#   mc_prefilter.input_count:      120  → 30       [aligned to expected pass count]
+#   genetic.population_size:        60  → 20       [first-run conservative]
+#   genetic.generations:            30  → 5        [first-run conservative]
+#   genetic.stagnation_generations: 10  → 3        [consistent with generations=5]
+#   run.max_workers:                 6  → 4        [first-run conservative]
+#   sensitivity.seed:           [added] = 46       [was missing — was silently defaulting]
+#
+# B9F-001 — exploration zone disabled:
+#   expand_zones() materialises the full Cartesian product via itertools.product().
+#   The exploration zone has ~387 TRILLION combinations → process hangs / OOM.
+#   The safe zone has ~2 million combinations → ~520MB RAM, feasible.
+#   ENABLED guard in expand_zones() IS present (line 34: enabled check) — so setting
+#   exploration.enabled: false is sufficient to prevent the hang.
+#   Fix: refactor expand_zones() to never enumerate full product (Block 9F session).
+#   Re-enable exploration zone AFTER that fix is deployed.
+#
+# AFTER FIRST RUN — restore these values for production:
+#   exploration.enabled:          false → true     (after B9F-001 fix deployed)
+#   random_search.samples_per_zone:  50 → 200
+#   mc_prefilter.input_count:        30 → 120
+#   genetic.population_size:         20 → 60
+#   genetic.generations:              5 → 30
+#   genetic.stagnation_generations:   3 → 10
+#   run.max_workers:                  4 → 6
+# =============================================================================
+
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+backtester_version: "1.0.0"       # Must match BACKTESTER_VERSION in orchestrator.py
+scenario: "capital_accumulation"  # Active scenario — must match a key under `scenarios`
+
+
+# ── Strategy base config ──────────────────────────────────────────────────────
+strategy:
+  base_yaml_path: "configs/strategies/strategy_template.yaml"
+
+
+# ── Run settings ──────────────────────────────────────────────────────────────
+run:
+  mode: "full_pipeline"             # Documentation only — orchestrator uses checkpoints, not this flag
+  output_dir: "outputs/backtesting" # All run artifacts: DB, HTML, YAMLs, JSON
+  temp_dir: "temp/backtesting"      # Temp candidate YAMLs — deleted after each evaluation
+  retain_temp_yamls: false          # Set true only for debugging evaluation failures
+  max_workers: 4                    # ← reduced from 6; increase after stability confirmed
+  log_level: "INFO"
+
+
+# ── Stage enables ─────────────────────────────────────────────────────────────
+# Documentation only — orchestrator uses checkpoint-based stage skipping, not these flags.
+stages:
+  random_search: true
+  mc_prefilter: true
+  genetic_algorithm: true
+  walk_forward: true
+  monte_carlo_deep: true
+  sensitivity: true
+  report: true
+
+
+# ── Random Search (Stage 1) ───────────────────────────────────────────────────
+random_search:
+  method: "lhs"                     # "lhs" (Latin Hypercube) | "random"
+  samples_per_zone: 50              # ← reduced from 200; safe zone only → 50 total evals
+                                    # Increase to 200 after stability confirmed
+  min_significant_trades: 30
+  seed: 42
+
+
+# ── MC Pre-Filter (Stage 2) ───────────────────────────────────────────────────
+mc_prefilter:
+  input_count: 30                   # ← reduced from 120; aligned to expected Stage 1 pass count
+                                    # rank() handles smaller pools — no crash if fewer pass
+  iterations: 300
+  perturbation_profile: "default"
+  seed: 43
+
+
+# ── Genetic Algorithm (Stage 3) ───────────────────────────────────────────────
+genetic:
+  population_size: 20               # ← reduced from 60; increase to 60 after stability confirmed
+  generations: 5                    # ← reduced from 30; increase to 30 after stability confirmed
+  elite_fraction: 0.10
+  mutation_rate: 0.15
+  crossover_rate: 0.70
+  tournament_size: 5
+  stagnation_generations: 3         # ← reduced from 10; consistent with generations=5
+  diversity_penalty_weight: 0.10
+  diversity_distance_threshold: 0.15
+  seed: 44
+
+
+# ── Walk-Forward Optimisation (Stage 4) ───────────────────────────────────────
+walk_forward:
+  input_count: 30
+  enforce_oos_gate: false           # Keep false — calibrate oos_degradation_threshold first
+  oos_degradation_threshold: 0.50
+
+  # 5 windows covering 2025-09-15 → 2025-12-17 (3-month DAX data slice)
+  # W01–W04: 18 calendar days each; W05: 9 days (end of data slice)
+  # 3-day gaps between windows = weekend buffers
+  # Minimum 3 windows required (Stage 0 validation enforces this)
+  windows:
+    - id: "W01"
+      start: "2025-09-15"
+      end:   "2025-10-03"
+    - id: "W02"
+      start: "2025-10-06"
+      end:   "2025-10-24"
+    - id: "W03"
+      start: "2025-10-27"
+      end:   "2025-11-14"
+    - id: "W04"
+      start: "2025-11-17"
+      end:   "2025-12-05"
+    - id: "W05"
+      start: "2025-12-08"
+      end:   "2025-12-17"
+
+
+# ── Monte Carlo Deep (Stage 5) ────────────────────────────────────────────────
+monte_carlo:
+  deep:
+    input_count: 10
+    iterations: 3000
+    perturbation_profile: "default"
+    ruin_threshold: 0.20
+    seed: 45
+
+
+# ── Parameter Sensitivity (Stage 6) ──────────────────────────────────────────
+# NOTE: sensitivity.spike_threshold below is documentation only.
+# After B9A-003, orchestrator Stage 6 reads from scenario.verdict_thresholds.
+# sensitivity_spike_threshold — the field here is never read by the orchestrator.
+sensitivity:
+  input_count: 5
+  max_steps: 2
+  spike_threshold: 0.15             # Documentation only — orchestrator reads from scenario
+  seed: 46                          # ← added (was missing — was silently defaulting to 46)
+
+
+# ── Output (Stage 7) ──────────────────────────────────────────────────────────
+output:
+  shortlist_count: 5
+  formats:
+    html: true
+    json: true
+    parquet: true
+  save_intermediates:
+    equity_curves: false
+    trade_logs: false
+    candidate_yamls: false
+
+
+# ── Perturbation Profiles ─────────────────────────────────────────────────────
+perturbation_profiles:
+  default:
+    version: "1.0"
+    spread_noise_bps_range: [0, 3]
+    slippage_pips_range: [0, 1]
+    risk_noise_fraction: 0.05
+    shuffle_trades: true
+    resample_returns: true
+    execution_delay_bars: 0
+
+
+# ── Scenarios ─────────────────────────────────────────────────────────────────
+scenarios:
+  capital_accumulation:
+    description: "Steadily grow account balance with controlled risk"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.25
+      max_drawdown: 0.20
+      win_rate: 0.15
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.45
+      max_drawdown: 0.15
+      max_losing_streak: 7
+      min_trades_per_week: 3.0
+      min_expectancy: 0.4
+      min_profit_factor: 1.3
+    mc_prefilter_ruin_threshold: 0.25
+    wfo_temporal_weights:
+      median_return: 0.30
+      variance: 0.30
+      worst_drawdown: 0.20
+      fraction_positive: 0.20
+    verdict_thresholds:
+      go_wfo_floor: 0.65
+      borderline_wfo_floor: 0.40
+      go_mc_ruin_ceiling: 0.05
+      borderline_mc_ruin_ceiling: 0.15
+      sensitivity_spike_threshold: 0.15
+    report_emphasis:
+      - wfo_consistency_score
+      - fraction_positive_windows
+      - actual_trades_per_week
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+  swing_trading:
+    description: "Maximise R:R on high-quality directional signals"
+    fitness_weights:
+      net_pnl: 0.15
+      expectancy: 0.35
+      max_drawdown: 0.15
+      win_rate: 0.10
+      trade_frequency: 0.05
+      profit_factor: 0.20
+    constraints:
+      min_win_rate: 0.38
+      max_drawdown: 0.20
+      max_losing_streak: 10
+      min_trades_per_week: 1.0
+      min_expectancy: 0.8
+      min_profit_factor: 1.5
+    mc_prefilter_ruin_threshold: 0.30
+    wfo_temporal_weights:
+      median_return: 0.40
+      variance: 0.25
+      worst_drawdown: 0.20
+      fraction_positive: 0.15
+    verdict_thresholds:
+      go_wfo_floor: 0.60
+      borderline_wfo_floor: 0.38
+      go_mc_ruin_ceiling: 0.07
+      borderline_mc_ruin_ceiling: 0.18
+      sensitivity_spike_threshold: 0.18
+    report_emphasis:
+      - actual_expectancy
+      - actual_profit_factor
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - median_window_return
+
+  conservative:
+    description: "Preserve capital; avoid ruin above all else"
+    fitness_weights:
+      net_pnl: 0.10
+      expectancy: 0.15
+      max_drawdown: 0.35
+      win_rate: 0.25
+      trade_frequency: 0.05
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.52
+      max_drawdown: 0.10
+      max_losing_streak: 5
+      min_trades_per_week: 2.0
+      min_expectancy: 0.3
+      min_profit_factor: 1.2
+    mc_prefilter_ruin_threshold: 0.15
+    wfo_temporal_weights:
+      median_return: 0.20
+      variance: 0.35
+      worst_drawdown: 0.30
+      fraction_positive: 0.15
+    verdict_thresholds:
+      go_wfo_floor: 0.70
+      borderline_wfo_floor: 0.50
+      go_mc_ruin_ceiling: 0.03
+      borderline_mc_ruin_ceiling: 0.10
+      sensitivity_spike_threshold: 0.12
+    report_emphasis:
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+      - wfo_worst_window_drawdown
+      - actual_win_rate
+      - wfo_consistency_score
+
+  e2e_test:
+    # -----------------------------------------------------------------------
+    # E2E PIPELINE TEST SCENARIO — NOT FOR TRADING USE
+    # Loose constraints to pass all pipeline stages for plumbing validation.
+    # DO NOT use for production optimization runs.
+    # -----------------------------------------------------------------------
+    description: "Pipeline validation only — loose constraints for E2E testing"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.20
+      max_drawdown: 0.20
+      win_rate: 0.20
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.05
+      max_drawdown: 0.99
+      max_losing_streak: 9999
+      min_trades_per_week: 1.0
+      min_expectancy: -10.0
+      min_profit_factor: 0.05
+    mc_prefilter_ruin_threshold: 0.99
+    wfo_temporal_weights:
+      median_return: 0.25
+      variance: 0.25
+      worst_drawdown: 0.25
+      fraction_positive: 0.25
+    verdict_thresholds:
+      go_wfo_floor: 0.01
+      borderline_wfo_floor: 0.005
+      go_mc_ruin_ceiling: 0.99
+      borderline_mc_ruin_ceiling: 0.999
+      sensitivity_spike_threshold: 0.99
+    report_emphasis:
+      - actual_win_rate
+      - actual_trades_per_week
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+
+# ── Parameter Zones ───────────────────────────────────────────────────────────
+# All parameter names verified against strategy_runner._PARAM_KEY_MAP ✓
+#
+# ENABLED GUARD: expand_zones() checks zone["enabled"] before expansion (confirmed).
+# Setting enabled: false is sufficient to prevent OOM — no code guard needed.
+#
+# safe zone:        ~2M combinations — feasible; ~520MB RAM one-time cost at Stage 1 start
+# exploration zone: ~387T combinations — DISABLED (B9F-001) until expand_zones() refactored
+# discovery zone:   disabled — wide ranges, enable only for dedicated exploration runs
+
+zones:
+  safe:
+    enabled: true
+    # 9 parameters. Conservative ranges. RSI + Bollinger always on.
+    parameters:
+      rsi_period:           {type: int,   min: 10, max: 20, step: 2}
+      rsi_overbought:       {type: int,   min: 65, max: 80, step: 5}
+      rsi_oversold:         {type: int,   min: 20, max: 35, step: 5}
+      atr_length:           {type: int,   min: 10, max: 20, step: 2}
+      atr_multiplier:       {type: float, min: 1.0, max: 2.0, step: 0.2}
+      rr_target:            {type: float, min: 5.0, max: 9.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.15, max: 0.30, step: 0.05}
+      bollinger_length:     {type: int,   min: 10, max: 20, step: 2}
+      bollinger_multiplier: {type: float, min: 0.3, max: 0.7, step: 0.1}
+
+  exploration:
+    enabled: false   # B9F-001: ~387T combinations → OOM. Re-enable after expand_zones() refactor.
+    # Wider ranges + secondary filter toggling (ADX, Choppiness, Supertrend).
+    parameters:
+      rsi_period:           {type: int,   min: 8,  max: 24, step: 2}
+      rsi_overbought:       {type: int,   min: 60, max: 85, step: 5}
+      rsi_oversold:         {type: int,   min: 15, max: 40, step: 5}
+      atr_length:           {type: int,   min: 7,  max: 28, step: 3}
+      atr_multiplier:       {type: float, min: 0.8, max: 2.5, step: 0.2}
+      rr_target:            {type: float, min: 4.0, max: 10.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.10, max: 0.40, step: 0.05}
+      bollinger_length:     {type: int,   min: 8,  max: 30, step: 2}
+      bollinger_multiplier: {type: float, min: 0.2, max: 1.0, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 20, max: 50, step: 5}
+      adx_enabled:          {type: choice, choices: [true, false]}
+      adx_length:           {type: int,   min: 10, max: 20, step: 2}
+      adx_threshold:        {type: float, min: 15.0, max: 30.0, step: 2.5}
+      choppiness_enabled:   {type: choice, choices: [true, false]}
+      choppiness_length:    {type: int,   min: 10, max: 20, step: 2}
+      choppiness_threshold: {type: float, min: 55.0, max: 65.0, step: 2.5}
+      supertrend_enabled:   {type: choice, choices: [true, false]}
+      supertrend_atr_length: {type: int,  min: 7,  max: 14, step: 1}
+      supertrend_factor:    {type: float, min: 2.0, max: 4.0, step: 0.5}
+
+  discovery:
+    enabled: false   # Wide ranges + full filter suite. Enable only for dedicated exploration runs.
+    parameters:
+      rsi_period:           {type: int,   min: 5,  max: 30, step: 1}
+      rsi_overbought:       {type: int,   min: 55, max: 90, step: 5}
+      rsi_oversold:         {type: int,   min: 10, max: 45, step: 5}
+      atr_length:           {type: int,   min: 5,  max: 35, step: 2}
+      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
+      rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.05, max: 0.50, step: 0.05}
+      bollinger_length:     {type: int,   min: 5,  max: 40, step: 2}
+      bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 15, max: 60, step: 5}
+      adx_enabled:          {type: choice, choices: [true, false]}
+      adx_length:           {type: int,   min: 8,  max: 25, step: 2}
+      adx_threshold:        {type: float, min: 10.0, max: 35.0, step: 2.5}
+      choppiness_enabled:   {type: choice, choices: [true, false]}
+      choppiness_length:    {type: int,   min: 8,  max: 25, step: 2}
+      choppiness_threshold: {type: float, min: 50.0, max: 70.0, step: 2.5}
+      supertrend_enabled:   {type: choice, choices: [true, false]}
+      supertrend_atr_length: {type: int,  min: 5,  max: 20, step: 1}
+      supertrend_factor:    {type: float, min: 1.5, max: 5.0, step: 0.5}
+      cci_enabled:          {type: choice, choices: [true, false]}
+      cci_length:           {type: int,   min: 10, max: 30, step: 5}
+      cci_overbought:       {type: int,   min: 80, max: 120, step: 10}
+      cci_oversold:         {type: int,   min: -120, max: -80, step: 10}
+      macd_enabled:         {type: choice, choices: [true, false]}
+      macd_fast:            {type: int,   min: 8,  max: 16, step: 2}
+      macd_slow:            {type: int,   min: 20, max: 30, step: 2}
+      macd_signal:          {type: int,   min: 6,  max: 12, step: 1}
+      ma_enabled:           {type: choice, choices: [true, false]}
+      ma_length:            {type: int,   min: 15, max: 50, step: 5}
+      ma_slope_length:      {type: int,   min: 5,  max: 20, step: 5}
+      pivot_enabled:        {type: choice, choices: [true, false]}
+      pivot_reversal_pct:   {type: float, min: 0.20, max: 0.60, step: 0.05}
+      pivot_order:          {type: int,   min: 3,  max: 8,  step: 1}
+      dpo_enabled:          {type: choice, choices: [true, false]}
+      dpo_length:           {type: int,   min: 14, max: 30, step: 2}
+      dpo_smooth:           {type: int,   min: 2,  max: 5,  step: 1}
+      dpo_threshold:        {type: float, min: 0.1, max: 0.5, step: 0.1}

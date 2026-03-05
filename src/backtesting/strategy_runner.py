@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # ── Parameter name mapping: backtester name → StrategyConfig YAML key ─────────
 # This dict is the ONLY place in the backtester that knows strategy config keys.
 # Update here when the strategy YAML schema changes.
+#
+# WARNING: Twin key map exists in yaml_generator.py (_STRATEGY_PARAM_KEY_MAP).
+# Both files MUST be updated together when adding/renaming strategy parameters.
 _PARAM_KEY_MAP: Dict[str, str] = {
     # ── RSI filter (always enabled in safe/exploration zones) ────────────────
     "rsi_period":               "filters.technical_filters.rsi_filter.length",

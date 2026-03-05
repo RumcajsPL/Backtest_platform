@@ -7,13 +7,27 @@ Responsibilities (orchestrate only):
 - Execute stages in order with checkpoint skip logic
 - Write immutable run artifacts at start (config hash, seeds, perturbation profile)
 
-Stages 1–4 remain stubs pending their respective phase implementations.
+Stages 1–3 are now fully implemented.
+Stage 4 remains a stub pending its respective phase implementation.
 Stages 0, 5, 6, and 7 are fully implemented.
 
 Block 9A fixes applied:
   B9A-002: Stage 1 stub now advances checkpoint to RANDOM_SEARCH_COMPLETE.
            Previously the checkpoint was never advanced, causing Stage 1 to
            re-run on every pipeline resume.
+
+Block 9D fixes applied:
+  B9A-001: Stages 5, 6, 7 now use ranker.rank_by_wfo() (returns List[CandidateRecord])
+           instead of the orchestrator's former inline rank_by_wfo() (returned
+           List[Dict]). All record access uses typed attributes, not dict keys.
+  B9A-003: Stage 6 spike_threshold now reads from
+           scenario.verdict_sensitivity_spike_threshold instead of
+           config["sensitivity"]["spike_threshold"]. Stage 0 validation block
+           for spike_threshold removed (ScenarioProfile.__post_init__ owns it).
+  B9C-007/B9C-006: sampler.py fixes applied upstream.
+  B9C-004: wfo_engine.py empty guard applied upstream.
+  B9C-005: parameter_space.py Decimal fix applied upstream.
+  B8-006: twin key map comments added to strategy_runner.py + yaml_generator.py.
 """
 from __future__ import annotations
 
@@ -31,7 +45,9 @@ import yaml
 from src.backtesting.candidate_store import CandidateStore
 from src.backtesting.contracts import (
     CandidateParameterSet,
+    CandidateRecord,
     CandidateResult,
+    CandidateStage,
     Checkpoint,
     MCMode,
     MCResult,
@@ -41,6 +57,7 @@ from src.backtesting.contracts import (
     Verdict,
     VerdictResult,
     WFOConsistencyScore,
+    WFOWindow,
 )
 from src.backtesting.evaluation.sensitivity import evaluate_sensitivity
 from src.backtesting.evaluation.verdict import compute_verdict
@@ -206,12 +223,9 @@ def _execute_pipeline(
         logger.info("Stage 0 already complete — skipping")
 
     # ── Stage 1: Random Search ────────────────────────────────────────────────
-    # NOTE (B8-007): Stages 1–4 are stubs — they advance checkpoints without
-    # producing output. Stages 5–7 will consume data from a prior run loaded
-    # into the DB. This is a known temporary state. See OPERATOR_RUNBOOK §3.
     if store.get_checkpoint(run_id).value < Checkpoint.RANDOM_SEARCH_COMPLETE.value:
         _run_stage_1_random_search(config, store, run_metadata)
-        store.set_checkpoint(run_id, Checkpoint.RANDOM_SEARCH_COMPLETE)  # B9A-002
+        store.set_checkpoint(run_id, Checkpoint.RANDOM_SEARCH_COMPLETE)
     else:
         logger.info("Stage 1 (Random Search) already complete — skipping")
 
@@ -264,25 +278,14 @@ def _execute_pipeline(
 
     _elapsed_total = _elapsed_5 + _elapsed_6 + _elapsed_7
     _budget = 14400.0
-    # NOTE (B8-008): Timing covers stages 5–7 only. Stages 1–4 are stubs and
-    # contribute negligible elapsed time. When stubs are replaced, move
-    # _t_total to the top of this function and sum all stage durations.
-    logger.info(
-        "TIMING stage_5_mc_deep elapsed=%.1fs", _elapsed_5,
-    )
-    logger.info(
-        "TIMING stage_6_sensitivity elapsed=%.1fs", _elapsed_6,
-    )
-    logger.info(
-        "TIMING stage_7_report elapsed=%.1fs", _elapsed_7,
-    )
+    # NOTE (B8-008): Timing covers stages 5–7 only. When Stage 1–4 stubs are
+    # replaced, move _t_total to the top of this function and sum all stage durations.
+    logger.info("TIMING stage_5_mc_deep elapsed=%.1fs", _elapsed_5)
+    logger.info("TIMING stage_6_sensitivity elapsed=%.1fs", _elapsed_6)
+    logger.info("TIMING stage_7_report elapsed=%.1fs", _elapsed_7)
     logger.info(
         "TIMING SUMMARY  stage5=%.1fs  stage6=%.1fs  stage7=%.1fs  total=%.1fs  budget=%.0fs  %s",
-        _elapsed_5,
-        _elapsed_6,
-        _elapsed_7,
-        _elapsed_total,
-        _budget,
+        _elapsed_5, _elapsed_6, _elapsed_7, _elapsed_total, _budget,
         "PASS" if _elapsed_total <= _budget else "OVER BUDGET",
     )
 
@@ -298,8 +301,6 @@ def _run_stage_0_init(
     Validate configuration, scenario, WFO windows, parameter names, and enabled zones.
     Raises ValueError on any validation failure.
     """
-    import logging
-    logger = logging.getLogger(__name__)
     logger.info("Stage 0: Validation & Init — run_id=%s", run_metadata.run_id)
 
     from src.backtesting.scenario import load_scenario
@@ -312,12 +313,9 @@ def _run_stage_0_init(
     _validate_wfo_windows(config.get("walk_forward", {}).get("windows", []))
 
     # M-05: Validate that all enabled zone parameter names exist in _PARAM_KEY_MAP.
-    # Catches typos and unsupported parameter names before any evaluation begins.
     _validate_parameter_names(config)
 
-    # B8-005: Validate min_significant_trades >= 1. A value of 0 disables the
-    # significance guard in strategy_runner.evaluate() silently, allowing zero-trade
-    # candidates with undefined metrics to enter the pipeline.
+    # B8-005: Validate min_significant_trades >= 1.
     min_significant_trades = config.get("random_search", {}).get("min_significant_trades", 30)
     if min_significant_trades < 1:
         raise ValueError(
@@ -325,17 +323,10 @@ def _run_stage_0_init(
             f"got {min_significant_trades}. A value of 0 disables the significance guard."
         )
 
-    # NOTE (B9A-003, B9A-005): spike_threshold is currently validated here from the
-    # config dict. Once B9A-003 is applied (Stage 6 reads spike_threshold from
-    # ScenarioProfile.verdict_sensitivity_spike_threshold instead), this validation
-    # becomes redundant — ScenarioProfile.__post_init__ owns the guard.
-    # Remove this block when B9A-003 is applied.
-    spike_threshold_val = config.get("sensitivity", {}).get("spike_threshold", 0.15)
-    if not (0.0 < spike_threshold_val < 1.0):
-        raise ValueError(
-            f"Stage 0: sensitivity.spike_threshold must be in (0, 1); "
-            f"got {spike_threshold_val}."
-        )
+    # NOTE (B9A-003 applied): spike_threshold Stage 0 validation removed.
+    # ScenarioProfile.__post_init__ owns the guard via
+    # verdict_sensitivity_spike_threshold. Stage 6 now reads from
+    # scenario.verdict_sensitivity_spike_threshold directly.
 
     zones = config.get("zones", {})
     enabled_zones = [name for name, zdef in zones.items() if zdef.get("enabled", True)]
@@ -381,19 +372,17 @@ def _validate_wfo_windows(windows_config: list) -> None:
                 f"WFO window '{window_id}': start ({start}) must be before end ({end})"
             )
 
+
 def _validate_parameter_names(config: dict) -> None:
     """
     Validate that all parameter names in enabled zones exist in strategy_runner._PARAM_KEY_MAP.
 
     Raises ValueError listing all unknown parameter names (sorted, for deterministic
-    test assertions) if any are found. Only enabled zones are checked — disabled zones
-    may contain experimental parameters that are not yet mapped.
+    test assertions) if any are found. Only enabled zones are checked.
 
     Called from _run_stage_0_init (M-05 audit remediation).
     """
-    import logging
     from src.backtesting.strategy_runner import _PARAM_KEY_MAP
-    logger = logging.getLogger(__name__)
 
     zones = config.get("zones", {})
     enabled_param_names = {
@@ -416,25 +405,281 @@ def _validate_parameter_names(config: dict) -> None:
         len(enabled_param_names),
     )
 
-# ── Stages 1–4: Stubs ─────────────────────────────────────────────────────────
+
+# ── Stage 1: Random Search ────────────────────────────────────────────────────
 
 def _run_stage_1_random_search(
     config: dict, store: CandidateStore, run_metadata: RunMetadata
 ) -> None:
-    logger.info("Stage 1: Random Search — stub, not yet implemented")
+    """
+    Stage 1: Random Search.
 
+    Expands enabled parameter zones into discrete grids, samples candidates
+    via LHS (or uniform random), evaluates each candidate with the full
+    strategy runner + fitness evaluator, and writes passing and failing
+    CandidateRecords to the store.
+
+    All candidates (pass and fail) are written so Stage 0 audit queries work.
+    """
+    from src.backtesting.parameter_space import expand_zones
+    from src.backtesting.sampler import sample_lhs, sample_random
+    from src.backtesting.strategy_runner import evaluate
+    from src.backtesting.fitness import evaluate_fitness
+    from src.backtesting.scenario import load_scenario
+
+    run_id = run_metadata.run_id
+    rs_config = config.get("random_search", {})
+    method: str = rs_config.get("method", "lhs")
+    samples_per_zone: int = rs_config.get("samples_per_zone", 200)
+    min_significant_trades: int = rs_config.get("min_significant_trades", 30)
+    retain_temp: bool = config.get("run", {}).get("retain_temp_yamls", False)
+    max_workers: int = config.get("run", {}).get("max_workers", 6)
+
+    base_yaml_path = _resolve_base_yaml(config)
+    temp_dir = Path(config["run"]["temp_dir"])
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    scenario = load_scenario(config)
+
+    logger.info(
+        "Stage 1: Random Search — method=%s samples_per_zone=%d",
+        method, samples_per_zone,
+    )
+
+    # ── Expand zones → sample candidates ─────────────────────────────────────
+    expanded = expand_zones(config)
+    if not expanded:
+        logger.warning("Stage 1: No enabled zones with combinations — nothing to sample")
+        return
+
+    if method == "lhs":
+        candidates: List[CandidateParameterSet] = sample_lhs(
+            expanded_space=expanded,
+            n_per_zone=samples_per_zone,
+            seed=run_metadata.random_search_seed,
+        )
+    else:
+        candidates = sample_random(
+            expanded_space=expanded,
+            n_per_zone=samples_per_zone,
+            seed=run_metadata.random_search_seed,
+        )
+
+    logger.info("Stage 1: %d candidates sampled across %d zones", len(candidates), len(expanded))
+
+    # ── Evaluate each candidate ───────────────────────────────────────────────
+    evaluated = 0
+    passed = 0
+
+    for candidate in candidates:
+        # Evaluate strategy
+        result: CandidateResult = evaluate(
+            candidate=candidate,
+            base_yaml_path=base_yaml_path,
+            temp_dir=temp_dir,
+            min_significant_trades=min_significant_trades,
+            retain_temp_yamls=retain_temp,
+        )
+
+        # Evaluate fitness + constraints
+        fitness_result = evaluate_fitness(result=result, scenario=scenario)
+
+        # Build CandidateRecord and persist
+        record = _build_candidate_record(
+            candidate=candidate,
+            fitness_result=fitness_result,
+            run_id=run_id,
+            stage=CandidateStage.RANDOM,
+        )
+        store.write_candidate(record)
+        evaluated += 1
+
+        if fitness_result.passed_constraints:
+            passed += 1
+            logger.debug(
+                "Stage 1: candidate %s PASS  fitness=%.4f",
+                candidate.candidate_id[:12], fitness_result.fitness_score,
+            )
+        else:
+            logger.debug(
+                "Stage 1: candidate %s FAIL  reason=%s",
+                candidate.candidate_id[:12], fitness_result.rejection_reason,
+            )
+
+    store.flush()
+    logger.info(
+        "Stage 1: Random Search complete — evaluated=%d passed=%d failed=%d",
+        evaluated, passed, evaluated - passed,
+    )
+
+
+# ── Stage 2: MC Pre-Filter ────────────────────────────────────────────────────
 
 def _run_stage_2_mc_prefilter(
     config: dict, store: CandidateStore, run_metadata: RunMetadata
 ) -> None:
-    logger.info("Stage 2: MC Pre-Filter — stub, not yet implemented")
+    """
+    Stage 2: Monte Carlo Pre-Filter.
 
+    Queries top-N RANDOM-stage constraint-passing candidates by fitness score,
+    runs a cheap MC simulation on each (low iteration count, 2 perturbation
+    types), and updates each candidate's stage to MC_PREFILTER_PASS or
+    MC_PREFILTER_FAIL based on ruin_probability vs mc_prefilter_ruin_threshold.
+
+    mc_prefilter_ruin_threshold is read from ScenarioProfile (not config dict)
+    so scenario-specific thresholds are respected.
+    """
+    from src.backtesting.monte_carlo.mc_engine import run_mc
+    from src.backtesting.ranker import rank
+    from src.backtesting.scenario import load_scenario
+
+    run_id = run_metadata.run_id
+    prefilter_config = config.get("mc_prefilter", {})
+    input_count: int = prefilter_config.get("input_count", 120)
+
+    scenario = load_scenario(config)
+    ruin_threshold: float = scenario.mc_prefilter_ruin_threshold
+
+    logger.info(
+        "Stage 2: MC Pre-Filter — top %d candidates, ruin_threshold=%.2f",
+        input_count, ruin_threshold,
+    )
+
+    # Query top-N RANDOM-pass candidates by fitness
+    seed_records: List[CandidateRecord] = rank(
+        store=store,
+        run_id=run_id,
+        stage=CandidateStage.RANDOM,
+        top_n=input_count,
+    )
+
+    if not seed_records:
+        logger.warning("Stage 2: No RANDOM-pass candidates available — skipping MC Pre-Filter")
+        return
+
+    passed = 0
+    failed = 0
+
+    for record in seed_records:
+        candidate = _record_to_candidate_from_record(record)
+        candidate_result = store.get_candidate_result(candidate.candidate_id)
+
+        if candidate_result is None:
+            logger.warning(
+                "Stage 2: No CandidateResult for %s — skipping",
+                candidate.candidate_id[:12],
+            )
+            continue
+
+        mc_result: MCResult = run_mc(
+            candidate=candidate,
+            candidate_result=candidate_result,
+            mode=MCMode.PRE_FILTER,
+            config=config,
+            seed=run_metadata.mc_prefilter_seed,
+        )
+        store.write_mc_result(mc_result, run_id)
+
+        # Determine pass/fail based on ruin probability
+        if mc_result.error or mc_result.ruin_probability is None:
+            new_stage = CandidateStage.MC_PREFILTER_FAIL
+            logger.warning(
+                "Stage 2: MC error for candidate %s: %s — marking FAIL",
+                candidate.candidate_id[:12], mc_result.error,
+            )
+        elif mc_result.ruin_probability > ruin_threshold:
+            new_stage = CandidateStage.MC_PREFILTER_FAIL
+            logger.debug(
+                "Stage 2: candidate %s FAIL  ruin=%.4f > threshold=%.2f",
+                candidate.candidate_id[:12], mc_result.ruin_probability, ruin_threshold,
+            )
+        else:
+            new_stage = CandidateStage.MC_PREFILTER_PASS
+            logger.debug(
+                "Stage 2: candidate %s PASS  ruin=%.4f <= threshold=%.2f",
+                candidate.candidate_id[:12], mc_result.ruin_probability, ruin_threshold,
+            )
+
+        # Write updated stage record — reuses the fitness from the RANDOM evaluation
+        updated_record = _build_candidate_record_from_existing(
+            existing=record,
+            run_id=run_id,
+            new_stage=new_stage,
+        )
+        store.write_candidate(updated_record)
+
+        if new_stage == CandidateStage.MC_PREFILTER_PASS:
+            passed += 1
+        else:
+            failed += 1
+
+    store.flush()
+    logger.info(
+        "Stage 2: MC Pre-Filter complete — pass=%d fail=%d total=%d",
+        passed, failed, passed + failed,
+    )
+
+
+# ── Stage 3: Genetic Algorithm ────────────────────────────────────────────────
 
 def _run_stage_3_ga(
     config: dict, store: CandidateStore, run_metadata: RunMetadata
 ) -> None:
-    logger.info("Stage 3: Genetic Algorithm — stub, not yet implemented")
+    """
+    Stage 3: Genetic Algorithm.
 
+    Builds WFOWindow objects from config, injects the base YAML path as the
+    private '_base_yaml_path' key (B9B-003 contract), and delegates to
+    ga_engine.run_ga() for the full evolution loop.
+
+    ga_engine writes all GA candidate evaluations to the store directly with
+    stage=GA. No additional store writes needed here.
+    """
+    from src.backtesting.ga.ga_engine import run_ga
+    from src.backtesting.scenario import load_scenario
+    from datetime import date
+
+    run_id = run_metadata.run_id
+
+    scenario = load_scenario(config)
+    base_yaml_path = _resolve_base_yaml(config)
+
+    # Build typed WFOWindow objects from YAML config dicts
+    wfo_windows: List[WFOWindow] = [
+        WFOWindow(
+            window_id=w["id"],
+            start_date=date.fromisoformat(str(w["start"])),
+            end_date=date.fromisoformat(str(w["end"])),
+        )
+        for w in config["walk_forward"]["windows"]
+    ]
+
+    # B9B-003: ga_engine.run_ga() reads config['_base_yaml_path'] as a private
+    # injected key. This key is NOT in backtest_template.yaml — it is the
+    # orchestrator's responsibility to inject it here before calling run_ga().
+    # A shallow copy prevents the injected key from leaking back to the caller.
+    ga_config = dict(config)
+    ga_config["_base_yaml_path"] = str(base_yaml_path)
+
+    logger.info(
+        "Stage 3: Genetic Algorithm — %d windows, seed=%d",
+        len(wfo_windows), run_metadata.ga_seed,
+    )
+
+    run_ga(
+        store=store,
+        run_id=run_id,
+        scenario=scenario,
+        wfo_windows=wfo_windows,
+        config=ga_config,
+        seed=run_metadata.ga_seed,
+    )
+
+    store.flush()
+    logger.info("Stage 3: Genetic Algorithm complete")
+
+
+# ── Stage 4: Full WFO ─────────────────────────────────────────────────────────
 
 def _run_stage_4_wfo(
     config: dict, store: CandidateStore, run_metadata: RunMetadata
@@ -458,8 +703,12 @@ def _run_stage_5_mc_deep(
 
     On MC failure (result.error set): writes the result anyway (ruin_probability=None)
     and logs a warning. The None ruin_probability path produces NO_GO in Stage 7.
+
+    B9A-001 applied: uses ranker.rank_by_wfo() (List[CandidateRecord]) instead
+    of the former inline rank_by_wfo() (List[Dict]).
     """
     from src.backtesting.monte_carlo.mc_engine import run_mc
+    from src.backtesting.ranker import rank_by_wfo
 
     run_id = run_metadata.run_id
     mc_config = config.get("monte_carlo", {}).get("deep", {})
@@ -467,14 +716,14 @@ def _run_stage_5_mc_deep(
 
     logger.info("Stage 5: MC Deep — top %d candidates by WFO score", input_count)
 
-    top_records = store.rank_by_wfo(run_id, top_n=input_count)
+    top_records: List[CandidateRecord] = rank_by_wfo(store, run_id, top_n=input_count)
     if not top_records:
         logger.warning("Stage 5: No candidates with WFO scores — skipping MC Deep")
         return
 
     processed = 0
     for record in top_records:
-        candidate = _record_to_candidate(record)
+        candidate = _record_to_candidate_from_record(record)
         candidate_result = store.get_candidate_result(candidate.candidate_id)
 
         if candidate_result is None:
@@ -532,33 +781,30 @@ def _run_stage_6_sensitivity(
     to evaluate_sensitivity() via the pool= kwarg. The pool stays warm between
     candidates — spawn overhead is paid once instead of once per candidate.
 
-    NOTE (B9A-003): spike_threshold is currently read from config dict
-    (sensitivity.spike_threshold). It should instead be read from
-    scenario.verdict_sensitivity_spike_threshold so that the detection threshold
-    and the verdict flagging threshold are always identical. Deferred to Block 9B.
-    When fixed, also remove the Stage 0 spike_threshold validation (B9A-005).
-
-    NOTE (B9A-004): load_scenario() is called here rather than receiving the
-    already-loaded ScenarioProfile as a parameter. Minor SRP friction — deferred.
+    B9A-003 applied: spike_threshold now reads from
+    scenario.verdict_sensitivity_spike_threshold instead of
+    config["sensitivity"]["spike_threshold"]. The two sources must always be
+    identical — reading from ScenarioProfile is the single source of truth.
     """
     from src.backtesting.evaluation.sensitivity import evaluate_sensitivity
     from src.backtesting.scenario import load_scenario
     from src.backtesting.contracts import SensitivityProfile
+    from src.backtesting.ranker import rank_by_wfo
 
     run_id = run_metadata.run_id
     sens_config = config.get("sensitivity", {})
     input_count: int = sens_config.get("input_count", 5)
-    spike_threshold: float = sens_config.get("spike_threshold", 0.15)  # B9A-003: see NOTE above
     max_steps: int = sens_config.get("max_steps", 2)
     max_workers: int = config.get("run", {}).get("max_workers", 6)
     min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
 
-    from src.utils.paths import CONFIGS_DIR
     base_yaml_path = _resolve_base_yaml(config)
     temp_dir = Path(config["run"]["temp_dir"])
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    scenario = load_scenario(config)  # B9A-004: should be passed as parameter
+    scenario = load_scenario(config)
+    # B9A-003: read spike_threshold from ScenarioProfile — single source of truth.
+    spike_threshold: float = scenario.verdict_sensitivity_spike_threshold
     parameter_space_def: dict = config.get("zones", {})
 
     logger.info(
@@ -566,7 +812,7 @@ def _run_stage_6_sensitivity(
         input_count, spike_threshold, max_steps,
     )
 
-    top_records = store.rank_by_wfo(run_id, top_n=input_count)
+    top_records: List[CandidateRecord] = rank_by_wfo(store, run_id, top_n=input_count)
     if not top_records:
         logger.warning("Stage 6: No candidates with WFO scores — skipping Sensitivity")
         return
@@ -574,10 +820,9 @@ def _run_stage_6_sensitivity(
     processed = 0
 
     # OPT-01: Open one shared pool for all candidates.
-    # Pool stays warm across the loop — spawn cost paid once, not per candidate.
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         for record in top_records:
-            candidate = _record_to_candidate(record)
+            candidate = _record_to_candidate_from_record(record)
             baseline_fitness = store.get_fitness_score(candidate.candidate_id)
 
             if baseline_fitness is None:
@@ -616,6 +861,7 @@ def _run_stage_6_sensitivity(
     logger.info("Stage 6: Sensitivity complete — %d/%d candidates processed",
                 processed, len(top_records))
 
+
 # ── Stage 7: Report & Output ──────────────────────────────────────────────────
 
 def _run_stage_7_report(
@@ -638,10 +884,12 @@ def _run_stage_7_report(
       - JSON per-candidate records
       - Parquet per-candidate records (if pandas available)
 
-    NOTE (B9A-001): rank_by_wfo() returns List[Dict] — raw dicts crossing the
-    store↔orchestrator boundary. record['candidate_id'] is untyped dict-key access.
-    Fix: rank_by_wfo() should return List[CandidateRecord]. Deferred to Block 9B.
+    B9A-001 applied: uses ranker.rank_by_wfo() (List[CandidateRecord], typed
+    attribute access) instead of the former inline rank_by_wfo() (List[Dict],
+    dict-key access).
     """
+    from src.backtesting.ranker import rank_by_wfo
+
     run_id = run_metadata.run_id
     sens_config = config.get("sensitivity", {})
     input_count: int = sens_config.get("input_count", 5)
@@ -659,14 +907,14 @@ def _run_stage_7_report(
         input_count, oos_gate_enabled,
     )
 
-    top_records = store.rank_by_wfo(run_id, top_n=input_count)
+    top_records: List[CandidateRecord] = rank_by_wfo(store, run_id, top_n=input_count)
     if not top_records:
         logger.warning("Stage 7: No candidates available — generating empty report")
 
     # ── 7a: Verdicts ──────────────────────────────────────────────────────────
     verdicts_written = 0
     for record in top_records:
-        candidate_id: str = record["candidate_id"]  # B9A-001: dict access — see NOTE above
+        candidate_id: str = record.candidate_id  # B9A-001: typed attribute access
 
         wfo_score: Optional[WFOConsistencyScore] = store.get_wfo_consistency_score(candidate_id)
         mc_result: Optional[MCResult] = store.get_mc_result(candidate_id, mode=MCMode.DEEP)
@@ -683,8 +931,6 @@ def _run_stage_7_report(
             )
             continue
         if sensitivity is None:
-            # Sensitivity may be missing if the candidate was excluded at Stage 6.
-            # profile_complete=False → sensitivity_profile_incomplete modifier flag.
             logger.warning(
                 "Stage 7: No sensitivity profile for %s — using neutral profile",
                 candidate_id[:12],
@@ -703,7 +949,7 @@ def _run_stage_7_report(
         # ── 7b: Trading YAML for go/borderline ────────────────────────────────
         yaml_output_path: Optional[str] = None
         if verdict.verdict in (Verdict.AUTO_GO, Verdict.BORDERLINE):
-            candidate = _record_to_candidate(record)
+            candidate = _record_to_candidate_from_record(record)
             out_path = build_output_path(output_dir, run_id, candidate_id)
             try:
                 yaml_path = generate_trading_yaml(
@@ -771,14 +1017,27 @@ def _run_stage_7_report(
 
 # ── Stage helper utilities ─────────────────────────────────────────────────────
 
+def _record_to_candidate_from_record(record: CandidateRecord) -> CandidateParameterSet:
+    """
+    Reconstruct a CandidateParameterSet from a typed CandidateRecord.
+    Parses parameters_json to restore the parameters dict.
+    candidate_id is deterministic (SHA-256 of parameters dict) — reconstructing
+    from the same parameters always yields the same ID as stored in the DB.
+    """
+    import json
+    params = json.loads(record.parameters_json) if record.parameters_json else {}
+    return CandidateParameterSet.create(
+        zone_name=record.zone_name,
+        parameters=params,
+        generation=record.generation,
+    )
+
+
 def _record_to_candidate(record: Dict[str, Any]) -> CandidateParameterSet:
     """
-    Reconstruct a CandidateParameterSet from a rank_by_wfo record dict.
+    Reconstruct a CandidateParameterSet from a raw dict (legacy path).
+    Retained for any code paths that still receive raw dicts.
     Supports both 'parameters' (dict) and 'parameters_json' (JSON string) keys.
-
-    NOTE: candidate_id is deterministic (SHA-256 of parameters dict) — reconstructing
-    from the same parameters always yields the same ID as stored in the DB.
-    No candidate_id field needs to be passed explicitly.
     """
     import json
 
@@ -796,6 +1055,120 @@ def _record_to_candidate(record: Dict[str, Any]) -> CandidateParameterSet:
         zone_name=zone_name,
         parameters=params,
         generation=record.get("generation"),
+    )
+
+
+def _build_candidate_record(
+    candidate: CandidateParameterSet,
+    fitness_result,
+    run_id: str,
+    stage: CandidateStage,
+) -> CandidateRecord:
+    """
+    Build a CandidateRecord from a CandidateParameterSet + FitnessResult.
+    Used in Stage 1 to persist new evaluations.
+    """
+    import json
+    return CandidateRecord(
+        run_id=run_id,
+        candidate_id=candidate.candidate_id,
+        zone_name=candidate.zone_name,
+        stage=stage.value,
+        generation=candidate.generation,
+        recorded_at=datetime.now(UTC),
+        parameters_json=json.dumps(candidate.parameters, sort_keys=True, default=str),
+        fitness_score=fitness_result.fitness_score,
+        passed_constraints=fitness_result.passed_constraints,
+        rejection_reason=fitness_result.rejection_reason,
+        failing_constraint=fitness_result.failing_constraint,
+        failing_value=fitness_result.failing_value,
+        actual_win_rate=fitness_result.actual_win_rate,
+        actual_max_drawdown=fitness_result.actual_max_drawdown,
+        actual_losing_streak=fitness_result.actual_losing_streak,
+        actual_trades_per_week=fitness_result.actual_trades_per_week,
+        actual_expectancy=fitness_result.actual_expectancy,
+        actual_profit_factor=fitness_result.actual_profit_factor,
+        # WFO fields not yet populated at Stage 1
+        wfo_median_window_return=None,
+        wfo_window_return_variance=None,
+        wfo_worst_window_drawdown=None,
+        wfo_fraction_positive_windows=None,
+        wfo_consistency_score=None,
+        wfo_windows_evaluated=None,
+        wfo_oos_gate_triggered=None,
+        wfo_window_collapse_flag=None,
+        wfo_median_oos_delta=None,
+        # MC fields not yet populated at Stage 1
+        mc_prefilter_ruin_probability=None,
+        mc_prefilter_avg_final_equity=None,
+        mc_prefilter_iterations=None,
+        mc_deep_ruin_probability=None,
+        mc_deep_avg_final_equity=None,
+        mc_deep_worst_drawdown=None,
+        mc_deep_p5_final_equity=None,
+        mc_deep_iterations=None,
+        # Sensitivity / verdict not yet populated
+        sensitivity_spike_detected=None,
+        sensitivity_spike_parameters=None,
+        sensitivity_profile_complete=None,
+        verdict=None,
+        deployment_status=None,
+        evidence_summary=None,
+    )
+
+
+def _build_candidate_record_from_existing(
+    existing: CandidateRecord,
+    run_id: str,
+    new_stage: CandidateStage,
+) -> CandidateRecord:
+    """
+    Build a CandidateRecord for Stage 2 by cloning an existing RANDOM record
+    with an updated stage. Preserves all fitness/constraint actuals from the
+    original RANDOM evaluation — Stage 2 does not re-evaluate fitness.
+    """
+    return CandidateRecord(
+        run_id=run_id,
+        candidate_id=existing.candidate_id,
+        zone_name=existing.zone_name,
+        stage=new_stage.value,
+        generation=existing.generation,
+        recorded_at=datetime.now(UTC),
+        parameters_json=existing.parameters_json,
+        fitness_score=existing.fitness_score,
+        passed_constraints=existing.passed_constraints,
+        rejection_reason=existing.rejection_reason,
+        failing_constraint=existing.failing_constraint,
+        failing_value=existing.failing_value,
+        actual_win_rate=existing.actual_win_rate,
+        actual_max_drawdown=existing.actual_max_drawdown,
+        actual_losing_streak=existing.actual_losing_streak,
+        actual_trades_per_week=existing.actual_trades_per_week,
+        actual_expectancy=existing.actual_expectancy,
+        actual_profit_factor=existing.actual_profit_factor,
+        wfo_median_window_return=None,
+        wfo_window_return_variance=None,
+        wfo_worst_window_drawdown=None,
+        wfo_fraction_positive_windows=None,
+        wfo_consistency_score=None,
+        wfo_windows_evaluated=None,
+        wfo_oos_gate_triggered=None,
+        wfo_window_collapse_flag=None,
+        wfo_median_oos_delta=None,
+        mc_prefilter_ruin_probability=None,
+        mc_prefilter_avg_final_equity=None,
+        mc_prefilter_iterations=None,
+        mc_deep_ruin_probability=None,
+        mc_deep_avg_final_equity=None,
+        mc_deep_worst_drawdown=None,
+        mc_deep_p5_final_equity=None,
+        mc_deep_iterations=None,
+        sensitivity_spike_detected=None,
+        sensitivity_spike_parameters=None,
+        sensitivity_profile_complete=None,
+        verdict=None,
+        deployment_status=None,
+        evidence_summary=None,
     )
 
 

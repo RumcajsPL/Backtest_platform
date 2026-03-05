@@ -6,6 +6,7 @@ No strategy knowledge. No evaluation. Pure expansion logic.
 from __future__ import annotations
 
 import itertools
+from decimal import Decimal
 from typing import Dict, List, Any
 
 
@@ -113,13 +114,20 @@ def _range_values(param_type: str, mn: float, mx: float, step: float) -> list:
     Generate all values from mn to mx (inclusive) at the given step.
     For int type, values are cast to int. For float, kept as float.
     Uses integer arithmetic internally to avoid floating-point drift.
+
+    B9C-005: Scale detection uses Decimal(str(step)) instead of str(step)
+    to correctly identify the number of decimal places for floats with
+    non-canonical representations (e.g. 0.10000000000001 → '0.1' via Decimal).
     """
-    # Scale to avoid floating-point step accumulation (e.g. 0.1 + 0.1 + 0.1 ≠ 0.3)
-    # Convert to int arithmetic using a common scale factor
+    # B9C-005: Decimal(str(step)) for robust scale detection — avoids float repr
+    # artefacts that str(step) would expose (e.g. 0.2 → '0.2' correctly,
+    # but a marginal float like 0.10000000000001 would bloat the scale factor
+    # and produce spurious intermediate values with str(step)).
+    step_decimal = Decimal(str(step))
+    step_str = str(step_decimal)
     scale = 1
-    step_str = str(step)
     if "." in step_str:
-        decimal_places = len(step_str.split(".")[1])
+        decimal_places = len(step_str.rstrip("0").split(".")[1])
         scale = 10 ** decimal_places
 
     imin = round(mn * scale)

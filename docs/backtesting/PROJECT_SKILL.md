@@ -13,24 +13,24 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-05)**: Block 9C complete.
-- Tests: ~113 green, 0 skipped, 0 failed (8A×12 + 8B×14 + 8C×11 + 9A×7 + 9B×28 + 9C×42)
-- Next: Block 9D — Stage 1–3 implementations OR P3 bug fixes (see CONTEXT.md Block 9D options)
-- Pre-production blocker: B8B-012 (sigmoid scale calibration — needs first real run)
+**Current status (2026-03-05)**: Block 9E complete.
+- Tests: ~345 green, 0 skipped, 0 failed (Block 9C baseline; 9D/9E add no new tests)
+- Next: Block 9F — first real pipeline run + calibration (B8B-012, B8B-003)
+- Pre-production blocker: B8B-012 (sigmoid scale — needs first real run data)
 ---
 ## Pipeline (in order — do not reorder)
 ```
 Stage 0: Validation & Init     (min 3 WFO windows; param name validation vs _PARAM_KEY_MAP)
-Stage 1: Random Search         (LHS/random, significance guard, constraint filter) [STUB]
-Stage 2: MC Pre-Filter         (cheap — 2 perturbation types, ruin screen) [STUB]
-Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty) [STUB]
+Stage 1: Random Search         (LHS/random, significance guard, constraint filter) ✅ IMPLEMENTED
+Stage 2: MC Pre-Filter         (cheap — ruin screen vs scenario.mc_prefilter_ruin_threshold) ✅ IMPLEMENTED
+Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty) ✅ IMPLEMENTED
 Stage 4: Full WFO              (all windows, 4-metric composite consistency score) [STUB]
 Stage 5: MC Deep               (full iterations, all perturbation types, WFO survivors only)
 Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline)
 Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
 ```
-Stages 0, 5, 6, 7: fully implemented. Stages 1–4: stubs that log and advance checkpoint.
-ALL stub checkpoints are now properly advanced (B9A-002 fixed).
+Stages 0–3, 5–7: fully implemented. Stage 4: stub that logs and advances checkpoint.
+OOS gate: implemented but off by default (enforce_oos_gate: false in config).
 ---
 ## Architecture Rules (non-negotiable)
 ```python
@@ -40,13 +40,12 @@ ALL stub checkpoints are now properly advanced (B9A-002 fixed).
 # Paths: pathlib.Path + src/utils/paths.py — never hardcoded separators
 # Concurrency: ProcessPoolExecutor spawn mode — never multiprocessing fork
 # Candidate ID: always CandidateParameterSet.create() — deterministic SHA-256 of params dict
-#   → reconstructing from same params always gives same ID (B9A-006 confirmed)
 # "Candidate" is NOT a contract type — use CandidateParameterSet
 # LIVE_APPROVED: never set in code — operator-only manual action
 # strategy_runner.run(): mode_override="core" — NOT mode="core"
 # Timing: logger.info only — never print(), never debug flags
 # store.close(): always in finally block
-# Mutation: snap-then-clamp order — never clamp-then-snap (would push off-grid back out of range)
+# Mutation: snap-then-clamp order — never clamp-then-snap
 ```
 ---
 ## CandidateStore Write API (verified)
@@ -64,8 +63,62 @@ store.flush()
 store.close()
 # There is NO write_fitness_result() method
 # query_mc_results: mode is plain string "deep"/"pre_filter" — NOT MCMode enum
-# write_wfo_window_result: non-blocking (enqueue). is_ga_fitness_window=0, ga_generation=None.
-# flag_candidate_wfo_insufficient: non-blocking. INSERT OR IGNORE — idempotent.
+```
+---
+## evaluate_window() Signature (critical — positional args must match pool.submit)
+```python
+def evaluate_window(
+    candidate: CandidateParameterSet,
+    window: WFOWindow,
+    base_yaml_path: Path,
+    temp_dir: Path,
+    scenario: ScenarioProfile,
+    min_significant_trades: int = 30,
+    oos_gate_enabled: bool = False,      # 7th arg — B8B-005
+) -> WFOWindowResult: ...
+
+# pool.submit call in wfo_engine.py must pass all 7 positional args in order:
+pool.submit(evaluate_window, candidate, window, base_yaml_path, temp_dir,
+            scenario, min_significant_trades, oos_gate_enabled)
+```
+---
+## OOS Gate Details (B8B-005 — implemented Block 9E)
+```python
+# IS/OOS split: _IS_FRACTION = 0.70 (70% IS, 30% OOS by calendar days)
+# is_end_date = window.start_date + timedelta(days=int(total_days * 0.70))
+# oos_delta = oos_fitness - is_fitness  (both [0,1]; negative = OOS underperforms IS)
+# oos_delta = None when:
+#   - oos_gate_enabled=False (GA lightweight mode, default)
+#   - window total_days < 2 (too short to split)
+#   - IS evaluation fails (error, significance guard, missing metrics)
+#   - OOS evaluation fails (error, missing metrics) — NOT when OOS fails constraints
+# OOS constraint-fail: oos_fitness = 0.0 (floor) — large negative delta, not None
+# consistency_scorer._check_oos_gate: abs(median_delta) > oos_degradation_threshold
+#   default threshold = 0.50 (50% fitness point drop — very lenient, calibrate after run)
+# enforce_oos_gate: false by default — activate only after calibrating threshold
+```
+---
+## Stage 1–3 Implementation Details
+```python
+# Stage 1 (_run_stage_1_random_search):
+#   expand_zones(config) → sample_lhs() or sample_random()
+#   → strategy_runner.evaluate() → fitness.evaluate_fitness()
+#   → _build_candidate_record(..., CandidateStage.RANDOM) → store.write_candidate()
+#   All candidates written (pass AND fail)
+#   CandidateRecord.stage = CandidateStage.RANDOM.value  (string "RANDOM")
+
+# Stage 2 (_run_stage_2_mc_prefilter):
+#   ranker.rank(store, run_id, CandidateStage.RANDOM, top_n)  # RANDOM-pass only
+#   → run_mc(PRE_FILTER) → store.write_mc_result()
+#   → ruin > scenario.mc_prefilter_ruin_threshold → MC_PREFILTER_FAIL else PASS
+#   → _build_candidate_record_from_existing(record, run_id, new_stage)
+#   ruin threshold: scenario.mc_prefilter_ruin_threshold  (NOT config dict)
+
+# Stage 3 (_run_stage_3_ga):
+#   Build List[WFOWindow] from config["walk_forward"]["windows"] (date.fromisoformat)
+#   ga_config = dict(config)  # shallow copy
+#   ga_config["_base_yaml_path"] = str(base_yaml_path)  # B9B-003 injection
+#   run_ga(store, run_id, scenario, wfo_windows, ga_config, seed=run_metadata.ga_seed)
 ```
 ---
 ## Known Confirmed Bugs / Fixed (do not re-open)
@@ -74,158 +127,125 @@ H-01: FALSE POSITIVE — strategy_runner.evaluate() DOES accept date_start/date_
 H-02: FIXED (7A) — write_wfo_window_result + flag_candidate_wfo_insufficient were absent.
 H-03: FALSE POSITIVE — wfo_evaluator passes window dates correctly.
 I-07: FIXED (7A) — datetime.utcnow() → datetime.now(UTC) in wfo_evaluator.py.
-B8B-001: FIXED — NaN guard in fitness.py (NaN metrics → rejection, not silent pass).
-B8B-018: FIXED — wfo_evaluator.py field names: "net_pnl"→"total_pnl_points", "expectancy"→"expectancy_points".
-B8C-001: FIXED — contracts.py: report_emphasis scalar string now raises ValueError at construction.
-B9A-002: FIXED — orchestrator.py Stage 1 stub now advances RANDOM_SEARCH_COMPLETE checkpoint.
-B8C-007: CLOSED — Stage 7 guards None wfo_score/mc_result before compute_verdict(). No bug in verdict.py.
-B9A-006: FALSE ALARM — CandidateParameterSet.candidate_id is SHA-256 of params. Deterministic. Safe.
-B9A-001 (ranker): CLOSED at ranker.py — rank_by_wfo() returns List[CandidateRecord]. Bug is orchestrator-only.
-B9A-003 (scenario): CLOSED at scenario.py — load_scenario() correct. Bug is orchestrator Stage 6 only.
-B8B-005 (wfo_engine): CLOSED at wfo_engine.py — engine passes flags correctly. Bug in evaluator/scorer.
+B8B-001: FIXED — NaN guard in fitness.py.
+B8B-018: FIXED — wfo_evaluator.py: total_pnl_points, expectancy_points.
+B8C-001: FIXED — contracts.py: report_emphasis validation.
+B9A-002: FIXED — Stage 1 stub advances RANDOM_SEARCH_COMPLETE checkpoint.
+B9A-001: FIXED (9D) — orchestrator Stages 5–7: ranker.rank_by_wfo() (typed).
+B9A-003: FIXED (9D) — Stage 6 spike_threshold → scenario.verdict_sensitivity_spike_threshold.
+B9C-007: FIXED (9D) — sampler._lhs_sample() sort key → float(x).
+B9C-006: FIXED (9D) — sampler.sample_random() docstring.
+B9C-004: FIXED (9D) — wfo_engine.run_wfo() empty candidates guard.
+B9C-005: FIXED (9D) — parameter_space._range_values() Decimal(str(step)).
+B8-006:  FIXED (9D) — twin key map comments in strategy_runner + yaml_generator.
+B8B-005: FIXED (9E) — IS/OOS split in wfo_evaluator + oos_gate_enabled pass-through in wfo_engine.
 ```
 ---
-## Critical Open Findings (fix before or when touching the file)
+## Critical Open Findings
 ```
+B9F-001 [P1 BLOCKER] parameter_space.py
+  expand_zones() calls itertools.product() which ENUMERATES the full Cartesian product.
+  exploration zone: ~387 trillion combinations → OOM / process hangs forever.
+  safe zone: ~2 million combinations → ~520MB RAM, feasible on 64-bit / ≥4GB free RAM.
+  Workaround for first run: exploration.enabled: false in YAML (enabled guard confirmed
+  present at line 34 of parameter_space.py — setting enabled: false is sufficient).
+  Fix: refactor expand_zones() to return Dict[str, Dict[str, List]] (per-param value
+  lists, not full product); refactor sampler._lhs_sample() to accept per-param lists
+  directly and sample via per-dimension stratified draws without enumeration.
+
 B8B-012 [PRE-PROD BLOCKER] consistency_scorer.py
-  WFO sigmoid scale=0.10 calibrated for unit fractions, not currency points.
-  Fix after first real run: measure net_pnl distribution → set wfo_sigmoid_scale.
-  Attention! Currency are not used in this project. Strategy metrics are in pips and points. Currency is not required.
-B8B-005 [P2] wfo_evaluator.py / consistency_scorer.py
-  oos_delta always None. enforce_oos_gate=True has no effect. OOS gate not implemented.
-  wfo_engine.py passes flags correctly — bug is in evaluator/scorer only.
-B9A-001 [P3] orchestrator.py
-  rank_by_wfo() in orchestrator returns List[Dict] — raw dicts, not List[CandidateRecord].
-  ranker.rank_by_wfo() is correct. Fix is orchestrator-only.
-B9A-003 [P3] orchestrator.py Stage 6
-  spike_threshold dual-source: config["sensitivity"]["spike_threshold"] vs
-  ScenarioProfile.verdict_sensitivity_spike_threshold. Must be kept in sync manually.
-  Fix: Stage 6 should read scenario.verdict_sensitivity_spike_threshold directly.
-  scenario.py is correct — fix is orchestrator Stage 6 only.
-B9B-003 [P3] ga_engine.py
-  config['_base_yaml_path'] is a private injected key — not in backtest_template.yaml.
-  When Stage 3 is implemented, orchestrator must inject:
-  config['_base_yaml_path'] = str(_resolve_base_yaml(config))
+  _sigmoid_normalise scale=0.10 calibrated for unit fractions, not points.
+  Fix after first real run: measure net_pnl distribution → set scale ≈ stdev * 0.5.
+  Metrics are in pips/points — not currency.
+B8B-003 [P3] fitness.py
+  expectancy_norm hardcoded at / 3.0 pts. Calibrate after first real run.
 B8-009 [P3] orchestrator.py
   Raw sqlite3 in _resume_or_start bypasses CandidateStore contract.
 B9B-001 [P3] crossover.py
-  No zone-name guard for cross-zone parents. Silent mixed-zone child.
-  Downstream mutation clamping catches boundary violations but no warning logged.
+  No zone-name guard for cross-zone parents.
 B8B-013 [P3] mc_engine.py
   ruin_threshold dual-source: config dict + ScenarioProfile.mc_prefilter_ruin_threshold.
-B8-006 [P3] strategy_runner.py + yaml_generator.py
-  Two files define YAML parameter key mapping: _PARAM_KEY_MAP and _STRATEGY_PARAM_KEY_MAP.
-  Both must be updated together when adding new strategy parameters.
-B9C-005 [P3] parameter_space.py
-  str(step) for scale detection is fragile for floats with non-canonical repr.
-  Recommend: Decimal(str(step)) for scale computation.
-B9C-006 [P3] sampler.py
-  sample_random() docstring says "with replacement" — implementation is rng.sample() (without replacement).
-  Fix: update docstring. Implementation is correct.
-B9C-007 [P3] sampler.py — FIX BEFORE STAGE 1 IMPLEMENTATION
-  _lhs_sample() sorts param value universe by (str(type), str(val)) — lexicographic for numerics.
-  Breaks LHS space-filling property for multi-digit int/float ranges (e.g. [9,10,11] sorts as [10,11,9]).
-  Fix:
-    try:
-        param_value_universe[name] = sorted(seen, key=lambda x: float(x))
-    except (TypeError, ValueError):
-        param_value_universe[name] = sorted(seen, key=lambda x: str(x))
-B9C-004 [P3] wfo_engine.py
-  No early-exit guard for empty candidates list before ProcessPoolExecutor entry.
-OPT-01 target (not achieved): Stage 6 ≤ 200s (40% reduction via pool reuse across candidates). Pool implemented but Stage 6 still ~300s - to reanalize if possible to improve below target
+B8B-011 [P3] consistency_scorer.py
+  fraction_positive_windows uses fixed 0.0 floor.
+B8C-002, B8C-003 [P3] report_generator.py — deferred
+B9C-008 [P3] sampler.py — deferred
+OPT-01 target (not achieved): Stage 6 ≤ 200s. Pool reuse applied but ~300s still.
 ```
 ---
 ## Test Import Convention (CRITICAL — violating causes circular import at collection)
 ```python
-# 1. sys.path FIRST — before any project imports
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
-# 2. path anchor
 from src.utils.paths import PROJECT_ROOT
-# 3. contracts BEFORE candidate_store
-from src.backtesting.contracts import (...)
-# 4. candidate_store AFTER contracts
+from src.backtesting.contracts import (...)   # BEFORE candidate_store
 from src.backtesting.candidate_store import CandidateStore
 ```
 ---
 ## Critical Patch Targets (Windows spawn mode)
 ```python
-# Stage 6 integration tests: patch at orchestrator level, NOT at worker function
-patch("src.backtesting.orchestrator.evaluate_sensitivity", ...)   # CORRECT
-# Stage 5: run_mc is a LOCAL import inside _run_stage_5_mc_deep
-patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)        # CORRECT
-# wfo_engine tests: patch at engine module level
-patch("src.backtesting.wfo.wfo_engine.evaluate_window", ...)      # CORRECT
-patch("src.backtesting.wfo.wfo_engine.compute_consistency", ...)  # CORRECT
-# DO NOT patch inside ProcessPoolExecutor workers — mock doesn't cross spawn boundary (ROB-09)
+patch("src.backtesting.orchestrator.evaluate_sensitivity", ...)   # Stage 6
+patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)        # Stage 5
+patch("src.backtesting.wfo.wfo_engine.evaluate_window", ...)      # wfo_engine tests
+patch("src.backtesting.wfo.wfo_engine.compute_consistency", ...)  # wfo_engine tests
+patch("src.backtesting.orchestrator.evaluate", ...)               # Stage 1
+patch("src.backtesting.orchestrator.run_mc", ...)                 # Stage 2
+patch("src.backtesting.orchestrator.run_ga", ...)                 # Stage 3
+# DO NOT patch inside ProcessPoolExecutor workers (spawn boundary)
 ```
 ---
 ## Module Map (current state)
 ```
-orchestrator.py         — Stage sequencer. 0/5/6/7 implemented. 1-4 stubs with checkpoints.
-                          B9A-002 fixed: all stubs now advance checkpoint.
-                          B9A-003 open: Stage 6 spike_threshold from config, not ScenarioProfile.
-                          B9A-001 open: inline rank_by_wfo returns List[Dict].
-fitness.py              — Stateless. MetricsReport + ScenarioProfile → FitnessResult. NaN guard added.
-contracts.py            — All frozen dataclasses. report_emphasis validation added (B8C-001).
+orchestrator.py         — Stages 0–3, 5–7 implemented. Stage 4 stub.
+                          B9A-001/B9A-003 fixed. New helpers in 9D.
+fitness.py              — Stateless. NaN guard. B8B-003 open (expectancy /3.0).
+contracts.py            — All frozen dataclasses. B8C-001 fixed.
 candidate_store.py      — SQLite WAL + single-writer queue. Thread-safe.
-strategy_runner.py      — Single candidate eval. _PARAM_KEY_MAP maps zone params → YAML paths.
-parameter_space.py      — Expands YAML zones. AUDITED (Block 9C). B9C-005 open (str(step) fragility).
-sampler.py              — LHS or random. AUDITED (Block 9C). B9C-006 (docstring), B9C-007 (sort key) open.
-scenario.py             — Loads ScenarioProfile from YAML. AUDITED (Block 9C). Clean.
-ranker.py               — Returns ranked List[CandidateRecord]. AUDITED (Block 9C). Clean.
-yaml_generator.py       — Merges params into base YAML. AUDITED (Block 9C). B8-006 scope expanded.
-wfo/wfo_evaluator.py    — One candidate × one window → WFOWindowResult. Never raises.
-                          B8B-018 FIXED: total_pnl_points, expectancy_points.
-wfo/wfo_engine.py       — Lightweight + full modes. AUDITED (Block 9C). B9C-004 P3 open. Clean otherwise.
-wfo/consistency_scorer.py — 4-metric composite. sigmoid scale=0.10 (B8B-012 open).
+strategy_runner.py      — Single candidate eval. B8-006 comment added.
+parameter_space.py      — Expands zones. B9C-005 fixed. AUDITED.
+sampler.py              — LHS/random. B9C-006/B9C-007 fixed. AUDITED.
+scenario.py             — Loads ScenarioProfile. AUDITED. Clean.
+ranker.py               — List[CandidateRecord]. AUDITED. Clean.
+yaml_generator.py       — Merges params. B8-006 comment added.
+wfo/wfo_evaluator.py    — B8B-018 fixed. B8B-005 FIXED (9E): IS/OOS split.
+                          _compute_oos_delta(): 70/30 split, oos_delta=fitness delta.
+                          oos_gate_enabled param added (7th positional).
+wfo/wfo_engine.py       — B9C-004 fixed. B8B-005 FIXED (9E): passes oos_gate_enabled
+                          to evaluate_window in pool.submit(). Log updated.
+wfo/consistency_scorer.py — 4-metric composite. B8B-012 open (sigmoid scale).
+                            Already correct — no changes in 9E.
 wfo/window_generator.py — YAML → sorted WFOWindow list.
-ga/ga_engine.py         — Full evolution. rng.sample(windows, k=2) per generation.
-                          B9B-003 open: config['_base_yaml_path'] injection contract.
-ga/population.py        — Init from MC_PREFILTER_PASS. Elite extraction. Typed API (CandidateRecord).
-ga/selection.py         — Tournament selection. Raises on empty pop.
-ga/crossover.py         — Uniform crossover. zone_name from parent_a. B9B-001 open (no zone guard).
-ga/mutation.py          — Gaussian on step grid. Snap-then-clamp. choice edge cases handled.
-ga/diversity.py         — Hybrid Euclidean/Hamming penalty.
-monte_carlo/mc_engine.py         — Pre-filter + deep dispatch. Never raises.
-monte_carlo/perturbation.py      — Named profiles from YAML.
-monte_carlo/equity_simulator.py  — Vectorised np.cumsum.
-monte_carlo/mc_metrics.py        — avg_equity, worst_dd, ruin_prob, p5_equity. Vectorised.
-evaluation/sensitivity.py — ±1/±2 steps. Parallel via ProcessPoolExecutor. OPT-01 pool reuse applied.
-evaluation/verdict.py     — Two-pillar + modifier flags. Never sets LIVE_APPROVED.
-report_generator.py       — Self-contained HTML. Inline charts. JSON + Parquet.
-```
----
-## Performance Baseline (locked Block 3)
-```
-Stage 5 (MC Deep):    <3s   — vectorised, never the bottleneck
-Stage 6 (Sensitivity): ~333–446s — structural bottleneck (Windows spawn overhead)
-Stage 7 (Report):     4–8s
-Budget: 14,400s → 2.3% consumed ✅
-OPT-01 (not achieved) target: Stage 6 ≤ 200s (pool reuse across candidates — applied in evaluation/sensitivity.py)
+ga/ga_engine.py         — Full evolution. _base_yaml_path injection from orchestrator.
+ga/population.py        — Init from MC_PREFILTER_PASS. Typed API.
+ga/selection.py         — Tournament selection.
+ga/crossover.py         — Uniform crossover. B9B-001 open.
+ga/mutation.py          — Snap-then-clamp.
+ga/diversity.py         — Hybrid Euclidean/Hamming.
+monte_carlo/mc_engine.py — Never raises. B8B-013 open.
+evaluation/sensitivity.py — ±1/±2 steps. OPT-01 pool reuse.
+evaluation/verdict.py   — Two-pillar + modifiers. Never sets LIVE_APPROVED.
+report_generator.py     — HTML + JSON + Parquet. B8C-002/003 open.
 ```
 ---
 ## Lessons Learned (locked)
 ```
-L-01: Windows spawn mode — mock patches don't cross worker boundary.
-      Patch at orchestrator level for integration tests.
-L-02: Verdict boundary operators must be >= / <= (inclusive) at go thresholds.
+L-01: Windows spawn mode — patch at orchestrator level for integration tests.
+L-02: Verdict boundary operators must be >= / <= (inclusive).
 L-03: Stage 6 is the dominant runtime (98.7% of total).
-L-04: Config fixture shape must match load_scenario() nested structure:
-      config["scenarios"][name]["fitness_weights"][...] NOT config["fitness_weights"][...]
-L-05: Silent write loss from missing store methods (H-02). Always verify store API
-      completeness against all call sites before trusting DB output.
-L-06: CandidateParameterSet.candidate_id is SHA-256 of params dict — deterministic.
-      Reconstructing from same params in _record_to_candidate() always gives same ID.
-      No need to carry candidate_id through rank_by_wfo() records (B9A-006 confirmed).
-L-07: ScenarioProfile.__post_init__ must validate sequence fields (not scalar strings).
-      report_emphasis="balanced" passes type hint but iterates as characters downstream.
-      Always add isinstance(..., (list, tuple)) + len > 0 guard for sequence fields.
-L-08: ranker.rank_by_wfo() is correct. orchestrator has its own inline rank_by_wfo that
-      returns List[Dict] (B9A-001). When implementing Stage 5, use ranker.rank_by_wfo().
-L-09: _lhs_sample() sorts by string — fix to float() sort before Stage 1 (B9C-007).
-      Affects LHS space-filling for any numeric parameter with values ≥ 10.
+L-04: Config fixture shape: config["scenarios"][name]["fitness_weights"][...].
+L-05: Always verify store API completeness against all call sites.
+L-06: CandidateParameterSet.candidate_id is SHA-256 — deterministic.
+L-07: ScenarioProfile.__post_init__ must validate sequence fields.
+L-08: ranker.rank_by_wfo() returns List[CandidateRecord] — not List[Dict].
+L-09: _lhs_sample() must sort by float() — string sort breaks for values ≥ 10.
+L-10: Stage 2 ruin threshold from scenario.mc_prefilter_ruin_threshold only.
+L-11: Stage 3 injects _base_yaml_path via shallow copy — never mutate original config.
+L-12: evaluate_window() takes oos_gate_enabled as 7th positional arg.
+      pool.submit() must pass it explicitly — keyword args don't cross spawn boundary safely.
+L-13: oos_delta=None is the safe default for any IS/OOS failure.
+      Never force a numeric delta when sub-evaluation is incomplete.
+L-14: OOS constraint-fail → oos_fitness=0.0 floor (not None) to preserve the
+      signal that OOS degraded severely, while keeping delta numeric.
 ```
 ---
 ## What NOT To Do
@@ -233,16 +253,16 @@ L-09: _lhs_sample() sorts by string — fix to float() sort before Stage 1 (B9C-
 - Do not modify `src/strategies/` — strategy architecture is frozen
 - Do not use `analytics` mode — `core` mode only (`mode_override="core"`)
 - Do not add `print()` — use `logger.info`
-- Do not implement ML/AI, eToro API, regime-aware MC, global sensitivity random-walk (v2+)
-- Do not re-open D-01 through D-12, H-01 through H-03 (all resolved)
 - Do not set `deployment_status = LIVE_APPROVED` in code
-- Do not use `datetime.utcnow()` in any new or modified code
+- Do not use `datetime.utcnow()`
 - Do not use `Candidate` type — use `CandidateParameterSet`
-- Do not patch functions called inside ProcessPoolExecutor workers (spawn boundary)
-- Do not use `e2e_test` scenario for production optimization runs
-- Do not clamp-before-snap in mutation — snap-then-clamp is correct
-- Do not re-open B9A-001 for ranker.py — it is correct. Bug is in orchestrator only.
-- Do not re-open B9A-003 for scenario.py — it is correct. Bug is in orchestrator Stage 6 only.
+- Do not patch inside ProcessPoolExecutor workers (spawn boundary)
+- Do not use `e2e_test` scenario for production runs
+- Do not clamp-before-snap in mutation
+- Do not re-open B8B-005 — fixed (9E)
+- Do not change `_IS_FRACTION` without updating CONTEXT.md
+- Do not enable `enforce_oos_gate: true` before calibrating `oos_degradation_threshold`
+- Do not use the old `_record_to_candidate(Dict)` — use `_record_to_candidate_from_record(CandidateRecord)`
 ---
 ## Platform
 - **OS**: Windows 10, Python 3.13.12

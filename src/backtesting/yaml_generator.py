@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 # Keys in candidate.parameters that map to top-level strategy YAML sections
 # (not nested under a specific config block). The strategy runner uses flat
 # parameter dicts, so we do a best-effort merge into the YAML structure.
+#
+# WARNING: Twin key map exists in strategy_runner.py (_PARAM_KEY_MAP).
+# Both files MUST be updated together when adding/renaming strategy parameters.
 _STRATEGY_PARAM_KEY_MAP: dict = {
     # parameter_name → (yaml_section, yaml_key)
     # These are the known strategy YAML keys. If a parameter is not in this map,
