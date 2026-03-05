@@ -1,8 +1,8 @@
 # ARCHITECTURE.md — Backtesting & Optimization Framework
-**Version**: 3.0.0
-**Date**: 2026-03-04
+**Version**: 4.0.0
+**Date**: 2026-03-05
 **Audience**: Any developer working on any aspect of the backtester pipeline
-**Status**: Block 9B complete. All sections verified against source.
+**Status**: Block 9C complete. All sections verified against source.
 **Promise**: This document describes what the code **actually does**, verified against source.
 No aspirational content. Every claim was confirmed by code review.
 
@@ -44,33 +44,45 @@ src/backtesting/
 ├── candidate_store.py       ← SQLite WAL store. Single-writer queue. Thread-safe.
 │                              All writes: non-blocking enqueue. All reads: direct.
 ├── parameter_space.py       ← Expands YAML zone definitions → discrete parameter grids.
+│                              AUDITED (Block 9C). B9C-005 open (str(step) fragility).
 ├── sampler.py               ← LHS / random sampling over expanded parameter space.
-├── scenario.py              ← Loads ScenarioProfile from config dict.
+│                              AUDITED (Block 9C). B9C-006 (docstring), B9C-007 (sort
+│                              key bug — fix before Stage 1) open.
+├── scenario.py              ← Loads ScenarioProfile from config dict. AUDITED (Block 9C). Clean.
 ├── strategy_runner.py       ← Single candidate evaluation. Writes temp YAML. Never raises.
-│                              _PARAM_KEY_MAP is the ONLY file that knows strategy YAML keys.
+│                              _PARAM_KEY_MAP is one of TWO files that knows strategy YAML keys
+│                              (yaml_generator._STRATEGY_PARAM_KEY_MAP is the second — B8-006).
 ├── fitness.py               ← Stateless. MetricsReport + ScenarioProfile → FitnessResult.
 │                              NaN guard added (B8B-001 fixed).
-├── ranker.py                ← Stateless. Query spec → ranked CandidateRecord list.
+├── ranker.py                ← Stateless. Query spec → ranked List[CandidateRecord].
+│                              AUDITED (Block 9C). Returns typed records correctly.
 ├── report_generator.py      ← Self-contained HTML + JSON + Parquet. Reads from store.
 ├── yaml_generator.py        ← Merges params into base YAML. Embeds backtester metadata.
+│                              AUDITED (Block 9C). _STRATEGY_PARAM_KEY_MAP second source
+│                              of truth — must stay in sync with strategy_runner._PARAM_KEY_MAP.
 ├── ga/
 │   ├── population.py        ← Init from MC_PREFILTER_PASS. Elite extraction. Typed API.
 │   ├── selection.py         ← Tournament selection. Raises on empty population.
-│   ├── crossover.py         ← Uniform crossover (zone_name from parent_a).
+│   ├── crossover.py         ← Uniform crossover (zone_name from parent_a). B9B-001 open.
 │   ├── mutation.py          ← Gaussian on step grid. Snap-then-clamp to zone bounds.
 │   ├── diversity.py         ← Hybrid Euclidean/Hamming distance penalty.
 │   └── ga_engine.py         ← Full evolution loop. Writes all candidates to store.
+│                              B9B-003 open: config['_base_yaml_path'] injection contract.
 ├── wfo/
 │   ├── window_generator.py  ← YAML → sorted WFOWindow list (min 3, no overlaps).
 │   ├── wfo_evaluator.py     ← One candidate × one window → WFOWindowResult. Never raises.
 │   │                          B8B-018 fixed: total_pnl_points, expectancy_points.
 │   ├── wfo_engine.py        ← "lightweight" (GA) + "full" (Stage 4) modes.
+│   │                          AUDITED (Block 9C). Correctly passes OOS gate flags to scorer.
+│   │                          B8B-005 bug lives in evaluator/scorer, not here.
 │   └── consistency_scorer.py← WFOWindowResults → 4 sub-metrics → composite [0,1].
+│                              B8B-012 open: sigmoid scale=0.10 (calibrate before first run).
 ├── monte_carlo/
 │   ├── perturbation.py      ← Named perturbation profiles from YAML.
 │   ├── equity_simulator.py  ← Vectorised np.cumsum. No Python loops over paths.
 │   ├── mc_metrics.py        ← avg_equity, worst_dd, ruin_prob, p5_equity. Vectorised.
 │   └── mc_engine.py         ← pre-filter + deep dispatch. Never raises.
+│                              B8B-013 open: ruin_threshold dual-source.
 └── evaluation/
     ├── sensitivity.py       ← ±1/±2 step perturbation. ProcessPoolExecutor workers.
     │                          OPT-01: single pool shared across all candidates (Block 7C).
@@ -83,6 +95,8 @@ configs/backtesting/
 docs/backtesting/
 ├── architecture/
 │   └── ARCHITECTURE.md      ← This file
+├── OPERATOR_RUNBOOK.md
+├── BLOCK8_AUDIT_REPORT.md
 ├── TECHNICAL_SPEC.md
 ├── BACKTESTER_PLAN.md
 ├── FUNCTIONAL_SPEC.md
@@ -105,9 +119,10 @@ tests/backtesting/
 │   ├── test_block8b_engines.py        ← 14 tests (Block 8B)
 │   ├── test_block8c_verdict_sensitivity.py ← 11 tests (Block 8C)
 │   ├── test_block9a_orchestrator.py   ←  7 tests (Block 9A)
-│   └── test_block9b_ga.py             ← 28 tests (Block 9B)
+│   ├── test_block9b_ga.py             ← 28 tests (Block 9B)
+│   └── test_block9c_supporting.py     ← 42 tests (Block 9C)
 
-Total: ~303 tests — all green as of 2026-03-04 (Block 9B)
+Total: ~345 tests — all green as of 2026-03-05 (Block 9C)
 ```
 
 ---
@@ -214,6 +229,7 @@ graph TD
 - `strategy_runner.py` is the only module that calls into `src/strategies/`
 - `orchestrator.py` is the only module that calls `store.set_checkpoint()`
 - `ga/population.py` is the only GA module consuming typed `CandidateRecord` (not raw dicts)
+- `ranker.py` returns `List[CandidateRecord]` (typed) — orchestrator's inline `rank_by_wfo` returns `List[Dict]` (B9A-001 open)
 
 ---
 
@@ -228,7 +244,7 @@ flowchart LR
 
     subgraph STAGE1["Stage 1 — Random Search"]
         PS["parameter_space\n.expand_zones(config)\n→ Dict[zone, List[params]]"]
-        SMP["sampler\n.sample_lhs(...)\n→ List[CandidateParameterSet]"]
+        SMP["sampler\n.sample_lhs(...)\n→ List[CandidateParameterSet]\n⚠ B9C-007: fix sort key before use"]
         SR1["strategy_runner\n.evaluate(candidate, yaml, temp)\n→ CandidateResult"]
         FIT1["fitness\n.evaluate_fitness(result, scenario)\n→ FitnessResult"]
         WC1["write_candidate(CandidateRecord)"]
@@ -240,7 +256,7 @@ flowchart LR
     end
 
     subgraph STAGE3["Stage 3 — GA"]
-        GA["ga_engine\n.run_ga(store, run_id, scenario, windows, config, seed)\n[reads CandidateRecord from store,\nwrites CandidateRecord per generation]"]
+        GA["ga_engine\n.run_ga(store, run_id, scenario, windows, config, seed)\n[reads CandidateRecord from store,\nwrites CandidateRecord per generation]\n⚠ B9B-003: inject config['_base_yaml_path'] before calling"]
         WFO_LW["wfo_engine (lightweight)\n2 random windows per generation\n→ WFOWindowResult × 2"]
     end
 
@@ -439,8 +455,11 @@ flowchart TD
 - Minimum 3 windows (required for GA random sampling diversity)
 - Unique IDs, `start_date < end_date`, no overlapping date ranges
 
-**IS/OOS split**: Not implemented. Each window is a single date range. `oos_delta` remains
-`None` until Block 9E implements the split (B8B-005).
+**`WFOWindow` contract**: Fields are `window_id: str`, `start_date: date`, `end_date: date`.
+There is no IS/OOS field split in the contract — each window is a single date range.
+
+**IS/OOS split**: Not implemented. `oos_delta` remains `None` until Block 9E implements
+the split (B8B-005).
 
 ---
 
@@ -466,7 +485,7 @@ flowchart LR
     end
 
     subgraph READERS["Stage Functions + Report"]
-        R1["rank_by_wfo(run_id, top_n)\n→ List[Dict]  ⚠ B9A-001"]
+        R1["rank_by_wfo(run_id, top_n)\n→ List[Dict]  ⚠ B9A-001\n(ranker.rank_by_wfo → List[CandidateRecord] ✅)"]
         R2["get_wfo_consistency_score(cid)"]
         R3["get_mc_result(cid, mode)"]
         R4["get_sensitivity_profile(cid)"]
@@ -496,10 +515,9 @@ All SQLite INSERT/UPDATE operations execute on this single thread — no write c
 **Flush / close**: `store.flush()` calls `queue.join()` — blocks until queue drains.
 `store.close()` flushes, stops writer thread, closes connection. Always in `finally` block.
 
-**B9A-001 (open)**: `rank_by_wfo()` returns `List[Dict]` rather than `List[CandidateRecord]`.
-Orchestrator Stages 5, 6, 7 access `record['candidate_id']` via dict-key access. Safe because
-`candidate_id` is SHA-256 of params — deterministic and reconstructible (B9A-006 confirmed).
-Typed return value deferred to Block 9C.
+**B9A-001 (open)**: Orchestrator's inline `rank_by_wfo()` returns `List[Dict]` rather than
+`List[CandidateRecord]`. `ranker.rank_by_wfo()` (the module-level function) is correct and
+returns typed records. When Stages 5–7 are refactored, use `ranker.rank_by_wfo()` directly.
 
 ---
 
@@ -586,46 +604,74 @@ Modifier demotion (AUTO_GO base → one flag active):
   Any flag on NO_GO    → NO_GO  (flags cannot override)
 ```
 
-**Note**: These are `capital_accumulation` production scenario defaults. Recalibrate after
-first real run. For `e2e_test` scenario thresholds, see `test_threshold_calibration.py`.
+---
+
+## §11 — Supporting Module Design Notes (Block 9C)
+
+### parameter_space.py
+- `expand_zones()` generates discrete parameter grids via `itertools.product` (Cartesian product)
+- `_range_values()` uses integer-scaled arithmetic to avoid floating-point accumulation
+- Disabled zones are excluded; empty ranges raise `ValueError` (fail-fast)
+- **B9C-005 (P3)**: `str(step)` for scale detection is fragile for floats with non-canonical repr — recommend `Decimal(str(step))`
+
+### sampler.py
+- Both `sample_lhs()` and `sample_random()` use single `rng = stdlib_random.Random(seed)` — fully reproducible
+- All outputs are `CandidateParameterSet.create()` instances — immutable, deterministic IDs
+- **B9C-007 (P3) — FIX BEFORE STAGE 1**: `_lhs_sample()` sorts parameter value universe by `(str(type), str(val))` — lexicographic for numerics. Breaks LHS space-filling for multi-digit int/float ranges (e.g. `[9,10,11]` sorts as `[10,11,9]`). Fix: `sorted(seen, key=lambda x: float(x))` for numeric params
+- **B9C-006 (P3)**: `sample_random()` docstring says "with replacement" — implementation uses `rng.sample()` (without replacement). Fix: update docstring only
+
+### scenario.py
+- `load_scenario()` correctly delegates all validation to `ScenarioProfile.__post_init__`
+- `verdict_sensitivity_spike_threshold` is loaded from YAML and placed in `ScenarioProfile` field
+- B9A-003 is orchestrator-only — scenario.py has no cross-config alignment responsibility
+
+### ranker.py
+- `rank()`, `rank_by_wfo()`, `rank_combined()` all return `List[CandidateRecord]` (typed) ✅
+- B9A-001 is orchestrator-only — the ranker module itself is correct
+- `rank_by_wfo()` intentionally queries without stage filter (WFO scores span all stages)
+- `rank_combined()` deduplicates by `candidate_id` before re-sorting
+
+### yaml_generator.py
+- Always sets `deployment_status = PAPER_TRADE_REQUIRED` — never `LIVE_APPROVED` ✅
+- Embeds all 5 run seeds in `backtester_metadata` for immutable audit trail ✅
+- `generate_trading_yaml()` deepcopies base config — base YAML is never mutated ✅
+- Validation: attempts `StrategyConfig.from_yaml()` first; falls back to `_structural_validate()` on ImportError
+- **B8-006 scope expanded**: `_STRATEGY_PARAM_KEY_MAP` is a second instance of the YAML key mapping alongside `strategy_runner._PARAM_KEY_MAP`. Both files must be updated together when adding new strategy parameters
+
+### wfo_engine.py
+- Lightweight/full mode dispatch correct; both modes pass `oos_gate_enabled` flags to `compute_consistency()` ✅
+- B8B-005 (OOS gate non-functional) lives in `wfo_evaluator.py` / `consistency_scorer.py` — not in wfo_engine
+- Full mode writes `WFOConsistencyScore` to store; lightweight mode does not ✅
 
 ---
 
-## §11 — Contract Catalogue
+## §12 — Contract Catalogue
 
 All contracts are **frozen dataclasses** in `src/backtesting/contracts.py`.
 Never pass raw dicts between modules. Always use `CandidateParameterSet.create()` factory.
 
 | Contract | Produced by | Consumed by | Key fields | None-path notes |
 |---|---|---|---|---|
-| `RunMetadata` | `orchestrator` | store, `yaml_generator` | `run_id`, `config_hash`, `wfo_window_ids`, 5 seeds, `checkpoint` | No Optional fields except `completed_at` (DB only) |
+| `RunMetadata` | `orchestrator` | store, `yaml_generator` | `run_id`, `config_hash` (64-char SHA-256), `wfo_window_ids` (min 3), `started_at`, `perturbation_profile_name`, 5 seeds, `checkpoint` | No Optional fields |
 | `ScenarioProfile` | `scenario` | `fitness`, `wfo_evaluator`, `consistency_scorer`, `verdict`, `report_generator` | fitness weights, constraint thresholds, verdict floors | `report_emphasis` must be non-empty list/tuple (B8C-001 fixed) |
 | `CandidateParameterSet` | `sampler`, `ga_engine` | `strategy_runner`, `wfo_evaluator`, `sensitivity` | `candidate_id` (SHA-256 of params — deterministic), `zone_name`, `parameters` | `generation`: None for Random Search |
 | `CandidateResult` | `strategy_runner` | `fitness`, `mc_engine` | `metrics`, `trades`, `total_trades`, `error` | `metrics`, `trades`, `total_trades`: all None on error |
 | `FitnessResult` | `fitness` | `orchestrator` (→ store) | `fitness_score`, `passed_constraints`, `actual_*` | `fitness_score`: None when constraints failed; NaN guard applied (B8B-001 fixed) |
-| `WFOWindow` | `window_generator` | `wfo_evaluator`, `ga_engine` | `window_id`, `start_date`, `end_date` | No Optional fields |
+| `WFOWindow` | `window_generator` | `wfo_evaluator`, `ga_engine` | `window_id`, `start_date: date`, `end_date: date` | No Optional fields. No IS/OOS split fields. |
 | `WFOWindowResult` | `wfo_evaluator` | `consistency_scorer`, store | `fitness_score`, `net_pnl` (pips), `win_rate`, `oos_delta` | All metrics: None on error; `oos_delta`: always None (B8B-005) |
 | `WFOConsistencyScore` | `consistency_scorer` | store, `verdict`, ranker | `composite_score`, `fraction_positive_windows`, `oos_gate_triggered`, `window_collapse_flag`, `median_oos_delta` | `median_oos_delta`: None when no windows carry oos_delta; persisted correctly after B8-001 fix |
 | `MCResult` | `mc_engine` | store, `verdict` | `ruin_probability`, `avg_final_equity`, `p5_final_equity`, `error` | All metrics: None on error; `ruin_probability=None` → `NO_GO` |
 | `SensitivityProfile` | `sensitivity` | store, `verdict` | `spike_detected`, `spike_parameters`, `profile_complete` | `profile_complete=False` → `sensitivity_profile_incomplete` modifier → BORDERLINE |
-| `VerdictResult` | `verdict` | store, `yaml_generator`, `report_generator` | `verdict` (enum), `deployment_status`, `evidence_summary` | `yaml_output_path`: None for NO_GO; `parameter_region_width`: always None (WF-07) |
-| `CandidateRecord` | `orchestrator` | store | All stage data flattened to primitives for SQLite | Most fields Optional |
+| `VerdictResult` | `verdict` | store, `yaml_generator`, `report_generator` | `verdict` (enum), `deployment_status`, `evidence_summary`, `scenario_name`, `oos_gate_triggered`, `window_collapse_flag`, `sensitivity_profile_incomplete`, `median_oos_delta`, `parameter_region_width`, `yaml_output_path` | `yaml_output_path`: None for NO_GO; `parameter_region_width`: always None (WF-07) |
+| `CandidateRecord` | `orchestrator` | store | All stage data flattened to primitives for SQLite. `stage` field is `str` (`.value`), not enum. | Most fields Optional |
 
 **`candidate_id` identity**: SHA-256 of the canonical JSON of `parameters` dict — deterministic
 and content-addressed. Reconstructing via `.create()` from the same parameters always yields
 the same ID as stored in DB (B9A-006 confirmed).
 
-**`MCResult.error` field**: `run_mc` never raises. Failures surface via
-`MCResult(error="...", ruin_probability=None)`. `verdict.py` maps `ruin_probability=None`
-→ `mc_pillar_no_go=True` → `NO_GO`. The orchestrator logs a WARNING and continues.
-
-**`SensitivityProfile.profile_complete`**: `False` when >50% of perturbation evaluations
-failed. Sets `sensitivity_profile_incomplete` modifier flag → demotes `AUTO_GO` to
-`BORDERLINE`. Pipeline never aborts — profile always written.
-
 ---
 
-## §12 — ProcessPoolExecutor — Spawn Mode & Patch Rules
+## §13 — ProcessPoolExecutor — Spawn Mode & Patch Rules
 
 Two modules use `ProcessPoolExecutor`. On Windows, the **spawn** start method is used (no fork).
 
@@ -635,6 +681,7 @@ Two modules use `ProcessPoolExecutor`. On Windows, the **spawn** start method is
 |---|---|---|
 | `evaluation/sensitivity.py` | `_evaluate_perturbation` | Single pool shared across ALL candidates (OPT-01) |
 | `ga/ga_engine.py` | `evaluate_window` | One pool per generation |
+| `wfo/wfo_engine.py` | `evaluate_window` | One pool per `run_wfo()` call |
 
 Workers must be picklable. All frozen dataclasses pickle correctly.
 
@@ -650,43 +697,35 @@ unittest.mock patches DO NOT cross the ProcessPoolExecutor spawn boundary on Win
 
 | What to test | Wrong target | Correct target |
 |---|---|---|
-| Stage 6 loop behaviour | `src.backtesting.evaluation.sensitivity._evaluate_perturbation` — silently ignored | `src.backtesting.orchestrator.evaluate_sensitivity` — above worker boundary |
-| Stage 5 MC injection | `src.backtesting.orchestrator.run_mc` — AttributeError (local import) | `src.backtesting.monte_carlo.mc_engine.run_mc` |
+| Stage 6 loop behaviour | `src.backtesting.evaluation.sensitivity._evaluate_perturbation` | `src.backtesting.orchestrator.evaluate_sensitivity` |
+| Stage 5 MC injection | `src.backtesting.orchestrator.run_mc` (AttributeError — local import) | `src.backtesting.monte_carlo.mc_engine.run_mc` |
+| `wfo_engine` write behaviour | `src.backtesting.wfo.wfo_engine.evaluate_window` alone (not sufficient) | Patch `ProcessPoolExecutor` + `as_completed` at engine module level to resolve futures synchronously |
 
 **Confirmed by Block 4 ROB-09**: `Can't pickle <class 'unittest.mock.MagicMock'>`.
 
 ---
 
-## §13 — GA Package — Design Notes (Block 9B)
+## §14 — GA Package — Design Notes (Block 9B)
 
 ### Mutation clamping order (mutation.py)
 **Snap-then-clamp** is the correct and implemented order for both `int` and `float`:
 ```
 new_value → snap_to_grid(new_value, low, step) → clamp(snapped, low, high)
 ```
-Clamp-first is wrong: if `max` is not on the step grid, clamping first then snapping
-pushes the value back outside `[min, max]`. Snap-then-clamp guarantees the result is
-simultaneously on-grid and within bounds. Confirmed and tested in Block 9B.
 
 ### Seed threading (ga_engine.py)
-`rng = random.Random(seed)` is created once in `run_ga()` and passed to all operators:
-`select_parents`, `crossover`, and `mutate`. All GA-level operations are fully reproducible.
+`rng = random.Random(seed)` is created once in `run_ga()` and passed to all operators.
 
 ### Elite preservation
 `next_population` = `n_elites` (unchanged) + exactly `population_size - n_elites` offspring.
-The `[:population_size]` slice never discards elites.
 
 ### Known GA gaps
-- **B9B-001** (P3): `crossover.py` has no zone-name assertion for cross-zone parents. A
-  mixed-zone child is produced silently; downstream mutation clamping enforces `parent_a`'s
-  zone bounds.
-- **B9B-003** (P3): `config['_base_yaml_path']` is an orchestrator-injected key, not a
-  YAML key. When Stage 3 is implemented, `_run_stage_3_ga()` must inject this before
-  calling `run_ga()`.
+- **B9B-001** (P3): `crossover.py` has no zone-name assertion for cross-zone parents.
+- **B9B-003** (P3): `config['_base_yaml_path']` is an orchestrator-injected key. When Stage 3 is implemented, `_run_stage_3_ga()` must inject this before calling `run_ga()`.
 
 ---
 
-## §14 — SQLite Schema — 9 Tables
+## §15 — SQLite Schema — 9 Tables
 
 ```
 runs                   ← Immutable run identity: config_hash, 5 seeds, checkpoint
@@ -705,7 +744,7 @@ Full DDL and 10 annotated query examples: `docs/backtesting/SQLITE_SCHEMA.md`
 
 ---
 
-## §15 — Performance Baseline (Block 3, 2026-03-03, LOCKED)
+## §16 — Performance Baseline (Block 3, 2026-03-03, LOCKED)
 
 ```
 Hardware:  Windows 10, 6 workers
@@ -714,7 +753,6 @@ Config:    mc.deep.iterations=3000, mc.deep.input_count=10,
 
 Run 1:  Total=457.2s  Stage5=2.5s   Stage6=446.3s  Stage7=8.3s
 Run 2:  Total=337.2s  Stage5=0.3s   Stage6=332.6s  Stage7=4.4s
-        (Run 2 faster — warm pool / OS cache effects on Windows)
 
 Stage 5 MC Deep:     0.3–2.5s — fully vectorised (np.cumsum). Never the bottleneck.
 Stage 6 Sensitivity: 333–446s — structural bottleneck (~66–89s/candidate).
@@ -724,54 +762,54 @@ Budget: 337–457s of 14,400s daily (2.3–3.2%). Well within tolerance.
 NOTE: TIMING SUMMARY log covers Stages 5–7 only (B8-008). Extends when 1–4 implemented.
 ```
 
-### Optimisation status
+---
 
-| ID | Description | Expected gain | Status |
-|---|---|---|---|
-| OPT-01 | Pool reuse across all candidates in Stage 6 | 40–60% Stage 6 reduction | ✅ Applied (Block 7C). **Target ≤200s not yet confirmed — re-analysis planned** |
-| OPT-02 | Batch all perturbations per candidate into one worker task | Additional 15–25% | 🟡 Re-evaluate after OPT-01 re-analysis |
-| OPT-03 | Reduce `sensitivity.input_count` from 5 to 3 (YAML only) | ~130–180s | 🟡 Available now |
-| OPT-04 | Stage 5 MC Deep — no action until `input_count > 50` | Negligible | ✅ No action |
-| OPT-05 | Clean up `max_workers` param in `evaluate_sensitivity()` after OPT-01 | Code quality | 🟡 Pending |
+## §17 — Known Deferral Decisions
+
+| ID | Finding | Severity | Status | Target |
+|---|---|---|---|---|
+| B8B-005 | OOS gate non-functional — `oos_delta` always None | P2 | Open | Block 9E |
+| B8B-012 | WFO sigmoid scale — verify before first prod run | Pre-prod blocker | Open | After first real run |
+| B9A-001 | orchestrator `rank_by_wfo()` returns `List[Dict]` | P3 | Open | Block 9D |
+| B9A-003 | `spike_threshold` dual-source | P3 | Open | Block 9D |
+| B9C-007 | `_lhs_sample()` lexicographic sort breaks LHS | P3 | Open — **fix before Stage 1** | Block 9D |
+| B9C-006 | `sample_random()` docstring wrong | P3 | Open | Block 9D |
+| B9C-005 | `str(step)` fragile for float repr | P3 | Open | Block 9D |
+| B9C-004 | `wfo_engine` no guard for empty candidates | P3 | Open | Block 9D |
+| B9C-008 | `_structural_validate` fallback type-blind | P3 | Open | Block 9D |
+| B8-006 | `_PARAM_KEY_MAP` dual-file (strategy_runner + yaml_generator) | P3 | Open | Block 9D |
+| B8-009 | Raw sqlite3 in `_resume_or_start` | P3 | Open | Deferred |
+| B9B-001 | No zone-name guard in crossover.py | P3 | Open | Deferred |
+| B9B-003 | `config['_base_yaml_path']` injected private key | P3 | Open | Fix when Stage 3 implemented |
+| B8B-013 | `ruin_threshold` dual-source | P3 | Open | Deferred |
+| B8B-003 | `expectancy_norm scale=3.0` hardcoded | P3 | Open | Deferred |
+| B8B-011 | Single-window variance optimistic | P3 | Open | Deferred |
+| B8B-013 | ruin_threshold dual-source | P3 | Open | Deferred |
+| B8C-002 | Chart figsize hardcoded | P3 | Open | Deferred |
+| B8C-003 | `query_wfo_window_results` missing run_id filter | P3 | Open | Deferred |
+| WF-07 | `parameter_region_width` always None | P4 | Deferred | ML density layer |
+| B8-007/B8-008 | Stage 1–4 stubs; timing covers Stage 5–7 only | P4 | Resolves when stubs implemented | Block 9D |
 
 ---
 
-## §16 — Known Deferral Decisions
-
-| ID | Finding | Severity | Status |
-|---|---|---|---|
-| B8B-005 | OOS gate non-functional — `oos_delta` always None | P2 | Open — Block 9E |
-| B8B-012 | WFO sigmoid scale — verify against real pips/points distribution before first prod run | P3 pre-prod | Open — after first real run |
-| B9A-001 | `rank_by_wfo()` returns `List[Dict]` — should be `List[CandidateRecord]` | P3 | Open — Block 9C |
-| B9A-003 | `spike_threshold` dual-source: config dict vs `ScenarioProfile` | P3 | Open — Block 9C |
-| B8-009 | Raw sqlite3 in `_resume_or_start` bypasses CandidateStore contract | P3 | Open — deferred |
-| B9B-001 | No zone-name guard in `crossover.py` for cross-zone parents | P3 | Open — deferred |
-| B9B-003 | `config['_base_yaml_path']` injected private key | P3 | Fix when Stage 3 implemented |
-| B8B-013 | `ruin_threshold` dual-source | P3 | Open — deferred |
-| B8-006 | `_PARAM_KEY_MAP` dot-paths are second source of truth for strategy YAML schema | P3 | Open — deferred |
-| WF-07 | `parameter_region_width` always None | P4 | Deferred — ML density layer |
-| B8-007/B8-008 | Stage 1–4 stubs; timing covers Stage 5–7 only | P4 | Resolves when stubs implemented |
-
----
-
-## §17 — Architecture Principles Compliance
+## §18 — Architecture Principles Compliance
 
 | # | Principle | Status | Notes |
 |---|---|---|---|
 | P1 SRP | ✅ | B9A-004 (P4): Stage 6 calls `load_scenario()` internally |
-| P2 Contracts | ⚠️ | B9A-001 (`rank_by_wfo` dict), B8-009 (raw sqlite3) |
-| P3 Immutability | ✅ | All contracts `frozen=True`. GA ops use `.create()`. |
-| P4 Explicit | ⚠️ | B8C-006, B9A-004 (both P4 cosmetic) |
+| P2 Contracts | ⚠️ | B9A-001 (`rank_by_wfo` dict in orchestrator), B8-009 (raw sqlite3) |
+| P3 Immutability | ✅ | All contracts `frozen=True`. GA ops use `.create()`. yaml_generator deepcopies base config. |
+| P4 Explicit | ⚠️ | B8C-006, B9C-006 (docstring mismatch), B9C-003 (KeyError vs ValueError) — all P4 cosmetic |
 | P5 Vectorisation | ✅ | MC: `np.cumsum`. Diversity: `min()` over list comprehension. |
-| P6 Fail Fast | ✅ | Stage 0 validates all config. NaN guard (B8B-001). `report_emphasis` validation (B8C-001). All stubs advance checkpoint (B9A-002). GA: empty pop/tournament guarded. |
-| P7 Single Source | ⚠️ | B9A-003 (spike_threshold), B8B-013 (ruin_threshold), B8-006 (_PARAM_KEY_MAP) |
+| P6 Fail Fast | ✅ | Stage 0 validates all config. NaN guard (B8B-001). `report_emphasis` validation (B8C-001). All stubs advance checkpoint (B9A-002). GA: empty pop/tournament guarded. parameter_space raises on empty range. |
+| P7 Single Source | ⚠️ | B9A-003 (spike_threshold), B8B-013 (ruin_threshold), B8-006 (two YAML key maps: strategy_runner + yaml_generator) |
 | P8 Cache Lifecycle | ✅ | `clear_all_caches()` in every `strategy_runner.evaluate()` finally block. |
 | P9 Code Hygiene | ✅ | No `print()` in production code. All logging via logger. |
-| P10 Reproducibility | ✅ | Seeds immutable in RunMetadata. GA seed threaded to all random ops. SHA-256 candidate_id deterministic. |
+| P10 Reproducibility | ✅ | Seeds immutable in RunMetadata. GA seed threaded to all random ops. SHA-256 candidate_id deterministic. Sampler seed threaded through single rng. yaml_generator embeds all 5 seeds. |
 
 ---
 
-## §18 — Adding a New Stage or Module
+## §19 — Adding a New Stage or Module
 
 1. Define a new contract in `contracts.py` (frozen dataclass, `__post_init__` validation)
 2. Add a write method to `CandidateStore` (enqueued, non-blocking)
@@ -784,7 +822,7 @@ NOTE: TIMING SUMMARY log covers Stages 5–7 only (B8-008). Extends when 1–4 i
 
 ---
 
-## §19 — Key Non-Negotiables
+## §20 — Key Non-Negotiables
 
 | Rule | Why |
 |---|---|
@@ -800,10 +838,13 @@ NOTE: TIMING SUMMARY log covers Stages 5–7 only (B8-008). Extends when 1–4 i
 | No `print()` in production code | Use `logger.info` |
 | `store.close()` in `finally` always | Drains write queue; prevents data loss |
 | Snap-then-clamp in mutation | Clamp-first breaks when `max` is not on step grid |
+| `CandidateRecord.stage` is `str` (`.value`) | Not enum — SQLite stores the string value |
+| `WFOWindow` has `start_date`/`end_date` only | No IS/OOS split in contract — single date range per window |
+| Both `_PARAM_KEY_MAP` files updated together | strategy_runner.py + yaml_generator.py both map param → YAML key |
 
 ---
 
-## §20 — Changelog
+## §21 — Changelog
 
 | Version | Date | Change |
 |---|---|---|
@@ -811,4 +852,5 @@ NOTE: TIMING SUMMARY log covers Stages 5–7 only (B8-008). Extends when 1–4 i
 | 1.1.0 | 2026-03-03 | Block 4: Windows spawn mock patching constraint. Confirmed verdict grid. Performance baseline. OPT table. |
 | 1.2.0 | 2026-03-03 | Block 6: Stage counts updated. Verdict grid updated to `capital_accumulation` thresholds. |
 | 2.0.0 | 2026-03-04 | Block 8A: Full rewrite for production readiness. §1–3 (module map, stage execution model), §4–§11 (evaluation data flows, MC path model, WFO window model, contract catalogue, verdict logic, threading model, deferral decisions, principles compliance). |
-| 3.0.0 | 2026-03-04 | Block 9B: Restored all 5 Mermaid diagrams (pipeline overview §3, module dependency §4, data flow §5, WFO window model §8, store threading §9, verdict logic §10) from v1.2 into the §-structured document. Applied all Block 8B–9B deltas: metric units corrected to pips/points throughout (B8B-012 note updated); B8B-018 fixed (field names); B8B-001 fixed (NaN guard); B8C-001 fixed (report_emphasis validation); B8C-007 closed (Stage 7 None guards); B9A-002 fixed (Stage 1 checkpoint); B9A-006 confirmed (SHA-256 determinism); GA design notes added (§13: snap-then-clamp, seed threading, elite preservation, B9B-001, B9B-003); store diagram updated with write_wfo_window_result; OPT-01 status updated (applied, re-analysis planned); known deferral table §16; principles compliance §17; test counts updated to ~303. |
+| 3.0.0 | 2026-03-04 | Block 9B: Restored all 5 Mermaid diagrams. Applied all Block 8B–9B deltas: metric units corrected to pips/points; B8B-018 fixed; B8B-001 fixed; B8C-001 fixed; B8C-007 closed; B9A-002 fixed; B9A-006 confirmed; GA design notes added (§13); store diagram updated; OPT-01 status updated; known deferral table §16; principles compliance §17; test counts updated to ~303. |
+| 4.0.0 | 2026-03-05 | Block 9C: Supporting modules audited (ranker, scenario, parameter_space, sampler, wfo_engine, yaml_generator). §2 module map updated with audit status and open findings. §5 data flow annotated with B9C-007 and B9B-003 warnings. §8 WFOWindow contract fields clarified. §9 store diagram updated — ranker.rank_by_wfo() noted as correct. §11 new section: Supporting Module Design Notes. §12 contract table expanded (VerdictResult full fields, WFOWindow corrected, CandidateRecord stage=str). §13 wfo_engine pool added; wfo_engine test patch pattern added. §17 deferral table expanded with B9C findings. §18 principles updated. §20 non-negotiables expanded. Test count updated to ~345. |

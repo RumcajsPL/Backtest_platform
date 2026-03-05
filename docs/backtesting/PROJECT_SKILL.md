@@ -13,9 +13,9 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-04)**: Block 9B complete.
-- Tests: ~71 green, 0 skipped, 0 failed (8A×12 + 8B×14 + 8C×11 + 9A×7 + 9B×27 + prior 235)
-- Next: Block 9C — supporting modules (wfo_engine, parameter_space, sampler, scenario, ranker, yaml_generator)
+**Current status (2026-03-05)**: Block 9C complete.
+- Tests: ~113 green, 0 skipped, 0 failed (8A×12 + 8B×14 + 8C×11 + 9A×7 + 9B×28 + 9C×42)
+- Next: Block 9D — Stage 1–3 implementations OR P3 bug fixes (see CONTEXT.md Block 9D options)
 - Pre-production blocker: B8B-012 (sigmoid scale calibration — needs first real run)
 ---
 ## Pipeline (in order — do not reorder)
@@ -80,6 +80,9 @@ B8C-001: FIXED — contracts.py: report_emphasis scalar string now raises ValueE
 B9A-002: FIXED — orchestrator.py Stage 1 stub now advances RANDOM_SEARCH_COMPLETE checkpoint.
 B8C-007: CLOSED — Stage 7 guards None wfo_score/mc_result before compute_verdict(). No bug in verdict.py.
 B9A-006: FALSE ALARM — CandidateParameterSet.candidate_id is SHA-256 of params. Deterministic. Safe.
+B9A-001 (ranker): CLOSED at ranker.py — rank_by_wfo() returns List[CandidateRecord]. Bug is orchestrator-only.
+B9A-003 (scenario): CLOSED at scenario.py — load_scenario() correct. Bug is orchestrator Stage 6 only.
+B8B-005 (wfo_engine): CLOSED at wfo_engine.py — engine passes flags correctly. Bug in evaluator/scorer.
 ```
 ---
 ## Critical Open Findings (fix before or when touching the file)
@@ -88,14 +91,17 @@ B8B-012 [PRE-PROD BLOCKER] consistency_scorer.py
   WFO sigmoid scale=0.10 calibrated for unit fractions, not currency points.
   Fix after first real run: measure net_pnl distribution → set wfo_sigmoid_scale.
   Attention! Currency are not used in this project. Strategy metrics are in pips and points. Currency is not required.
-B8B-005 [P2] wfo_evaluator.py / wfo_engine.py
+B8B-005 [P2] wfo_evaluator.py / consistency_scorer.py
   oos_delta always None. enforce_oos_gate=True has no effect. OOS gate not implemented.
+  wfo_engine.py passes flags correctly — bug is in evaluator/scorer only.
 B9A-001 [P3] orchestrator.py
-  rank_by_wfo() returns List[Dict] — raw dicts, not List[CandidateRecord].
+  rank_by_wfo() in orchestrator returns List[Dict] — raw dicts, not List[CandidateRecord].
+  ranker.rank_by_wfo() is correct. Fix is orchestrator-only.
 B9A-003 [P3] orchestrator.py Stage 6
   spike_threshold dual-source: config["sensitivity"]["spike_threshold"] vs
   ScenarioProfile.verdict_sensitivity_spike_threshold. Must be kept in sync manually.
   Fix: Stage 6 should read scenario.verdict_sensitivity_spike_threshold directly.
+  scenario.py is correct — fix is orchestrator Stage 6 only.
 B9B-003 [P3] ga_engine.py
   config['_base_yaml_path'] is a private injected key — not in backtest_template.yaml.
   When Stage 3 is implemented, orchestrator must inject:
@@ -107,8 +113,26 @@ B9B-001 [P3] crossover.py
   Downstream mutation clamping catches boundary violations but no warning logged.
 B8B-013 [P3] mc_engine.py
   ruin_threshold dual-source: config dict + ScenarioProfile.mc_prefilter_ruin_threshold.
-OPT-01 target (not achived): Stage 6 ≤ 200s (40% reduction via pool reuse across candidates). Pool 
-  implemented but Stage 6 still ~300s - to reanalize if possible to improve below target
+B8-006 [P3] strategy_runner.py + yaml_generator.py
+  Two files define YAML parameter key mapping: _PARAM_KEY_MAP and _STRATEGY_PARAM_KEY_MAP.
+  Both must be updated together when adding new strategy parameters.
+B9C-005 [P3] parameter_space.py
+  str(step) for scale detection is fragile for floats with non-canonical repr.
+  Recommend: Decimal(str(step)) for scale computation.
+B9C-006 [P3] sampler.py
+  sample_random() docstring says "with replacement" — implementation is rng.sample() (without replacement).
+  Fix: update docstring. Implementation is correct.
+B9C-007 [P3] sampler.py — FIX BEFORE STAGE 1 IMPLEMENTATION
+  _lhs_sample() sorts param value universe by (str(type), str(val)) — lexicographic for numerics.
+  Breaks LHS space-filling property for multi-digit int/float ranges (e.g. [9,10,11] sorts as [10,11,9]).
+  Fix:
+    try:
+        param_value_universe[name] = sorted(seen, key=lambda x: float(x))
+    except (TypeError, ValueError):
+        param_value_universe[name] = sorted(seen, key=lambda x: str(x))
+B9C-004 [P3] wfo_engine.py
+  No early-exit guard for empty candidates list before ProcessPoolExecutor entry.
+OPT-01 target (not achieved): Stage 6 ≤ 200s (40% reduction via pool reuse across candidates). Pool implemented but Stage 6 still ~300s - to reanalize if possible to improve below target
 ```
 ---
 ## Test Import Convention (CRITICAL — violating causes circular import at collection)
@@ -131,6 +155,9 @@ from src.backtesting.candidate_store import CandidateStore
 patch("src.backtesting.orchestrator.evaluate_sensitivity", ...)   # CORRECT
 # Stage 5: run_mc is a LOCAL import inside _run_stage_5_mc_deep
 patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)        # CORRECT
+# wfo_engine tests: patch at engine module level
+patch("src.backtesting.wfo.wfo_engine.evaluate_window", ...)      # CORRECT
+patch("src.backtesting.wfo.wfo_engine.compute_consistency", ...)  # CORRECT
 # DO NOT patch inside ProcessPoolExecutor workers — mock doesn't cross spawn boundary (ROB-09)
 ```
 ---
@@ -139,22 +166,21 @@ patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)        # CORRECT
 orchestrator.py         — Stage sequencer. 0/5/6/7 implemented. 1-4 stubs with checkpoints.
                           B9A-002 fixed: all stubs now advance checkpoint.
                           B9A-003 open: Stage 6 spike_threshold from config, not ScenarioProfile.
+                          B9A-001 open: inline rank_by_wfo returns List[Dict].
 fitness.py              — Stateless. MetricsReport + ScenarioProfile → FitnessResult. NaN guard added.
 contracts.py            — All frozen dataclasses. report_emphasis validation added (B8C-001).
 candidate_store.py      — SQLite WAL + single-writer queue. Thread-safe.
 strategy_runner.py      — Single candidate eval. _PARAM_KEY_MAP maps zone params → YAML paths.
-parameter_space.py      — Expands YAML zones. [NOT YET AUDITED — Block 9C]
-sampler.py              — LHS or random. [NOT YET AUDITED — Block 9C]
-scenario.py             — Loads ScenarioProfile from YAML. [NOT YET AUDITED — Block 9C]
-ranker.py               — Returns ranked list. [NOT YET AUDITED — Block 9C — may resolve B9A-001]
-yaml_generator.py       — Merges params into base YAML. [NOT YET AUDITED — Block 9C]
-
+parameter_space.py      — Expands YAML zones. AUDITED (Block 9C). B9C-005 open (str(step) fragility).
+sampler.py              — LHS or random. AUDITED (Block 9C). B9C-006 (docstring), B9C-007 (sort key) open.
+scenario.py             — Loads ScenarioProfile from YAML. AUDITED (Block 9C). Clean.
+ranker.py               — Returns ranked List[CandidateRecord]. AUDITED (Block 9C). Clean.
+yaml_generator.py       — Merges params into base YAML. AUDITED (Block 9C). B8-006 scope expanded.
 wfo/wfo_evaluator.py    — One candidate × one window → WFOWindowResult. Never raises.
                           B8B-018 FIXED: total_pnl_points, expectancy_points.
-wfo/wfo_engine.py       — Lightweight + full modes. [NOT YET FULLY AUDITED — Block 9C]
+wfo/wfo_engine.py       — Lightweight + full modes. AUDITED (Block 9C). B9C-004 P3 open. Clean otherwise.
 wfo/consistency_scorer.py — 4-metric composite. sigmoid scale=0.10 (B8B-012 open).
 wfo/window_generator.py — YAML → sorted WFOWindow list.
-
 ga/ga_engine.py         — Full evolution. rng.sample(windows, k=2) per generation.
                           B9B-003 open: config['_base_yaml_path'] injection contract.
 ga/population.py        — Init from MC_PREFILTER_PASS. Elite extraction. Typed API (CandidateRecord).
@@ -162,12 +188,10 @@ ga/selection.py         — Tournament selection. Raises on empty pop.
 ga/crossover.py         — Uniform crossover. zone_name from parent_a. B9B-001 open (no zone guard).
 ga/mutation.py          — Gaussian on step grid. Snap-then-clamp. choice edge cases handled.
 ga/diversity.py         — Hybrid Euclidean/Hamming penalty.
-
 monte_carlo/mc_engine.py         — Pre-filter + deep dispatch. Never raises.
 monte_carlo/perturbation.py      — Named profiles from YAML.
 monte_carlo/equity_simulator.py  — Vectorised np.cumsum.
 monte_carlo/mc_metrics.py        — avg_equity, worst_dd, ruin_prob, p5_equity. Vectorised.
-
 evaluation/sensitivity.py — ±1/±2 steps. Parallel via ProcessPoolExecutor. OPT-01 pool reuse applied.
 evaluation/verdict.py     — Two-pillar + modifier flags. Never sets LIVE_APPROVED.
 report_generator.py       — Self-contained HTML. Inline charts. JSON + Parquet.
@@ -198,6 +222,10 @@ L-06: CandidateParameterSet.candidate_id is SHA-256 of params dict — determini
 L-07: ScenarioProfile.__post_init__ must validate sequence fields (not scalar strings).
       report_emphasis="balanced" passes type hint but iterates as characters downstream.
       Always add isinstance(..., (list, tuple)) + len > 0 guard for sequence fields.
+L-08: ranker.rank_by_wfo() is correct. orchestrator has its own inline rank_by_wfo that
+      returns List[Dict] (B9A-001). When implementing Stage 5, use ranker.rank_by_wfo().
+L-09: _lhs_sample() sorts by string — fix to float() sort before Stage 1 (B9C-007).
+      Affects LHS space-filling for any numeric parameter with values ≥ 10.
 ```
 ---
 ## What NOT To Do
@@ -213,6 +241,8 @@ L-07: ScenarioProfile.__post_init__ must validate sequence fields (not scalar st
 - Do not patch functions called inside ProcessPoolExecutor workers (spawn boundary)
 - Do not use `e2e_test` scenario for production optimization runs
 - Do not clamp-before-snap in mutation — snap-then-clamp is correct
+- Do not re-open B9A-001 for ranker.py — it is correct. Bug is in orchestrator only.
+- Do not re-open B9A-003 for scenario.py — it is correct. Bug is in orchestrator Stage 6 only.
 ---
 ## Platform
 - **OS**: Windows 10, Python 3.13.12
