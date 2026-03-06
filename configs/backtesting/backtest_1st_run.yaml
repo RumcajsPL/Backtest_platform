@@ -1,7 +1,7 @@
 # =============================================================================
-# backtest_template.yaml — Backtesting & Optimization Framework
+# backtest_1st_run.yaml — Backtesting & Optimization Framework
 # Version: 1.0.0
-# Date: 2026-03-05  (revised for Block 9F first run — see CHANGES below)
+# Date: 2026-03-06  (Block 9H — calibration run prep)
 #
 # Source of truth: docs/backtesting/TECHNICAL_SPEC.md
 # Schema reference: TECHNICAL_SPEC.md Section 5
@@ -11,43 +11,45 @@
 #
 # CHANGES FROM 2026-03-02 ORIGINAL:
 #   exploration.enabled:          true  → false    [B9F-001 BLOCKER — see note]
-#   random_search.samples_per_zone: 200 → 50       [first-run conservative]
-#   mc_prefilter.input_count:      120  → 30       [aligned to expected pass count]
-#   genetic.population_size:        60  → 20       [first-run conservative]
-#   genetic.generations:            30  → 5        [first-run conservative]
-#   genetic.stagnation_generations: 10  → 3        [consistent with generations=5]
-#   run.max_workers:                 6  → 4        [first-run conservative]
+#   random_search.samples_per_zone: 200 → 50       [was: first-run conservative]
+#   mc_prefilter.input_count:      120  → 30       [was: aligned to expected pass count]
+#   genetic.population_size:        60  → 20       [was: first-run conservative]
+#   genetic.generations:            30  → 5        [was: first-run conservative]
+#   genetic.stagnation_generations: 10  → 3        [was: consistent with generations=5]
+#   run.max_workers:                 6  → 4        [was: first-run conservative]
 #   sensitivity.seed:           [added] = 46       [was missing — was silently defaulting]
 #
 # CHANGES FROM 2026-03-06 (Block 9F run 1 calibration):
 #   capital_accumulation.constraints.min_win_rate: 0.45 → 0.15
 #     [Run 1 result: 50/50 candidates failed Stage 1. Some candidates were close.
 #      Eased to 0.15 to allow ≥2 candidates through for Stage 2/3 pipeline
-#      validation. Restore to a calibrated value after B8B-003/B8B-012 complete.]
+#      validation. Restore to calibrated value after B8B-003/B8B-012 complete.]
+#
+# CHANGES FROM 2026-03-06 Block 9H (calibration run):
+#   scenario:                    e2e_test → capital_accumulation
+#   random_search.samples_per_zone:  50  → 200     [restored to production value]
+#   mc_prefilter.input_count:        30  → 120     [restored to production value]
+#   genetic.population_size:         20  → 60      [restored to production value]
+#   genetic.generations:              5  → 30      [restored to production value]
+#   genetic.stagnation_generations:   3  → 10      [restored to production value]
+#   run.max_workers:                  4  → 6       [restored to production value]
 #
 # B9F-001 — exploration zone disabled:
-#   expand_zones() materialises the full Cartesian product via itertools.product().
-#   The exploration zone has ~387 TRILLION combinations → process hangs / OOM.
-#   The safe zone has ~2 million combinations → ~520MB RAM, feasible.
-#   ENABLED guard in expand_zones() IS present (line 34: enabled check) — so setting
-#   exploration.enabled: false is sufficient to prevent the hang.
-#   Fix: refactor expand_zones() to never enumerate full product (Block 9F session).
-#   Re-enable exploration zone AFTER that fix is deployed.
+#   expand_zones() no longer enumerates the full Cartesian product (B9F-001 fixed
+#   in Block 9H). However, the exploration zone remains disabled until the
+#   calibration run completes and B8B-012 sigmoid scale is calibrated.
+#   Re-enable only after both B8B-012 and B8B-003 are addressed.
 #
-# AFTER FIRST RUN — restore these values for production:
-#   exploration.enabled:          false → true     (after B9F-001 fix deployed)
-#   random_search.samples_per_zone:  50 → 200
-#   mc_prefilter.input_count:        30 → 120
-#   genetic.population_size:         20 → 60
-#   genetic.generations:              5 → 30
-#   genetic.stagnation_generations:   3 → 10
-#   run.max_workers:                  4 → 6
+# CALIBRATION RUN NOTES (Block 9H):
+#   - min_win_rate remains at 0.15 (eased from 0.45). Restore after B8B-003/B8B-012.
+#   - After this run: measure net_pnl distribution to calibrate B8B-012 sigmoid scale.
+#   - After this run: calibrate B8B-003 expectancy_norm divisor in fitness.py.
 # =============================================================================
 
 
 # ── Identity ──────────────────────────────────────────────────────────────────
 backtester_version: "1.0.0"       # Must match BACKTESTER_VERSION in orchestrator.py
-scenario: "e2e_test"  # Active scenario — must match a key under `scenarios`
+scenario: "capital_accumulation"  # Switched from e2e_test (Block 9H calibration run)
 
 
 # ── Strategy base config ──────────────────────────────────────────────────────
@@ -61,7 +63,7 @@ run:
   output_dir: "outputs/backtesting" # All run artifacts: DB, HTML, YAMLs, JSON
   temp_dir: "temp/backtesting"      # Temp candidate YAMLs — deleted after each evaluation
   retain_temp_yamls: false          # Set true only for debugging evaluation failures
-  max_workers: 4                    # ← reduced from 6; increase after stability confirmed
+  max_workers: 6                    # Restored to production value (was 4 for e2e_test)
   log_level: "INFO"
 
 
@@ -80,16 +82,14 @@ stages:
 # ── Random Search (Stage 1) ───────────────────────────────────────────────────
 random_search:
   method: "lhs"                     # "lhs" (Latin Hypercube) | "random"
-  samples_per_zone: 50              # ← reduced from 200; safe zone only → 50 total evals
-                                    # Increase to 200 after stability confirmed
+  samples_per_zone: 200             # Restored to production value (was 50 for e2e_test)
   min_significant_trades: 30
   seed: 42
 
 
 # ── MC Pre-Filter (Stage 2) ───────────────────────────────────────────────────
 mc_prefilter:
-  input_count: 30                   # ← reduced from 120; aligned to expected Stage 1 pass count
-                                    # rank() handles smaller pools — no crash if fewer pass
+  input_count: 120                  # Restored to production value (was 30 for e2e_test)
   iterations: 300
   perturbation_profile: "default"
   seed: 43
@@ -97,13 +97,13 @@ mc_prefilter:
 
 # ── Genetic Algorithm (Stage 3) ───────────────────────────────────────────────
 genetic:
-  population_size: 20               # ← reduced from 60; increase to 60 after stability confirmed
-  generations: 5                    # ← reduced from 30; increase to 30 after stability confirmed
+  population_size: 60               # Restored to production value (was 20 for e2e_test)
+  generations: 30                   # Restored to production value (was 5 for e2e_test)
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 3         # ← reduced from 10; consistent with generations=5
+  stagnation_generations: 10        # Restored to production value (was 3 for e2e_test)
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -155,7 +155,7 @@ sensitivity:
   input_count: 5
   max_steps: 2
   spike_threshold: 0.15             # Documentation only — orchestrator reads from scenario
-  seed: 46                          # ← added (was missing — was silently defaulting to 46)
+  seed: 46
 
 
 # ── Output (Stage 7) ──────────────────────────────────────────────────────────
@@ -335,11 +335,13 @@ scenarios:
 # ── Parameter Zones ───────────────────────────────────────────────────────────
 # All parameter names verified against strategy_runner._PARAM_KEY_MAP ✓
 #
-# ENABLED GUARD: expand_zones() checks zone["enabled"] before expansion (confirmed).
-# Setting enabled: false is sufficient to prevent OOM — no code guard needed.
+# B9F-001 FIXED (Block 9H): expand_zones() no longer enumerates the full
+# Cartesian product. It now returns per-param value lists. The exploration zone
+# can be re-enabled safely from a memory standpoint, but remains disabled until
+# B8B-012 and B8B-003 calibration are complete after the first real run.
 #
-# safe zone:        ~2M combinations — feasible; ~520MB RAM one-time cost at Stage 1 start
-# exploration zone: ~387T combinations — DISABLED (B9F-001) until expand_zones() refactored
+# safe zone:        9 params — feasible at any sample size
+# exploration zone: disabled — re-enable after B8B-012/B8B-003 calibration
 # discovery zone:   disabled — wide ranges, enable only for dedicated exploration runs
 
 zones:
@@ -358,7 +360,7 @@ zones:
       bollinger_multiplier: {type: float, min: 0.3, max: 0.7, step: 0.1}
 
   exploration:
-    enabled: false   # B9F-001: ~387T combinations → OOM. Re-enable after expand_zones() refactor.
+    enabled: false   # B9F-001 fixed. Re-enable after B8B-012/B8B-003 calibration complete.
     # Wider ranges + secondary filter toggling (ADX, Choppiness, Supertrend).
     parameters:
       rsi_period:           {type: int,   min: 8,  max: 24, step: 2}
