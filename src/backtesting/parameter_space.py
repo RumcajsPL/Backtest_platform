@@ -1,34 +1,54 @@
 """
-parameter_space.py — Expands YAML zone definitions into discrete parameter sets.
+parameter_space.py — Expands YAML zone definitions into per-parameter value lists.
 
 No strategy knowledge. No evaluation. Pure expansion logic.
+
+B9F-001: expand_zones() now returns Dict[str, Dict[str, List]] — a mapping of
+zone_name → {param_name: [value, ...]} — instead of the full Cartesian product.
+The previous implementation called itertools.product() over all parameter value
+lists, which materialises every combination in memory. The safe zone has ~2M
+combinations (~520MB RAM); the exploration zone has ~387 trillion combinations
+and would hang or OOM the process.
+
+The per-param list format is sufficient for all downstream consumers:
+  - sampler.sample_lhs()   — uses _lhs_sample() which already works per-param
+  - sampler.sample_random() — draws independently per parameter
+  - validate_combination()  — unchanged, works on a single params dict vs zone_def
+  - parameter_space.get_param_values() — new helper for sensitivity step calculation
+
+The Cartesian product is never needed: LHS and random sampling both draw from
+the marginal distributions, not from an enumerated joint distribution.
 """
 from __future__ import annotations
 
-import itertools
 from decimal import Decimal
 from typing import Dict, List, Any
 
 
-def expand_zones(config: dict) -> Dict[str, List[Dict[str, object]]]:
+def expand_zones(config: dict) -> Dict[str, Dict[str, List]]:
     """
     Read zone definitions from config['zones'] and expand each enabled zone
-    into a list of all valid parameter combinations.
+    into a dict of per-parameter value lists.
 
     For int/float parameters: generates values from min to max (inclusive) at
-    the given step size.
+    the given step size using integer arithmetic to avoid floating-point drift.
     For choice parameters: uses the choices list directly.
 
-    Returns a dict of {zone_name: [param_dict, ...]}.
-    Disabled zones are excluded from the output.
+    Returns:
+        Dict[zone_name, Dict[param_name, List[value]]]
 
-    Raises ValueError for malformed zone definitions.
+    Disabled zones are excluded from the output.
+    Raises ValueError for malformed zone definitions or empty ranges.
+
+    B9F-001: previously returned Dict[zone_name, List[Dict]] (full Cartesian
+    product via itertools.product). Replaced with per-param value lists to
+    avoid materialising ~387T combinations for the exploration zone.
     """
     zones_config = config.get("zones")
     if not zones_config:
         raise ValueError("config['zones'] is missing or empty")
 
-    result: Dict[str, List[Dict[str, object]]] = {}
+    result: Dict[str, Dict[str, List]] = {}
 
     for zone_name, zone_def in zones_config.items():
         if not zone_def.get("enabled", True):
@@ -38,15 +58,15 @@ def expand_zones(config: dict) -> Dict[str, List[Dict[str, object]]]:
         if not params_def:
             raise ValueError(f"Zone '{zone_name}' has no parameters defined")
 
-        # Build discrete value list for each parameter
-        param_value_lists: Dict[str, list] = {}
+        param_value_lists: Dict[str, List] = {}
         for param_name, param_spec in params_def.items():
             param_type = param_spec.get("type")
             if param_type == "choice":
                 choices = param_spec.get("choices")
                 if not choices:
                     raise ValueError(
-                        f"Zone '{zone_name}', param '{param_name}': choice type requires non-empty choices"
+                        f"Zone '{zone_name}', param '{param_name}': "
+                        f"choice type requires non-empty choices"
                     )
                 param_value_lists[param_name] = list(choices)
 
@@ -73,10 +93,7 @@ def expand_zones(config: dict) -> Dict[str, List[Dict[str, object]]]:
                     f"unknown type '{param_type}'; expected 'int', 'float', or 'choice'"
                 )
 
-        # Cartesian product of all parameter value lists
-        param_names = list(param_value_lists.keys())
-        combinations = list(itertools.product(*[param_value_lists[n] for n in param_names]))
-        result[zone_name] = [dict(zip(param_names, combo)) for combo in combinations]
+        result[zone_name] = param_value_lists
 
     return result
 
@@ -107,6 +124,45 @@ def validate_combination(params: Dict[str, object], zone_def: dict) -> bool:
     return True
 
 
+def get_param_values(zone_def: dict, param_name: str) -> List:
+    """
+    Return the discrete value list for a single parameter in a zone definition.
+    Used by sensitivity analysis to enumerate ±step perturbations.
+
+    Raises KeyError if param_name is not in the zone definition.
+    Raises ValueError for malformed parameter specs.
+    """
+    params_def = zone_def.get("parameters", {})
+    param_spec = params_def.get(param_name)
+    if param_spec is None:
+        raise KeyError(
+            f"Parameter '{param_name}' not found in zone definition. "
+            f"Available: {sorted(params_def.keys())}"
+        )
+
+    param_type = param_spec.get("type")
+    if param_type == "choice":
+        choices = param_spec.get("choices")
+        if not choices:
+            raise ValueError(
+                f"Parameter '{param_name}': choice type requires non-empty choices"
+            )
+        return list(choices)
+    elif param_type in ("int", "float"):
+        mn = param_spec.get("min")
+        mx = param_spec.get("max")
+        step = param_spec.get("step")
+        if mn is None or mx is None or step is None:
+            raise ValueError(
+                f"Parameter '{param_name}': int/float type requires min, max, step"
+            )
+        return _range_values(param_type, mn, mx, step)
+    else:
+        raise ValueError(
+            f"Parameter '{param_name}': unknown type '{param_type}'; "
+            f"expected 'int', 'float', or 'choice'"
+        )
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _range_values(param_type: str, mn: float, mx: float, step: float) -> list:
@@ -119,10 +175,6 @@ def _range_values(param_type: str, mn: float, mx: float, step: float) -> list:
     to correctly identify the number of decimal places for floats with
     non-canonical representations (e.g. 0.10000000000001 → '0.1' via Decimal).
     """
-    # B9C-005: Decimal(str(step)) for robust scale detection — avoids float repr
-    # artefacts that str(step) would expose (e.g. 0.2 → '0.2' correctly,
-    # but a marginal float like 0.10000000000001 would bloat the scale factor
-    # and produce spurious intermediate values with str(step)).
     step_decimal = Decimal(str(step))
     step_str = str(step_decimal)
     scale = 1

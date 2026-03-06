@@ -9,9 +9,17 @@ Architecture:
 - All reads are direct (no queue) — WAL allows concurrent readers.
 
 Source of truth: docs/backtesting/SQLITE_SCHEMA.md
+
+B9H-002: _write_wfo_window_result now uses a deterministic result_id derived
+from SHA-256(run_id + candidate_id + window_id). This makes INSERT OR REPLACE
+actually deduplicate: repeated writes for the same candidate+window within a
+run correctly update the existing row rather than appending a new one.
+Previously, a fresh uuid4() was used as PK on every call, so OR REPLACE never
+triggered and duplicate rows accumulated silently in wfo_window_results.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
@@ -253,6 +261,23 @@ def _now_ts() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _wfo_result_id(run_id: str, candidate_id: str, window_id: str) -> str:
+    """
+    Deterministic result_id for wfo_window_results rows.
+
+    Derived from SHA-256(run_id + candidate_id + window_id), truncated to
+    32 hex chars. Guarantees that INSERT OR REPLACE deduplicates correctly:
+    repeated writes for the same (run, candidate, window) triple update the
+    existing row rather than appending a new one.
+
+    B9H-002: replaces the previous uuid4() approach which caused silent row
+    accumulation because a fresh PK was generated on every call, so the
+    REPLACE clause in INSERT OR REPLACE never triggered.
+    """
+    key = f"{run_id}:{candidate_id}:{window_id}"
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
 class CandidateStore:
     """
     Thread-safe SQLite store for all backtesting pipeline results.
@@ -405,7 +430,7 @@ class CandidateStore:
                       worst_window_drawdown, fraction_positive_windows,
                       wfo_consistency_score, oos_gate_triggered, window_collapse_flag,
                       median_oos_delta
-               FROM wfo_consistency_scores WHERE candidate_id = ?""",               
+               FROM wfo_consistency_scores WHERE candidate_id = ?""",
             (candidate_id,),
         ).fetchone()
         if row is None:
@@ -415,7 +440,7 @@ class CandidateStore:
             median_return, variance, worst_dd, frac_pos,
             composite, oos_gate, collapse, median_oos_delta,
         ) = row
-        return WFOConsistencyScore(        
+        return WFOConsistencyScore(
             candidate_id=cid,
             windows_evaluated=windows_evaluated or 0,
             windows_total=windows_total or 0,
@@ -426,8 +451,8 @@ class CandidateStore:
             composite_score=composite or 0.0,
             oos_gate_triggered=bool(oos_gate) if oos_gate is not None else False,
             window_collapse_flag=bool(collapse) if collapse is not None else False,
-            median_oos_delta=median_oos_delta,  # B8-001: read persisted M-01 value
-        )           
+            median_oos_delta=median_oos_delta,
+        )
 
     def get_mc_result(self, candidate_id: str, mode: MCMode) -> Optional[MCResult]:
         """Return the MCResult for a candidate and mode, or None if not found."""
@@ -471,7 +496,6 @@ class CandidateStore:
             return None
         cid, baseline, spike_det, spike_params_json, complete = row
 
-        # Reload per-step results to reconstruct parameter_sensitivities tuple
         step_rows = self._conn.execute(
             """SELECT parameter_name, step, perturbed_value, fitness_delta, evaluation_error
                FROM sensitivity_results WHERE candidate_id = ?
@@ -578,7 +602,6 @@ class CandidateStore:
                 "generation": generation,
                 "wfo_consistency_score": wfo_score,
                 "parameters": params,
-                # Also expose parameters_json for _record_to_candidate compatibility
                 "parameters_json": params_json or "{}",
             })
         return result
@@ -882,10 +905,6 @@ class CandidateStore:
         Write candidates + candidate_parameters rows only. No evaluations row.
         INSERT OR IGNORE — safe to call for candidates already in the DB (no-op).
         Called by writer thread only.
-
-        This is used by ga_engine to register offspring candidates before
-        writing their WFO window results, preventing FOREIGN KEY constraint
-        failures on wfo_window_results(candidate_id → candidates).
         """
         candidate, run_id, stage, generation = args
         params = candidate.parameters
@@ -935,8 +954,17 @@ class CandidateStore:
         )
 
     def _write_wfo_window_result(self, args: tuple) -> None:
-        """Write one WFOWindowResult row. Called by writer thread only."""
+        """
+        Write one WFOWindowResult row. Called by writer thread only.
+
+        B9H-002: Uses a deterministic result_id via _wfo_result_id() so that
+        INSERT OR REPLACE correctly deduplicates on (run_id, candidate_id,
+        window_id). Previously, a fresh uuid4() was used on every call, which
+        caused duplicate rows to accumulate silently because the REPLACE clause
+        never triggered (new PK = new row, always).
+        """
         result, run_id = args
+        result_id = _wfo_result_id(run_id, result.candidate_id, result.window_id)
         self._conn.execute(
             """INSERT OR REPLACE INTO wfo_window_results (
                 result_id, candidate_id, run_id, window_id,
@@ -945,7 +973,7 @@ class CandidateStore:
                 win_rate, expectancy, profit_factor, oos_delta, evaluation_error
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                str(uuid.uuid4()),
+                result_id,
                 result.candidate_id,
                 run_id,
                 result.window_id,
@@ -1004,7 +1032,7 @@ class CandidateStore:
                 worst_window_drawdown, fraction_positive_windows,
                 wfo_consistency_score, windows_evaluated, windows_total,
                 oos_gate_triggered, window_collapse_flag, median_oos_delta
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",               
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 score.candidate_id,
                 run_id,
@@ -1018,11 +1046,11 @@ class CandidateStore:
                 score.windows_total,
                 int(score.oos_gate_triggered),
                 int(score.window_collapse_flag),
-                score.median_oos_delta,   # B8-001: persist M-01 computed value
+                score.median_oos_delta,
             ),
         )
         self._conn.commit()
-        logger.debug("WFO score written: candidate=%s  score=%.4f",        
+        logger.debug("WFO score written: candidate=%s  score=%.4f",
                      score.candidate_id[:12], score.composite_score)
 
     def _write_mc_result(self, args: tuple) -> None:
@@ -1057,7 +1085,6 @@ class CandidateStore:
         profile, run_id = args
         now = _now_ts()
 
-        # Write per-step sensitivity_results rows
         for ps in profile.parameter_sensitivities:
             is_spike = (
                 ps.parameter_name in profile.spike_parameters
@@ -1089,7 +1116,6 @@ class CandidateStore:
                 ),
             )
 
-        # Write sensitivity_profiles summary row
         self._conn.execute(
             """INSERT OR REPLACE INTO sensitivity_profiles (
                 candidate_id, run_id, baseline_fitness, spike_detected,
@@ -1203,8 +1229,8 @@ class CandidateStore:
             wfo_windows_evaluated=wfo_evaluated,
             wfo_oos_gate_triggered=bool(wfo_oos_gate) if wfo_oos_gate is not None else None,
             wfo_window_collapse_flag=bool(wfo_collapse) if wfo_collapse is not None else None,
-            wfo_median_oos_delta=wfo_median_oos_delta,  # B8-002
-            mc_prefilter_ruin_probability=mc_pre_ruin,            
+            wfo_median_oos_delta=wfo_median_oos_delta,
+            mc_prefilter_ruin_probability=mc_pre_ruin,
             mc_prefilter_avg_final_equity=mc_pre_equity,
             mc_prefilter_iterations=mc_pre_iters,
             mc_deep_ruin_probability=mc_deep_ruin,

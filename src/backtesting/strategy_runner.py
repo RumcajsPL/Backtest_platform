@@ -144,7 +144,7 @@ def evaluate(
                                  Accepts date or datetime; date is formatted as
                                  "YYYY-MM-DD 23:59:59" to match strategy YAML format.
     """
-    yaml_path = temp_dir / f"candidate_{candidate.candidate_id[:12]}.yaml"
+    yaml_path = temp_dir / f"candidate_{candidate.candidate_id}.yaml"
     cache_manager = None
 
     try:

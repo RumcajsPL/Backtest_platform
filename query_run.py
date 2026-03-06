@@ -110,10 +110,12 @@ def q_pipeline_health(conn, run_id):
                    f"{passed}/{total} ({rate:.0%})",
                    "OK" if passed > 0 else "FAIL: 0 candidates passed - check constraints"))
 
-    # Stage 3 GA
+    # Stage 3 GA — query candidates table (stubs write no evaluations row)
+    # B9H-001: was querying evaluations WHERE stage='GA' which always returns 0
+    # because write_candidate_stub() does not write an evaluations row.
     r = conn.execute("""
-        SELECT COUNT(DISTINCT candidate_id) as n
-        FROM evaluations WHERE run_id = ? AND stage = 'GA'
+        SELECT COUNT(*) as n
+        FROM candidates WHERE run_id = ? AND origin_stage = 'GA'
     """, (run_id,)).fetchone()
     ga_n = r["n"] or 0
     checks.append(("Stage 3 GA candidates", str(ga_n),
@@ -337,13 +339,12 @@ def q_ga_generations(conn, run_id):
     """, (run_id,)).fetchall()
     if not rows:
         subsection("generation column not populated for GA stage - showing totals")
+        # B9H-001: count GA candidates from candidates table (stubs write no evaluations row)
         r = conn.execute("""
-            SELECT COUNT(DISTINCT candidate_id) as n,
-                   ROUND(MAX(fitness_score), 4) as best_fitness,
-                   ROUND(AVG(fitness_score), 4) as avg_fitness
-            FROM evaluations WHERE run_id = ? AND stage = 'GA'
+            SELECT COUNT(*) as n
+            FROM candidates WHERE run_id = ? AND origin_stage = 'GA'
         """, (run_id,)).fetchone()
-        print(f"  Total GA candidates: {r['n']}  best={r['best_fitness']}  avg={r['avg_fitness']}")
+        print(f"  Total GA candidates: {r['n']}  (fitness scores not stored for GA stubs)")
     else:
         fmt_table(rows, ["generation", "candidates", "best", "avg", "worst"])
 
@@ -385,20 +386,26 @@ def q_wfo_window_detail(conn, run_id):
     for row in top5:
         cid = row["candidate_id"]
         print(f"\n  Candidate {cid[:12]}  WFO={row['score']}")
+        # B9H-002: Deduplicate rows per window_id. _write_wfo_window_result uses
+        # INSERT OR REPLACE with a fresh uuid4() PK, so duplicate rows accumulate
+        # when the same candidate is evaluated multiple times (GA + Stage 4).
+        # GROUP BY window_id with MAX(fitness_score) keeps the best result per window,
+        # consistent with how consistency_scorer.py treats the window results.
         windows = conn.execute("""
             SELECT window_id,
-                   is_ga_fitness_window         as ga_win,
-                   ROUND(fitness_score, 4)      as fitness,
-                   total_trades,
-                   ROUND(win_rate, 4)           as win_rate,
-                   ROUND(net_pnl, 2)            as net_pnl,
-                   ROUND(max_drawdown, 4)       as drawdown,
-                   ROUND(expectancy, 4)         as expectancy,
-                   ROUND(oos_delta, 4)          as oos_delta,
-                   COALESCE(evaluation_error,'') as error
+                   0                                        as ga_win,
+                   ROUND(MAX(fitness_score), 4)             as fitness,
+                   MAX(total_trades)                        as total_trades,
+                   ROUND(AVG(win_rate), 4)                  as win_rate,
+                   ROUND(MAX(net_pnl), 2)                   as net_pnl,
+                   ROUND(MIN(max_drawdown), 4)              as drawdown,
+                   ROUND(AVG(expectancy), 4)                as expectancy,
+                   ROUND(AVG(oos_delta), 4)                 as oos_delta,
+                   COALESCE(MAX(evaluation_error), '')      as error
             FROM wfo_window_results
             WHERE run_id = ? AND candidate_id = ?
               AND is_ga_fitness_window = 0
+            GROUP BY window_id
             ORDER BY window_id
         """, (run_id, cid)).fetchall()
         fmt_table(windows, ["window_id", "ga_win", "fitness", "total_trades",
