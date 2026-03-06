@@ -218,7 +218,7 @@ def q_rejection_breakdown(conn, run_id):
         SELECT
             CASE passed_constraints WHEN 1 THEN 'PASS' ELSE 'FAIL' END as result,
             COALESCE(rejection_reason, 'n/a') as reason,
-            COALESCE(failing_constraint, 'n/a') as constraint,
+            COALESCE(failing_constraint, 'n/a') as "constraint",
             COUNT(*) as count
         FROM evaluations
         WHERE run_id = ? AND stage = 'RANDOM'
