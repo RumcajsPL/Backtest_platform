@@ -105,17 +105,24 @@ def extract_trade_returns(candidate_result_trades: object) -> np.ndarray:
     into a 1-D numpy array suitable for MC simulation.
 
     The trades object is the TradeResult from the strategy architecture.
-    This function extracts the 'pnl' field from each trade.
+    Attribute resolution order (B9F-004):
+      1. trade.pnl_points  — Trade.pnl_points property (TradeExit.pnl_points via exit)
+      2. trade.pnl         — legacy fallback attribute name
+      3. dict["pnl_points"] — dict representation fallback
+      4. dict["pnl"]        — legacy dict fallback
+
+    Open trades (exit is None) return pnl_points=None and are skipped.
+    Only closed trades contribute to MC simulation.
 
     Args:
-        candidate_result_trades: TradeResult from strategy (list of trade objects
-                                 or list of dicts with 'pnl' key).
+        candidate_result_trades: TradeResult from strategy (list of Trade objects
+                                 or list of dicts with pnl_points/pnl key).
 
     Returns:
-        1-D numpy array of float64 P&L values, one per trade.
+        1-D numpy array of float64 P&L values, one per closed trade.
 
     Raises:
-        ValueError: If no trades found or P&L values cannot be extracted.
+        ValueError: If no closed trades found or P&L values cannot be extracted.
     """
     if candidate_result_trades is None:
         raise ValueError("trades object is None — cannot extract returns for MC simulation")
@@ -130,17 +137,32 @@ def extract_trade_returns(candidate_result_trades: object) -> np.ndarray:
 
     pnl_values = []
     for trade in trades:
-        if hasattr(trade, "pnl"):
+        # B9F-004: Trade contract uses pnl_points (via Trade.pnl_points property).
+        # Trade.pnl_points returns None for open trades (no exit) — skip those.
+        if hasattr(trade, "pnl_points"):
+            val = trade.pnl_points
+            if val is None:
+                continue  # Open trade — no exit yet, skip
+            pnl_values.append(float(val))
+        elif hasattr(trade, "pnl"):
             pnl_values.append(float(trade.pnl))
+        elif isinstance(trade, dict) and "pnl_points" in trade:
+            val = trade["pnl_points"]
+            if val is None:
+                continue
+            pnl_values.append(float(val))
         elif isinstance(trade, dict) and "pnl" in trade:
             pnl_values.append(float(trade["pnl"]))
         else:
             raise ValueError(
                 f"Cannot extract pnl from trade object type {type(trade).__name__}. "
-                "Expected attribute 'pnl' or dict key 'pnl'."
+                "Expected attribute 'pnl_points', 'pnl', or dict key 'pnl_points'/'pnl'."
             )
 
     if not pnl_values:
-        raise ValueError("No valid P&L values extracted from trade list")
+        raise ValueError(
+            "No closed trades available for MC simulation — "
+            "all trades are open (no exit recorded)"
+        )
 
     return np.array(pnl_values, dtype=np.float64)

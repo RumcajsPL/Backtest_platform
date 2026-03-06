@@ -13,14 +13,26 @@ Integration:
 - StrategyConfig.from_yaml(path) — fail fast on invalid config
 - StrategyOrchestrator(config, cache_manager=cache_manager).run(mode="core")
 - OrchestratorResult.metrics (MetricsReport), .trade_result (TradeResult)
+
+Block 9F fix (B9F-005):
+  date_start / date_end parameters added to evaluate() and _write_temp_yaml().
+  When provided, they override data.date_range.start / data.date_range.end in
+  the temp YAML so that WFO window-scoped evaluations use the correct date range.
+  Date objects are formatted as "YYYY-MM-DD HH:MM:SS" strings to match the
+  strategy_template.yaml format (data.date_range expects full datetime strings).
+  When None, the base YAML's date_range is used unchanged (Stage 1 behaviour).
+
+  NOTE: H-01 in the skill was incorrectly marked as FALSE POSITIVE.
+  strategy_runner.evaluate() did NOT accept date_start/date_end before this fix.
+  The fix is here — wfo_evaluator.py was already correct in passing them.
 """
 from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, date
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import yaml
 
@@ -80,7 +92,6 @@ _PARAM_KEY_MAP: Dict[str, str] = {
     "ma_enabled":               "filters.technical_filters.ma_filter.enabled",
     "ma_length":                "filters.technical_filters.ma_filter.length",
     "ma_slope_length":          "filters.technical_filters.ma_filter.slope_length",
-    # ma_type excluded: high interaction effects; add as choice param in dedicated zone (v2+)
 
     # ── Pivot filter ─────────────────────────────────────────────────────────
     "pivot_enabled":            "filters.technical_filters.pivot_filter.enabled",
@@ -98,15 +109,8 @@ _PARAM_KEY_MAP: Dict[str, str] = {
     "atr_multiplier":           "trade_management.risk.atr_multiplier_sl",
     "rr_target":                "trade_management.risk.risk_to_reward_ratio",
     "risk_percentile":          "trade_management.risk.max_risk_percentile",
-
-    # EXCLUDED (v2+):
-    #   strategy_tf    — data.paths.strategy_ohlcv is a full file path, not a TF field.
-    #                    Requires path construction + file existence validation.
-    #   htf_tf         — same issue; data.htf_period also needs a matching file path.
-    #   session_filter — session_start/end are nested {hour, minute} dicts, not scalars.
-    #   filter_sequence — list of 10 names; 10! orderings, no fitness gradient. v2+.
-    #   ma_type        — choice param with high interaction effects. Dedicated zone only.
 }
+
 
 def evaluate(
     candidate: CandidateParameterSet,
@@ -114,6 +118,8 @@ def evaluate(
     temp_dir: Path,
     min_significant_trades: int = 30,
     retain_temp_yamls: bool = False,
+    date_start: Optional[Union[date, datetime]] = None,
+    date_end: Optional[Union[date, datetime]] = None,
 ) -> CandidateResult:
     """
     Build a temp YAML from the candidate's parameters, run the strategy in
@@ -122,14 +128,27 @@ def evaluate(
     Never raises. All failures are returned as CandidateResult with error set.
     CacheManager.clear_all_caches() and temp YAML cleanup happen in every
     finally block — even on exception or early return.
+
+    Args:
+        candidate:               Candidate parameter set to evaluate.
+        base_yaml_path:          Path to base strategy_template.yaml.
+        temp_dir:                Directory for temp per-candidate YAMLs.
+        min_significant_trades:  Significance guard — reject if total_trades < this.
+        retain_temp_yamls:       If True, do not delete temp YAML after evaluation.
+        date_start:              Optional window start date for WFO scoping.
+                                 Overrides data.date_range.start in the temp YAML.
+                                 Accepts date or datetime; date is formatted as
+                                 "YYYY-MM-DD 00:00:00" to match strategy YAML format.
+        date_end:                Optional window end date for WFO scoping.
+                                 Overrides data.date_range.end in the temp YAML.
+                                 Accepts date or datetime; date is formatted as
+                                 "YYYY-MM-DD 23:59:59" to match strategy YAML format.
     """
     yaml_path = temp_dir / f"candidate_{candidate.candidate_id[:12]}.yaml"
     cache_manager = None
 
     try:
         # ── Import strategy components ─────────────────────────────────────
-        # Imported inside the function so the module is importable even when
-        # the strategy package is not available (e.g. in test environments).
         try:
             from src.strategies.config.config_schema import StrategyConfig
             from src.strategies.orchestrator import StrategyOrchestrator
@@ -152,7 +171,13 @@ def evaluate(
         cache_manager = CacheManager()
 
         # ── Write temp YAML ────────────────────────────────────────────────
-        _write_temp_yaml(candidate, base_yaml_path, yaml_path)
+        _write_temp_yaml(
+            candidate=candidate,
+            base_yaml_path=base_yaml_path,
+            output_path=yaml_path,
+            date_start=date_start,
+            date_end=date_end,
+        )
 
         # ── Validate config (fail fast) ────────────────────────────────────
         strategy_config = StrategyConfig.from_yaml(yaml_path)
@@ -207,7 +232,6 @@ def evaluate(
         )
 
     finally:
-        # Always clean up — even on exception or early return
         if cache_manager is not None:
             try:
                 cache_manager.clear_all_caches()
@@ -226,10 +250,20 @@ def _write_temp_yaml(
     candidate: CandidateParameterSet,
     base_yaml_path: Path,
     output_path: Path,
+    date_start: Optional[Union[date, datetime]] = None,
+    date_end: Optional[Union[date, datetime]] = None,
 ) -> None:
     """
     Load the base YAML, deep-set each candidate parameter using dot-notation
-    key paths, and write to output_path. Raises on I/O or YAML parse errors.
+    key paths, optionally override the date range for WFO window scoping,
+    and write to output_path. Raises on I/O or YAML parse errors.
+
+    B9F-005: date_start / date_end override data.date_range.start / .end when
+    provided. date objects are formatted with default session times:
+      date_start → "YYYY-MM-DD 00:00:00"
+      date_end   → "YYYY-MM-DD 23:59:59"
+    datetime objects are formatted as-is via isoformat(sep=" ", timespec="seconds").
+    This matches the strategy_template.yaml format for data.date_range fields.
     """
     with open(base_yaml_path, "r", encoding="utf-8") as f:
         config_dict = yaml.safe_load(f)
@@ -237,12 +271,18 @@ def _write_temp_yaml(
     for param_name, value in candidate.parameters.items():
         yaml_key_path = _PARAM_KEY_MAP.get(param_name)
         if yaml_key_path is None:
-            # Unknown parameter — this is a defect. Raise to surface it.
             raise KeyError(
                 f"No YAML key mapping for parameter '{param_name}'. "
                 "Add it to _PARAM_KEY_MAP in strategy_runner.py."
             )
         _deep_set(config_dict, yaml_key_path, value)
+
+    # ── B9F-005: WFO date range override ──────────────────────────────────────
+    if date_start is not None:
+        _deep_set(config_dict, "data.date_range.start", _fmt_date(date_start, is_end=False))
+    if date_end is not None:
+        _deep_set(config_dict, "data.date_range.end", _fmt_date(date_end, is_end=True))
+    # ── end B9F-005 ────────────────────────────────────────────────────────────
 
     # Always run in core mode
     _deep_set(config_dict, "execution.mode", "core")
@@ -250,6 +290,24 @@ def _write_temp_yaml(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config_dict, f, default_flow_style=False, allow_unicode=True)
+
+
+def _fmt_date(d: Union[date, datetime], is_end: bool) -> str:
+    """
+    Format a date or datetime to the strategy YAML date_range string format.
+    "YYYY-MM-DD HH:MM:SS"
+
+    For date objects:
+      - start date → "YYYY-MM-DD 00:00:00"  (beginning of day)
+      - end date   → "YYYY-MM-DD 23:59:59"  (end of day)
+    For datetime objects: formatted as-is (caller controls time component).
+    """
+    if isinstance(d, datetime):
+        return d.strftime("%Y-%m-%d %H:%M:%S")
+    # date object — apply session boundary defaults
+    if is_end:
+        return f"{d.isoformat()} 23:59:59"
+    return f"{d.isoformat()} 00:00:00"
 
 
 def _deep_set(d: dict, dot_path: str, value: Any) -> None:

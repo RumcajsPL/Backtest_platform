@@ -277,3 +277,87 @@ and immediately advances the checkpoint to `WFO_COMPLETE`. This means:
 Full Stage 4 implementation is planned for Block 9G. Until then, to exercise
 Stages 5–7 manually (e.g. for integration testing), you can populate
 `wfo_consistency_scores` directly with synthetic data or stub scores.
+
+# OPERATOR RUNBOOK Block 9F Delta
+**Append to**: docs/backtesting/OPERATOR_RUNBOOK.md
+**Date**: 2026-03-06
+
+---
+## Block 9F — First Pipeline Run Results & Fixes
+
+### Run 1 (capital_accumulation, min_win_rate=0.45)
+- Result: 50/50 candidates failed Stage 1
+- Cause: Strategy producing ~10% win rates across all parameter combinations
+- Fix: min_win_rate eased to 0.15 in backtest_1st_run.yaml
+- Lesson: Strategy win rates in this parameter space are well below typical
+  thresholds. Consider reviewing base YAML filter configuration.
+
+### Run 2 (capital_accumulation, min_win_rate=0.15)
+- Result: 0/50 passed (still failing — best win_rate observed ~11.7%)
+- Pipeline crashed at Stage 3 with ValueError from initialise_population()
+- Fix applied: B9F-002 (graceful Stage 3 skip)
+
+### Run 3 (e2e_test scenario)
+- Result: 50/50 passed Stage 1
+- Stage 2 crashed: "CandidateResult is invalid (error: None)"
+- Fix applied: B9F-003 (re-evaluate in Stage 2)
+
+### Run 4 (e2e_test, B9F-003 applied)
+- Stage 2 ran but all 30 candidates failed MC with:
+  "Cannot extract pnl from trade object type Trade. Expected attribute 'pnl'"
+- Fix applied: B9F-004 (trade.pnl_points)
+
+### Run 5 (e2e_test, B9F-004 applied)
+- Stage 2 completed. Stage 3 (GA) ran.
+- GA WFO evaluation failed: "evaluate() got an unexpected keyword argument 'date_start'"
+- Fix applied: B9F-005 (strategy_runner date_start/date_end)
+- B9F-005 NOT yet run-tested — deploy and confirm in Block 9G.
+
+---
+## Constraints Calibration Log
+
+| Date | Scenario | Constraint | Old Value | New Value | Reason |
+|---|---|---|---|---|---|
+| 2026-03-06 | capital_accumulation | min_win_rate | 0.45 | 0.15 | 0/50 passed; max observed ~11.7% |
+
+**TODO Block 9G**: After first successful capital_accumulation run, query actual
+win_rate distribution and set min_win_rate to a calibrated value (e.g. P10 of
+observed win_rates among all candidates, or a strategy-appropriate floor).
+
+---
+## Troubleshooting — New Entries
+
+### "CandidateResult is invalid (error: None) — cannot run MC simulation"
+**Cause**: Stage 2 was calling `store.get_candidate_result()` which returns
+`trades=None` because trade objects are never persisted to SQLite.
+**Fix**: B9F-003 — Stage 2 now re-evaluates via `strategy_runner.evaluate()`.
+**Status**: Fixed.
+
+### "Cannot extract pnl from trade object type Trade. Expected attribute 'pnl'"
+**Cause**: `extract_trade_returns()` was looking for `trade.pnl` but the Trade
+dataclass uses `trade.pnl_points`.
+**Fix**: B9F-004 — `extract_trade_returns()` now uses `trade.pnl_points`.
+**Status**: Fixed.
+
+### "evaluate() got an unexpected keyword argument 'date_start'"
+**Cause**: `wfo_evaluator.py` passes `date_start`/`date_end` to `evaluate()` for
+WFO window scoping, but `strategy_runner.evaluate()` did not accept these params.
+**Fix**: B9F-005 — `evaluate()` now accepts `date_start`/`date_end` and injects
+them as `data.date_range.start`/`.end` overrides in the temp YAML.
+**Status**: Fixed. Verify in Block 9G first run.
+
+### "Stage 3: No MC_PREFILTER_PASS candidates available — skipping GA"
+This is now a WARNING (not a crash). Expected when Stage 1 or 2 produces no
+survivors. Pipeline continues to Stages 4–7 which handle empty input gracefully.
+**Status**: Fixed (B9F-002).
+
+---
+## Block 9G Run Procedure
+
+1. Deploy all Block 9F output files (see CONTEXT.md STEP 1)
+2. Delete `outputs/backtesting/backtester.db`
+3. Set `scenario: "e2e_test"` in backtest_1st_run.yaml
+4. Run pipeline — confirm Stages 1–3 complete cleanly
+5. Set `scenario: "capital_accumulation"`, delete DB again
+6. Run pipeline — collect calibration query results (Queries 3–7 from Block 9F CONTEXT.md)
+7. Report to Claude for B8B-012 + B8B-003 calibration

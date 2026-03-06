@@ -192,3 +192,75 @@ already has a TECHNICAL_SPEC note deferring this to Block 9 calibration).
 4. **Stage 6 spike threshold ownership**: `scenario.verdict_sensitivity_spike_threshold`
    is the single source of truth. The former `config["sensitivity"]["spike_threshold"]`
    read path has been removed.
+
+   # ARCHITECTURE Block 9F Delta
+**Append to**: docs/backtesting/ARCHITECTURE.md
+**Date**: 2026-03-06
+
+---
+## Block 9F — Integration Bug Fixes
+
+### B9F-002: Stage 3 Graceful Skip (orchestrator.py)
+`_run_stage_3_ga()` now queries the store for MC_PREFILTER_PASS candidates
+before calling `run_ga()`. If none exist it logs a WARNING and returns early.
+The checkpoint is still advanced to GA_COMPLETE by the caller so the pipeline
+continues to Stages 4–7. Previously the function called `run_ga()` unconditionally
+which caused `initialise_population()` to raise ValueError, crashing the pipeline.
+
+### B9F-003: Stage 2 Live CandidateResult (orchestrator.py)
+`_run_stage_2_mc_prefilter()` now calls `strategy_runner.evaluate()` directly
+to obtain a live `CandidateResult` instead of calling `store.get_candidate_result()`.
+
+**Root cause**: `CandidateResult.trades` and `.metrics` are live Python objects
+from the strategy architecture — they are never persisted to SQLite.
+`store.get_candidate_result()` reconstructs from the `evaluations` table with
+`trades=None` and `metrics=None` hardcoded, so `CandidateResult.is_valid` is
+always `False` on reconstructed objects, causing MC to fail for every candidate.
+
+**Design consequence**: Stage 2 performs N additional strategy evaluations
+(one per top-N RANDOM-pass candidate). This is architecturally correct and
+consistent with Stage 4 (WFO) which also re-evaluates per window. The trade
+history cannot be meaningfully persisted in column form — only aggregate metrics
+are stored. `store.get_candidate_result()` remains in the codebase for potential
+future use but must not be relied upon for MC input.
+
+### B9F-004: Trade P&L Attribute (equity_simulator.py)
+`extract_trade_returns()` now uses `trade.pnl_points` (the correct attribute
+on the `Trade` dataclass from `src/strategies/contracts/trade_contracts.py`)
+instead of `trade.pnl` (which does not exist). Open trades (`trade.exit is None`)
+return `pnl_points = None` and are skipped — only closed trades contribute to
+MC simulation. Fallback chain: `pnl_points` → `pnl` → `dict["pnl_points"]`
+→ `dict["pnl"]`.
+
+### B9F-005: WFO Date Range Scoping (strategy_runner.py)
+`strategy_runner.evaluate()` now accepts optional `date_start` and `date_end`
+parameters. When provided, `_write_temp_yaml()` injects them as overrides to
+`data.date_range.start` / `data.date_range.end` in the temp candidate YAML.
+
+**Format**: `date` objects are formatted as `"YYYY-MM-DD 00:00:00"` (start) and
+`"YYYY-MM-DD 23:59:59"` (end) to match the strategy YAML's datetime string format.
+`datetime` objects are formatted as-is.
+
+**Impact**: Enables WFO window-scoped evaluation — each window evaluates the
+strategy only over its date range. Without this fix, all WFO windows evaluated
+over the full dataset date range, producing identical results across windows.
+
+**Note**: `wfo_evaluator.py` was already passing `date_start`/`date_end` to
+`evaluate()` correctly. The bug was in `strategy_runner.py` which silently ignored
+the kwargs (TypeError in Python — unexpected keyword argument). The skill entry
+H-01 ("FALSE POSITIVE — strategy_runner.evaluate() DOES accept date_start/date_end")
+was incorrect and has been corrected.
+
+---
+## Trade Contract Reference (verified Block 9F)
+```
+TradeResult.trades          List[Trade]
+Trade.entry                 TradeEntry
+Trade.exit                  Optional[TradeExit]   ← None = open trade
+Trade.pnl_points            Optional[float]       ← None if open
+Trade.is_closed             bool
+TradeExit.pnl_points        float
+TradeExit.pnl_percent       float
+TradeExit.exit_reason       ExitReason
+```
+Source: `src/strategies/contracts/trade_contracts.py`

@@ -528,10 +528,19 @@ def _run_stage_2_mc_prefilter(
 
     mc_prefilter_ruin_threshold is read from ScenarioProfile (not config dict)
     so scenario-specific thresholds are respected.
+
+    B9F-003: CandidateResult is re-evaluated via strategy_runner.evaluate()
+    instead of reconstructing from store. The store only persists aggregate
+    metrics — trades and metrics objects are never persisted, so
+    store.get_candidate_result() always returns trades=None / metrics=None,
+    causing CandidateResult.is_valid=False and MC failure for every candidate.
+    Re-evaluating is the correct fix: it produces a live CandidateResult with
+    real trades, consistent with how WFO evaluates candidates in Stage 4.
     """
     from src.backtesting.monte_carlo.mc_engine import run_mc
     from src.backtesting.ranker import rank
     from src.backtesting.scenario import load_scenario
+    from src.backtesting.strategy_runner import evaluate
 
     run_id = run_metadata.run_id
     prefilter_config = config.get("mc_prefilter", {})
@@ -539,6 +548,12 @@ def _run_stage_2_mc_prefilter(
 
     scenario = load_scenario(config)
     ruin_threshold: float = scenario.mc_prefilter_ruin_threshold
+
+    base_yaml_path = _resolve_base_yaml(config)
+    temp_dir = Path(config["run"]["temp_dir"])
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    retain_temp: bool = config.get("run", {}).get("retain_temp_yamls", False)
+    min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
 
     logger.info(
         "Stage 2: MC Pre-Filter — top %d candidates, ruin_threshold=%.2f",
@@ -562,14 +577,35 @@ def _run_stage_2_mc_prefilter(
 
     for record in seed_records:
         candidate = _record_to_candidate_from_record(record)
-        candidate_result = store.get_candidate_result(candidate.candidate_id)
 
-        if candidate_result is None:
+        # ── B9F-003: Re-evaluate to get live CandidateResult with trades ─────
+        # store.get_candidate_result() reconstructs from DB with trades=None —
+        # CandidateResult.is_valid is always False on reconstructed objects.
+        # Re-evaluating is the correct fix: consistent with WFO stage behaviour.
+        candidate_result: CandidateResult = evaluate(
+            candidate=candidate,
+            base_yaml_path=base_yaml_path,
+            temp_dir=temp_dir,
+            min_significant_trades=min_significant_trades,
+            retain_temp_yamls=retain_temp,
+        )
+
+        if not candidate_result.is_valid:
             logger.warning(
-                "Stage 2: No CandidateResult for %s — skipping",
+                "Stage 2: Re-evaluation failed for candidate %s (error: %s) — skipping MC",
                 candidate.candidate_id[:12],
+                candidate_result.error,
             )
+            new_stage = CandidateStage.MC_PREFILTER_FAIL
+            failed += 1
+            updated_record = _build_candidate_record_from_existing(
+                existing=record,
+                run_id=run_id,
+                new_stage=new_stage,
+            )
+            store.write_candidate(updated_record)
             continue
+        # ── end B9F-003 ────────────────────────────────────────────────────────
 
         mc_result: MCResult = run_mc(
             candidate=candidate,
@@ -618,8 +654,7 @@ def _run_stage_2_mc_prefilter(
         "Stage 2: MC Pre-Filter complete — pass=%d fail=%d total=%d",
         passed, failed, passed + failed,
     )
-
-
+    
 # ── Stage 3: Genetic Algorithm ────────────────────────────────────────────────
 
 def _run_stage_3_ga(
@@ -634,12 +669,32 @@ def _run_stage_3_ga(
 
     ga_engine writes all GA candidate evaluations to the store directly with
     stage=GA. No additional store writes needed here.
+
+    B9F-002: Guard added — if Stage 2 produced no MC_PREFILTER_PASS candidates,
+    logs a warning and returns early instead of crashing in initialise_population().
+    Checkpoint is advanced to GA_COMPLETE by the caller regardless, so the
+    pipeline continues to Stages 4–7.
     """
     from src.backtesting.ga.ga_engine import run_ga
     from src.backtesting.scenario import load_scenario
+    from src.backtesting.ranker import rank
     from datetime import date
 
     run_id = run_metadata.run_id
+
+    # ── B9F-002: Guard — skip GA gracefully if Stage 2 had no survivors ──────
+    prefilter_pass = rank(
+        store=store,
+        run_id=run_id,
+        stage=CandidateStage.MC_PREFILTER_PASS,
+        top_n=1,
+    )
+    if not prefilter_pass:
+        logger.warning(
+            "Stage 3: No MC_PREFILTER_PASS candidates available — skipping GA"
+        )
+        return
+    # ── end B9F-002 ────────────────────────────────────────────────────────────
 
     scenario = load_scenario(config)
     base_yaml_path = _resolve_base_yaml(config)
@@ -677,7 +732,6 @@ def _run_stage_3_ga(
 
     store.flush()
     logger.info("Stage 3: Genetic Algorithm complete")
-
 
 # ── Stage 4: Full WFO ─────────────────────────────────────────────────────────
 
