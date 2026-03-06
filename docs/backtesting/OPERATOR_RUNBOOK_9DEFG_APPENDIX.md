@@ -361,3 +361,166 @@ survivors. Pipeline continues to Stages 4–7 which handle empty input gracefull
 5. Set `scenario: "capital_accumulation"`, delete DB again
 6. Run pipeline — collect calibration query results (Queries 3–7 from Block 9F CONTEXT.md)
 7. Report to Claude for B8B-012 + B8B-003 calibration
+
+# OPERATOR_RUNBOOK_9G_DELTA.md — Block 9G Appendix
+**Append to**: `docs/backtesting/OPERATOR_RUNBOOK.md`
+**Date**: 2026-03-06
+**Block**: 9G
+
+---
+
+## Pipeline is Now Fully Integrated
+
+As of Block 9G, all 7 pipeline stages are fully implemented and operational.
+The `e2e_test` scenario has been validated end-to-end. The pipeline is ready
+for production configuration runs.
+
+---
+
+## Reference: Clean Run Log Pattern
+
+A clean run produces exactly this Stage progression with no ERRORs:
+
+```
+Stage 0: Validation & Init        — All validations passed — N WFO windows, N enabled zones
+Stage 1: Random Search complete   — evaluated=N passed=N failed=0
+Stage 2: MC Pre-Filter complete   — pass=N fail=0 total=N
+Stage 3: Genetic Algorithm complete
+Stage 4: Full WFO complete        — N/N candidates scored
+Stage 5: MC Deep complete         — N/N candidates processed
+Stage 6: Sensitivity complete     — N/N candidates processed
+Stage 7: Report & Output complete — run_id=...
+```
+
+**Expected WARNINGs (not bugs)**:
+```
+WARNING  wfo.consistency_scorer — No valid window results for candidate XXXX
+WARNING  wfo.wfo_engine         — Candidate XXXX failed >50% of WFO windows — flagging WFO_INSUFFICIENT_WINDOWS
+WARNING  candidate_store        — Candidate XXXX flagged WFO_INSUFFICIENT_WINDOWS
+```
+These three lines together mean a parameter combination produced no tradeable signals
+in any WFO window. The candidate is correctly scored 0.0 and excluded downstream.
+Frequency depends on how many candidates the strategy refuses to trade over the
+evaluation period — expect more of these as parameter ranges tighten in calibration.
+
+---
+
+## How to Run (reminder)
+
+```powershell
+# From project root, venv activated:
+python scripts/runners/run_backtester.py
+
+# Monitor live:
+Get-Content outputs\backtesting\pipeline_<run_id>.log -Wait -Tail 20
+
+# Post-run error check:
+Select-String -Path "outputs\backtesting\pipeline_<run_id>.log" -Pattern "ERROR|WARNING" `
+  | Select-Object -ExpandProperty Line
+```
+
+---
+
+## Transitioning to Production Config
+
+The `backtest_1st_run.yaml` was calibrated for e2e_test pipeline validation.
+Before a production calibration run, restore these values:
+
+| Setting | e2e_test value | Production value |
+|---------|---------------|------------------|
+| `scenario` | `e2e_test` | `capital_accumulation` |
+| `random_search.samples_per_zone` | 50 | 200 |
+| `mc_prefilter.input_count` | 30 | 120 |
+| `genetic.population_size` | 20 | 60 |
+| `genetic.generations` | 5 | 30 |
+| `genetic.stagnation_generations` | 3 | 10 |
+| `run.max_workers` | 4 | 6 |
+| `scenarios.capital_accumulation.constraints.min_win_rate` | 0.15 | calibrate (was 0.45, too strict) |
+
+**Do not restore `exploration.enabled: true`** until B9F-001 is fixed
+(expand_zones Cartesian product OOM — ~387T combinations).
+
+---
+
+## Interpreting Stage 7 Output
+
+### Trading YAMLs
+Location: `outputs/backtesting/trading_yamls/{run_id[:8]}_{candidate_id[:12]}_strategy.yaml`
+
+Each file is a complete, runnable strategy config with:
+- All candidate parameters merged into the correct template locations
+- A `backtester_metadata` section with full run provenance
+
+**The `deployment_status` field is always `PAPER_TRADE_REQUIRED` in pipeline output.**
+Changing it to `LIVE_APPROVED` is a manual operator action — never automated.
+
+### Verdict interpretation
+| Verdict | Meaning |
+|---------|---------|
+| `auto_go` | WFO ≥ `go_wfo_floor` AND ruin ≤ `go_mc_ruin_ceiling` |
+| `borderline` | WFO ≥ `borderline_wfo_floor` AND ruin ≤ `borderline_mc_ruin_ceiling` |
+| `no_go` | Failed WFO floor OR ruin too high OR MC Deep failed |
+
+**Note**: In `e2e_test` scenario, thresholds are intentionally loose
+(`go_wfo_floor: 0.01`, `go_mc_ruin_ceiling: 0.99`). All candidates with any WFO
+signal will receive `auto_go`. These verdicts are not meaningful for trading decisions.
+
+---
+
+## Known Calibration TODOs (B8B-012, B8B-003)
+
+After the first **production** run (non-e2e_test), perform:
+
+1. **B8B-012** — Calibrate `_sigmoid_normalise` scale in `consistency_scorer.py`:
+   ```python
+   # Current (wrong for real P&L):
+   scale = 0.10
+   # Fix: measure net_pnl distribution from first real run
+   # Set: scale ≈ stdev(net_pnl_across_candidates) * 0.5
+   ```
+
+2. **B8B-003** — Calibrate expectancy normalisation in `fitness.py`:
+   ```python
+   # Current:
+   expectancy_norm = expectancy_points / 3.0
+   # Fix: set divisor to 95th-percentile expectancy from first real run
+   ```
+
+Neither fix requires a code change today. Collect the distribution data first.
+
+---
+
+## Diagnosing yaml_generator Failures
+
+If Stage 7 logs:
+```
+ERROR Stage 7: Failed to write trading YAML for candidate XXXX:
+  Trading YAML validation failed for ..._strategy.yaml:
+  missing required sections: [...]
+  Sections present: [...]
+```
+
+**Diagnostic steps**:
+1. Check "Sections present" — if `strategy` or `parameters` appear, `_PARAM_MAP`
+   in `yaml_generator.py` is writing to phantom sections. Update the map.
+2. Cross-reference every entry in `_PARAM_MAP` against `strategy_template.yaml`
+   top-level structure.
+3. Check `_structural_validate` `required_sections` — must be real template keys
+   (`filters`, `trade_management`), never inferred keys.
+4. If new parameters were added to a zone, ensure they are in both
+   `yaml_generator._PARAM_MAP` AND `strategy_runner._PARAM_KEY_MAP`.
+
+---
+
+## WFO Window Design Reference
+
+Current windows (from `backtest_1st_run.yaml`):
+```
+W01: 2025-09-15 → 2025-10-03  (18 calendar days)
+W02: 2025-10-06 → 2025-10-24  (18 calendar days, 3-day gap)
+W03: 2025-10-27 → 2025-11-14  (18 calendar days, 3-day gap)
+W04: 2025-11-17 → 2025-12-05  (18 calendar days, 3-day gap)
+W05: 2025-12-08 → 2025-12-17  (9 calendar days,  3-day gap)
+```
+Minimum 3 windows required (Stage 0 enforces). Gaps are weekend buffers.
+`enforce_oos_gate: false` — do not enable until `oos_degradation_threshold` calibrated.

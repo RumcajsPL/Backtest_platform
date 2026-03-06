@@ -13,24 +13,23 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-06)**: Block 9F complete.
-- Tests: ~345 green, 0 skipped, 0 failed (Block 9C baseline; 9D/9E/9F add no new tests)
-- Next: Block 9G — first clean pipeline run (e2e_test) + calibration (B8B-012, B8B-003)
-- Pre-production blocker: B8B-012 (sigmoid scale — needs first real run data)
+**Current status (2026-03-06)**: Block 9G complete. All 7 stages fully integrated and operational.
+- Tests: ~345 green, 0 skipped, 0 failed (Block 9C baseline; 9D/9E/9F/9G add no new tests)
+- Next: Result analysis + calibration run (switch e2e_test → capital_accumulation scenario)
+- Pre-production blockers: B9F-001 (expand_zones OOM), B8B-012 (sigmoid scale calibration)
 ---
 ## Pipeline (in order — do not reorder)
 ```
-Stage 0: Validation & Init     (min 3 WFO windows; param name validation vs _PARAM_KEY_MAP)
-Stage 1: Random Search         (LHS/random, significance guard, constraint filter) ✅ IMPLEMENTED
-Stage 2: MC Pre-Filter         (re-evaluates candidates; cheap ruin screen) ✅ IMPLEMENTED
-Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty) ✅ IMPLEMENTED
-Stage 4: Full WFO              (all windows, 4-metric composite consistency score) [STUB]
-Stage 5: MC Deep               (full iterations, all perturbation types, WFO survivors only)
-Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline)
-Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML)
+Stage 0: Validation & Init     (min 3 WFO windows; param name validation vs _PARAM_KEY_MAP) ✅
+Stage 1: Random Search         (LHS/random, significance guard, constraint filter) ✅
+Stage 2: MC Pre-Filter         (re-evaluates candidates; cheap ruin screen) ✅
+Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty) ✅
+Stage 4: Full WFO              (all windows, 4-metric composite consistency score) ✅
+Stage 5: MC Deep               (full iterations, all perturbation types, WFO survivors only) ✅
+Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline) ✅
+Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML) ✅
 ```
-Stages 0–3, 5–7: fully implemented. Stage 4: stub that logs and advances checkpoint.
-OOS gate: implemented but off by default (enforce_oos_gate: false in config).
+All stages fully implemented. OOS gate: implemented but off by default (enforce_oos_gate: false).
 ---
 ## Architecture Rules (non-negotiable)
 ```python
@@ -51,6 +50,7 @@ OOS gate: implemented but off by default (enforce_oos_gate: false in config).
 ## CandidateStore Write API (verified)
 ```python
 store.write_candidate(record: CandidateRecord)
+store.write_candidate_stub(candidate: CandidateParameterSet)  # INSERT OR IGNORE — safe always
 store.write_wfo_window_result(result: WFOWindowResult, run_id: str)
 store.flag_candidate_wfo_insufficient(candidate_id: str, run_id: str)
 store.write_wfo_consistency_score(score: WFOConsistencyScore, run_id: str)
@@ -64,6 +64,7 @@ store.close()
 # There is NO write_fitness_result() method
 # query_mc_results: mode is plain string "deep"/"pre_filter" — NOT MCMode enum
 # get_candidate_result() returns trades=None / metrics=None ALWAYS — do NOT use for MC input
+# write_candidate_stub() MUST be called before any FK-referencing write (B9G-001)
 ```
 ---
 ## evaluate_window() Signature (critical — positional args must match pool.submit)
@@ -94,6 +95,7 @@ def evaluate(
     date_start: Optional[Union[date, datetime]] = None,  # B9F-005
     date_end: Optional[Union[date, datetime]] = None,    # B9F-005
 ) -> CandidateResult: ...
+
 # date_start/date_end override data.date_range.start/end in temp YAML
 # date object → "YYYY-MM-DD 00:00:00" (start) / "YYYY-MM-DD 23:59:59" (end)
 # datetime object → formatted as-is
@@ -113,14 +115,55 @@ TradeExit.pnl_points        # float  — the correct P&L field
 # DO NOT use trade.pnl — this attribute does not exist on Trade
 ```
 ---
-## Stage 2 Design (B9F-003)
+## Re-Evaluation Pattern (Stage 2 and Stage 5)
 ```python
-# Stage 2 MUST re-evaluate candidates via strategy_runner.evaluate() to get
-# a live CandidateResult with real trades and metrics objects.
-# store.get_candidate_result() always returns trades=None / metrics=None
-# because these objects are never persisted to SQLite.
-# CandidateResult.is_valid requires metrics is not None AND trades is not None.
-# Re-evaluation is consistent with WFO stage behaviour (Stage 4 also re-evaluates).
+# BOTH Stage 2 (MC Pre-Filter) and Stage 5 (MC Deep) must re-evaluate candidates
+# via strategy_runner.evaluate() before calling run_mc().
+# store.get_candidate_result() always returns trades=None / metrics=None (L-15).
+# CandidateResult.is_valid requires both fields non-None.
+# Pattern:
+for candidate in top_candidates:
+    result = evaluate(candidate, base_yaml_path, temp_dir, ...)  # live eval
+    mc_result = run_mc(candidate, result, mode, config, seed)    # never raises
+    store.write_mc_result(mc_result, run_id)
+# If evaluate() returns invalid result: still call run_mc() — returns
+# MCResult(error=..., ruin_probability=None) → NO_GO in Stage 7 (correct).
+```
+---
+## write_candidate_stub() Invariant (B9G-001)
+```python
+# Call before ANY FK-referencing write. Safe for existing and new candidates.
+# Required in:
+#   ga_engine._evaluate_generation()   — before pool.submit for WFO windows
+#   orchestrator._run_stage_4_wfo()    — before wfo_engine.run_wfo()
+#   orchestrator._run_stage_5_mc_deep() — before run_mc()
+store.write_candidate_stub(candidate)
+store.flush()  # always flush after stubbing, before pool submission
+```
+---
+## rank_by_wfo() Deduplication Invariant (B9G-003)
+```python
+# query_candidates() JOINs evaluations — candidates in multiple stages produce
+# duplicate rows. rank_by_wfo() deduplicates by candidate_id (keeps highest score).
+# Any ranker calling query_candidates() with ORDER BY must deduplicate before top_n.
+# rank_combined() already did this; rank_by_wfo() now consistent.
+```
+---
+## yaml_generator._PARAM_MAP Format (B9G-004)
+```python
+# Three-tuple: (top_section, nested_path_tuple, leaf_key)
+# Derived from strategy_template.yaml structure — never inferred from param names.
+# Safe zone params map to:
+#   rsi_*        → filters.technical_filters.rsi_filter
+#   bollinger_*  → filters.technical_filters.bollinger_filter
+#   atr_length   → trade_management.risk.atr_length
+#   atr_multiplier → trade_management.risk.atr_multiplier_sl
+#   rr_target    → trade_management.risk.risk_to_reward_ratio
+#   risk_percentile → trade_management.risk.max_risk_percentile
+# Unknown params log WARNING — never silently drop into phantom section.
+# _structural_validate checks ["filters", "trade_management"] (real template keys).
+# Structural check runs ALWAYS as backstop — StrategyConfig.from_yaml() may silently pass.
+# Twin map: strategy_runner._PARAM_KEY_MAP — both must be updated together.
 ```
 ---
 ## OOS Gate Details (B8B-005 — implemented Block 9E)
@@ -135,8 +178,6 @@ TradeExit.pnl_points        # float  — the correct P&L field
 ## Known Confirmed Bugs / Fixed (do not re-open)
 ```
 H-01: FIXED (B9F-005) — strategy_runner.evaluate() NOW accepts date_start/date_end.
-      Previous skill entry "FALSE POSITIVE" was incorrect.
-      wfo_evaluator.py was always correct — the runner was missing the params.
 H-02: FIXED (7A) — write_wfo_window_result + flag_candidate_wfo_insufficient were absent.
 H-03: FALSE POSITIVE — wfo_evaluator passes window dates correctly.
 I-07: FIXED (7A) — datetime.utcnow() → datetime.now(UTC) in wfo_evaluator.py.
@@ -156,6 +197,10 @@ B9F-002: FIXED (9F) — Stage 3 graceful skip when no MC_PREFILTER_PASS candidat
 B9F-003: FIXED (9F) — Stage 2 re-evaluates via evaluate() instead of store reconstruct.
 B9F-004: FIXED (9F) — extract_trade_returns uses trade.pnl_points not trade.pnl.
 B9F-005: FIXED (9F) — strategy_runner.evaluate() accepts date_start/date_end.
+B9G-001: FIXED (9G) — GA offspring write_candidate_stub() before FK writes.
+B9G-002: FIXED (9G) — Stage 5 re-evaluates via evaluate() before run_mc().
+B9G-003: FIXED (9G) — rank_by_wfo() deduplicates by candidate_id.
+B9G-004: FIXED (9G) — yaml_generator _PARAM_MAP + _structural_validate correct keys.
 ```
 ---
 ## Critical Open Findings
@@ -167,19 +212,26 @@ B9F-001 [P1 BLOCKER] parameter_space.py
   Workaround: exploration.enabled: false in YAML.
   Fix: refactor expand_zones() to return Dict[str, Dict[str, List]] (per-param value
   lists, not full product); refactor sampler._lhs_sample() to accept per-param lists.
+
 B8B-012 [PRE-PROD BLOCKER] consistency_scorer.py
   _sigmoid_normalise scale=0.10 calibrated for unit fractions, not points.
   Fix after first real run: measure net_pnl distribution → set scale ≈ stdev * 0.5.
+
 B8B-003 [P3] fitness.py
   expectancy_norm hardcoded at / 3.0 pts. Calibrate after first real run.
+
 B8-009 [P3] orchestrator.py
   Raw sqlite3 in _resume_or_start bypasses CandidateStore contract.
+
 B9B-001 [P3] crossover.py
   No zone-name guard for cross-zone parents.
+
 B8B-013 [P3] mc_engine.py
   ruin_threshold dual-source: config dict + ScenarioProfile.mc_prefilter_ruin_threshold.
+
 B8B-011 [P3] consistency_scorer.py
   fraction_positive_windows uses fixed 0.0 floor.
+
 B8C-002, B8C-003 [P3] report_generator.py — deferred
 B9C-008 [P3] sampler.py — deferred
 OPT-01 target (not achieved): Stage 6 ≤ 200s.
@@ -209,45 +261,52 @@ patch("src.backtesting.orchestrator.run_ga", ...)                 # Stage 3
 ---
 ## Module Map (current state)
 ```
-orchestrator.py         — Stages 0–3, 5–7 implemented. Stage 4 stub.
-                          B9F-002: Stage 3 graceful skip guard added.
-                          B9F-003: Stage 2 re-evaluates via evaluate().
+orchestrator.py         — All stages fully implemented (B9G complete).
+                          Stage 5 re-evaluates via evaluate() (B9G-002).
 fitness.py              — Stateless. NaN guard. B8B-003 open (expectancy /3.0).
 contracts.py            — All frozen dataclasses. B8C-001 fixed.
 candidate_store.py      — SQLite WAL + single-writer queue. Thread-safe.
+                          write_candidate_stub() added (B9G-001).
                           get_candidate_result() returns trades=None — do not use for MC.
 strategy_runner.py      — B9F-005: date_start/date_end params added.
-                          Injects data.date_range.start/end override into temp YAML.
 parameter_space.py      — B9C-005 fixed. B9F-001 open (Cartesian product OOM).
 sampler.py              — B9C-006/B9C-007 fixed.
 scenario.py             — Clean.
-ranker.py               — Clean.
-yaml_generator.py       — B8-006 comment added.
+ranker.py               — rank_by_wfo() deduplicates by candidate_id (B9G-003).
+yaml_generator.py       — B9G-004: _PARAM_MAP + _structural_validate fully corrected.
 wfo/wfo_evaluator.py    — B8B-005/B8B-018 fixed. Passes date_start/date_end correctly.
 wfo/wfo_engine.py       — B8B-005/B9C-004 fixed.
 wfo/consistency_scorer.py — B8B-012 open (sigmoid scale).
 monte_carlo/mc_engine.py  — Never raises. B8B-013 open.
 monte_carlo/equity_simulator.py — B9F-004: extract_trade_returns uses pnl_points.
-ga/ga_engine.py         — Full evolution loop.
-ga/population.py        — Raises ValueError on empty seeds (correct — guard is in orchestrator).
+ga/ga_engine.py         — write_candidate_stub() + flush() before pool (B9G-001).
+ga/population.py        — Raises ValueError on empty seeds (correct — guard in orchestrator).
 evaluation/sensitivity.py — OPT-01 pool reuse.
 evaluation/verdict.py   — Two-pillar + modifiers.
 report_generator.py     — B8C-002/003 open.
 ```
 ---
-## Lessons Learned (locked — additions from Block 9F)
+## Lessons Learned (complete — L-01 through L-24)
 ```
-L-01 through L-14: unchanged — see Block 9E CONTEXT.md
+L-01 through L-14: see Block 9E CONTEXT.md
 L-15: store.get_candidate_result() is structurally incomplete — trades/metrics are
-      never persisted. Stage 2 and any stage needing live trade data must re-evaluate
-      via strategy_runner.evaluate(). Never rely on reconstructed CandidateResult
-      for MC or any trade-level operation.
-L-16: Trade.pnl_points is the correct P&L attribute (not Trade.pnl which does not exist).
-      Open trades return pnl_points=None — always skip None values in MC extraction.
-L-17: strategy_runner.evaluate() date_start/date_end override data.date_range in the
-      temp YAML. date objects use "00:00:00"/"23:59:59" boundary defaults.
-L-18: H-01 "FALSE POSITIVE" in the skill was wrong. Always verify contract claims
-      against actual function signatures before marking as false positive.
+      never persisted. Stages 2 and 5 must re-evaluate via strategy_runner.evaluate().
+L-16: Trade.pnl_points is the correct P&L attribute. Open trades return None — skip.
+L-17: strategy_runner.evaluate() date_start/date_end override data.date_range.
+L-18: Always verify contract claims against actual signatures before marking false positive.
+L-19: GA offspring must be registered via write_candidate_stub() before any FK write.
+      INSERT OR IGNORE is safe for both new and existing candidates.
+L-20: windows_total in compute_consistency() must equal len(window_results) (actual
+      results received), not the requested sample size.
+L-21: Any ranker calling query_candidates() with ORDER BY must deduplicate by
+      candidate_id before applying top_n.
+L-22: yaml_generator._PARAM_MAP must be derived from actual strategy_template.yaml
+      structure — never inferred from parameter names alone.
+L-23: StrategyConfig.from_yaml() may silently accept structurally invalid configs.
+      Always run structural validation as a hard backstop regardless.
+L-24: If yaml_generator errors show phantom sections ("strategy", "parameters") in
+      "Sections present", the _PARAM_MAP is writing to keys that don't exist in the
+      template. Cross-reference template before updating the map.
 ```
 ---
 ## What NOT To Do
@@ -263,10 +322,13 @@ L-18: H-01 "FALSE POSITIVE" in the skill was wrong. Always verify contract claim
 - Do not clamp-before-snap in mutation
 - Do not re-open B8B-005 — fixed (9E)
 - Do not use trade.pnl — use trade.pnl_points (B9F-004)
-- Do not call store.get_candidate_result() for MC input — re-evaluate instead (B9F-003)
+- Do not call store.get_candidate_result() for MC input — re-evaluate instead (L-15)
 - Do not mark H-01 as false positive — it is FIXED (B9F-005)
 - Do not change `_IS_FRACTION` without updating CONTEXT.md
 - Do not enable `enforce_oos_gate: true` before calibrating `oos_degradation_threshold`
+- Do not enable `exploration` zone before B9F-001 is fixed
+- Do not add new params to zones without updating BOTH _PARAM_MAP and _PARAM_KEY_MAP
+- Do not rely on StrategyConfig.from_yaml() as sole validator — structural check must run
 ---
 ## Platform
 - **OS**: Windows 10, Python 3.13.12

@@ -264,3 +264,134 @@ TradeExit.pnl_percent       float
 TradeExit.exit_reason       ExitReason
 ```
 Source: `src/strategies/contracts/trade_contracts.py`
+
+# ARCHITECTURE_9G_DELTA.md — Block 9G Appendix
+**Append to**: `docs/backtesting/ARCHITECTURE.md`
+**Date**: 2026-03-06
+**Block**: 9G
+
+---
+
+## §1 — New CandidateStore Write Method: `write_candidate_stub()`
+
+### Motivation
+GA offspring candidates (from crossover + mutation) are produced inside `ga_engine`
+and submitted directly to the WFO window pool. They were never written to the
+`candidates` table before `write_wfo_window_result()` was called, causing a FOREIGN
+KEY constraint failure on the `wfo_window_results.candidate_id` column.
+
+### Design
+```
+write_candidate_stub(candidate: CandidateParameterSet) → None
+  └─ _write_candidate_stub()
+       ├─ INSERT OR IGNORE INTO candidates (candidate_id, zone_name, ...)
+       └─ INSERT OR IGNORE INTO candidate_parameters (candidate_id, param_name, value)
+       # NO evaluations row — stub only
+```
+
+**INSERT OR IGNORE** makes this safe for all callers:
+- Seed candidates already in DB: no-op
+- GA offspring not yet in DB: inserted
+- Repeated calls for the same candidate: no-op
+
+### Contract
+`write_candidate_stub()` must be called (and `store.flush()` called after) before
+any FK-referencing write (`write_wfo_window_result`, `write_mc_result`, etc.).
+
+This invariant is now enforced in:
+- `ga_engine._evaluate_generation()` — before pool.submit()
+- `orchestrator._run_stage_4_wfo()` — before `wfo_engine.run_wfo()`
+- `orchestrator._run_stage_5_mc_deep()` — before `run_mc()` (via re-evaluation pattern)
+
+---
+
+## §2 — Stage 5 Re-Evaluation Pattern
+
+Stage 5 (MC Deep) now follows the same re-evaluation pattern as Stage 2 (MC Pre-Filter).
+
+**Root cause**: `store.get_candidate_result()` reconstructs from SQLite but returns
+`trades=None / metrics=None` because these objects are never persisted (L-15).
+`MCEngine.run_mc()` raises immediately if `CandidateResult.is_valid` is False.
+
+**Pattern (now consistent across Stage 2 and Stage 5)**:
+```
+for candidate in top_candidates:
+    result = strategy_runner.evaluate(candidate, ...)   # live evaluation
+    mc_result = run_mc(candidate, result, mode, ...)    # run_mc never raises
+    store.write_mc_result(mc_result, run_id)
+```
+
+If `evaluate()` returns an invalid result (e.g. evaluation failed), `run_mc()` is
+still called — it returns `MCResult(error=..., ruin_probability=None)`, which the
+verdict engine treats as NO_GO. This is the correct conservative treatment.
+
+---
+
+## §3 — Ranker Deduplication Invariant
+
+**Problem**: `query_candidates()` JOINs `evaluations`. A candidate that has been
+evaluated in multiple stages (e.g. both `RANDOM` and `MC_PREFILTER_PASS`) produces
+multiple rows in the result set with the same `candidate_id` but different stage values.
+
+**Fix**: `rank_by_wfo()` now deduplicates by `candidate_id` after ORDER BY, keeping
+the first (highest-scoring) occurrence. This was already done in `rank_combined()`.
+
+**Invariant**: Any ranker function that calls `query_candidates()` with an ORDER BY
+must deduplicate by `candidate_id` before applying `top_n`. Violating this causes
+duplicate entries in every downstream stage (MC Deep, Sensitivity, Stage 7 verdicts,
+trading YAMLs).
+
+---
+
+## §4 — yaml_generator Parameter Map Architecture
+
+### Problem (B9G-004)
+The original `_STRATEGY_PARAM_KEY_MAP` used a flat two-tuple `(section, key)` and
+pointed all search-space parameters to `("strategy", ...)` or `("parameters", ...)`.
+Neither `strategy` nor `parameters` are top-level keys in `strategy_template.yaml`.
+The template has: `asset`, `data`, `execution`, `filters`, `trade_management`, `output`.
+
+### New Map Format
+```python
+_PARAM_MAP: dict[str, tuple[str, tuple[str, ...], str]] = {
+    # param_name → (top_section, nested_path_tuple, leaf_key)
+    "rsi_period": ("filters", ("technical_filters", "rsi_filter"), "length"),
+    "atr_length": ("trade_management", ("risk",), "atr_length"),
+    ...
+}
+```
+
+`_set_nested(d, top, path, key, value)` navigates `d[top][path[0]][path[1]]...[key]`,
+creating intermediate dicts as needed.
+
+### Invariant
+`yaml_generator._PARAM_MAP` and `strategy_runner._PARAM_KEY_MAP` must be updated
+together whenever a parameter is added, renamed, or remapped. Both files contain
+a comment: `# WARNING: Twin key map exists in [other file]. Both MUST be updated together.`
+
+### Validation Backstop
+`_structural_validate()` now checks `["filters", "trade_management"]` (real template
+sections) and spot-checks `filters.technical_filters` and `trade_management.risk` are
+dicts. It runs as a hard backstop regardless of whether `StrategyConfig.from_yaml()`
+passes — because `StrategyConfig.from_yaml()` silently accepted an invalid config in
+the run that exposed B9G-004.
+
+---
+
+## §5 — WFO Consistency Scorer: WFO_INSUFFICIENT_WINDOWS Behaviour
+
+Candidate `7bf2f892d683` produced 0 valid window results across 5 WFO windows.
+The system behaved correctly:
+
+```
+consistency_scorer  → WARN: No valid window results — returning zero consistency score
+wfo_engine          → WARN: Candidate failed >50% of WFO windows — flagging WFO_INSUFFICIENT_WINDOWS
+candidate_store     → WARN: Candidate flagged WFO_INSUFFICIENT_WINDOWS
+```
+
+The candidate received `wfo_consistency_score = 0.0` and was not selected for
+Stages 5–7 (rank_by_wfo top-10 excluded it). This is the expected path for
+parameter combinations that produce no tradeable signals in any window.
+
+**These three WARNINGs together indicate correct system behaviour, not a bug.**
+Document this pattern so future operators do not file spurious bug reports.

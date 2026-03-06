@@ -242,6 +242,14 @@ def _evaluate_generation(
     """
     Evaluate all population candidates across the 2 sampled windows in parallel.
     Returns a map of candidate_id → WFO-weighted fitness for this generation.
+
+    B9G-001: Each candidate is registered in the store (candidates +
+    candidate_parameters tables) via write_candidate_stub() before its WFO
+    window results are written. Seed candidates (already in DB) are no-ops
+    due to INSERT OR IGNORE. Offspring candidates (new from crossover/mutation)
+    require this call — without it, write_wfo_window_result raises
+    FOREIGN KEY constraint failed because candidate_id does not exist in
+    the candidates table.
     """
     tasks: List[Tuple[CandidateParameterSet, WFOWindow]] = [
         (candidate, window)
@@ -252,6 +260,22 @@ def _evaluate_generation(
     results_by_candidate: Dict[str, List[WFOWindowResult]] = {
         c.candidate_id: [] for c in population
     }
+
+    # ── B9G-001: Register all candidates before writing window results ────────
+    # write_candidate_stub uses INSERT OR IGNORE — safe for seed candidates
+    # already in the DB. Required for offspring that have not yet been persisted.
+    for candidate in population:
+        store.write_candidate_stub(
+            candidate=candidate,
+            run_id=run_id,
+            stage="GA",
+            generation=gen_num,
+        )
+    # Flush stubs before pool writes results to guarantee FK constraint is satisfied.
+    # The writer queue is single-threaded and FIFO — flush ensures all stub INSERTs
+    # complete before any wfo_window_results INSERT is attempted.
+    store.flush()
+    # ── end B9G-001 ────────────────────────────────────────────────────────────
 
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         future_map = {
@@ -289,7 +313,7 @@ def _evaluate_generation(
             continue
         consistency = compute_consistency(
             window_results=window_results,
-            windows_total=len(windows),
+            windows_total=len(window_results),  # GA lightweight: total = results received this gen
             scenario=scenario,
             oos_gate_enabled=False,  # IS/OOS gate not applied in GA lightweight mode
         )

@@ -735,13 +735,139 @@ def _run_stage_3_ga(
 
 # ── Stage 4: Full WFO ─────────────────────────────────────────────────────────
 
-def _run_stage_4_wfo(
-    config: dict, store: CandidateStore, run_metadata: RunMetadata
-) -> None:
-    logger.info("Stage 4: Full WFO — stub, not yet implemented")
+# ── PATCH TARGET: src/backtesting/orchestrator.py ─────────────────────────────
+#
+# Replace the entire _run_stage_4_wfo function (currently a one-line stub):
+#
+#   def _run_stage_4_wfo(config, store, run_metadata) -> None:
+#       logger.info("Stage 4: Full WFO — stub, not yet implemented")
+#
+# with the implementation below.
+# No other changes to orchestrator.py are required.
+# ──────────────────────────────────────────────────────────────────────────────
 
+
+def _run_stage_4_wfo(
+    config: dict,
+    store: "CandidateStore",
+    run_metadata: "RunMetadata",
+) -> None:
+    """
+    Stage 4: Full Walk-Forward Optimisation.
+
+    Per FUNCTIONAL_SPEC §7 and TECHNICAL_SPEC D-06:
+      - Input: top M candidates from the combined RANDOM + GA pool, ranked by
+        fitness score. M = walk_forward.input_count (default 30).
+      - Evaluation: every candidate × every configured WFO window, via
+        wfo_engine.run_wfo(mode="full").
+      - Output: WFOConsistencyScore per candidate written to store by wfo_engine.
+        Candidates that fail >50% of windows are flagged WFO_INSUFFICIENT_WINDOWS
+        and excluded from Stages 5+.
+
+    wfo_engine.run_wfo() in full mode:
+      - Dispatches all candidate-window pairs to ProcessPoolExecutor workers.
+      - Calls store.write_wfo_window_result() for every WFOWindowResult.
+      - Calls store.write_wfo_consistency_score() for every candidate.
+      - Calls store.flag_candidate_wfo_insufficient() for collapse cases.
+    All store writes are handled by wfo_engine — no additional writes here.
+    """
+    from src.backtesting.wfo.wfo_engine import run_wfo
+    from src.backtesting.ranker import rank_combined
+    from src.backtesting.scenario import load_scenario
+    from datetime import date
+
+    run_id = run_metadata.run_id
+    wfo_config = config.get("walk_forward", {})
+    input_count: int = wfo_config.get("input_count", 30)
+    oos_gate_enabled: bool = wfo_config.get("enforce_oos_gate", False)
+    oos_degradation_threshold: float = wfo_config.get("oos_degradation_threshold", 0.50)
+    max_workers: int = config.get("run", {}).get("max_workers", 6)
+    min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
+
+    base_yaml_path = _resolve_base_yaml(config)
+    temp_dir = Path(config["run"]["temp_dir"])
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    scenario = load_scenario(config)
+
+    # Build typed WFOWindow objects from YAML config dicts
+    wfo_windows: List[WFOWindow] = [
+        WFOWindow(
+            window_id=w["id"],
+            start_date=date.fromisoformat(str(w["start"])),
+            end_date=date.fromisoformat(str(w["end"])),
+        )
+        for w in config["walk_forward"]["windows"]
+    ]
+
+    logger.info(
+        "Stage 4: Full WFO — top %d candidates (RANDOM+GA), %d windows, oos_gate=%s",
+        input_count,
+        len(wfo_windows),
+        oos_gate_enabled,
+    )
+
+    # Pull top-M from combined RANDOM + GA pool by fitness score (FUNCTIONAL_SPEC §7)
+    top_records: List[CandidateRecord] = rank_combined(
+        store=store,
+        run_id=run_id,
+        stages=[CandidateStage.RANDOM, CandidateStage.MC_PREFILTER_PASS, CandidateStage.GA],
+        top_n=input_count,
+    )
+
+    if not top_records:
+        logger.warning("Stage 4: No candidates available for Full WFO — skipping")
+        return
+
+    # Reconstruct CandidateParameterSet for each record
+    candidates: List[CandidateParameterSet] = [
+        _record_to_candidate_from_record(r) for r in top_records
+    ]
+
+    logger.info("Stage 4: %d candidates selected for Full WFO", len(candidates))
+
+    # Ensure all candidates have a stub row in the candidates table before
+    # wfo_engine writes window results (FK constraint guard — same pattern as Stage 3)
+    for candidate in candidates:
+        store.write_candidate_stub(
+            candidate=candidate,
+            run_id=run_id,
+            stage="WFO",
+            generation=None,
+        )
+    store.flush()
+
+    # wfo_engine full mode: evaluates all windows, writes all results to store
+    consistency_scores = run_wfo(
+        candidates=candidates,
+        windows=wfo_windows,
+        store=store,
+        run_id=run_id,
+        scenario=scenario,
+        base_yaml_path=base_yaml_path,
+        temp_dir=temp_dir,
+        mode="full",
+        max_workers=max_workers,
+        min_significant_trades=min_significant_trades,
+        oos_gate_enabled=oos_gate_enabled,
+        oos_degradation_threshold=oos_degradation_threshold,
+    )
+
+    store.flush()
+    logger.info(
+        "Stage 4: Full WFO complete — %d/%d candidates scored",
+        len(consistency_scores),
+        len(candidates),
+    )
 
 # ── Stage 5: MC Deep ──────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATCH 1 — src/backtesting/orchestrator.py
+# Replace _run_stage_5_mc_deep entirely.
+# Root cause: store.get_candidate_result() always returns trades=None/metrics=None
+# (L-15 — known, documented). Stage 5 must re-evaluate like Stage 2 (B9F-003).
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _run_stage_5_mc_deep(
     config: dict,
@@ -751,22 +877,36 @@ def _run_stage_5_mc_deep(
     """
     Stage 5: Monte Carlo Deep simulation.
 
-    Takes the top-N candidates by WFO consistency score, runs a full MC Deep
-    simulation on each (all perturbation types, configured iteration count),
-    and writes each MCResult to the store.
+    Takes the top-N candidates by WFO consistency score, re-evaluates each
+    via strategy_runner.evaluate() to get a live CandidateResult with real
+    trades (store.get_candidate_result() always returns trades=None — L-15),
+    runs a full MC Deep simulation on each, and writes each MCResult to store.
 
-    On MC failure (result.error set): writes the result anyway (ruin_probability=None)
-    and logs a warning. The None ruin_probability path produces NO_GO in Stage 7.
+    B9G-002: Re-evaluate via strategy_runner.evaluate() instead of
+    store.get_candidate_result(). Identical fix to B9F-003 (Stage 2).
+    store.get_candidate_result() reconstructs from DB with trades=None /
+    metrics=None — CandidateResult.is_valid is always False, causing
+    run_mc() to raise "CandidateResult is invalid". Re-evaluating produces
+    a live CandidateResult with real trades, consistent with Stage 2 and
+    Stage 4 behaviour.
 
-    B9A-001 applied: uses ranker.rank_by_wfo() (List[CandidateRecord]) instead
-    of the former inline rank_by_wfo() (List[Dict]).
+    On re-evaluation failure: writes MCResult(error=..., ruin_probability=None)
+    and continues — ruin_probability=None → NO_GO in Stage 7 (correct).
+    On MC failure: same — writes result with error, logs WARNING, continues.
     """
     from src.backtesting.monte_carlo.mc_engine import run_mc
     from src.backtesting.ranker import rank_by_wfo
+    from src.backtesting.strategy_runner import evaluate
 
     run_id = run_metadata.run_id
     mc_config = config.get("monte_carlo", {}).get("deep", {})
     input_count: int = mc_config.get("input_count", 10)
+
+    base_yaml_path = _resolve_base_yaml(config)
+    temp_dir = Path(config["run"]["temp_dir"])
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    retain_temp: bool = config.get("run", {}).get("retain_temp_yamls", False)
+    min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
 
     logger.info("Stage 5: MC Deep — top %d candidates by WFO score", input_count)
 
@@ -778,14 +918,28 @@ def _run_stage_5_mc_deep(
     processed = 0
     for record in top_records:
         candidate = _record_to_candidate_from_record(record)
-        candidate_result = store.get_candidate_result(candidate.candidate_id)
 
-        if candidate_result is None:
+        # ── B9G-002: Re-evaluate to get live CandidateResult with trades ──────
+        # store.get_candidate_result() always returns trades=None (L-15).
+        # run_mc() raises if CandidateResult.is_valid is False.
+        # Re-evaluating is the correct fix — same pattern as B9F-003 (Stage 2).
+        candidate_result: CandidateResult = evaluate(
+            candidate=candidate,
+            base_yaml_path=base_yaml_path,
+            temp_dir=temp_dir,
+            min_significant_trades=min_significant_trades,
+            retain_temp_yamls=retain_temp,
+        )
+
+        if not candidate_result.is_valid:
             logger.warning(
-                "Stage 5: No full-dataset result for candidate %s — skipping",
+                "Stage 5: Re-evaluation failed for candidate %s (error: %s) — MC will record NO_GO",
                 candidate.candidate_id[:12],
+                candidate_result.error,
             )
-            continue
+            # Still run_mc so it records MCResult(error=..., ruin_probability=None)
+            # → NO_GO in Stage 7. Consistent with "never raises" MC contract.
+        # ── end B9G-002 ────────────────────────────────────────────────────────
 
         mc_result: MCResult = run_mc(
             candidate=candidate,
@@ -814,7 +968,6 @@ def _run_stage_5_mc_deep(
     store.flush()
     logger.info("Stage 5: MC Deep complete — %d/%d candidates processed",
                 processed, len(top_records))
-
 
 # ── Stage 6: Parameter Sensitivity ───────────────────────────────────────────
 

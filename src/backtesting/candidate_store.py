@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.backtesting.contracts import (
+    CandidateParameterSet,
     CandidateRecord,
     CandidateResult,
     CandidateStage,
@@ -289,6 +290,27 @@ class CandidateStore:
     def write_candidate(self, record: CandidateRecord) -> None:
         """Non-blocking enqueue. Worker-safe. Returns immediately."""
         self._queue.put(("_write_candidate_record", record))
+
+    def write_candidate_stub(
+        self,
+        candidate: CandidateParameterSet,
+        run_id: str,
+        stage: str = "GA",
+        generation: Optional[int] = None,
+    ) -> None:
+        """
+        Ensure a candidate row exists in `candidates` + `candidate_parameters`.
+        Does NOT write an evaluations row. Safe to call for seed candidates
+        already in the DB (INSERT OR IGNORE is a no-op for existing rows).
+
+        Used by ga_engine before writing WFO window results for offspring
+        candidates that have not yet been persisted. Without this call,
+        write_wfo_window_result raises FOREIGN KEY constraint failed because
+        the candidate_id does not exist in the candidates table.
+
+        Non-blocking — enqueued to the single writer thread.
+        """
+        self._queue.put(("_write_candidate_stub", (candidate, run_id, stage, generation)))
 
     def set_checkpoint(self, run_id: str, checkpoint: Checkpoint) -> None:
         """Update checkpoint in runs table. Blocks until written."""
@@ -855,6 +877,63 @@ class CandidateStore:
         )
         self._conn.commit()
 
+    def _write_candidate_stub(self, args: tuple) -> None:
+        """
+        Write candidates + candidate_parameters rows only. No evaluations row.
+        INSERT OR IGNORE — safe to call for candidates already in the DB (no-op).
+        Called by writer thread only.
+
+        This is used by ga_engine to register offspring candidates before
+        writing their WFO window results, preventing FOREIGN KEY constraint
+        failures on wfo_window_results(candidate_id → candidates).
+        """
+        candidate, run_id, stage, generation = args
+        params = candidate.parameters
+        params_json = json.dumps(params, sort_keys=True, default=str)
+
+        self._conn.execute(
+            """INSERT OR IGNORE INTO candidates
+               (candidate_id, run_id, zone_name, generation, origin_stage, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                candidate.candidate_id,
+                run_id,
+                candidate.zone_name,
+                generation if generation is not None else candidate.generation,
+                stage,
+                _now_ts(),
+            ),
+        )
+
+        self._conn.execute(
+            """INSERT OR IGNORE INTO candidate_parameters
+               (candidate_id, parameters_json,
+                rsi_period, rsi_overbought, rsi_oversold, adx_threshold,
+                atr_length, atr_multiplier, rr_target, risk_percentile,
+                strategy_tf, htf_tf, session_filter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                candidate.candidate_id,
+                params_json,
+                params.get("rsi_period"),
+                params.get("rsi_overbought"),
+                params.get("rsi_oversold"),
+                params.get("adx_threshold"),
+                params.get("atr_length"),
+                params.get("atr_multiplier"),
+                params.get("rr_target"),
+                params.get("risk_percentile"),
+                params.get("strategy_tf"),
+                params.get("htf_tf"),
+                params.get("session_filter"),
+            ),
+        )
+        self._conn.commit()
+        logger.debug(
+            "Candidate stub written: candidate=%s  stage=%s  gen=%s",
+            candidate.candidate_id[:12], stage, generation,
+        )
+
     def _write_wfo_window_result(self, args: tuple) -> None:
         """Write one WFOWindowResult row. Called by writer thread only."""
         result, run_id = args
@@ -977,7 +1056,6 @@ class CandidateStore:
     def _write_sensitivity_profile(self, args: tuple) -> None:
         profile, run_id = args
         now = _now_ts()
-        spike_threshold = 0.0   # is_spike already computed in profile; use per-step delta
 
         # Write per-step sensitivity_results rows
         for ps in profile.parameter_sensitivities:

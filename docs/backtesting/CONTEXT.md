@@ -1,167 +1,168 @@
-# CONTEXT.md — Block 9F Handoff
-**Generated**: 2026-03-06 (end of Block 9F session)
-**From**: Block 9F — First Real Pipeline Run + Bug Fixes
-**To**: Block 9G — First Clean Pipeline Run + Calibration (B8B-012, B8B-003)
+# CONTEXT.md — Block 9G Handoff
+**Date**: 2026-03-06
+**Session**: Block 9G
+**Status**: ✅ Pipeline fully integrated — all 7 stages clean, end-to-end
 ---
-## Current Pipeline State
-
-### Stage Implementation Status
-| Stage | Name | Status |
-|---|---|---|
-| 0 | Validation & Init | ✅ Implemented |
-| 1 | Random Search | ✅ Implemented |
-| 2 | MC Pre-Filter | ✅ Implemented (B9F-003 fixed) |
-| 3 | Genetic Algorithm | ✅ Implemented (B9F-002 fixed) |
-| 4 | Full WFO | 🟡 Stub (logs + advances checkpoint only) |
-| 5 | MC Deep | ✅ Implemented |
-| 6 | Parameter Sensitivity | ✅ Implemented |
-| 7 | Report & Output | ✅ Implemented |
-### Block 9F Fixes Applied
-| ID | File | Description |
-|---|---|---|
-| B9F-002 ✅ | orchestrator.py | Stage 3 graceful skip when no MC_PREFILTER_PASS candidates |
-| B9F-003 ✅ | orchestrator.py | Stage 2 re-evaluates candidate via evaluate() instead of store reconstruction |
-| B9F-004 ✅ | equity_simulator.py | extract_trade_returns uses trade.pnl_points (not trade.pnl) |
-| B9F-005 ✅ | strategy_runner.py | evaluate() accepts date_start/date_end; _write_temp_yaml injects data.date_range |
-### Critical Skill Correction
-**H-01 was INCORRECTLY marked as FALSE POSITIVE in the skill.**
-strategy_runner.evaluate() did NOT accept date_start/date_end before B9F-005.
-wfo_evaluator.py was always correct in passing them — the runner was missing
-the parameters. H-01 must be re-marked as FIXED (B9F-005) in the skill.
-### Run Status
-- Scenario `e2e_test` used for pipeline validation (loose constraints).
-- B9F-005 fix (strategy_runner date_start/date_end) NOT yet run-tested.
-- Next session: delete DB, run pipeline with e2e_test, confirm Stages 1–3 complete.
-- Then run with capital_accumulation (calibrated constraints) for real calibration data.
-### OOS Gate
-- Off by default (enforce_oos_gate: false). Do not enable until calibrated.
-### Test Suite
-345 passing (Block 9C baseline). Blocks 9D/9E/9F add no new tests.
+## What Was Accomplished This Session
+### B9G-001 [FIXED] — GA FOREIGN KEY constraint failed
+Offspring candidates from crossover+mutation were never written to `candidates`
+table before `write_wfo_window_result()` was called, causing FK constraint failure.
+**Fix** (`candidate_store.py` + `ga_engine.py`):
+- Added `write_candidate_stub()` public method + `_write_candidate_stub()` internal writer
+  (INSERT OR IGNORE on `candidates` + `candidate_parameters` only — no `evaluations` row)
+- `ga_engine._evaluate_generation()` now calls `store.write_candidate_stub()` + `store.flush()`
+  for every candidate before pool submission
+### B9G-002 [FIXED] — Stage 5 MC Deep: CandidateResult is invalid
+`store.get_candidate_result()` always returns `trades=None / metrics=None` (L-15).
+Stage 5 was passing this broken result to `run_mc()` → "CandidateResult is invalid".
+**Fix** (`orchestrator.py` `_run_stage_5_mc_deep`):
+- Re-evaluate each candidate via `strategy_runner.evaluate()` before calling `run_mc()`
+- Identical pattern to B9F-003 (Stage 2)
+- If re-evaluation fails: still call `run_mc()` → `MCResult(error=..., ruin_probability=None)`
+  → NO_GO in Stage 7 (correct conservative treatment)
+### B9G-003 [FIXED] — Stage 7 duplicate verdicts
+`rank_by_wfo()` returned duplicate `candidate_id` rows because `query_candidates`
+JOINs `evaluations` — a candidate with rows in both `RANDOM` and `MC_PREFILTER_PASS`
+stages produced two records with the same `candidate_id`.
+**Fix** (`ranker.py` `rank_by_wfo`):
+- Added `seen_ids` deduplication pass after ORDER BY, keeping first (highest-score)
+  occurrence of each `candidate_id`
+- Affects Stages 5, 6, and 7 simultaneously (all call `rank_by_wfo`)
+### B9G-004 [FIXED] — Stage 7 trading YAML missing `strategy:` section
+Two bugs in `yaml_generator.py`:
+1. `_STRATEGY_PARAM_KEY_MAP` pointed all parameters to `("strategy", ...)` or
+   `("parameters", ...)` — neither key exists in `strategy_template.yaml`
+2. `_structural_validate` checked for `["strategy", "parameters"]` — same phantom keys
+3. `StrategyConfig.from_yaml()` silently accepted the broken config (did not raise)
+   so the validation branch short-circuited before `_structural_validate`
+**Fix** (`yaml_generator.py` — full replacement):
+- `_PARAM_MAP` rewritten with three-tuple `(top_section, nested_path_tuple, leaf_key)`
+  mapping all 9 safe zone params to correct template locations:
+  - `rsi_*` → `filters.technical_filters.rsi_filter`
+  - `bollinger_*` → `filters.technical_filters.bollinger_filter`
+  - `atr_length/atr_multiplier` → `trade_management.risk`
+  - `rr_target` → `trade_management.risk.risk_to_reward_ratio`
+  - `risk_percentile` → `trade_management.risk.max_risk_percentile`
+  - All exploration/discovery zone params pre-mapped (ready for B9F-001 fix)
+- `_structural_validate` now checks `["filters", "trade_management"]` + spot-checks
+  `filters.technical_filters` and `trade_management.risk` are dicts
+- `_validate_strategy_config` runs structural check as hard backstop always
+  (even when `StrategyConfig.from_yaml()` passes)
+- Unknown parameters log WARNING instead of silently dropping into phantom section
 ---
-## Block 9G — Operator Preparation
-### STEP 1 — Deploy all Block 9F output files
+## Final Pipeline Run (2026-03-06 17:43–18:00)
 ```
-src/backtesting/orchestrator.py          ← _run_stage_3_ga (B9F-002)
-                                          ← _run_stage_2_mc_prefilter (B9F-003)
-src/backtesting/monte_carlo/equity_simulator.py  ← extract_trade_returns (B9F-004)
-src/backtesting/strategy_runner.py       ← evaluate() + _write_temp_yaml (B9F-005)
-configs/backtesting/backtest_1st_run.yaml ← min_win_rate eased to 0.15
+Run ID : b0faec30-5860-4e1d-a796-7353ad1aaf7c
+Config : backtest_1st_run.yaml (scenario: e2e_test)
+Stage 0: ✅ Validation passed — 5 WFO windows, 1 enabled zone
+Stage 1: ✅ 50 evaluated, 50 passed, 0 failed
+Stage 2: ✅ 30 pass, 0 fail
+Stage 3: ✅ GA complete (5 gen, early stop gen 4 — stagnation)
+Stage 4: ✅ 27/27 candidates scored (1 candidate flagged WFO_INSUFFICIENT_WINDOWS — expected)
+Stage 5: ✅ 10/10 processed (no MC failures)
+Stage 6: ✅ 5/5 processed
+Stage 7: ✅ 5 verdicts written, 5 trading YAMLs written — no errors
+Warnings (benign):
+  candidate 7bf2f892d683 — WFO_INSUFFICIENT_WINDOWS (0/5 valid windows)
+  This is expected: bad param combo, correctly excluded downstream.
 ```
-### STEP 2 — Delete the stale DB
-```bash
-del outputs\backtesting\backtester.db
-```
-Every run attempt this session left partial checkpoints. Start fresh.
-### STEP 3 — Run with e2e_test scenario first
-In backtest_1st_run.yaml, set:
-```yaml
-scenario: "e2e_test"
-```
-Run and confirm all stages 1–3 complete without error.
-Expected log pattern:
-```
-Stage 1: Random Search complete — evaluated=50 passed=50 failed=0
-Stage 2: MC Pre-Filter complete — pass=P fail=F total=30
-Stage 3: Genetic Algorithm — 5 windows, seed=44
-GA starting: pop=N gens=5 ...
-GA complete: final_best=X.XXXX
-Stage 3: Genetic Algorithm complete
-Stage 4: Full WFO — stub, not yet implemented
-Stage 5: No candidates with WFO scores — skipping MC Deep
-Stage 6: No candidates with WFO scores — skipping Sensitivity
-Stage 7: No candidates available — generating empty report
-Pipeline complete
-```
-### STEP 4 — Run calibration queries (from CONTEXT.md Block 9F)
-After a successful e2e_test run, restore `scenario: "capital_accumulation"` with
-the calibration data queries from the previous CONTEXT.md (Queries 3–7).
-These require actual fitness scores and WFO data — only available after a
-real (non-e2e_test) run with candidates passing Stage 1.
+**Top 5 verdicts (auto_go, e2e_test scenario — not for trading):**
+| Candidate      | WFO   | Ruin   |
+|----------------|-------|--------|
+| 7fc22c8fcce4   | 0.700 | 0.0000 |
+| 8dc8164ee1a8   | 0.650 | 0.0000 |
+| c45693d20e9c   | 0.650 | 0.0000 |
+| 098a54d31e95   | 0.650 | 0.0000 |
+| 86ed43ac04a8   | 0.350 | 0.0000 |
 ---
-## Block 9G — Calibration Actions (done by Claude)
-### B8B-012 — Sigmoid scale calibration (PRE-PROD BLOCKER)
-Requires Query 3 (net_pnl distribution) from a capital_accumulation run.
-File: consistency_scorer.py, function _sigmoid_normalise()
-Current: scale=0.10
-### B8B-003 — Expectancy normalisation ceiling
-Requires Query 4 (expectancy distribution) from a capital_accumulation run.
-File: fitness.py, function _compute_weighted_score()
-Current: expectancy_norm = clamp(expectancy / 3.0, 0, 1)
-### Constraint re-calibration
-After first capital_accumulation run with passing candidates:
-- Query actual win_rate distribution to set min_win_rate correctly
-- Current temporary value: 0.15 (eased from 0.45 — run 1 showed max ~11.7%)
-- Strategy is producing ~10% win rates — may indicate strategy config issue
-  OR the parameter space (safe zone) doesn't include profitable configurations.
-  If capital_accumulation run still shows 0 passing at 0.15 → investigate
-  strategy data coverage and base YAML filter configuration.
+## Current Pipeline Status
+| Stage | Status | Notes |
+|-------|--------|-------|
+| 0 Validation | ✅ Implemented | |
+| 1 Random Search | ✅ Implemented | |
+| 2 MC Pre-Filter | ✅ Implemented | Re-evaluates via evaluate() (B9F-003) |
+| 3 GA | ✅ Implemented | write_candidate_stub() FK guard (B9G-001) |
+| 4 Full WFO | ✅ Implemented | wfo_engine handles all persistence internally |
+| 5 MC Deep | ✅ Implemented | Re-evaluates via evaluate() (B9G-002) |
+| 6 Sensitivity | ✅ Implemented | |
+| 7 Report & Output | ✅ Implemented | yaml_generator fixed (B9G-004) |
+**All 7 stages fully operational.**
 ---
-## Open Findings
-### Active
-| ID | Priority | File | Description |
-|---|---|---|---|
-| B9F-001 | **P1 BLOCKER** | parameter_space.py | expand_zones() Cartesian product OOM for exploration zone. Workaround: exploration.enabled: false. Fix: refactor to per-param value lists. |
-| B8B-012 | PRE-PROD | consistency_scorer.py | sigmoid scale=0.10 — calibrate after first real run |
-| B8B-003 | P3 | fitness.py | expectancy /3.0 hardcoded — calibrate after first real run |
-| B8-009 | P3 | orchestrator.py | raw sqlite3 in _resume_or_start |
-| B9B-001 | P3 | crossover.py | no zone-name guard |
-| B8B-013 | P3 | mc_engine.py | ruin_threshold dual-source |
-| B8B-011 | P3 | consistency_scorer.py | fraction_positive_windows floor |
-| B8C-002/003 | P3 | report_generator.py | deferred |
-| B9C-008 | P3 | sampler.py | deferred |
-### Resolved This Session (Block 9F)
-| ID | Fix |
-|---|---|
-| B9F-002 ✅ | orchestrator.py Stage 3 graceful skip |
-| B9F-003 ✅ | orchestrator.py Stage 2 re-evaluate instead of store reconstruct |
-| B9F-004 ✅ | equity_simulator.py pnl_points attribute |
-| B9F-005 ✅ | strategy_runner.py date_start/date_end for WFO window scoping |
----
-## Contract Field Reference (verified — do NOT deviate)
-```python
-# CandidateStage enum values (exact):
-CandidateStage.RANDOM
-CandidateStage.MC_PREFILTER_PASS / MC_PREFILTER_FAIL
-CandidateStage.GA / WFO / MC_DEEP / SENSITIVITY
-# Trade contract (B9F-004 verified):
-Trade.pnl_points        → Optional[float] (None if trade is open / no exit)
-Trade.exit              → Optional[TradeExit]
-TradeExit.pnl_points    → float
-TradeResult.trades      → List[Trade]  (unwrap with trades.trades if TradeResult)
-# strategy_runner.evaluate() full signature (B9F-005):
-evaluate(candidate, base_yaml_path, temp_dir,
-         min_significant_trades=30, retain_temp_yamls=False,
-         date_start=None, date_end=None) -> CandidateResult
-# date_start/date_end: date or datetime, optional
-# date → "YYYY-MM-DD 00:00:00" (start) / "YYYY-MM-DD 23:59:59" (end)
-# datetime → formatted as-is
-# YAML date_range keys (B9F-005 verified from strategy_template.yaml):
-data.date_range.start   "YYYY-MM-DD HH:MM:SS"
-data.date_range.end     "YYYY-MM-DD HH:MM:SS"
-# All other contracts unchanged from Block 9E — see previous CONTEXT.md
+## Open Issues (prioritised)
+### P1 Blockers (production)
+```
+B9F-001 — parameter_space.py: expand_zones() enumerates full Cartesian product
+  exploration zone: ~387T combinations → OOM
+  Fix: refactor expand_zones() to return per-param value lists (not full product)
+       refactor sampler._lhs_sample() to accept per-param lists
+  Workaround: exploration.enabled: false (active)
+B8B-012 — consistency_scorer.py: _sigmoid_normalise scale=0.10 needs calibration
+  Fix after first REAL run (not e2e_test): measure net_pnl distribution
+  → set scale ≈ stdev * 0.5
+```
+### P3 (non-blocking)
+```
+B8B-003 — fitness.py: expectancy_norm hardcoded /3.0 — calibrate after real run
+B8-009  — orchestrator.py: raw sqlite3 in _resume_or_start bypasses CandidateStore
+B9B-001 — crossover.py: no zone-name guard for cross-zone parents
+B8B-013 — mc_engine.py: ruin_threshold dual-source
+B8B-011 — consistency_scorer.py: fraction_positive_windows fixed 0.0 floor
+B8C-002/003 — report_generator.py: deferred
+B9C-008 — sampler.py: deferred
+OPT-01  — Stage 6 target ≤200s (currently ~229s on e2e_test)
 ```
 ---
-## Critical Non-Negotiables (unchanged + additions)
-```python
-# All Block 9E non-negotiables still apply (see previous CONTEXT.md)
-# Additions from Block 9F:
-# extract_trade_returns: use trade.pnl_points, skip None (open trades)
-# Stage 2: re-evaluate via evaluate() — never reconstruct from store
-# strategy_runner.evaluate(): date_start/date_end override data.date_range
-# H-01 is FIXED (B9F-005) — not a false positive
+## Immediate Next Actions
+1. **Result analysis** — examine the e2e_test run output:
+   - Review HTML report for Stage 7 output quality
+   - Check trading YAML content against strategy_template.yaml
+   - Verify `backtester_metadata` section in output YAMLs
+2. **Calibration run preparation** (switch from e2e_test → capital_accumulation):
+   - Restore `random_search.samples_per_zone: 200`
+   - Restore `genetic.population_size: 60`, `generations: 30`
+   - Review `min_win_rate: 0.15` — was eased from 0.45 for e2e_test
+3. **B8B-012** — after first real run, measure net_pnl distribution and calibrate
+   `_sigmoid_normalise` scale in `consistency_scorer.py`
+4. **B9F-001** — refactor `expand_zones()` before enabling exploration zone
+---
+## Files Modified This Block
+| File | Change |
+|------|--------|
+| `src/backtesting/candidate_store.py` | Added `write_candidate_stub()` + `_write_candidate_stub()` + fixed `_write_mc_result()` `run_id` ref |
+| `src/backtesting/ga/ga_engine.py` | `_evaluate_generation()`: stub writes + `windows_total` fix |
+| `src/backtesting/orchestrator.py` | Stage 4 full impl + Stage 5 re-evaluate fix |
+| `src/backtesting/ranker.py` | `rank_by_wfo()`: dedup by candidate_id |
+| `src/backtesting/yaml_generator.py` | Full replacement: correct `_PARAM_MAP` + validator |
+---
+## Lessons Learned (Block 9G additions)
+```
+L-19: GA offspring must be registered via write_candidate_stub() before any FK-referencing
+      writes (wfo_window_results, mc_results, etc.). INSERT OR IGNORE is safe for both
+      new and existing candidates.
+L-20: windows_total passed to compute_consistency() must equal len(window_results)
+      (actual results received), not the requested sample size. GA lightweight mode
+      may receive 1–2 results per generation; using len(windows) violates the contract
+      guard windows_evaluated <= windows_total.
+L-21: rank_by_wfo() (and any ranker that JOINs evaluations) must deduplicate by
+      candidate_id before applying top_n. A candidate in multiple stages produces
+      multiple rows; without dedup, duplicate verdicts and YAMLs propagate to Stage 7.
+L-22: yaml_generator._PARAM_MAP must be derived from the actual strategy_template.yaml
+      structure — never inferred from parameter names alone. Always cross-reference
+      the template before writing or updating the map.
+L-23: StrategyConfig.from_yaml() may silently accept structurally invalid configs
+      (it did in this session). Always run structural validation as a hard backstop
+      regardless of whether schema validation passes.
+L-24: The only reliable way to diagnose yaml_generator failures is to inspect the
+      "Sections present" in the error message against strategy_template.yaml top-level
+      keys. If "strategy" or "parameters" appear in "Sections present" but not in the
+      template, the _PARAM_MAP is writing to phantom sections.
 ```
 ---
-## Block Roadmap
-```
-Block 9D (done):  Prerequisite fixes + Stages 1–3 implemented
-Block 9E (done):  B8B-005 OOS gate
-Block 9F (done):  B9F-002/003/004/005 bug fixes; pipeline reaches Stage 3
-Block 9G (next):  1. Confirm clean e2e_test run (Stages 1–3 complete)
-                  2. capital_accumulation run with calibration queries
-                  3. Calibrate B8B-012 + B8B-003
-                  4. Re-assess min_win_rate for capital_accumulation
-                  5. B9F-001 fix (expand_zones refactor) if exploration zone needed
-Block 9H (TBD):   Stage 4 Full WFO implementation
-Block 9I (TBD):   OOS gate threshold calibration + enable
-Production:       Stage 4 complete, B8B-012/003 calibrated, exploration zone enabled
-```
+## Architecture Invariants (unchanged — do not modify)
+- `store.get_candidate_result()` always returns `trades=None / metrics=None` — never use for MC input
+- `write_candidate_stub()` is always safe (INSERT OR IGNORE) — call before any FK write
+- `rank_by_wfo()` deduplicates by candidate_id — `rank_combined()` already did this; now consistent
+- `yaml_generator._PARAM_MAP` must stay in sync with `strategy_runner._PARAM_KEY_MAP`
+- `StrategyConfig.from_yaml()` is not a reliable validator — structural check runs always
+- `e2e_test` scenario: loose thresholds for pipeline validation only — all results are `auto_go`
+  at WFO ≥ 0.01; do not interpret verdicts from this scenario
