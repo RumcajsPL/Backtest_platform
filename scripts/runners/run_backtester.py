@@ -83,8 +83,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/backtesting/backtest_template.yaml"),
-        help="Path to backtest config YAML (default: configs/backtesting/backtest_template.yaml)",
+        default=Path("configs/backtesting/backtest_1st_run.yaml"),
+        help="Path to backtest config YAML (default: configs/backtesting/backtest_1st_run.yaml)",
     )
     parser.add_argument(
         "--log-level",
