@@ -353,8 +353,8 @@ zones:
     # 9 parameters. Conservative ranges. RSI + Bollinger always on.
     parameters:
       rsi_period:           {type: int,   min: 8, max: 20, step: 1}
-      rsi_overbought:       {type: int,   min: 50, max: 80, step: 1}
-      rsi_oversold:         {type: int,   min: 20, max: 50, step: 1}
+      rsi_overbought:       {type: int,   min: 51, max: 80, step: 1}
+      rsi_oversold:         {type: int,   min: 20, max: 49, step: 1}
       atr_length:           {type: int,   min: 6, max: 20, step: 1}
       atr_multiplier:       {type: float, min: 1.2, max: 2.5, step: 0.1}
       rr_target:            {type: float, min: 3.0, max: 9.0, step: 0.1}
