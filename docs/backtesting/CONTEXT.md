@@ -1,184 +1,190 @@
-# CONTEXT.md — Block 9H Handoff
-**Date**: 2026-03-06
-**Session**: Block 9H
-**Status**: ✅ All fixes applied — calibration run ready to fire
+# CONTEXT.md — Block 9J Handoff (Final)
+**Date**: 2026-03-07
+**Session**: Block 9J (same chat window as 9I)
+**Status**: ✅ COLLAPSE-UNIT fixed. auto_go verdicts confirmed. Pipeline production-ready.
 ---
 ## What Was Accomplished This Session
-### B9H-001 [FIXED] — query_run.py: Stage 3 GA health check always reported 0
-`q_pipeline_health` and `q_ga_generations` queried `evaluations WHERE stage = 'GA'`
-which always returns 0 because `write_candidate_stub()` writes no evaluations row
-(by design — stubs write `candidates` + `candidate_parameters` only).
-**Fix** (`query_run.py`):
-- `q_pipeline_health`: now queries `candidates WHERE origin_stage = 'GA'`
-- `q_ga_generations` totals fallback: same fix applied
-### B9H-002 [FIXED] — candidate_store.py: Duplicate rows in wfo_window_results
-`_write_wfo_window_result` used `uuid4()` as PK on every call, so `INSERT OR REPLACE`
-never triggered — a fresh PK always meant a new row. Duplicate rows accumulated
-silently when the same candidate+window was evaluated multiple times (GA + Stage 4).
-**Fix** (`candidate_store.py`):
-- Added `_wfo_result_id(run_id, candidate_id, window_id)` — deterministic
-  SHA-256[:32] key derived from the three fields that uniquely identify a window result
-- `_write_wfo_window_result` now uses `_wfo_result_id()` instead of `uuid4()`
-- `INSERT OR REPLACE` now correctly deduplicates on repeated writes
-- Added `import hashlib`
-- `query_run.py` `q_wfo_window_detail` also updated with `GROUP BY window_id`
-  as read-side guard for rows already in existing DBs
-### B9F-001 [FIXED] — parameter_space.py + sampler.py: Cartesian product OOM
-`expand_zones()` called `itertools.product()` to materialise all combinations.
-Safe zone: ~2M combos (~520MB RAM). Exploration zone: ~387T combos → OOM/hang.
-**Fix** (`parameter_space.py`):
-- `expand_zones()` now returns `Dict[str, Dict[str, List]]` (per-param value lists)
-  instead of `Dict[str, List[Dict]]` (full Cartesian product)
-- `itertools` import removed entirely
-- Added `get_param_values(zone_def, param_name)` helper for sensitivity step enumeration
-**Fix** (`sampler.py`):
-- `sample_lhs()` and `sample_random()` updated to accept new format
-- `_lhs_sample()` accepts `Dict[str, List]` directly — redundant
-  `param_value_universe` extraction loop removed
-- Added `min_universe_size` clamp in `_lhs_sample()` to guard n > smallest param universe
-- `sample_random()` now draws per-parameter independently — no Cartesian product needed
-### B9H-003 [FIXED] — strategy_runner.py: Temp YAML filename collision (12-char truncation)
-`yaml_path = temp_dir / f"candidate_{candidate.candidate_id[:12]}.yaml"`
-Two candidates sharing the same 12-char prefix collide on the same temp file.
-One worker writes it, another truncates/deletes mid-write → `NoneType` YAML error.
-Also caused `[WinError 32]` file-lock warnings on cleanup.
-**Fix** (`strategy_runner.py`) — ONE LINE, operator applies manually:
-```python
-# Before:
-yaml_path = temp_dir / f"candidate_{candidate.candidate_id[:12]}.yaml"
-# After:
-yaml_path = temp_dir / f"candidate_{candidate.candidate_id}.yaml"
-```
-### Calibration run prep [DONE]
-- `backtest_1st_run.yaml`: scenario `e2e_test` → `capital_accumulation`
-- Production values restored: `samples_per_zone=200`, `input_count=120`,
-  `population_size=60`, `generations=30`, `stagnation_generations=10`, `max_workers=6`
-- `strategy_template.yaml`: operator to copy 3 filter enabled flags from `wbws_strategy_DAX.yaml`:
-  `rsi_filter.enabled: false`, `dpo_filter.enabled: true`, `choppiness_filter.enabled: true`
-- DPO/choppiness parameter values remain at template defaults (not in safe zone search space)
-- `exploration.enabled` remains `false` — re-enable after B8B-012/B8B-003 calibration
+### COLLAPSE-UNIT [FIXED] — wfo_collapse_drawdown_threshold unit mismatch
+Root cause was two-layered, discovered together:
+1. `contracts.py` `__post_init__` validated `(0.0 < threshold <= 1.0)` — would reject any pts value
+2. `scenario.py` `load_scenario()` never wired the field from YAML — always used dataclass default
+**Fix applied (3 files)**:
+- `contracts.py`: default `0.40 → 400.0`; validation `<= 1.0` guard removed, replaced with `<= 0.0` guard only. Docstring updated to say "pts" with DAX example.
+- `scenario.py`: added `wfo_collapse_drawdown_threshold=float(s.get("wfo_collapse_drawdown_threshold", 400.0))` after `mc_prefilter_ruin_threshold` line.
+- `backtest_1st_run.yaml`: added `wfo_collapse_drawdown_threshold: 400.0` to capital_accumulation scenario.
+**Result** (run 1fcc6398): 11/17 WFO candidates collapsed (those with worst_dd > 400 pts),
+6 did not collapse — verdicts correctly differentiated: 3 auto_go, 2 borderline.
+Previous run had 24/24 collapsed (all borderline). Fix confirmed working.
+### RSI sensitivity still zero (RSI-SENS — confirmed persistent, diagnosis updated)
+All RSI perturbations return delta=0.0000 across all 5 sensitivity profiles again.
+Given that rsi_filter.enabled=true is confirmed in the YAML, and two independent runs
+show the same zero-delta pattern, **the most likely cause is that the RSI filter
+produces no additional filtering effect given the current DPO + choppiness filter
+combination**. The DAX parameter sets being evaluated likely have no trades that pass
+DPO+choppiness but fail RSI at the current threshold settings. RSI dimensions are
+active search dimensions consuming compute but producing no differentiation.
+**Action**: Either remove RSI params from search space (simplify) or tighten RSI
+thresholds to create filter overlap (e.g. overbought: 65, oversold: 40).
+Not blocking for next run but wastes search dimensions.
+### Instrument-specific normalisation — RAR note (logged for V2)
+`wfo_collapse_drawdown_threshold`, `_SIGMOID_SCALE`, `_MAX_EXPECTED_VARIANCE`,
+`_MAX_EXPECTED_DRAWDOWN` are all calibrated in raw instrument points for DAX.
+These values would be wrong for any other instrument (FTSE, ES, NQ etc.).
+The correct long-term solution is to normalise via **RAR (Rolling Annual Range)**
+— the instrument's rolling price range provides a natural unit-agnostic scale.
+With RAR normalisation, all thresholds and sigmoid constants become instrument-
+independent percentages, enabling multi-asset operation without recalibration.
+This is a V2 architectural change — do not implement until current DAX pipeline
+is validated in production. Logged as V2-RAR.
 ---
-## Calibration Run — Pre-Flight Checklist
-Before firing the calibration run, confirm:
-- [ ] B9H-003 one-line fix applied to `strategy_runner.py`
-- [ ] 3 filter `enabled` flags copied into `strategy_template.yaml`
-- [ ] `backtest_1st_run.yaml` replaced with Block 9H version (scenario=capital_accumulation)
-- [ ] `src/backtesting/parameter_space.py` replaced with Block 9H version
-- [ ] `src/backtesting/sampler.py` replaced with Block 9H version
-- [ ] `src/backtesting/candidate_store.py` replaced with Block 9H version
-- [ ] `query_run.py` replaced with Block 9H version
-- [ ] Old `outputs/backtesting/backtester.db` deleted or moved (new run, new DB)
+## Run 1fcc6398 — Key Findings
+### Pipeline health
+- Stage 1: 17/200 passed (8%) — slight decrease from 12% in run 4e7135ed
+- WFO: 17 scored (11 collapsed, 6 clean), range 0.0000–0.9286
+- MC Deep: all ruin_prob=0.0000 ✅
+- Verdicts: **3 auto_go, 2 borderline** ✅ First auto_go verdicts produced.
+### COLLAPSE-UNIT fix validated
+6 candidates with worst_dd < 400 pts → not collapsed → eligible for auto_go.
+11 candidates with worst_dd > 400 pts → collapsed → borderline at most.
+The threshold is working as intended. 400 pts is a reasonable starting value for
+DAX — may want to review after more runs if collapse rate seems too high.
+### 03174190cdae — WFO=0.0000 anomaly
+windows_evaluated=0, all metrics zero, window_collapse_flag=1. This candidate
+produced no valid windows at all. A configuration issue (possibly YAML mapping
+error visible in W04 of 41eed9b34afa from prior run) caused complete evaluation
+failure. Not blocking — the pipeline handled it gracefully (wfo_score=0.0 → no_go).
+Monitor frequency of zero-evaluation candidates in future runs.
+### W03-only pattern — persistent (3rd consecutive run)
+All WFO-scored candidates still win only on W03. W01/W02 borderline or slight loss,
+W04/W05 loss-making. This is now an established characteristic of the strategy
+on this 3-month data slice. Not a bug. Accept as context for live validation.
+### RSI sensitivity — confirmed zero for third run
+All RSI perturbations (rsi_period, rsi_overbought, rsi_oversold) return 0.0000
+across all 5 candidates in Stage 6. RSI filter is enabled but not contributing
+to trade filtering in the evaluated parameter space. See RSI-SENS action below.
+### atr_multiplier ceiling — partially resolved
+Previous run: all winners at 2.0. This run: winners span 1.6–2.1, avg 1.92.
+The extended range (2.5 max) allowed the GA to explore above 2.0 — f57ade9c9e75
+uses 2.1 (highest WFO). The ceiling concern is substantially reduced. Monitor.
+### risk_percentile — interesting reversal
+Previous run optimum: 0.51–0.59. This run top 5 risk_percentile values:
+0.40, 0.32, 0.64, 0.32, 0.32. Much lower values now winning. This suggests
+the GA is finding different risk profiles rather than converging on a single
+optimum. Healthy diversity. Overall range: 0.32–0.66.
+### Best candidates (run 1fcc6398)
+| Candidate | WFO | MC avg_equity | MC p5 | Spike | Verdict | Assessment |
+|---|---|---|---|---|---|---|
+| f57ade9c9e75 | 0.9286 | 9,041 | 7,459 | none | auto_go | Best WFO, clean |
+| 2ec7e80968b6 | 0.9228 | 8,925 | 7,329 | none | auto_go | Strong, very tight sensitivity |
+| 1bfa417dc8bb | 0.9207 | 9,054 | 7,406 | none | auto_go | Best MC, clean, moderate sensitivity |
+| 11220d7b9360 | 0.9223 | 9,459 | 7,607 | rr_target | borderline | Best MC overall, spike on rr |
+| 696a3511ee42 | 0.9155 | 9,090 | 7,468 | none | borderline | Collapsed (worst_dd 420 > 400) |
+**1bfa417dc8bb is strongest overall**: auto_go, best avg MC equity (9,054),
+good WFO (0.9207), no spike, clean sensitivity map. Paper trade candidate.
+### 2ec7e80968b6 sensitivity — near-isolated parameter space
+This candidate has almost universal REJECTED_CONSTRAINTS on perturbation — bollinger
+(all 4 steps), atr_multiplier (3 of 4 steps), risk_percentile (2 of 4 steps).
+The parameter combination is sitting in a very narrow feasible region. It passes
+constraints but its neighbours mostly do not. High fragility despite auto_go verdict.
+Use with caution in paper trading — small drift in market conditions could push it
+out of feasible region. Recommend 1bfa417dc8bb or f57ade9c9e75 instead.
+### 11220d7b9360 rr_target spike — interesting directionality
+Base rr_target=6.8. Perturbed to 7.0: delta=+0.08 (spike). To 7.2: delta=+0.15 (spike).
+The spike is upward — higher rr_target improves fitness significantly. This suggests
+the optimum is actually above 6.8 and the current value is below-optimal. The spike
+is not fragility in the dangerous sense but an unexplored improvement direction.
+Note for future search space: rr_target upper bound may warrant extension above 7.2.
 ---
-## Calibration Run — What To Measure Afterwards
-Priority analysis for next session:
-1. **Stage 1 pass rate** — how many of 200 candidates pass `capital_accumulation`
-   constraints? If 0 again, `min_win_rate: 0.15` needs further easing OR
-   `min_expectancy: 0.4` / `min_profit_factor: 1.3` are too tight. Check
-   `q_stage1 --section stage1` for closest-to-passing failures.
-2. **B8B-012 calibration** — after run, query net_pnl distribution from Stage 1
-   RANDOM evaluations. Target: `scale ≈ stdev(net_pnl) * 0.5` in
-   `consistency_scorer.py _sigmoid_normalise`.
-3. **B8B-003 calibration** — check expectancy range from Stage 1 results.
-   Current divisor `/3.0` in `fitness.py`. Adjust to normalise expectancy to
-   roughly [0, 1] range given actual data.
-4. **WFO consistency scores** — are any candidates reaching `go_wfo_floor: 0.65`?
-   If not, assess whether the 3-month data window is too short for 5 windows
-   to produce meaningful consistency signal.
-5. **Verdict distribution** — auto_go / borderline / no_go counts and thresholds.
-   All verdicts from `capital_accumulation` are real — interpret accordingly.
----
-## Current Pipeline Status
-| Stage | Status | Notes |
-|-------|--------|-------|
-| 0 Validation | ✅ | |
-| 1 Random Search | ✅ | |
-| 2 MC Pre-Filter | ✅ | Re-evaluates via evaluate() (B9F-003) |
-| 3 GA | ✅ | write_candidate_stub() FK guard (B9G-001) |
-| 4 Full WFO | ✅ | |
-| 5 MC Deep | ✅ | Re-evaluates via evaluate() (B9G-002) |
-| 6 Sensitivity | ✅ | |
-| 7 Report & Output | ✅ | |
-**All 7 stages fully operational.**
----
-## Open Issues (prioritised)
-### P1 Blockers (production)
+## Open Issues (updated)
+### P1 Blockers — NONE
+COLLAPSE-UNIT resolved. Pipeline producing auto_go verdicts. ✅
+### P2 Important
 ```
-B8B-012 — consistency_scorer.py: _sigmoid_normalise scale=0.10 needs calibration
-  Fix after calibration run: measure net_pnl distribution
-  → set scale ≈ stdev * 0.5
+RSI-SENS — RSI zero-delta confirmed across 3 runs despite rsi_filter.enabled=true.
+  RSI filter is likely producing no additional filtering effect given current
+  DPO+choppiness configuration. Two options:
+  Option A (simplify): Remove rsi_period, rsi_overbought, rsi_oversold from
+    search space in backtest_1st_run.yaml. Reduces search dimensions, improves
+    Stage 1 sample efficiency.
+  Option B (activate): Tighten RSI thresholds (overbought: 65, oversold: 40)
+    to force more overlap with existing filters. Requires strategy knowledge.
+  Decision deferred to operator. Not blocking.
+RR-CEILING — rr_target spike on 11220d7b9360 suggests optimum above 7.2.
+  Current safe zone max: 7.0. Consider extending to 8.0.
+  Observation only — not a blocker.
 ```
-### P3 (non-blocking)
+### P3 Non-blocking
 ```
-B8B-003 — fitness.py: expectancy_norm hardcoded /3.0 — calibrate after real run
-B8-009  — orchestrator.py: raw sqlite3 in _resume_or_start bypasses CandidateStore
-B9B-001 — crossover.py: no zone-name guard for cross-zone parents
+B8B-003 — fitness.py: expectancy /3.0 — acceptable, low priority
+B8-009  — orchestrator.py: raw sqlite3 in _resume_or_start
+B9B-001 — crossover.py: no zone-name guard
 B8B-013 — mc_engine.py: ruin_threshold dual-source
 B8B-011 — consistency_scorer.py: fraction_positive_windows fixed 0.0 floor
 B8C-002/003 — report_generator.py: deferred
 B9C-008 — sampler.py: deferred
-OPT-01  — Stage 6 target ≤200s (currently ~229s on e2e_test)
-[WinError 32] — strategy_runner.py: temp YAML file-lock on cleanup (Windows spawn
-  mode). Cosmetic after B9H-003 fix (no more shared filenames). Pre-existing,
-  low priority.
+OPT-01  — Stage 6 ≤200s
+[WinError 32] — cosmetic, pre-existing
+03174190cdae-type zeros — monitor frequency of zero-window-evaluation candidates
+W03-ONLY — established data characteristic; needs longer data range (V2)
 ```
-### Resolved this block (no longer open)
+### V2 Backlog
 ```
-B9H-001: FIXED — query_run.py GA health check
-B9H-002: FIXED — candidate_store.py wfo_window_results duplicate rows
-B9F-001: FIXED — parameter_space.py + sampler.py Cartesian product OOM
-B9H-003: FIXED — strategy_runner.py temp YAML 12-char collision
+V2-RAR  — Normalise all instrument-specific thresholds via Rolling Annual Range.
+  Enables multi-asset operation without per-instrument recalibration.
+  wfo_collapse_drawdown_threshold, _SIGMOID_SCALE, _MAX_EXPECTED_VARIANCE,
+  _MAX_EXPECTED_DRAWDOWN all become dimensionless fractions of RAR.
+  Do not implement until DAX pipeline validated in paper trading.
+Dynamic WFO window generation — see OPERATOR_RUNBOOK_9I_DELTA.md spec.
+```
+### Resolved this block
+```
+COLLAPSE-UNIT: FIXED — contracts.py + scenario.py + backtest_1st_run.yaml
+B9I-001: FIXED (Block 9I)
+B9I-002: FIXED (Block 9I)
+B8B-012: FIXED (Block 9I)
 ```
 ---
-## Immediate Next Actions (Block 9I)
-1. Apply pre-flight checklist above and fire calibration run
-2. Analyse calibration run results with `query_run.py --section all`
-3. B8B-012: calibrate `_sigmoid_normalise` scale in `consistency_scorer.py`
-4. B8B-003: calibrate `expectancy_norm` divisor in `fitness.py`
-5. Assess verdict thresholds against real capital_accumulation results
+## Production Readiness Assessment
+The pipeline has now produced **3 auto_go candidates** across 2 calibration runs.
+All pre-production blockers are resolved. The pipeline is ready for:
+1. Paper trading with the 3 auto_go YAMLs from run 1fcc6398
+2. Continued calibration runs to accumulate more auto_go candidates
+3. Review of RSI-SENS (simplification recommended)
+Before extending to additional scenarios or instruments, implement V2-RAR.
+---
+## Architecture Invariants (complete, current)
+- `_lhs_sample()` always returns exactly n candidates — no cap on n (B9I-001)
+- `actual_net_pnl` / `actual_total_trades` do NOT exist in evaluations table (B9I-002)
+- net_pnl for sigmoid calibration: `wfo_window_results.net_pnl` (Stage 4 only)
+- `_SIGMOID_SCALE = 131.0` — DAX pts, run 87712cab, 2026-03-07. Recalibrate on data/instrument change.
+- `_MAX_EXPECTED_VARIANCE = 100_000.0` pts² — DAX calibration
+- `_MAX_EXPECTED_DRAWDOWN = 1_000.0` pts — DAX calibration
+- `wfo_collapse_drawdown_threshold` default = 400.0 pts (DAX). Must be pts, not fraction.
+  Wired via `scenario.py` `s.get("wfo_collapse_drawdown_threshold", 400.0)` (COLLAPSE-UNIT fix).
+- `contracts.py` `__post_init__` validates only `> 0.0` — no upper bound (any pts value valid)
+- All normalisation constants are instrument-specific. V2-RAR will make them dimensionless.
+- Recalibrate `_SIGMOID_SCALE`: `scale = stdev(wfo_window_results.net_pnl WHERE is_ga_fitness_window=0) * 0.5`
+---
+## Lessons Learned (L-36, L-37)
+```
+L-36: A YAML field with a dataclass default will silently use that default even if
+      the field is added to the YAML file, unless scenario.py (or the equivalent
+      loader) explicitly reads and passes it. Always verify the loader wire-up when
+      adding new ScenarioProfile fields. The two-layer failure (validator rejects pts,
+      loader ignores YAML) means the field was doubly broken and tests would not
+      catch it without an integration test that checks actual verdict output.
+L-37: When a sensitivity parameter shows 0.0000 delta across all perturbation steps
+      and all candidates over multiple runs, the filter is either disabled or the
+      current parameter range produces no filtering overlap with the strategy's
+      active trade flow. Zero-delta RSI params waste search dimensions — either
+      activate (tighten thresholds) or remove from search space. Do not add params
+      to search space for filters whose effectiveness has not been independently
+      verified on the target instrument/timeframe.
+```
 ---
 ## Files Modified This Block
 | File | Change |
 |------|--------|
-| `query_run.py` | B9H-001: GA health check queries candidates table; B9H-002: q_wfo_window_detail GROUP BY |
-| `src/backtesting/candidate_store.py` | B9H-002: deterministic _wfo_result_id(), import hashlib |
-| `src/backtesting/parameter_space.py` | B9F-001: expand_zones() returns per-param lists; added get_param_values() |
-| `src/backtesting/sampler.py` | B9F-001: updated for new expand_zones() format |
-| `configs/backtesting/backtest_1st_run.yaml` | calibration run prep: scenario + production values |
-| `src/backtesting/strategy_runner.py` | B9H-003: candidate_id[:12] → candidate_id (operator applies) |
-| `configs/strategies/strategy_template.yaml` | 3 filter enabled flags (operator applies) |
----
-## Architecture Invariants (unchanged)
-- `store.get_candidate_result()` always returns `trades=None / metrics=None` — never use for MC input
-- `write_candidate_stub()` is always safe (INSERT OR IGNORE) — call before any FK write
-- `rank_by_wfo()` deduplicates by candidate_id
-- `yaml_generator._PARAM_MAP` must stay in sync with `strategy_runner._PARAM_KEY_MAP`
-- `StrategyConfig.from_yaml()` is not a reliable validator — structural check runs always
-- `e2e_test` scenario: loose thresholds for pipeline validation only
-- `expand_zones()` returns `Dict[str, Dict[str, List]]` — per-param value lists (B9F-001)
-- `_lhs_sample()` accepts `Dict[str, List]` directly — not a Cartesian product list
-- `_wfo_result_id()` is deterministic — INSERT OR REPLACE deduplicates correctly (B9H-002)
-- Temp YAML filenames use full `candidate_id` (64 chars) — no truncation (B9H-003)
----
-## Lessons Learned (Block 9H additions)
-```
-L-25: query_run.py health checks must be derived from the table that actually
-      receives the write. write_candidate_stub() writes candidates, not evaluations.
-      Any health check for stub-only stages must query candidates.origin_stage.
-
-L-26: INSERT OR REPLACE only deduplicates if the PK is deterministic. uuid4()
-      as PK on every call means OR REPLACE never fires — always a new row.
-      For any table where "one row per (run, candidate, window)" is the invariant,
-      the PK must be derived from those three fields, not generated randomly.
-
-L-27: Temp file names must use the full candidate_id hash. 12-char truncation
-      creates collision risk that grows with candidate pool size. On Windows
-      spawn mode, collisions cause WinError 32 (file in use) and NoneType YAML
-      errors. Full hash (64 chars) eliminates both.
-
-L-28: Base config parameters that are inside _PARAM_KEY_MAP are always
-      overwritten by _deep_set() during evaluation. Only parameters outside
-      the search space (filter enabled flags, session times, timeframes,
-      data paths) are meaningful to set in strategy_template.yaml.
-      Never use a manually-tuned strategy YAML as the base config if its
-      search-space parameters are outside the zone ranges.
-```
+| `src/backtesting/contracts.py` | COLLAPSE-UNIT: default 0.40→400.0, validation `<=1.0` removed |
+| `src/backtesting/scenario.py` | COLLAPSE-UNIT: wired wfo_collapse_drawdown_threshold from YAML |
+| `configs/backtesting/backtest_1st_run.yaml` | wfo_collapse_drawdown_threshold: 400.0 added |

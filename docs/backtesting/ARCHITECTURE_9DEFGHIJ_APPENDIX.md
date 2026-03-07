@@ -395,3 +395,152 @@ parameter combinations that produce no tradeable signals in any window.
 
 **These three WARNINGs together indicate correct system behaviour, not a bug.**
 Document this pattern so future operators do not file spurious bug reports.
+# ARCHITECTURE_9I_DELTA.md
+**Block**: 9I
+**Date**: 2026-03-07
+**Append to**: docs/backtesting/ARCHITECTURE.md
+---
+
+## Changes This Block
+
+### sampler.py — LHS cycling strata (B9I-001)
+`_lhs_sample()` previously hard-capped `actual_n = min(n, min_universe_size)`,
+truncating every run to 4 candidates. Cap removed. `actual_n = n` always.
+
+Stratum loop branches per parameter:
+- `n <= n_vals`: standard LHS, one pick per stratum window
+- `n > n_vals`: `cycled_idx = stratum_idx % n_vals` — cycles through universe
+
+**Invariant**: `_lhs_sample()` always returns exactly `n` candidates.
+
+---
+
+### query_run.py — Phantom column removal (B9I-002)
+`actual_net_pnl` and `actual_total_trades` removed from `evaluations` queries.
+Neither column exists in `FitnessResult` or `CandidateRecord`.
+
+`FitnessResult` stores exactly six constraint actuals:
+`actual_win_rate`, `actual_max_drawdown`, `actual_losing_streak`,
+`actual_trades_per_week`, `actual_expectancy`, `actual_profit_factor`.
+
+Net PnL is available only at Stage 4 via `wfo_window_results.net_pnl`.
+
+Secondary bug fixed: `q_constraint_margins` print loop was printing min twice.
+
+---
+
+### consistency_scorer.py — B8B-012 calibrated for DAX points
+Three module-level constants recalibrated. Prior values were for fractional
+returns (0–1 range) and produced degenerate output for DAX point values.
+
+| Constant | Before | After | Derivation |
+|---|---|---|---|
+| `_SIGMOID_SCALE` | 0.10 | 131.0 | stdev(net_pnl) × 0.5 = 261.98 × 0.5 |
+| `_MAX_EXPECTED_VARIANCE` | 0.10 | 100_000.0 | stdev≈262 → var≈68k → conservative ceiling |
+| `_MAX_EXPECTED_DRAWDOWN` | 0.50 | 1_000.0 | observed range 282–899 pts → conservative ceiling |
+
+`abs()` added to worst_drawdown_raw before normalisation (raw values are negative pts).
+`abs()` added to collapse flag comparison for same reason.
+
+**Calibration source**: run 87712cab, `wfo_window_results`, n=1006, stdev=261.98.
+**Recalibration trigger**: instrument change, data range change > 6 months.
+**Recalibration procedure**: `python calibrate_sigmoid.py` (outputs/calibrate_sigmoid.py).
+
+---
+
+## Unit Contract — ScenarioProfile threshold fields (new documentation)
+
+After B8B-012, all drawdown comparisons in consistency_scorer.py use raw pts.
+The following ScenarioProfile fields must use **matching units**:
+
+| Field | Units after B8B-012 | DAX example |
+|---|---|---|
+| `max_drawdown` (constraint) | fraction 0–1 | 0.15 |
+| `wfo_collapse_drawdown_threshold` | **pts** (post B8B-012) | 400.0 |
+| `_MAX_EXPECTED_DRAWDOWN` | pts | 1_000.0 |
+
+`wfo_collapse_drawdown_threshold` was previously documented as fraction (0.40 default).
+After B8B-012 it must be set in pts for DAX. Current YAML value 0.40 causes
+universal collapse flag (COLLAPSE-UNIT open issue). Fix: 400.0.
+
+**Rule**: whenever normalisation units change in consistency_scorer.py, audit
+all ScenarioProfile threshold fields that feed into the same comparisons.
+
+---
+
+## No New Tables or Contract Fields
+Schema unchanged. No new dataclass fields added.
+# ARCHITECTURE_9J_DELTA.md
+**Block**: 9J
+**Date**: 2026-03-07
+**Append to**: docs/backtesting/ARCHITECTURE.md
+---
+
+## Changes This Block
+
+### contracts.py — ScenarioProfile.wfo_collapse_drawdown_threshold (COLLAPSE-UNIT fix)
+
+**Before**: default `0.40`, validated `(0.0 < threshold <= 1.0)`.
+Fraction units. Any pts value would raise at construction.
+
+**After**: default `400.0`, validated `threshold > 0.0` only (no upper bound).
+Units: raw instrument points. Any positive value is valid.
+
+```python
+# Before
+wfo_collapse_drawdown_threshold: float = 0.40
+# validator:
+if not (0.0 < self.wfo_collapse_drawdown_threshold <= 1.0):
+    raise ValueError(...)
+
+# After
+wfo_collapse_drawdown_threshold: float = 400.0  # pts — DAX default
+# validator:
+if self.wfo_collapse_drawdown_threshold <= 0.0:
+    raise ValueError(...)
+```
+
+Docstring updated: removed `# conservative scenario should use 0.20`.
+Added: `# Units: raw instrument points. DAX default 400.0 pts ≈ 4% of 10,000pt account.`
+Added: `# See V2-RAR backlog for instrument-agnostic normalisation via Rolling Annual Range.`
+
+---
+
+### scenario.py — load_scenario() wires wfo_collapse_drawdown_threshold (COLLAPSE-UNIT fix)
+
+Previously the field was never read from YAML, so ScenarioProfile always used the
+dataclass default regardless of what was in backtest_1st_run.yaml.
+
+**Added** (after `mc_prefilter_ruin_threshold` line):
+```python
+wfo_collapse_drawdown_threshold=float(s.get("wfo_collapse_drawdown_threshold", 400.0)),
+```
+
+Uses `.get()` with explicit default — field is optional in YAML. Existing scenario
+definitions without this field will use 400.0 pts automatically.
+
+---
+
+## Unit Contract — All Instrument-Specific Constants
+
+After COLLAPSE-UNIT fix, the following constants are all in **raw instrument points**
+for DAX. They must be recalibrated per instrument. V2-RAR will replace them with
+dimensionless Rolling Annual Range fractions.
+
+| Constant / Field | Location | Value (DAX) | Unit |
+|---|---|---|---|
+| `_SIGMOID_SCALE` | consistency_scorer.py | 131.0 | pts |
+| `_MAX_EXPECTED_VARIANCE` | consistency_scorer.py | 100_000.0 | pts² |
+| `_MAX_EXPECTED_DRAWDOWN` | consistency_scorer.py | 1_000.0 | pts |
+| `wfo_collapse_drawdown_threshold` | ScenarioProfile / YAML | 400.0 | pts |
+
+**V2-RAR backlog**: normalise all four via instrument's Rolling Annual Range.
+Result: dimensionless fractions, one calibration serves all instruments.
+
+---
+
+## No New Tables or Schema Changes
+`contracts.py` field type unchanged (float). No DB schema changes.
+Existing test fixtures passing `wfo_collapse_drawdown_threshold=0.40` remain valid
+(0.40 > 0.0 passes the new validation). Any test asserting the old `<= 1.0`
+upper-bound error message must be updated — expected to be zero such tests.

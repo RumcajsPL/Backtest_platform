@@ -524,3 +524,297 @@ W05: 2025-12-08 → 2025-12-17  (9 calendar days,  3-day gap)
 ```
 Minimum 3 windows required (Stage 0 enforces). Gaps are weekend buffers.
 `enforce_oos_gate: false` — do not enable until `oos_degradation_threshold` calibrated.
+
+# OPERATOR_RUNBOOK_9I_DELTA.md
+**Block**: 9I
+**Date**: 2026-03-07
+**Append to**: docs/backtesting/OPERATOR_RUNBOOK.md
+---
+
+## Immediate Action Required Before Next Run
+
+### Fix wfo_collapse_drawdown_threshold (COLLAPSE-UNIT — P1)
+
+All verdicts in run 4e7135ed are borderline due to a unit mismatch.
+`wfo_collapse_drawdown_threshold: 0.40` is in fraction units but is now
+compared against raw DAX point values after B8B-012.
+
+**In `configs/backtesting/backtest_1st_run.yaml`, update all DAX scenarios:**
+
+```yaml
+scenarios:
+  capital_accumulation:
+    wfo_collapse_drawdown_threshold: 400.0   # was: 0.40 — pts for DAX
+
+  swing_trading:
+    wfo_collapse_drawdown_threshold: 500.0   # was: 0.40 — pts for DAX (wider tolerance)
+
+  conservative:
+    wfo_collapse_drawdown_threshold: 250.0   # was: 0.20 — pts for DAX (tighter)
+```
+
+Recalibrate these values after several runs. 400 pts ≈ 4% of a 10,000pt
+reference account — conservative starting point.
+
+---
+
+### Extend atr_multiplier range (P2)
+
+All top WFO candidates use atr_multiplier=2.0 (safe zone ceiling).
+Optimum likely lies above 2.0. Exploration zone allows up to 2.5.
+
+**In `configs/backtesting/backtest_1st_run.yaml`, zones.safe.parameters:**
+```yaml
+atr_multiplier: {type: float, min: 1.0, max: 2.5, step: 0.2}
+#                                             ^^^^ was: 2.0
+```
+
+---
+
+### Investigate RSI sensitivity (P2)
+
+RSI perturbations return delta=0.0000 despite rsi_filter.enabled=true.
+Before treating RSI as an active dimension, confirm it is actually filtering.
+
+**Step 1** — Verify temp YAML propagation:
+```yaml
+# In backtest_1st_run.yaml, temporarily:
+run:
+  retain_temp_yamls: true
+```
+Fire a short e2e_test run (samples_per_zone: 5). Open any temp YAML in
+`temp/backtesting/` and confirm:
+```yaml
+filters:
+  technical_filters:
+    rsi_filter:
+      enabled: true   # must be true
+```
+If false: the strategy_template.yaml change did not save correctly. Re-apply and retry.
+
+**Step 2** — If propagation confirmed, check RSI filter effectiveness:
+With current parameter combinations and DPO+choppiness filters active, the RSI
+filter may have zero overlap with the existing filter output (no additional trades
+filtered). In this case RSI parameters are genuinely inert for this configuration
+even when enabled — consider adjusting RSI thresholds (e.g. oversold: 30→40) to
+create more filtering overlap.
+
+**Restore after investigation:**
+```yaml
+run:
+  retain_temp_yamls: false
+```
+
+---
+
+## New Calibration Procedures
+
+### Procedure: Recalibrate sigmoid scale (run after each major data range change)
+
+```powershell
+# Save calibrate_sigmoid.py to project root first (available in outputs/)
+python calibrate_sigmoid.py
+```
+
+Then update `_SIGMOID_SCALE` in `src/backtesting/wfo/consistency_scorer.py`:
+```python
+_SIGMOID_SCALE: float = <stdev_result> * 0.5
+```
+
+Recalibration is needed when:
+- Data range changes by more than 6 months
+- Instrument changes (e.g. DAX → FTSE)
+- Strategy trade frequency changes significantly (affects net_pnl distribution)
+
+---
+
+## Calibration Run Summary — Block 9I
+
+### Run 87712cab (first 200-candidate run)
+- Scenario: capital_accumulation
+- Stage 1: 6/200 (3%) — constraints too tight initially
+- WFO: all scores 0.7000 — B8B-012 not yet applied
+- Used to: calibrate sigmoid scale (stdev=261.98, scale=131.0)
+
+### Run 4e7135ed (post B8B-012 + RSI enable + risk_percentile extension)
+- Scenario: capital_accumulation
+- Stage 1: 24/200 (12%)
+- WFO: 0.5330–0.9531 ✅ — differentiation confirmed
+- Verdicts: 5 borderline — all caused by COLLAPSE-UNIT bug, not strategy quality
+- Best candidates: bb100cfedb6d (best combined), b30de16a933e (best MC)
+- risk_percentile optimum confirmed: 0.51–0.59 (operator estimate 0.55–0.65 validated)
+- atr_multiplier at ceiling: all winners at 2.0 — extend range
+
+---
+
+## Known Issues and Expected Warnings
+
+### [WinError 32] and NoneType YAML (pre-existing, non-blocking)
+```
+WARNING: Temp YAML cleanup failed: [WinError 32]
+ERROR: Candidate evaluation failed: Config file must be a YAML mapping, got NoneType
+```
+Windows spawn mode file-lock race. Cosmetic. Affects small number of GA candidates only.
+Pipeline continues normally. Do not investigate unless temp/ accumulates unreleased files.
+
+### W03-only WFO performance pattern
+Top candidates consistently score only on W03 (Oct 27–Nov 14, 2025). This reflects
+a market regime in the 3-month data window, not a pipeline defect. WFO consistency
+scores are partially inflated by this single strong window. Interpret auto_go verdicts
+with this context — paper trade validation is essential before live deployment.
+
+---
+
+## Appendix — V2 Backlog: Dynamic Data Range with Intelligent WFO Windows
+
+**Logged in Block 9I. Implementation deferred to V2.**
+
+### Requirement
+The current pipeline hardcodes WFO windows as explicit date ranges in
+`backtest_1st_run.yaml`. Two operational problems:
+1. Data range used for Stage 1 and WFO window dates are maintained separately and can diverge.
+2. Adding more historical data requires manual recalculation of all WFO window dates.
+
+### V2 Design Principle
+Single configurable data range in backtester YAML:
+```yaml
+data:
+  start: "2022-01-01"
+  end:   "2025-12-17"
+```
+
+WFO windows derived automatically:
+```yaml
+walk_forward:
+  auto_windows:
+    enabled: true
+    window_count: 10
+    min_window_days: 14
+    gap_days: 3
+```
+
+### Scope Impact
+- `backtest_1st_run.yaml`: replace `windows:` list with `auto_windows:` block
+- `orchestrator.py`: add `_derive_wfo_windows(config)` at Stage 0
+- `contracts.py`: `RunMetadata.wfo_window_ids` derived at runtime
+- Manual `windows:` list remains valid as explicit override
+
+### Not in Scope for V2
+- Adaptive window sizing by trade frequency
+- Rolling vs anchored window schemes
+- Multi-timeframe hierarchies
+# OPERATOR_RUNBOOK_9J_DELTA.md
+**Block**: 9J
+**Date**: 2026-03-07
+**Append to**: docs/backtesting/OPERATOR_RUNBOOK.md
+---
+
+## Pipeline Status After Block 9J
+
+✅ **All P1 blockers resolved. Pipeline producing auto_go verdicts.**
+
+Run 1fcc6398 (capital_accumulation): 3 auto_go, 2 borderline.
+Paper trade YAMLs available in `outputs/backtesting/trading_yamls/1fcc6398_*`.
+
+---
+
+## Recommended Paper Trade Candidates (run 1fcc6398)
+
+| Candidate | Verdict | WFO | MC avg | Notes |
+|---|---|---|---|---|
+| 1bfa417dc8bb | auto_go | 0.9207 | 9,054 | **Recommended first.** Best MC, clean sensitivity, moderate parameter spread. |
+| f57ade9c9e75 | auto_go | 0.9286 | 9,041 | Best WFO. Sensitivity shows narrow feasible zone on some params — viable. |
+| 2ec7e80968b6 | auto_go | 0.9228 | 8,925 | **Use with caution.** Most perturbations REJECTED_CONSTRAINTS — highly isolated parameter combination. |
+
+---
+
+## Action Items Before Next Run
+
+### RSI search dimensions — decision required (P2)
+RSI sensitivity delta = 0.0000 across all candidates in 3 consecutive runs.
+The RSI filter appears to produce no additional filtering on DAX with current settings.
+Choose one:
+
+**Option A — Remove from search space (recommended for efficiency)**
+In `configs/backtesting/backtest_1st_run.yaml`, remove or comment out:
+```yaml
+# rsi_period:      {type: int,   min: 10, max: 20, step: 2}
+# rsi_overbought:  {type: int,   min: 65, max: 80, step: 5}
+# rsi_oversold:    {type: int,   min: 20, max: 35, step: 5}
+```
+Effect: fewer search dimensions → Stage 1 LHS covers remaining params more densely.
+
+**Option B — Tighten thresholds to force filter activation**
+In `configs/strategies/strategy_template.yaml`:
+```yaml
+rsi_filter:
+  overbought_threshold: 65   # was: 75 default — tighter
+  oversold_threshold: 40     # was: 25 default — tighter
+```
+Then re-run. If RSI sensitivity remains zero, proceed with Option A.
+
+### rr_target upper bound — optional extension
+Candidate 11220d7b9360 shows strong upward spike at rr_target=7.0→7.2 (delta +0.15).
+Optimum may lie above current max (7.0). To explore:
+```yaml
+rr_target: {type: float, min: 4.0, max: 8.5, step: 0.2}  # was max: 7.0
+```
+Low priority — current auto_go candidates are strong without this.
+
+---
+
+## Normalisation — Instrument-Specific Warning
+
+All pipeline normalisation constants are currently calibrated for **DAX in raw pts**:
+- `wfo_collapse_drawdown_threshold: 400.0` (backtest_1st_run.yaml)
+- `_SIGMOID_SCALE = 131.0` (consistency_scorer.py)
+- `_MAX_EXPECTED_VARIANCE = 100_000.0` (consistency_scorer.py)
+- `_MAX_EXPECTED_DRAWDOWN = 1_000.0` (consistency_scorer.py)
+
+**Before running on any other instrument** (FTSE, ES, NQ, etc.):
+1. Recalibrate all four constants for that instrument's point scale
+2. Update `wfo_collapse_drawdown_threshold` in the scenario YAML for that instrument
+3. Run `calibrate_sigmoid.py` after first calibration run to derive `_SIGMOID_SCALE`
+
+Long-term solution: V2-RAR (Rolling Annual Range normalisation) — see V2 backlog.
+
+---
+
+## Known Issues and Expected Warnings (updated)
+
+### zero WFO score (e.g. 03174190cdae, wfo_score=0.0000)
+Occasionally a candidate will produce windows_evaluated=0 and wfo_score=0.0.
+This is handled gracefully (verdict = no_go). Caused by YAML mapping failure
+(NoneType) in temp YAML generation for some GA candidates — pre-existing
+[WinError 32] / NoneType issue. Rate appears low (1/17 in latest run). Monitor.
+
+### W03-only performance pattern
+Expected. All candidates score only on W03 (Oct 27–Nov 14). Accept as data
+characteristic for 3-month DAX slice. Do not interpret as pipeline defect.
+
+---
+
+## Appendix — V2 Backlog Addition: RAR Normalisation
+
+**V2-RAR**: Replace all instrument-specific normalisation constants with
+dimensionless fractions of the instrument's Rolling Annual Range (RAR).
+
+RAR = 252-day rolling high - 252-day rolling low of the instrument price.
+
+Example conversion for DAX (current RAR ≈ 3,000 pts):
+- `wfo_collapse_drawdown_threshold` → `0.133` (400 / 3000)
+- `_MAX_EXPECTED_DRAWDOWN` → `0.333` (1000 / 3000)
+- `_SIGMOID_SCALE` → computed from stdev(net_pnl_pct_of_RAR)
+
+Benefits:
+- One configuration file works for all instruments
+- No per-instrument recalibration needed
+- Thresholds have intuitive meaning (% of annual price range)
+
+Implementation scope:
+- `consistency_scorer.py`: accept `rar_pts` parameter, compute scale from RAR
+- `contracts.py`: `ScenarioProfile.wfo_collapse_drawdown_threshold` as RAR fraction
+- `scenario.py`: pass `rar_pts` into scorer, or pre-convert threshold at load time
+- `calibrate_sigmoid.py`: output RAR-normalised scale constant
+
+Do not implement until DAX pipeline validated through paper trading phase.

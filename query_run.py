@@ -233,6 +233,12 @@ def q_rejection_breakdown(conn, run_id):
 def q_constraint_margins(conn, run_id):
     section("STAGE 1 - METRIC DISTRIBUTIONS (all candidates)")
     subsection("Use this to calibrate constraint thresholds for production runs")
+    # B9I-002: Removed actual_net_pnl from this query.
+    # That column does not exist in the evaluations table — FitnessResult has no
+    # actual_net_pnl field, so CandidateRecord never stores it.
+    # net_pnl is available per-window in wfo_window_results (Stage 4 onward).
+    # B8B-012 sigmoid calibration must be performed from WFO window data, not
+    # Stage 1 aggregates. The net_pnl_pts row is removed from the display.
     r = conn.execute("""
         SELECT
             ROUND(MIN(actual_win_rate), 4)          as wr_min,
@@ -250,9 +256,6 @@ def q_constraint_margins(conn, run_id):
             ROUND(MIN(actual_trades_per_week), 2)   as tpw_min,
             ROUND(AVG(actual_trades_per_week), 2)   as tpw_avg,
             ROUND(MAX(actual_trades_per_week), 2)   as tpw_max,
-            ROUND(MIN(actual_net_pnl), 2)           as pnl_min,
-            ROUND(AVG(actual_net_pnl), 2)           as pnl_avg,
-            ROUND(MAX(actual_net_pnl), 2)           as pnl_max,
             ROUND(MIN(actual_losing_streak), 0)     as streak_min,
             ROUND(AVG(actual_losing_streak), 1)     as streak_avg,
             ROUND(MAX(actual_losing_streak), 0)     as streak_max
@@ -265,7 +268,6 @@ def q_constraint_margins(conn, run_id):
         ("expectancy",     r["exp_min"],    r["exp_avg"],    r["exp_max"]),
         ("profit_factor",  r["pf_min"],     r["pf_avg"],     r["pf_max"]),
         ("trades/week",    r["tpw_min"],    r["tpw_avg"],    r["tpw_max"]),
-        ("net_pnl_pts",    r["pnl_min"],    r["pnl_avg"],    r["pnl_max"]),
         ("losing_streak",  r["streak_min"], r["streak_avg"], r["streak_max"]),
     ]
     print(f"\n  {'metric':20s}  {'min':>10s}  {'avg':>10s}  {'max':>10s}")
@@ -303,6 +305,12 @@ def q_closest_to_passing(conn, run_id):
 
 def q_top_stage1(conn, run_id):
     section("STAGE 1 - TOP 10 PASSED CANDIDATES")
+    # B9I-002: Removed actual_net_pnl and actual_total_trades from this query.
+    # Neither column exists in the evaluations table — both were silently
+    # returning NULL from SQLite. FitnessResult stores only the six constraint
+    # actuals (win_rate, max_drawdown, losing_streak, trades_per_week,
+    # expectancy, profit_factor). net_pnl and total_trades are not persisted
+    # at Stage 1. They are available at Stage 4 via wfo_window_results.
     rows = conn.execute("""
         SELECT
             SUBSTR(c.candidate_id, 1, 12)       as candidate,
@@ -312,8 +320,6 @@ def q_top_stage1(conn, run_id):
             ROUND(e.actual_expectancy, 4)       as expectancy,
             ROUND(e.actual_profit_factor, 4)    as pf,
             ROUND(e.actual_trades_per_week, 2)  as tpw,
-            e.actual_total_trades               as trades,
-            ROUND(e.actual_net_pnl, 2)          as net_pnl,
             ROUND(e.fitness_score, 4)           as fitness
         FROM evaluations e
         JOIN candidates c ON c.candidate_id = e.candidate_id
@@ -322,7 +328,7 @@ def q_top_stage1(conn, run_id):
         LIMIT 10
     """, (run_id,)).fetchall()
     fmt_table(rows, ["candidate", "zone", "win_rate", "drawdown", "expectancy",
-                     "pf", "tpw", "trades", "net_pnl", "fitness"])
+                     "pf", "tpw", "fitness"])
 
 
 def q_ga_generations(conn, run_id):

@@ -13,10 +13,11 @@ description: >
 A fully automated 8-stage optimization pipeline for the WBWSStrategy. Given a parameter
 space definition and a strategy base config, it searches for robust parameter combinations
 and produces a verdict (auto_go / borderline / no_go) per candidate.
-**Current status (2026-03-06)**: Block 9H complete. All 7 stages fully integrated and operational.
-- Tests: ~345 green, 0 skipped, 0 failed (Block 9C baseline; 9D/9E/9F/9G/9H add no new tests)
-- Next: Calibration run (capital_accumulation scenario) — pre-flight checklist in CONTEXT.md
-- Pre-production blockers: B8B-012 (sigmoid scale calibration), B8B-003 (expectancy norm)
+**Current status (2026-03-07)**: Block 9J complete. All P1 blockers resolved. auto_go verdicts
+confirmed (3 auto_go in run 1fcc6398). Pipeline production-ready for DAX paper trading.
+- Tests: ~345 green, 0 skipped, 0 failed (Block 9C baseline)
+- Next: Paper trade 1bfa417dc8bb / f57ade9c9e75. RSI-SENS decision (remove or tighten).
+- Pre-production blockers: NONE
 ---
 ## Pipeline (in order — do not reorder)
 ```
@@ -29,7 +30,7 @@ Stage 5: MC Deep               (full iterations, all perturbation types, WFO sur
 Stage 6: Parameter Sensitivity (±1/±2 step, fitness delta map, spike = borderline) ✅
 Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML) ✅
 ```
-All stages fully implemented. OOS gate: implemented but off by default (enforce_oos_gate: false).
+All stages fully implemented. OOS gate: implemented but off by default (enforce_oas_gate: false).
 ---
 ## Architecture Rules (non-negotiable)
 ```python
@@ -47,6 +48,13 @@ All stages fully implemented. OOS gate: implemented but off by default (enforce_
 # Mutation: snap-then-clamp order — never clamp-then-snap
 # Temp YAML filenames: full candidate_id (64 chars) — NEVER truncate (B9H-003)
 # expand_zones() returns Dict[str, Dict[str, List]] — per-param lists, NOT Cartesian product (B9F-001)
+# _lhs_sample() always returns exactly n candidates — no cap on n (B9I-001)
+# actual_net_pnl / actual_total_trades do NOT exist in evaluations table — never query (B9I-002)
+# net_pnl for calibration: wfo_window_results.net_pnl only (Stage 4)
+# wfo_collapse_drawdown_threshold: default 400.0 pts (DAX). Must be pts, not fraction (COLLAPSE-UNIT)
+# scenario.py wires via s.get("wfo_collapse_drawdown_threshold", 400.0) — YAML field optional
+# contracts.py validates threshold > 0.0 only — no upper bound (any pts value valid)
+# All normalisation constants are DAX-specific. V2-RAR will make them dimensionless.
 ```
 ---
 ## CandidateStore Write API (verified)
@@ -68,10 +76,82 @@ store.close()
 # get_candidate_result() returns trades=None / metrics=None ALWAYS — do NOT use for MC input
 # write_candidate_stub() MUST be called before any FK-referencing write (B9G-001)
 # _wfo_result_id() is deterministic SHA-256[:32] of run_id+candidate_id+window_id (B9H-002)
-# INSERT OR REPLACE on wfo_window_results deduplicates correctly — no duplicate rows (B9H-002)
+# INSERT OR REPLACE on wfo_window_results deduplicates correctly (B9H-002)
 ```
 ---
-## evaluate_window() Signature (critical — positional args must match pool.submit)
+## FitnessResult — stored actuals (evaluations table)
+```python
+# FitnessResult stores EXACTLY these six constraint actuals.
+# Do NOT query any other "actual_*" columns — they do not exist (B9I-002).
+actual_win_rate         # 0-1 fraction (divided by 100)
+actual_max_drawdown     # 0-1 fraction (abs(pts) / ref_pts)
+actual_losing_streak    # raw int
+actual_trades_per_week  # raw float
+actual_expectancy       # raw pts (expectancy_points)
+actual_profit_factor    # raw float
+# NOT in evaluations: actual_net_pnl, actual_total_trades
+# net_pnl: wfo_window_results.net_pnl (Stage 4 only)
+```
+---
+## consistency_scorer.py — Calibration State (B8B-012, DAX pts)
+```python
+_SIGMOID_SCALE: float = 131.0          # stdev(net_pnl)=261.98 × 0.5 (run 87712cab)
+_MAX_EXPECTED_VARIANCE: float = 100_000.0   # pts² ceiling
+_MAX_EXPECTED_DRAWDOWN: float = 1_000.0     # pts ceiling; abs() applied before use
+
+# Recalibrate when instrument or data range changes materially:
+#   python calibrate_sigmoid.py   (saved in outputs/)
+#   scale = stdev × 0.5
+
+# UNIT CONTRACT: all three constants are in DAX raw points.
+# V2-RAR will normalise to Rolling Annual Range fractions.
+```
+---
+## ScenarioProfile — wfo_collapse_drawdown_threshold
+```python
+# contracts.py: default = 400.0 pts (DAX). Validation: > 0.0 only (no upper bound).
+# scenario.py: wired via s.get("wfo_collapse_drawdown_threshold", 400.0)
+# backtest_1st_run.yaml: wfo_collapse_drawdown_threshold: 400.0
+
+# HISTORY: was 0.40 (fraction), never wired from YAML, validator rejected any pts value.
+# All three errors fixed in Block 9J (COLLAPSE-UNIT).
+
+# For other instruments: set proportionally to instrument's typical drawdown magnitude.
+# V2-RAR: will become a dimensionless RAR fraction (e.g. 0.133 for DAX at RAR=3000pts).
+```
+---
+## Open Issues (prioritised)
+```
+RSI-SENS [P2] — RSI delta=0.0000 across 3 runs. Filter active but ineffective.
+  Option A (recommended): remove rsi_period/rsi_overbought/rsi_oversold from search space.
+  Option B: tighten overbought: 65, oversold: 40 to force filter activation.
+
+RR-CEILING [P3] — rr_target spike suggests optimum above current max 7.0.
+  Consider extending to 8.5. Low priority.
+
+B8B-003 [P3] fitness.py: expectancy /3.0 — acceptable, low priority
+B8-009  [P3] orchestrator.py: raw sqlite3 in _resume_or_start
+B9B-001 [P3] crossover.py: no zone-name guard
+B8B-013 [P3] mc_engine.py: ruin_threshold dual-source
+B8B-011 [P3] consistency_scorer.py: fraction_positive_windows fixed 0.0 floor
+B8C-002/003 [P3] report_generator.py: deferred
+B9C-008 [P3] sampler.py: deferred
+OPT-01  [P3] Stage 6 ≤200s
+[WinError 32] cosmetic, pre-existing
+```
+---
+## V2 Backlog
+```
+V2-RAR: Normalise all instrument-specific constants via Rolling Annual Range.
+  Affected: _SIGMOID_SCALE, _MAX_EXPECTED_VARIANCE, _MAX_EXPECTED_DRAWDOWN,
+  wfo_collapse_drawdown_threshold. Enables multi-asset without recalibration.
+  Do not implement until DAX pipeline validated in paper trading.
+
+Dynamic WFO window generation: data_range as single param, windows auto-derived.
+  See OPERATOR_RUNBOOK_9I_DELTA.md for full spec.
+```
+---
+## evaluate_window() Signature
 ```python
 def evaluate_window(
     candidate: CandidateParameterSet,
@@ -80,15 +160,11 @@ def evaluate_window(
     temp_dir: Path,
     scenario: ScenarioProfile,
     min_significant_trades: int = 30,
-    oos_gate_enabled: bool = False,      # 7th arg — B8B-005
+    oos_gate_enabled: bool = False,
 ) -> WFOWindowResult: ...
-
-# pool.submit call in wfo_engine.py must pass all 7 positional args in order:
-pool.submit(evaluate_window, candidate, window, base_yaml_path, temp_dir,
-            scenario, min_significant_trades, oos_gate_enabled)
 ```
 ---
-## strategy_runner.evaluate() Full Signature (B9F-005)
+## strategy_runner.evaluate() Signature
 ```python
 def evaluate(
     candidate: CandidateParameterSet,
@@ -96,267 +172,59 @@ def evaluate(
     temp_dir: Path,
     min_significant_trades: int = 30,
     retain_temp_yamls: bool = False,
-    date_start: Optional[Union[date, datetime]] = None,  # B9F-005
-    date_end: Optional[Union[date, datetime]] = None,    # B9F-005
+    date_start: Optional[Union[date, datetime]] = None,
+    date_end: Optional[Union[date, datetime]] = None,
 ) -> CandidateResult: ...
-
-# date_start/date_end override data.date_range.start/end in temp YAML
-# date object → "YYYY-MM-DD 00:00:00" (start) / "YYYY-MM-DD 23:59:59" (end)
-# datetime object → formatted as-is
-# None → base YAML date_range used unchanged (Stage 1 behaviour)
-# Temp YAML filename uses full candidate_id (64 chars) — B9H-003
-```
----
-## Trade Contract (verified Block 9F — B9F-004)
-```python
-# Source: src/strategies/contracts/trade_contracts.py
-TradeResult.trades          # List[Trade]  — unwrap if needed: trades.trades
-Trade.entry                 # TradeEntry
-Trade.exit                  # Optional[TradeExit]  — None = open trade
-Trade.pnl_points            # Optional[float]      — None if open (no exit)
-Trade.is_closed             # bool
-TradeExit.pnl_points        # float  — the correct P&L field
-# extract_trade_returns: use trade.pnl_points, skip None values (open trades)
-# DO NOT use trade.pnl — this attribute does not exist on Trade
-```
----
-## Re-Evaluation Pattern (Stage 2 and Stage 5)
-```python
-# BOTH Stage 2 (MC Pre-Filter) and Stage 5 (MC Deep) must re-evaluate candidates
-# via strategy_runner.evaluate() before calling run_mc().
-# store.get_candidate_result() always returns trades=None / metrics=None (L-15).
-# CandidateResult.is_valid requires both fields non-None.
-# Pattern:
-for candidate in top_candidates:
-    result = evaluate(candidate, base_yaml_path, temp_dir, ...)  # live eval
-    mc_result = run_mc(candidate, result, mode, config, seed)    # never raises
-    store.write_mc_result(mc_result, run_id)
-# If evaluate() returns invalid result: still call run_mc() — returns
-# MCResult(error=..., ruin_probability=None) → NO_GO in Stage 7 (correct).
-```
----
-## write_candidate_stub() Invariant (B9G-001)
-```python
-# Call before ANY FK-referencing write. Safe for existing and new candidates.
-# Required in:
-#   ga_engine._evaluate_generation()   — before pool.submit for WFO windows
-#   orchestrator._run_stage_4_wfo()    — before wfo_engine.run_wfo()
-#   orchestrator._run_stage_5_mc_deep() — before run_mc()
-store.write_candidate_stub(candidate)
-store.flush()  # always flush after stubbing, before pool submission
-```
----
-## rank_by_wfo() Deduplication Invariant (B9G-003)
-```python
-# query_candidates() JOINs evaluations — candidates in multiple stages produce
-# duplicate rows. rank_by_wfo() deduplicates by candidate_id (keeps highest score).
-# Any ranker calling query_candidates() with ORDER BY must deduplicate before top_n.
-# rank_combined() already did this; rank_by_wfo() now consistent.
-```
----
-## expand_zones() Contract (B9F-001 — CHANGED Block 9H)
-```python
-# Returns Dict[str, Dict[str, List]] — per-param value lists per zone
-# NOT Dict[str, List[Dict]] — full Cartesian product is NEVER materialised
-# sampler._lhs_sample() accepts Dict[str, List] directly
-# sampler.sample_random() draws per-parameter independently
-# parameter_space.get_param_values(zone_def, param_name) — single-param helper
-
-# Correct usage:
-expanded = expand_zones(config)
-# expanded = {"safe": {"rsi_period": [10,12,14,...], "atr_length": [10,12,...], ...}}
-candidates = sample_lhs(expanded, n_per_zone=200, seed=42)
-```
----
-## yaml_generator._PARAM_MAP Format (B9G-004)
-```python
-# Three-tuple: (top_section, nested_path_tuple, leaf_key)
-# Example: "rsi_period" → ("filters", ("technical_filters", "rsi_filter"), "length")
-# Must stay in sync with strategy_runner._PARAM_KEY_MAP
-# Cross-reference strategy_template.yaml before any update
-```
----
-## query_run.py GA Health Check (B9H-001)
-```python
-# Stage 3 GA candidates — queries candidates table, NOT evaluations
-# write_candidate_stub() writes no evaluations row (by design)
-# Correct query:
-SELECT COUNT(*) FROM candidates WHERE run_id = ? AND origin_stage = 'GA'
-# WRONG (always returns 0):
-SELECT COUNT(DISTINCT candidate_id) FROM evaluations WHERE run_id = ? AND stage = 'GA'
-```
----
-## wfo_window_results Deduplication (B9H-002)
-```python
-# result_id is deterministic: SHA-256[:32] of f"{run_id}:{candidate_id}:{window_id}"
-# INSERT OR REPLACE correctly deduplicates — one row per (run, candidate, window)
-# DO NOT revert to uuid4() as result_id — OR REPLACE will never fire
-# query_run.py q_wfo_window_detail uses GROUP BY window_id as read-side guard
-```
----
-## Temp YAML Filename Rule (B9H-003)
-```python
-# CORRECT — full 64-char hash, no collisions:
-yaml_path = temp_dir / f"candidate_{candidate.candidate_id}.yaml"
-# WRONG — 12-char truncation causes collisions at scale:
-yaml_path = temp_dir / f"candidate_{candidate.candidate_id[:12]}.yaml"
-```
----
-## strategy_template.yaml Base Config Rule (L-28)
-```
-Parameters inside _PARAM_KEY_MAP are ALWAYS overwritten by _deep_set() during
-evaluation. Only set values in strategy_template.yaml for fields the backtester
-does NOT search (filter enabled flags, session times, timeframes, data paths).
-
-Current non-search-space settings in strategy_template.yaml (Block 9H):
-  rsi_filter.enabled:        false   (was true — changed Block 9H)
-  dpo_filter.enabled:        true    (was false — changed Block 9H)
-  choppiness_filter.enabled: true    (was false — changed Block 9H)
-  DPO + choppiness params:   template defaults (not in safe zone search space)
-
-Never use a manually-tuned strategy YAML as base config if its search-space
-parameters fall outside the zone ranges — _deep_set() will overwrite them.
-```
----
-## Bug Registry
-```
-B9C-006: FIXED (9D) — sampler.sample_random() docstring.
-B9C-004: FIXED (9D) — wfo_engine.run_wfo() empty candidates guard.
-B9C-005: FIXED (9D) — parameter_space._range_values() Decimal(str(step)).
-B8-006:  FIXED (9D) — twin key map comments in strategy_runner + yaml_generator.
-B8B-005: FIXED (9E) — IS/OOS split in wfo_evaluator + oos_gate_enabled pass-through.
-B9F-002: FIXED (9F) — Stage 3 graceful skip when no MC_PREFILTER_PASS candidates.
-B9F-003: FIXED (9F) — Stage 2 re-evaluates via evaluate() instead of store reconstruct.
-B9F-004: FIXED (9F) — extract_trade_returns uses trade.pnl_points not trade.pnl.
-B9F-005: FIXED (9F) — strategy_runner.evaluate() accepts date_start/date_end.
-B9G-001: FIXED (9G) — GA offspring write_candidate_stub() before FK writes.
-B9G-002: FIXED (9G) — Stage 5 re-evaluates via evaluate() before run_mc().
-B9G-003: FIXED (9G) — rank_by_wfo() deduplicates by candidate_id.
-B9G-004: FIXED (9G) — yaml_generator _PARAM_MAP + _structural_validate correct keys.
-B9H-001: FIXED (9H) — query_run.py GA health check queries candidates table.
-B9H-002: FIXED (9H) — candidate_store.py deterministic _wfo_result_id().
-B9F-001: FIXED (9H) — parameter_space.py + sampler.py Cartesian product OOM.
-B9H-003: FIXED (9H) — strategy_runner.py temp YAML 12-char collision.
-```
----
-## Critical Open Findings
-```
-B8B-012 [P1 — calibrate after first real run] consistency_scorer.py
-  _sigmoid_normalise scale=0.10 calibrated for unit fractions, not points.
-  Fix: measure net_pnl distribution from calibration run Stage 1 results
-  → set scale ≈ stdev(net_pnl) * 0.5
-
-B8B-003 [P3] fitness.py
-  expectancy_norm hardcoded at / 3.0 pts. Calibrate after calibration run.
-
-B8-009 [P3] orchestrator.py
-  Raw sqlite3 in _resume_or_start bypasses CandidateStore contract.
-
-B9B-001 [P3] crossover.py
-  No zone-name guard for cross-zone parents.
-
-B8B-013 [P3] mc_engine.py
-  ruin_threshold dual-source: config dict + ScenarioProfile.mc_prefilter_ruin_threshold.
-
-B8B-011 [P3] consistency_scorer.py
-  fraction_positive_windows uses fixed 0.0 floor.
-
-B8C-002, B8C-003 [P3] report_generator.py — deferred
-B9C-008 [P3] sampler.py — deferred
-OPT-01 target (not achieved): Stage 6 ≤ 200s.
-```
----
-## Test Import Convention (CRITICAL — violating causes circular import at collection)
-```python
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-from src.utils.paths import PROJECT_ROOT
-from src.backtesting.contracts import (...)   # BEFORE candidate_store
-from src.backtesting.candidate_store import CandidateStore
-```
----
-## Critical Patch Targets (Windows spawn mode)
-```python
-patch("src.backtesting.orchestrator.evaluate_sensitivity", ...)   # Stage 6
-patch("src.backtesting.monte_carlo.mc_engine.run_mc", ...)        # Stage 5
-patch("src.backtesting.wfo.wfo_engine.evaluate_window", ...)      # wfo_engine tests
-patch("src.backtesting.wfo.wfo_engine.compute_consistency", ...)  # wfo_engine tests
-patch("src.backtesting.orchestrator.evaluate", ...)               # Stage 1
-patch("src.backtesting.orchestrator.run_mc", ...)                 # Stage 2
-patch("src.backtesting.orchestrator.run_ga", ...)                 # Stage 3
-# DO NOT patch inside ProcessPoolExecutor workers (spawn boundary)
+# None date → base YAML date_range unchanged (Stage 1)
+# Temp YAML uses full candidate_id (64 chars) — B9H-003
 ```
 ---
 ## Module Map (current state)
 ```
-orchestrator.py         — All stages fully implemented (B9G complete).
-                          Stage 5 re-evaluates via evaluate() (B9G-002).
-fitness.py              — Stateless. NaN guard. B8B-003 open (expectancy /3.0).
-contracts.py            — All frozen dataclasses. B8C-001 fixed.
-candidate_store.py      — SQLite WAL + single-writer queue. Thread-safe.
-                          write_candidate_stub() added (B9G-001).
-                          _wfo_result_id() deterministic PK (B9H-002).
-                          get_candidate_result() returns trades=None — do not use for MC.
-strategy_runner.py      — B9F-005: date_start/date_end params added.
-                          B9H-003: full candidate_id in temp YAML filename.
-parameter_space.py      — B9F-001 FIXED: returns per-param lists, no Cartesian product.
-                          get_param_values() helper added.
-sampler.py              — B9F-001 FIXED: accepts per-param lists from expand_zones().
-scenario.py             — Clean.
-ranker.py               — rank_by_wfo() deduplicates by candidate_id (B9G-003).
-yaml_generator.py       — B9G-004: _PARAM_MAP + _structural_validate fully corrected.
-query_run.py            — B9H-001: GA health check fixed. B9H-002: GROUP BY window_id.
-wfo/wfo_evaluator.py    — B8B-005/B8B-018 fixed. Passes date_start/date_end correctly.
+orchestrator.py         — All stages (B9G complete). Stage 5 re-evaluates (B9G-002).
+fitness.py              — Stateless. NaN guard. B8B-003 low priority.
+contracts.py            — All frozen dataclasses. COLLAPSE-UNIT: threshold default 400.0, validator > 0.0 only.
+candidate_store.py      — SQLite WAL. _wfo_result_id() deterministic (B9H-002).
+strategy_runner.py      — B9F-005: date params. B9H-003: full candidate_id.
+parameter_space.py      — B9F-001: per-param lists. get_param_values() added.
+sampler.py              — B9I-001: cycling strata, no cap on n.
+scenario.py             — COLLAPSE-UNIT: wfo_collapse_drawdown_threshold wired from YAML.
+ranker.py               — rank_by_wfo() deduplicates (B9G-003).
+yaml_generator.py       — B9G-004: _PARAM_MAP corrected.
+query_run.py            — B9H-001/002: GA health, GROUP BY. B9I-002: phantom cols removed.
+wfo/wfo_evaluator.py    — B8B-005/B8B-018 fixed.
 wfo/wfo_engine.py       — B8B-005/B9C-004 fixed.
-wfo/consistency_scorer.py — B8B-012 open (sigmoid scale).
+wfo/consistency_scorer.py — B8B-012 FIXED: scale=131.0, var=100k, dd=1000 (DAX pts).
 monte_carlo/mc_engine.py  — Never raises. B8B-013 open.
-monte_carlo/equity_simulator.py — B9F-004: extract_trade_returns uses pnl_points.
+monte_carlo/equity_simulator.py — B9F-004: pnl_points.
 ga/ga_engine.py         — write_candidate_stub() + flush() before pool (B9G-001).
-ga/population.py        — Raises ValueError on empty seeds (correct — guard in orchestrator).
+ga/population.py        — Raises on empty seeds.
 evaluation/sensitivity.py — OPT-01 pool reuse.
 evaluation/verdict.py   — Two-pillar + modifiers.
 report_generator.py     — B8C-002/003 open.
 ```
 ---
-## Lessons Learned (complete — L-01 through L-28)
+## Lessons Learned (L-01 through L-37)
 ```
-L-01 through L-14: see Block 9E CONTEXT.md
-L-15: store.get_candidate_result() is structurally incomplete — trades/metrics are
-      never persisted. Stages 2 and 5 must re-evaluate via strategy_runner.evaluate().
-L-16: Trade.pnl_points is the correct P&L attribute. Open trades return None — skip.
-L-17: strategy_runner.evaluate() date_start/date_end override data.date_range.
-L-18: Always verify contract claims against actual signatures before marking false positive.
-L-19: GA offspring must be registered via write_candidate_stub() before any FK write.
-      INSERT OR IGNORE is safe for both new and existing candidates.
-L-20: windows_total in compute_consistency() must equal len(window_results) (actual
-      results received), not the requested sample size.
-L-21: Any ranker calling query_candidates() with ORDER BY must deduplicate by
-      candidate_id before applying top_n.
-L-22: yaml_generator._PARAM_MAP must be derived from actual strategy_template.yaml
-      structure — never inferred from parameter names alone.
-L-23: StrategyConfig.from_yaml() may silently accept structurally invalid configs.
-      Always run structural validation as a hard backstop regardless.
-L-24: If yaml_generator errors show phantom sections ("strategy", "parameters") in
-      "Sections present", the _PARAM_MAP is writing to keys that don't exist in the
-      template. Cross-reference template before updating the map.
-L-25: query_run.py health checks must be derived from the table that actually
-      receives the write. write_candidate_stub() writes candidates, not evaluations.
-      Any health check for stub-only stages must query candidates.origin_stage.
-L-26: INSERT OR REPLACE only deduplicates if the PK is deterministic. uuid4()
-      as PK on every call means OR REPLACE never fires — always a new row.
-      For any table where "one row per (run, candidate, window)" is the invariant,
-      the PK must be derived from those three fields, not generated randomly.
-L-27: Temp file names must use the full candidate_id hash. 12-char truncation
-      creates collision risk that grows with candidate pool size. On Windows
-      spawn mode, collisions cause WinError 32 (file in use) and NoneType YAML
-      errors. Full hash (64 chars) eliminates both.
-L-28: Base config parameters that are inside _PARAM_KEY_MAP are always
-      overwritten by _deep_set() during evaluation. Only parameters outside
-      the search space (filter enabled flags, session times, timeframes,
-      data paths) are meaningful to set in strategy_template.yaml.
-      Never use a manually-tuned strategy YAML as the base config if its
-      search-space parameters are outside the zone ranges.
+L-01 through L-33: see Block 9I CONTEXT.md
+
+L-34: Normalisation constants in consistency_scorer.py are instrument-specific.
+      Calibrate from actual run data. Recalibrate after instrument or range change.
+
+L-35: Threshold fields must use same units as stored metric values. Document unit
+      (fraction vs pts) for every ScenarioProfile threshold field. Verify after
+      any normalisation change.
+
+L-36: A YAML field with a dataclass default is silently ignored unless the loader
+      (scenario.py) explicitly reads and passes it. Always verify loader wire-up
+      when adding new ScenarioProfile fields. Two-layer failures (validator rejects
+      the correct value AND loader ignores the YAML) will not be caught by unit
+      tests — requires integration test checking actual verdict output.
+
+L-37: Zero sensitivity delta across all perturbation steps and all candidates over
+      multiple runs = filter is either disabled or produces no overlap with active
+      trade flow. Zero-delta params waste search dimensions. Verify filter
+      effectiveness independently before including its params in search space.
 ```
 ---
 ## What NOT To Do
@@ -370,28 +238,29 @@ L-28: Base config parameters that are inside _PARAM_KEY_MAP are always
 - Do not patch inside ProcessPoolExecutor workers (spawn boundary)
 - Do not use `e2e_test` scenario for production runs
 - Do not clamp-before-snap in mutation
-- Do not re-open B8B-005 — fixed (9E)
 - Do not use trade.pnl — use trade.pnl_points (B9F-004)
-- Do not call store.get_candidate_result() for MC input — re-evaluate instead (L-15)
-- Do not mark H-01 as false positive — it is FIXED (B9F-005)
-- Do not change `_IS_FRACTION` without updating CONTEXT.md
-- Do not enable `enforce_oos_gate: true` before calibrating `oos_degradation_threshold`
-- Do not enable `exploration` zone before B8B-012/B8B-003 calibration complete
-- Do not add new params to zones without updating BOTH _PARAM_MAP and _PARAM_KEY_MAP
-- Do not rely on StrategyConfig.from_yaml() as sole validator — structural check must run
-- Do not truncate candidate_id in temp YAML filenames — use full 64-char hash (B9H-003)
-- Do not use uuid4() as result_id in wfo_window_results — use _wfo_result_id() (B9H-002)
-- Do not call expand_zones() expecting List[Dict] — it returns Dict[str, List] per param (B9F-001)
-- Do not use a manually-tuned strategy YAML as base config (L-28)
+- Do not call store.get_candidate_result() for MC input (L-15)
+- Do not truncate candidate_id in temp YAML filenames (B9H-003)
+- Do not use uuid4() as result_id in wfo_window_results (B9H-002)
+- Do not call expand_zones() expecting List[Dict] (B9F-001)
+- Do not cap _lhs_sample() at min_universe_size (B9I-001)
+- Do not query actual_net_pnl or actual_total_trades from evaluations (B9I-002)
+- Do not use evaluations for net_pnl — use wfo_window_results
+- Do not set wfo_collapse_drawdown_threshold as fraction for DAX — must be pts (COLLAPSE-UNIT)
+- Do not assume identical WFO scores = equal candidates — check sigmoid scale (L-31)
+- Do not add RSI params to search space without verifying filter is producing signals (L-37)
+- Do not add new ScenarioProfile fields without wiring them in scenario.py (L-36)
+- Do not run on non-DAX instruments without recalibrating all normalisation constants
+- Do not enable exploration zone before verifying collapse rate is reasonable
 ---
 ## Platform
 - **OS**: Windows 10, Python 3.13.12
 - **Timezone**: OHLCV/signals CET/CEST; pipeline timestamps UTC
 - **Paths**: always `src/utils/paths.py`
-- **DB**: `outputs/backtesting/backtester.db` (confirmed path from run logs)
+- **DB**: `outputs/backtesting/backtester.db`
 ---
 ## Session Deliverables (end of every session)
-- Updated `outputs/CONTEXT.md` (handoff to next session)
-- `outputs/ARCHITECTURE_<block>_DELTA.md` (append to ARCHITECTURE.md — only if structural changes)
-- `outputs/OPERATOR_RUNBOOK_<block>_DELTA.md` (append to OPERATOR_RUNBOOK.md — only if operator-visible changes)
-- Updated `SKILL.md` in outputs/ (this file — replace user skill at end of session)
+- Updated `outputs/CONTEXT.md`
+- `outputs/ARCHITECTURE_<block>_DELTA.md` (if structural changes)
+- `outputs/OPERATOR_RUNBOOK_<block>_DELTA.md` (if operator-visible changes)
+- Updated `SKILL.md` in outputs/ (replace user skill)

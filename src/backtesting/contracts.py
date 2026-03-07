@@ -124,7 +124,7 @@ class ScenarioProfile:
             previously hardcoded in fitness.py. Defaults reproduce prior behaviour.
       M-03: wfo_collapse_drawdown_threshold — WFO window collapse flag threshold
             previously hardcoded as 0.40 in consistency_scorer.py.
-            Default 0.40 reproduces prior behaviour.
+            Default 0.40 reproduces prior behaviour. Changed to 400 pts
     All new fields have defaults and are appended at the end so existing
     YAML loaders and test fixtures require no changes.
 
@@ -175,8 +175,9 @@ class ScenarioProfile:
 
     # ── M-03: WFO collapse threshold (was hardcoded 0.40 in consistency_scorer.py) ──
     # Any valid window with max_drawdown >= this value triggers window_collapse_flag.
-    # conservative scenario should use a lower value (e.g. 0.20) to flag earlier.
-    wfo_collapse_drawdown_threshold: float = 0.40
+    # Units: raw instrument points (e.g. 400.0 for DAX).
+    # conservative scenario should use a lower value (e.g. 250.0) to flag earlier.
+    wfo_collapse_drawdown_threshold: float = 400.0
 
     # ── M-02: Fitness normalisation reference constants (were hardcoded in fitness.py) ──
     # normalisation_drawdown_ref_points: "100% drawdown" reference equity in points.
@@ -219,9 +220,9 @@ class ScenarioProfile:
             raise ValueError(
                 "verdict_go_mc_ruin_ceiling must be strictly less than verdict_borderline_mc_ruin_ceiling"
             )
-        if not (0.0 < self.wfo_collapse_drawdown_threshold <= 1.0):
+        if self.wfo_collapse_drawdown_threshold <= 0.0:
             raise ValueError(
-                f"wfo_collapse_drawdown_threshold must be in (0, 1]; "
+                f"wfo_collapse_drawdown_threshold must be positive; "
                 f"got {self.wfo_collapse_drawdown_threshold}"
             )
         if self.normalisation_drawdown_ref_points <= 0.0:

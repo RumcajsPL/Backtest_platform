@@ -90,7 +90,7 @@ filters:
 
   technical_filters:
     rsi_filter:
-      enabled: false
+      enabled: true
       length: 14
       overbought: 70
       oversold: 30

@@ -65,6 +65,7 @@ def load_scenario(config: dict) -> ScenarioProfile:
         min_profit_factor=float(ct["min_profit_factor"]),
 
         mc_prefilter_ruin_threshold=float(s["mc_prefilter_ruin_threshold"]),
+        wfo_collapse_drawdown_threshold=float(s.get("wfo_collapse_drawdown_threshold", 400.0)),
 
         wfo_weight_median_return=float(wfw["median_return"]),
         wfo_weight_variance=float(wfw["variance"]),

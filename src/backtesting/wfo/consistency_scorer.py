@@ -19,6 +19,17 @@ Block 7B change (M-03): window_collapse_flag threshold is now read from
 ScenarioProfile.wfo_collapse_drawdown_threshold instead of hardcoded 0.40.
 Default on ScenarioProfile is 0.40, preserving prior behaviour for all existing
 scenarios that do not set this field explicitly.
+
+Block 9I change (B8B-012): Three normalisation constants recalibrated for DAX
+point-denominated returns. Prior values were calibrated for fractional returns
+(0–1 range) and produced degenerate outputs for DAX point values:
+  - _SIGMOID_SCALE:          0.10   → 131.0  (stdev=261.98 from run 87712cab × 0.5)
+  - _MAX_EXPECTED_VARIANCE:  0.10   → 100_000.0  (pts² ceiling; stdev≈262 → var≈68k)
+  - _MAX_EXPECTED_DRAWDOWN:  0.50   → 600.0  (pts ceiling; observed range -282 to -493)
+Prior values caused all three sub-metrics to produce 0.0 or identical outputs,
+making all WFO composite scores identical (0.7000 in calibration run 87712cab).
+Recalibrate _SIGMOID_SCALE after each significant data range change:
+  scale = stdev(wfo_window_results.net_pnl WHERE is_ga_fitness_window=0) * 0.5
 """
 from __future__ import annotations
 
@@ -35,10 +46,27 @@ from src.backtesting.contracts import (
 
 logger = logging.getLogger(__name__)
 
-# Clamp thresholds for normalisation — calibrated conservatively.
-# These define the "worst plausible" values for variance and drawdown normalisation.
-_MAX_EXPECTED_VARIANCE: float = 0.10   # variance of net_pnl values (in return space)
-_MAX_EXPECTED_DRAWDOWN: float = 0.50   # 50% drawdown = worst floor
+# ── Normalisation constants — calibrated for DAX point-denominated returns ────
+# Recalibrate after significant data range or instrument changes.
+# Source: run 87712cab (capital_accumulation, 3-month DAX, 2026-03-07)
+#
+# _SIGMOID_SCALE: controls sensitivity of median_return_norm to net_pnl values.
+#   value=0 → 0.5, value=+scale → ~0.731, value=-scale → ~0.269
+#   = stdev(wfo_window_results.net_pnl) * 0.5
+#   stdev from calibration run: 261.98 pts → scale = 131.0
+#
+# _MAX_EXPECTED_VARIANCE: "worst plausible" variance of per-window net_pnl (pts²).
+#   Used to invert variance into a [0,1] score (lower variance = higher score).
+#   Set conservatively above observed values to avoid clamping at 0.
+#   stdev≈262 → variance≈68,000 → ceiling = 100_000 pts²
+#
+# _MAX_EXPECTED_DRAWDOWN: "worst plausible" per-window max_drawdown (pts, positive).
+#   worst_window_drawdown is stored as raw negative pts (e.g. -416.81).
+#   Inversion: 1.0 - (abs(raw) / ceiling). Ceiling must be > max observed abs value.
+#   Observed range in calibration run: 282–676 pts → ceiling = 1_000 pts (conservative)
+_SIGMOID_SCALE: float = 131.0
+_MAX_EXPECTED_VARIANCE: float = 100_000.0
+_MAX_EXPECTED_DRAWDOWN: float = 1_000.0
 
 
 def compute_consistency(
@@ -90,23 +118,26 @@ def compute_consistency(
 
     # ── Sub-metric 1: Median window return ──────────────────────────────────
     median_return_raw: float = statistics.median(net_pnls) if net_pnls else 0.0
-    # Normalise to [0, 1]: sigmoid-like scaling. 0 return → 0.5, positive → above 0.5
-    median_return_norm: float = _sigmoid_normalise(median_return_raw, scale=0.10)
+    # Normalise to [0, 1] via sigmoid. value=0 → 0.5, positive → above 0.5.
+    # B8B-012: scale=131.0 (calibrated from DAX point stdev, run 87712cab).
+    median_return_norm: float = _sigmoid_normalise(median_return_raw, scale=_SIGMOID_SCALE)
 
     # ── Sub-metric 2: Window-to-window return variance (inverted) ───────────
     if len(net_pnls) >= 2:
         variance_raw: float = statistics.variance(net_pnls)
     else:
         variance_raw = 0.0
-    # Invert: lower variance = higher score
-    variance_norm: float = max(0.0, 1.0 - (variance_raw / _MAX_EXPECTED_VARIANCE))
-    variance_norm = min(1.0, variance_norm)
+    # Invert: lower variance = higher score.
+    # B8B-012: _MAX_EXPECTED_VARIANCE=100_000 pts² (calibrated for DAX points).
+    variance_norm: float = max(0.0, min(1.0, 1.0 - (variance_raw / _MAX_EXPECTED_VARIANCE)))
 
     # ── Sub-metric 3: Worst window drawdown (inverted) ───────────────────────
+    # worst_window_drawdown is stored as raw negative pts (e.g. -416.81).
+    # Take abs() before normalising so inversion works correctly.
+    # B8B-012: _MAX_EXPECTED_DRAWDOWN=1_000 pts (calibrated for DAX points).
     worst_drawdown_raw: float = max(drawdowns) if drawdowns else 0.0
-    # Invert: lower drawdown = higher score
-    worst_dd_norm: float = max(0.0, 1.0 - (worst_drawdown_raw / _MAX_EXPECTED_DRAWDOWN))
-    worst_dd_norm = min(1.0, worst_dd_norm)
+    worst_dd_abs: float = abs(worst_drawdown_raw)
+    worst_dd_norm: float = max(0.0, min(1.0, 1.0 - (worst_dd_abs / _MAX_EXPECTED_DRAWDOWN)))
 
     # ── Sub-metric 4: Fraction of positive windows ───────────────────────────
     positive_count = sum(1 for p in net_pnls if p > 0.0)
@@ -114,9 +145,9 @@ def compute_consistency(
 
     # ── Composite score ──────────────────────────────────────────────────────
     composite = (
-        scenario.wfo_weight_median_return     * median_return_norm
-        + scenario.wfo_weight_variance        * variance_norm
-        + scenario.wfo_weight_worst_drawdown  * worst_dd_norm
+        scenario.wfo_weight_median_return       * median_return_norm
+        + scenario.wfo_weight_variance          * variance_norm
+        + scenario.wfo_weight_worst_drawdown    * worst_dd_norm
         + scenario.wfo_weight_fraction_positive * fraction_positive
     )
     # Clamp to [0, 1] — rounding safety
@@ -140,9 +171,14 @@ def compute_consistency(
     # Previously hardcoded as 0.40. Now reads from ScenarioProfile so that
     # conservative scenario (threshold 0.20) can flag collapses that
     # capital_accumulation (threshold 0.40) would not.
+    # B8B-012: worst_window_drawdown is in raw pts — compare abs() vs threshold.
+    # ScenarioProfile.wfo_collapse_drawdown_threshold is also in pts for DAX runs.
+    # NOTE: if the scenario threshold was set as a fraction (e.g. 0.40), it will
+    # never trigger for DAX point values. Operator must set threshold in pts
+    # (e.g. 400.0) for point-denominated instruments after this calibration.
     collapse_threshold: float = scenario.wfo_collapse_drawdown_threshold
     window_collapse_flag = any(
-        (r.max_drawdown or 0.0) >= collapse_threshold for r in valid_results
+        abs(r.max_drawdown or 0.0) >= collapse_threshold for r in valid_results
     )
 
     logger.debug(
@@ -178,11 +214,14 @@ def compute_consistency(
 
 # ── Private helpers ────────────────────────────────────────────────────────────
 
-def _sigmoid_normalise(value: float, scale: float = 0.10) -> float:
+def _sigmoid_normalise(value: float, scale: float = _SIGMOID_SCALE) -> float:
     """
     Map any real return value to (0, 1) via a sigmoid.
     value=0 → 0.5, positive values → above 0.5, negative → below 0.5.
-    scale controls sensitivity (smaller scale = more sensitive to small returns).
+    scale controls sensitivity: value=+scale → ~0.731, value=-scale → ~0.269.
+    B8B-012: default scale updated from 0.10 to _SIGMOID_SCALE (131.0).
+    Recalibrate when instrument or data range changes:
+      scale = stdev(wfo_window_results.net_pnl WHERE is_ga_fitness_window=0) * 0.5
     """
     try:
         return 1.0 / (1.0 + math.exp(-value / scale))
