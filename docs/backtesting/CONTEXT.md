@@ -8,7 +8,6 @@
 `q_pipeline_health` and `q_ga_generations` queried `evaluations WHERE stage = 'GA'`
 which always returns 0 because `write_candidate_stub()` writes no evaluations row
 (by design — stubs write `candidates` + `candidate_parameters` only).
-
 **Fix** (`query_run.py`):
 - `q_pipeline_health`: now queries `candidates WHERE origin_stage = 'GA'`
 - `q_ga_generations` totals fallback: same fix applied
