@@ -352,15 +352,16 @@ zones:
     enabled: true
     # 9 parameters. Conservative ranges. RSI + Bollinger always on.
     parameters:
-      rsi_period:           {type: int,   min: 10, max: 20, step: 2}
-      rsi_overbought:       {type: int,   min: 65, max: 80, step: 5}
-      rsi_oversold:         {type: int,   min: 20, max: 35, step: 5}
-      atr_length:           {type: int,   min: 10, max: 20, step: 1}
-      atr_multiplier:       {type: float, min: 1.0, max: 2.2, step: 0.1}
-      rr_target:            {type: float, min: 4.0, max: 9.0, step: 0.2}
-      risk_percentile:      {type: float, min: 0.14, max: 0.65, step: 0.02}
-      bollinger_length:     {type: int,   min: 10, max: 20, step: 2}
-      bollinger_multiplier: {type: float, min: 0.3, max: 0.7, step: 0.1}
+      rsi_period:           {type: int,   min: 8, max: 20, step: 1}
+      rsi_overbought:       {type: int,   min: 50, max: 80, step: 1}
+      rsi_oversold:         {type: int,   min: 20, max: 50, step: 1}
+      atr_length:           {type: int,   min: 6, max: 20, step: 1}
+      atr_multiplier:       {type: float, min: 1.2, max: 2.5, step: 0.1}
+      rr_target:            {type: float, min: 3.0, max: 9.0, step: 0.1}
+      risk_percentile:      {type: float, min: 0.2, max: 0.65, step: 0.01}
+      bollinger_length:     {type: int,   min: 8, max: 20, step: 1}
+      bollinger_multiplier: {type: float, min: 0.3, max: 1.1, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 10, max: 50, step: 0.1}
 
   exploration:
     enabled: false   # B9F-001 fixed. Re-enable after B8B-012/B8B-003 calibration complete.
