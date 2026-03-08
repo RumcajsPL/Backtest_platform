@@ -153,7 +153,7 @@ scenarios:
     fitness_weights:
       net_pnl: 0.20
       expectancy: 0.50
-      #max_drawdown: 0.20
+      max_drawdown: 0.20
       win_rate: 0.25
       trade_frequency: 0.10
       profit_factor: 0.25
