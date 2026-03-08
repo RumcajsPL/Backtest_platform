@@ -152,11 +152,11 @@ scenarios:
     description: "Steadily grow account balance with controlled risk"
     fitness_weights:
       net_pnl: 0.20
-      expectancy: -1.0
-      max_drawdown: 0.20
-      win_rate: 0.12
+      expectancy: 0.50
+      #max_drawdown: 0.20
+      win_rate: 0.25
       trade_frequency: 0.10
-      profit_factor: 0.10
+      profit_factor: 0.25
     constraints:
       min_win_rate: 0.15
       # max_drawdown REMOVED for full-history Stage 1 evaluation.
