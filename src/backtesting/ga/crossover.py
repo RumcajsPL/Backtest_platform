@@ -25,26 +25,19 @@ def crossover(
     rng: random.Random,
     generation: Optional[int] = None,
 ) -> CandidateParameterSet:
-    """
-    Produce one offspring via uniform crossover.
+    # B9B-001: Guard against cross-zone crossover.
+    # If parents are from different zones, return parent_a unchanged.
+    # Without this guard, the offspring inherits parent_a's zone_name but
+    # potentially parameter values only valid in parent_b's zone.
+    # Mutation clamping downstream cannot correct this — parent_b values
+    # may be completely outside parent_a's zone bounds.
+    if parent_a.zone_name != parent_b.zone_name:
+        return CandidateParameterSet.create(
+            zone_name=parent_a.zone_name,
+            parameters=dict(parent_a.parameters),
+            generation=generation,
+        )
 
-    If a uniform random draw >= crossover_rate, return parent_a unchanged
-    (no crossover occurs). Otherwise, apply uniform crossover across all parameters.
-
-    The offspring inherits zone_name from parent_a. If parents are from different
-    zones, parameter ranges from parent_a's zone apply — this is handled by mutation
-    clamping downstream, not here (this module does not validate zone membership).
-
-    Args:
-        parent_a:       First parent (zone_name inherited by offspring).
-        parent_b:       Second parent.
-        crossover_rate: Probability that crossover occurs (vs. passing parent_a through).
-        rng:            Seeded Random instance.
-        generation:     GA generation number for the offspring.
-
-    Returns:
-        A new CandidateParameterSet (offspring or copy of parent_a).
-    """
     if rng.random() >= crossover_rate:
         # No crossover — return parent_a as-is (with updated generation)
         return CandidateParameterSet.create(
@@ -63,7 +56,6 @@ def crossover(
         elif key not in parent_b.parameters:
             child_params[key] = parent_a.parameters[key]
         else:
-            # Inherit from parent_a with p=0.5, parent_b with p=0.5
             child_params[key] = (
                 parent_a.parameters[key] if rng.random() < 0.5
                 else parent_b.parameters[key]

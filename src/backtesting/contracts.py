@@ -190,6 +190,12 @@ class ScenarioProfile:
     # normalisation_freq_ref_trades_per_week: trade frequency ceiling for fitness scoring.
     #   trades_per_week / this value → normalised contribution. Default 20 trades/week.
     normalisation_freq_ref_trades_per_week: float = 20.0
+    # normalisation_expectancy_ref_pts: expectancy value considered "excellent" for fitness.
+    #   expectancy_points / this value → normalised contribution, clamped [0,1].
+    #   Default 3.0 reproduces the prior hardcoded divisor in fitness.py (B8B-003).
+    #   Calibrate to ~90th percentile of expectancy_points among Stage 1 passers.
+    #   From run 2ab4fd0e: max observed expectancy = 2.01 pts → 3.0 is a reasonable ceiling.
+    normalisation_expectancy_ref_pts: float = 3.0
 
     def __post_init__(self):
         fitness_weights = (
@@ -239,6 +245,11 @@ class ScenarioProfile:
             raise ValueError(
                 f"normalisation_freq_ref_trades_per_week must be positive; "
                 f"got {self.normalisation_freq_ref_trades_per_week}"
+            )
+        if self.normalisation_expectancy_ref_pts <= 0.0:
+            raise ValueError(
+                f"normalisation_expectancy_ref_pts must be positive; "
+                f"got {self.normalisation_expectancy_ref_pts}"
             )
         # B8C-001: report_emphasis must be a non-empty sequence of metric name strings.
         # A scalar string (e.g. "balanced") is accepted by the type hint but causes

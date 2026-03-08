@@ -227,9 +227,11 @@ def _compute_weighted_score(metrics, scenario: ScenarioProfile) -> float:
     # win_rate: normalise from 0–100 → 0–1
     win_rate_norm = _clamp(_normalise_win_rate(_get(metrics, "win_rate")) or 0.0, 0.0, 1.0)
 
-    # expectancy_points: normalise to [0, 1] with fixed scale of 3.0 pts per unit
-    # (not yet scenario-configurable — deferred to Block 9 calibration; B8B-003)
-    expectancy_norm = _clamp((_get(metrics, "expectancy_points") or 0.0) / 3.0, 0.0, 1.0)
+    # expectancy_points: normalise to [0, 1] via scenario ref (B8B-003 resolved).
+    # scenario.normalisation_expectancy_ref_pts default = 3.0 (unchanged behaviour).
+    expectancy_norm = _clamp(
+        (_get(metrics, "expectancy_points") or 0.0) / scenario.normalisation_expectancy_ref_pts, 0.0, 1.0,
+    )
 
     profit_factor_norm = _clamp(((_get(metrics, "profit_factor") or 1.0) - 1.0) / 4.0, 0.0, 1.0)
 

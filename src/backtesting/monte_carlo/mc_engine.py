@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from src.backtesting.contracts import (
     CandidateParameterSet,
@@ -43,6 +44,7 @@ def run_mc(
     mode: MCMode,
     config: dict,
     seed: int,
+    ruin_threshold: Optional[float] = None,
 ) -> MCResult:
     """
     Run Monte Carlo simulation on a candidate's trade history.
@@ -58,7 +60,7 @@ def run_mc(
         MCResult — always. On failure, ruin_probability is None and error is set.
     """
     try:
-        return _run_mc_internal(candidate, candidate_result, mode, config, seed)
+        return _run_mc_internal(candidate, candidate_result, mode, config, seed, ruin_threshold)
     except Exception as exc:
         logger.error(
             "MC simulation failed: candidate=%s mode=%s error=%s",
@@ -71,7 +73,7 @@ def run_mc(
             candidate_id=candidate.candidate_id,
             mode=mode,
             perturbation_profile_name=_get_profile_name(config, mode),
-            iterations=1,  # Minimum valid value — actual iterations unknown in error path
+            iterations=1,
             evaluated_at=datetime.now(timezone.utc),
             avg_final_equity=None,
             worst_drawdown_across_paths=None,
@@ -89,6 +91,7 @@ def _run_mc_internal(
     mode: MCMode,
     config: dict,
     seed: int,
+    ruin_threshold_override: Optional[float] = None,
 ) -> MCResult:
     """Internal implementation — may raise. Caller wraps in try/except."""
     if not candidate_result.is_valid:
@@ -107,7 +110,17 @@ def _run_mc_internal(
 
     iterations: int = mc_cfg["iterations"]
     profile_name: str = mc_cfg["perturbation_profile"]
-    ruin_threshold: float = mc_cfg.get("ruin_threshold", config["monte_carlo"]["deep"].get("ruin_threshold", 0.20))
+    # B8B-013: ruin_threshold resolved from caller override first (scenario value),
+    # then YAML config block, then hardcoded default.
+    # ruin_threshold_override is set by orchestrator from scenario.mc_prefilter_ruin_threshold
+    # for pre-filter mode, ensuring scenario-specific thresholds are respected.
+    if ruin_threshold_override is not None:
+        ruin_threshold: float = ruin_threshold_override
+    else:
+        ruin_threshold = mc_cfg.get(
+            "ruin_threshold",
+            config["monte_carlo"]["deep"].get("ruin_threshold", 0.20)
+        )
 
     profile: PerturbationProfile = load_profile(config, profile_name)
 

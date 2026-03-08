@@ -58,8 +58,8 @@ def load_scenario(config: dict) -> ScenarioProfile:
         weight_profit_factor=float(fw["profit_factor"]),
 
         min_win_rate=float(ct["min_win_rate"]),
-        max_drawdown=float(ct["max_drawdown"]),
-        max_losing_streak=int(ct["max_losing_streak"]),
+        max_drawdown=float(ct.get("max_drawdown", 1.0)),
+        max_losing_streak=int(ct.get("max_losing_streak", 99999)),
         min_trades_per_week=float(ct["min_trades_per_week"]),
         min_expectancy=float(ct["min_expectancy"]),
         min_profit_factor=float(ct["min_profit_factor"]),

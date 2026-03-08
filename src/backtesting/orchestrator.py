@@ -139,31 +139,22 @@ def _resume_or_start(
     Check for an existing run with the same config hash. If found and checkpoint
     is not COMPLETE, resume it. If config hash has changed, refuse to resume and
     raise. If no existing run found, start fresh.
-    """
-    import sqlite3
 
+    B8-009: Uses CandidateStore read API (get_incomplete_run / get_any_incomplete_run)
+    instead of opening a raw sqlite3 connection directly. The store already holds
+    an open WAL-mode connection — a second connection was architecturally wrong
+    even if safe in practice.
+    """
     current_hash = _compute_config_hash(config_path)
 
-    conn = sqlite3.connect(str(store._db_path))
-    try:
-        row = conn.execute(
-            "SELECT run_id FROM runs WHERE config_hash = ? AND checkpoint != ? "
-            "ORDER BY started_at DESC LIMIT 1",
-            (current_hash, Checkpoint.COMPLETE.name),
-        ).fetchone()
+    # Check for resumable run with matching config hash
+    run_id = store.get_incomplete_run(current_hash)
+    if run_id is not None:
+        logger.info("Resuming existing run %s", run_id)
+        return store.get_run_metadata(run_id)
 
-        if row is not None:
-            run_id = row[0]
-            logger.info("Resuming existing run %s", run_id)
-            return store.get_run_metadata(run_id)
-
-        conflict = conn.execute(
-            "SELECT run_id, config_hash FROM runs WHERE checkpoint != ? LIMIT 1",
-            (Checkpoint.COMPLETE.name,),
-        ).fetchone()
-    finally:
-        conn.close()
-
+    # Check for config hash conflict (different incomplete run exists)
+    conflict = store.get_any_incomplete_run()
     if conflict is not None:
         existing_run_id, existing_hash = conflict
         raise ValueError(
@@ -173,7 +164,6 @@ def _resume_or_start(
         )
 
     return _initialise_run(store, config, config_path, current_hash)
-
 
 def _initialise_run(
     store: CandidateStore,
@@ -613,6 +603,7 @@ def _run_stage_2_mc_prefilter(
             mode=MCMode.PRE_FILTER,
             config=config,
             seed=run_metadata.mc_prefilter_seed,
+            ruin_threshold=ruin_threshold,  # B8B-013: pass scenario value
         )
         store.write_mc_result(mc_result, run_id)
 

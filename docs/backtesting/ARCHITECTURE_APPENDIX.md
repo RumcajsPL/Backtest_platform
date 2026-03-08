@@ -544,3 +544,160 @@ Result: dimensionless fractions, one calibration serves all instruments.
 Existing test fixtures passing `wfo_collapse_drawdown_threshold=0.40` remain valid
 (0.40 > 0.0 passes the new validation). Any test asserting the old `<= 1.0`
 upper-bound error message must be updated — expected to be zero such tests.
+
+# ARCHITECTURE APPENDIX — Block 9N
+**Date**: 2026-03-08
+**Covers**: Full-history calibration work, scenario.py constraint fix, broker integration project start, CTP strategic roadmap
+
+---
+
+## A1. Calibration Constants — Two-Track System
+
+As of Block 9N the platform maintains **two distinct calibration tracks** that must never be mixed.
+
+### 3-Month Production Track (V1 — do not change)
+```
+_SIGMOID_SCALE                   = 131.0
+_MAX_EXPECTED_DRAWDOWN           = 1_000.0   # pts
+_MAX_EXPECTED_VARIANCE           = 100_000.0
+wfo_collapse_drawdown_threshold  = 400.0 pts (per WFO window — unchanged for full-history)
+normalisation_expectancy_ref_pts = 3.0 pts
+normalisation_freq_ref_trades_per_week = 20.0  (CAL-01: raise to 50.0 before V2)
+```
+These constants are **frozen** for `backtest_production_v1.yaml` and all short-window (≤3-month Stage 1) runs. Do not recalibrate unless Stage 1 data stdev shifts >30% from the calibration baseline of 261.98 pts.
+
+### Full-History Track (38-month, 2023-2026 — PENDING)
+```
+_MAX_EXPECTED_DRAWDOWN           = 2_500.0   # CODE CHANGE REQUIRED before calibration run
+_SIGMOID_SCALE                   = TBD        # requires calibration_v2 run result
+```
+**Rule**: `_MAX_EXPECTED_DRAWDOWN` is dataset-range-specific. 38 months of continuous evaluation produces drawdowns 2.5–3× larger than a 3-month window. The 1,000 pt cap was truncating real values (observed avg drawdown: 790 pts — already near cap on short windows). 2,500 pt cap is the correct value for full-history runs.
+
+**Important**: `wfo_collapse_drawdown_threshold = 400 pts` is per-window and does NOT change for full-history runs. This is the correct granularity — WFO evaluates each window independently.
+
+---
+
+## A2. scenario.py — Constraint Loader Fix (B9N-001)
+
+**Problem**: `scenario.py` uses hard `dict[]` access for all constraint fields. Removing a constraint from the YAML causes `KeyError` at Stage 0 — the pipeline fails before any strategy runs.
+
+**Root cause found**: Line 61 in `scenario.py`:
+```python
+max_drawdown=float(ct["max_drawdown"]),  # HARD LOOKUP — fails if key absent
+```
+
+**Fix applied (must be committed before full-history run)**:
+```python
+max_drawdown=float(ct.get("max_drawdown", 1.0)),           # 1.0 = 100% = disabled
+max_losing_streak=int(ct.get("max_losing_streak", 99999)), # 99999 = disabled
+```
+
+**Design principle**: default values must semantically disable the constraint, not set it to zero or a tight value. `max_drawdown=1.0` means "allow 100% drawdown" — equivalent to no gate. `max_losing_streak=99999` is unreachable in practice.
+
+**Architectural debt registered as B9N-001 [P3]**: All constraint fields in `scenario.py` use hard `dict[]` access. The systematic fix (convert all to `ct.get()` with documented defaults) is required before V2. For now the two-field targeted fix unblocks full-history runs.
+
+**Promotion backlog (V2)**: Promote `_MAX_EXPECTED_DRAWDOWN` and `_MAX_EXPECTED_VARIANCE` to scenario YAML fields — same pattern as `normalisation_expectancy_ref_pts`. This eliminates the need to change source code between full-history and 3-month runs. Tracked as part of V2-RAR work.
+
+---
+
+## A3. Full-History Run Design
+
+### Stage 1 Date Range
+`2023-01-02 → 2026-02-28` (38 months, 3 distinct DAX regimes)
+
+### WFO Window Map (13 windows)
+```
+W01: 2023-01-02 → 2023-03-31  (2023 recovery trend)
+W02: 2023-04-03 → 2023-06-30
+W03: 2023-07-03 → 2023-09-29
+W04: 2023-10-02 → 2023-12-29
+W05: 2024-01-02 → 2024-03-28  ← KEY STRESS: choppy rate cycle
+W06: 2024-04-01 → 2024-06-28
+W07: 2024-07-01 → 2024-09-30  (ECB peak)
+W08: 2024-10-01 → 2024-12-31
+W09: 2025-01-02 → 2025-03-31  (2025 range-bound)
+W10: 2025-04-01 → 2025-06-30
+W11: 2025-07-01 → 2025-09-30
+W12: 2025-10-01 → 2025-12-31  (cross-reference vs production_v1)
+W13: 2026-01-02 → 2026-02-28  (partial ~2 months — REJECTED_INSUFFICIENT_TRADES expected)
+```
+
+### Constraints removed for full-history Stage 1
+- `max_drawdown` — REMOVED (accumulates over 38 months; correct gate is WFO per-window)
+- `max_losing_streak` raised `50 → 200` (observed avg 44, max 78 over 38 months)
+
+These removals apply **only to full-history YAMLs**. Production_v1.yaml is unchanged.
+
+### Runtime estimate
+~10–14 hours. Stage 4 dominant: 13 windows × 30 candidates (390 WFO evaluations vs 150 in production runs).
+
+---
+
+## A4. Calibration Failure — Root Cause (Run d1ce2b1d, Now Diagnosed)
+
+Run `d1ce2b1d` produced 0/200 Stage 1 passes. Root cause: `max_drawdown=0.15` was calibrated for 3-month evaluation. Over 38 continuous months, normalised drawdown (against `_MAX_EXPECTED_DRAWDOWN=1000`) averaged 0.79. 199/200 candidates failed the 0.15 gate.
+
+**Lesson L-43**: Constraints calibrated for short evaluation windows become invalid for long continuous evaluations. `max_drawdown` and `max_losing_streak` accumulate over the full Stage 1 date range. The correct granularity for these constraints is the WFO window (Stage 4), not the full dataset. Always verify constraint calibration matches the Stage 1 evaluation date range before launching a run.
+
+---
+
+## A5. New Lessons — Block 9N
+
+**L-42** *(finalised from 9M)*: A filter producing zero sensitivity delta across 6 consecutive runs is structurally inactive for the current instrument/timeframe. Zero signal = zero cost but wastes GA search dimensions. Remove from search space in the next major version rather than forcing activation.
+
+**L-43**: Constraints calibrated for short evaluation windows (3 months) become invalid for long continuous evaluations (38 months). max_drawdown and max_losing_streak accumulate across the full date range in Stage 1. The correct granularity for these constraints is the WFO window (Stage 4), not the full dataset. Always verify constraint calibration matches the Stage 1 evaluation date range.
+
+**L-44**: Before removing a YAML field, verify the loader uses `dict.get()` not `dict[]`. Hard key access causes Stage 0 failure — the pipeline does not run at all. Audit `scenario.py` for all `ct[]` accesses before V2 constraint redesign.
+
+---
+
+## A6. Open Issues — Full Tracker
+
+| ID | Priority | Description | Target |
+|----|----------|-------------|--------|
+| RSI-SENS-2 | P2 | RSI zero delta across 6 runs. Remove from V2 search space. | V2 |
+| CAL-01 | P3 | normalisation_freq_ref_trades_per_week=20.0 → raise to 50.0 | V2 |
+| RR-CEILING-2 | P3 | Revert safe zone rr_target.max 8.5→7.0 | Next YAML |
+| B9N-001 | P3 | scenario.py hard dict[] access for all constraints. Systematic fix needed. | V2 |
+| V2-RAR | P1 (V2) | Dimensionless normalisation via Rolling Annual Range | V2 |
+| DYN-WFO | P2 (V2) | Dynamic window generation from data_range + window_size | V2 |
+| B8C-002/003 | P3 | report_generator.py cosmetic HTML issues | V2 |
+| B9C-008 | P3 | Deferred | V2 |
+| WinError 32 | P3 | Windows file lock issue on log rotation | V2 |
+
+---
+
+## A7. Broker Integration — Architecture Decisions (Block 9N)
+
+### Project: broker_support (eToro API integration)
+**Location**: `E:\Trading\Broker_support`
+**Package**: `broker-support` v0.1.0
+**Status**: Working connection confirmed. Three bugs identified and scoped for fix.
+
+### Confirmed Working
+- `EToroClient._make_request()` and `_get_headers()` — connection confirmed, auth working
+- `EToroClient.test_connection()` via `/api/v1/watchlists` — returns 200
+- `EToroClient.get_portfolio()` — returns `clientPortfolio` structure
+
+### Confirmed API Facts (from official OpenAPI spec)
+| Endpoint | Path | Status |
+|----------|------|--------|
+| Demo portfolio + open positions + PnL | `GET /api/v1/trading/info/demo/pnl` | ✅ Official |
+| Real account trade history | `GET /api/v1/trading/info/trade/history?minDate=YYYY-MM-DD` | ✅ Official |
+| Demo account trade history | **Not documented** — may not exist | ⚠️ Needs empirical test |
+| Open demo order by amount | `POST /api/v1/trading/execution/demo/market-orders-by-amount` | ✅ Official |
+| Close demo position | `POST /api/v1/trading/execution/demo/close-position` | ✅ Official |
+
+### Critical finding: demo history endpoint unknown
+The eToro API does not document a demo-equivalent of `/api/v1/trading/info/trade/history`. The snapshot-comparison approach in `PositionTracker` is therefore not a workaround — it may be the only method available for demo trade detection. **Empirical test required before any further architecture decisions**: call real-account history endpoint with `minDate` set to a past date and verify whether demo trades appear.
+
+### Three Bugs Requiring Fix Before Any New Development
+1. **Wrong portfolio endpoint**: `get_portfolio()` calls `/demo/portfolio` — correct path is `/demo/pnl`
+2. **Orphaned function**: second `fetch_closed_trades` definition in `client.py` is a free function (not a class method) — causes silent import-time issues
+3. **Wrong date param**: `fetch_closed_trades` uses `from`/`fromDate` — confirmed param name is `minDate`
+
+### Trade Model Mismatch
+`Trade` model uses `alias='id'` but eToro returns `positionId`. Fix: change alias to `positionId` and add optional fields from the actual API schema: `fees`, `leverage`, `sl_rate`, `tp_rate`.
+
+### Architectural Principle: Demo/Real Symmetry
+eToro demo and real account endpoints share identical schemas and auth. The only difference is the path prefix (`/demo/` vs `/`). The signal bridge built for demo paper trading requires zero code changes at go-live — only a configuration flag changes. All broker integration work is production code from day one.

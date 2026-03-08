@@ -421,6 +421,41 @@ class CandidateStore:
             checkpoint=Checkpoint[checkpoint_val],
             backtester_version=backtester_version,
         )
+    
+    def get_incomplete_run(self, config_hash: str) -> Optional[str]:
+        """
+        Return run_id of the most recent incomplete run with the given config_hash,
+        or None if no such run exists.
+
+        An incomplete run is any run where checkpoint != COMPLETE.
+        Used by _resume_or_start() to detect resumable runs without opening a
+        second SQLite connection.
+
+        B8-009: Replaces raw sqlite3.connect() in orchestrator._resume_or_start()
+        which bypassed CandidateStore and accessed _db_path directly.
+        """
+        row = self._conn.execute(
+            "SELECT run_id FROM runs WHERE config_hash = ? AND checkpoint != ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (config_hash, Checkpoint.COMPLETE.name),
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def get_any_incomplete_run(self) -> Optional[tuple]:
+        """
+        Return (run_id, config_hash) of any incomplete run, or None.
+
+        Used by _resume_or_start() to detect config hash conflicts:
+        if a different incomplete run exists when starting a new run,
+        the operator must resolve it before continuing.
+
+        B8-009: Replaces the second raw sqlite3 query in orchestrator._resume_or_start().
+        """
+        row = self._conn.execute(
+            "SELECT run_id, config_hash FROM runs WHERE checkpoint != ? LIMIT 1",
+            (Checkpoint.COMPLETE.name,),
+        ).fetchone()
+        return (row[0], row[1]) if row is not None else None
 
     def get_wfo_consistency_score(self, candidate_id: str) -> Optional[WFOConsistencyScore]:
         """Return the WFOConsistencyScore for a candidate, or None if not found."""

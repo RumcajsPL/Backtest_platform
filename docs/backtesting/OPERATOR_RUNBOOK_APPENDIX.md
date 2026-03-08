@@ -818,3 +818,169 @@ Implementation scope:
 - `calibrate_sigmoid.py`: output RAR-normalised scale constant
 
 Do not implement until DAX pipeline validated through paper trading phase.
+
+# OPERATOR RUNBOOK — Block 9N Delta
+**Date**: 2026-03-08
+**Audience**: Operator
+**Covers**: Full-history calibration sequence, scenario.py fix, pending actions before production full-history run
+
+---
+
+## Status at End of Block 9N
+
+| Item | Status |
+|------|--------|
+| V1 production declared | ✅ Complete (Block 9M) |
+| Paper trade candidates identified | ✅ Complete (Block 9M) |
+| Full-history calibration v1 (d1ce2b1d) | ❌ Failed — 0/200 Stage 1 passes (diagnosed) |
+| scenario.py constraint fix | ⏳ Pending operator code change |
+| _MAX_EXPECTED_DRAWDOWN code change | ⏳ Pending operator code change |
+| Full-history calibration v2 | ⏳ Pending (awaiting calibration run completion) |
+| Full-history production run | 🔒 Blocked on calibration v2 result |
+
+---
+
+## Three-Step Sequence to Full-History Production Run
+
+### Step 1 — Apply Two Code Changes (do before running anything)
+
+**File**: `src/backtesting/scoring/consistency_scorer.py`
+
+Change:
+```python
+_MAX_EXPECTED_DRAWDOWN: float = 1_000.0
+```
+To:
+```python
+_MAX_EXPECTED_DRAWDOWN: float = 2_500.0
+```
+
+**File**: `src/backtesting/scenario.py`
+
+Change (~line 61, in the constraints loader block):
+```python
+max_drawdown=float(ct["max_drawdown"]),
+max_losing_streak=int(ct.get("max_losing_streak", 50)),
+```
+To:
+```python
+max_drawdown=float(ct.get("max_drawdown", 1.0)),
+max_losing_streak=int(ct.get("max_losing_streak", 99999)),
+```
+
+**Verify**: After editing scenario.py, confirm no other `ct["..."]` hard lookups remain near this block. Check `ct.get()` is used for all other constraint fields too — if not, note them for V2 but do not change now.
+
+**Do NOT touch**: `wfo_collapse_drawdown_threshold = 400.0` anywhere in the codebase. This is per-window and correct as-is for full-history runs.
+
+---
+
+### Step 2 — Run Calibration v2
+
+**YAML**: `outputs\9M\backtest_calibration_fullhistory_v2.yaml`
+**Stages**: 1 + 4 only (calibration run — no MC, no sensitivity, no verdict)
+**Expected runtime**: 45–90 minutes
+**Expected Stage 1 passes**: 15–50 candidates (was 0 in v1 due to the bug now fixed)
+
+After run completes, share the `query_run.py` output for this run ID. The assistant will calculate `_SIGMOID_SCALE = stdev(net_pnl) × 0.5` from the Stage 1 passer distribution.
+
+**If Stage 1 still produces 0 passes**: share the full run log. Do not proceed to Step 3.
+
+---
+
+### Step 3 — Update _SIGMOID_SCALE and Run Production
+
+After receiving the new `_SIGMOID_SCALE` value from assistant:
+
+**File**: `src/backtesting/scoring/consistency_scorer.py`
+
+Change:
+```python
+_SIGMOID_SCALE: float = 131.0
+```
+To the value provided (example — do not use this):
+```python
+_SIGMOID_SCALE: float = <VALUE FROM ASSISTANT>
+```
+
+Then run:
+**YAML**: `outputs\9M\backtest_production_fullhistory_v2.yaml`
+**Runtime**: ~10–14 hours (overnight run recommended)
+**Stages**: Full pipeline (1 → 7)
+
+---
+
+## Paper Trading — Start Conditions
+
+Paper trading on `c4f0aea11a3e` and `da38ecc0ddc6` can start **independently of the full-history run**. V1 is declared and the paper trade YAMLs are ready.
+
+**Paper trade YAMLs (already generated)**:
+```
+outputs\backtesting\trading_yamls\f545f0f2_c4f0aea11a3e_strategy.yaml   ← primary
+outputs\backtesting\trading_yamls\f545f0f2_da38ecc0ddc6_strategy.yaml   ← secondary
+```
+
+See `OPERATOR_RUNBOOK_9M_DELTA.md` for full paper trade monitoring checklist and escalation guide. Nothing has changed from that document for paper trading purposes.
+
+---
+
+## Broker Integration — Immediate Actions
+
+Before writing any new broker code, run this empirical test (5 minutes):
+
+```python
+# In broker_support Python environment
+from broker_support.api.client import EToroClient
+from datetime import datetime
+
+client = EToroClient()
+# Test real-account history endpoint — even with zero real trades
+result = client._make_request(
+    'GET',
+    'api/v1/trading/info/trade/history',
+    params={'minDate': '2026-01-01'}
+)
+print(result)
+```
+
+**What you are testing**: whether demo trades appear in the real-account history endpoint. This determines whether you need the snapshot-comparison approach permanently or can query history directly.
+
+**Expected outcomes**:
+- Returns a list (possibly empty) → endpoint works, confirm if demo trades appear
+- Returns 401/403 → endpoint requires real account verification
+- Returns 404 → endpoint path is wrong
+
+Share the result and the assistant will confirm the architecture for close-price enrichment before any further code changes.
+
+---
+
+## What NOT to Change This Session
+
+| Item | Why |
+|------|-----|
+| `_SIGMOID_SCALE = 131.0` in production runs | Still correct for 3-month windows. Do not change until full-history calibration complete. |
+| `backtest_production_v1.yaml` | Frozen. V1 is declared. No changes until V1.1 is agreed. |
+| `wfo_collapse_drawdown_threshold` | Per-window, correct for all run types. Leave at 400.0. |
+| Any paper trade candidate YAMLs | Already generated and validated. |
+
+---
+
+## Calibration Constants — Quick Reference Card
+
+```
+# FOR 3-MONTH PRODUCTION RUNS (production_v1.yaml)
+consistency_scorer.py:
+  _SIGMOID_SCALE              = 131.0       ← DO NOT CHANGE
+  _MAX_EXPECTED_DRAWDOWN      = 1_000.0     ← restore after full-history work
+
+# FOR 38-MONTH FULL-HISTORY RUNS
+consistency_scorer.py:
+  _MAX_EXPECTED_DRAWDOWN      = 2_500.0     ← apply for Steps 2 and 3 above
+  _SIGMOID_SCALE              = TBD         ← calculated after calibration v2 run
+
+# SHARED (do not change for either run type)
+  wfo_collapse_drawdown_threshold = 400.0 pts
+  normalisation_expectancy_ref_pts = 3.0 pts
+  normalisation_freq_ref_trades_per_week = 20.0 (raise to 50.0 before V2 only)
+```
+
+**After completing the full-history run**: restore `_MAX_EXPECTED_DRAWDOWN = 1_000.0` and `_SIGMOID_SCALE = 131.0` before running any new 3-month production runs. Or wait for V2-RAR which eliminates this two-track complexity entirely.

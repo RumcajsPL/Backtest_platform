@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 #   Observed range in calibration run: 282–676 pts → ceiling = 1_000 pts (conservative)
 _SIGMOID_SCALE: float = 131.0
 _MAX_EXPECTED_VARIANCE: float = 100_000.0
-_MAX_EXPECTED_DRAWDOWN: float = 1_000.0
+_MAX_EXPECTED_DRAWDOWN: float = 2_500.0
 
 
 def compute_consistency(
