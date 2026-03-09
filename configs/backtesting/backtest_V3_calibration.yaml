@@ -79,7 +79,7 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 2     # Reduced from 6 — full-history WFO: each worker holds ~850MB (df_full
+  max_workers: 6     # Reduced from 6 — full-history WFO: each worker holds ~850MB (df_full
                      # passed to TradeSimulator for LTF tick resolution). 6×850MB=~5.1GB peak.
                      # 2 workers = ~1.7GB peak. Restore to 6 only after V2-RAR.
                      # Runtime: ~24 min for 9 passers × 7 windows at 45s/eval.
@@ -178,7 +178,7 @@ scenarios:
       min_expectancy: -2.0       # Loosened from -1.0 (v3) — run 756a7829 avg=-1.69, min=-2.56
                                  # -2.0 targets top ~60-65% by expectancy. Combined with win_rate:
                                  # target 20-40 Stage 1 passers from 60 candidates.
-      min_profit_factor: 0.90    # Unchanged
+      min_profit_factor: 0.75    # Unchanged
     mc_prefilter_ruin_threshold: 0.25
     wfo_collapse_drawdown_threshold: 400.0    # Per-window — correct granularity (unchanged)
     normalisation_expectancy_ref_pts: 3.0

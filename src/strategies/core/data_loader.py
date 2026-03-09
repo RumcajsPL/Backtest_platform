@@ -1,6 +1,6 @@
 """
-DataLoader v3.3 - LTF/HTF Slice-Before-Cache
-Version: 3.3.0
+DataLoader v3.4 - LTF/HTF Slice-Before-Cache
+Version: 3.4.0
 
 B9O-006: Fix OOM on LTF (and HTF) files for full-history WFO runs.
 
@@ -32,6 +32,31 @@ V2 BACKLOG — V2-LTF-PARTITION:
   Root cause is loading the full Parquet before slicing. V2 should partition
   LTF Parquet by month so pd.read_parquet(filters=[...]) pushes date range to
   the Parquet reader, eliminating the cache-miss peak entirely.
+
+# B9O-007: Warmup bar count for WFO window df_full slicing.
+# Wilder RMA (ATR) converges after ~5× the period. Max atr_length in search
+# space = 24. Minimum warmup = 120 bars. Using 200 for safety margin.
+# iloc-based (not timedelta) so weekend/non-trading gaps are excluded.
+B9O-007: Fix OOM — warmup-buffered df_full for WFO window evaluations.
+
+ROOT CAUSE:
+  DataLoader always loaded df_full as the full 38-month file (~850MB) and stored
+  it in DataBundle.full. TradeSimulator passed it to RiskManager(ohlcv_data=df_full).
+  RiskManager.__init__ does ohlcv_data.copy() → 1.7GB per worker at init.
+  max_workers=2 → ~3.4GB peak → OOM under normal system load.
+  B9O-001 and B9O-006 fixed LTF/HTF caching but df_full was intentionally excluded
+  because the architecture comment said "TradeSimulator needs it" — that was incomplete.
+  TradeSimulator only needs df_full for RiskManager ATR + RAR. Both are correct
+  with a warmup-buffered slice.
+
+FIX (B9O-007):
+  When date_range is set (WFO window evaluation), load full file, extract
+  df_full[window_start - 200 bars : window_end], del full file.
+  200-bar warmup ensures Wilder RMA ATR is fully converged at window_start.
+  DataBundle.full is now ~1MB per worker instead of ~850MB.
+  max_workers can be restored to 6.
+
+  When date_range is not set (Stage 1, analytics): completely unchanged.
 """
 
 import pandas as pd
@@ -59,7 +84,7 @@ except ImportError:
     PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 logger = logging.getLogger(__name__)
-
+_WFO_WARMUP_BARS: int = 200
 
 class DataLoader:
     """
@@ -395,12 +420,27 @@ class DataLoader:
         sliced for DataBundle.strategy. B9O-001 caches the slice separately.
 
         LTF/HTF: apply_date_range=True. B9O-006 caches the slice (not full file).
+
+        B9O-007: When date_range is set (WFO window evaluation), DataBundle.full
+        is a warmup-buffered slice instead of the full 38-month file.
+        RiskManager only needs ATR + RAR computation — both are correct with a
+        200-bar warmup prefix before the window start.
+        When date_range is not set (Stage 1 / analytics), behaviour is unchanged.
+        Memory per worker: ~850MB → ~1MB. max_workers can be restored to 6.
         """
         self._log("info", "Loading data files...")
 
+        # ── Determine if this is a WFO window evaluation ──────────────────────
+        # date_range is set only when strategy_runner.py writes a temp YAML with
+        # WFO window dates (B9F-005). Stage 1 and analytics have no date_range.
+        _is_wfo_window = (
+            self.data_config.date_range is not None
+            and self.data_config.date_range.is_bounded
+        )
+
         # ── Strategy file (B9O-001 path) ──────────────────────────────────────
         df_strategy = None
-        if self.data_config.date_range and self.data_config.date_range.is_bounded:
+        if _is_wfo_window:
             dr = self.data_config.date_range
             date_range_str = f"{dr.start.isoformat()}_{dr.end.isoformat()}"
             str_path = str(self.data_config.strategy_data.path.resolve())
@@ -408,24 +448,56 @@ class DataLoader:
             if df_strategy is not None:
                 self._log("info", "  ⚡ Cache hit: strategy slice (B9O-001)")
 
-        # Always load df_full — required for DataBundle.full (TradeSimulator needs it)
-        df_full = self._load_file_with_cache(
+        # ── Load full strategy file ────────────────────────────────────────────
+        # B9O-007: For WFO windows, we slice df_full to a warmup-buffered window
+        # immediately after loading and delete the full DataFrame to free memory.
+        # For Stage 1 / analytics (no date_range), df_full remains the full file.
+        df_full_raw = self._load_file_with_cache(
             self.data_config.strategy_data,
             "strategy",
             apply_date_range=False,
         )
-        df_full = self._sanitize_df(df_full, "strategy_full")
+        df_full_raw = self._sanitize_df(df_full_raw, "strategy_full")
 
+        if _is_wfo_window:
+            # ── B9O-007: Warmup-buffered slice for DataBundle.full ─────────────
+            # RiskManager needs 200 bars BEFORE window start for ATR warmup.
+            # Use iloc-based offset so weekend/non-trading gaps are excluded.
+            dr = self.data_config.date_range
+            full_index = df_full_raw.index
+
+            # Find the integer position of window_start in the full index
+            # searchsorted returns the insertion point — equivalent to first bar >= start
+            window_start_pos = full_index.searchsorted(dr.start)
+            warmup_start_pos = max(0, window_start_pos - _WFO_WARMUP_BARS)
+
+            # Slice to [warmup_start : window_end] inclusive
+            df_full = df_full_raw.iloc[warmup_start_pos:].loc[:dr.end].copy()
+
+            actual_warmup = window_start_pos - warmup_start_pos
+            self._log(
+                "info",
+                f"  B9O-007: df_full sliced to warmup+window "
+                f"({actual_warmup} warmup bars + window, total {len(df_full)} bars "
+                f"vs {len(df_full_raw)} full file bars)",
+            )
+            del df_full_raw  # Release full DataFrame — do not hold 850MB in worker
+        else:
+            # Stage 1 / analytics / no date_range: unchanged behaviour
+            df_full = df_full_raw
+            # (do not del df_full_raw — it IS df_full in this path)
+
+        # ── Build df_strategy (window slice) ──────────────────────────────────
         if df_strategy is None:
-            if self.data_config.date_range and self.data_config.date_range.is_bounded:
-                start = self.data_config.date_range.start
-                end = self.data_config.date_range.end
+            if _is_wfo_window:
+                dr = self.data_config.date_range
+                start = dr.start
+                end = dr.end
                 df_strategy = df_full.loc[start:end].copy()
                 if df_strategy.empty:
                     raise ValueError(
                         f"Strategy data is empty after applying date_range [{start} → {end}]."
                     )
-                dr = self.data_config.date_range
                 date_range_str = f"{dr.start.isoformat()}_{dr.end.isoformat()}"
                 str_path = str(self.data_config.strategy_data.path.resolve())
                 self._save_sliced_strategy_cache(df_strategy, str_path, date_range_str)

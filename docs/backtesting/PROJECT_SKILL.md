@@ -395,6 +395,12 @@ L-46: TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for 
 L-47: Pre-run cache clear is mandatory after data_loader.py upgrades. run_cleaner.py automates this.
 L-48: The stages: toggle block in YAML was parsed but never enforced until B9O-005. Any code
       that relies on stages being conditionally disabled must verify the orchestrator guard exists.
+L-49: df_full in DataBundle is consumed by TradeSimulator → RiskManager ONLY.
+      For WFO window evaluations, it needs only a warmup-buffered slice
+      (window_start - 200 bars to window_end), not the full dataset.
+      DataLoader is the correct place to apply this slice — not TradeSimulator
+      or RiskManager, which are strategy-layer frozen modules.
+      Always audit DataBundle.full consumers before assuming full history is needed.
 ```
 ---
 ## What NOT To Do
