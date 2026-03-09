@@ -1,6 +1,6 @@
 """
-DataLoader v3.4 - LTF/HTF Slice-Before-Cache
-Version: 3.4.0
+DataLoader v3.5 - LTF/HTF Slice-Before-Cache
+Version: 3.5.0
 
 B9O-006: Fix OOM on LTF (and HTF) files for full-history WFO runs.
 
@@ -57,6 +57,21 @@ FIX (B9O-007):
   max_workers can be restored to 6.
 
   When date_range is not set (Stage 1, analytics): completely unchanged.
+B9O-008: Fix LTF/HTF sort_index() OOM peak during cache miss.
+
+ROOT CAUSE:
+  _load_file_with_cache() called sort_index() on the full 22.4M-row LTF file
+  before slicing. sort_index() internally calls .copy() → 856MB peak per worker.
+  B9O-006 fixed the cache value (stores slice) but the loading peak was unfixed.
+  With max_workers=6 and cold cache: 6 × 856MB = 5.1GB → OOM → system crash.
+
+FIX (B9O-008):
+  For sorted Parquet files (is_monotonic_increasing=True, always true for
+  well-formed market data), slice to date_range BEFORE sort_index().
+  sort_index() then operates on the ~20MB slice, not the 856MB full file.
+  Unsorted files fall back to sort-then-slice with a warning.
+  Combined with B9O-007 (df_full warmup slice) and B9O-006 (cache fix),
+  per-worker peak memory is now ~40MB regardless of max_workers.
 """
 
 import pandas as pd
@@ -289,6 +304,31 @@ class DataLoader:
                 if hasattr(df.index, "tz") and df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
                 df.index = df.index.floor("s")
+
+                # ── B9O-008: Slice BEFORE sort to avoid 856MB sort_index peak ──
+                # sort_index() calls .copy() on the full DataFrame internally.
+                # For sorted files (all well-formed market data Parquet), slice
+                # to the target date_range first so sort operates on ~20MB not 856MB.
+                # Unsorted files fall back to sort-then-slice (original behaviour).
+                if (apply_date_range
+                        and date_range
+                        and data_type != "artf"
+                        and date_range.start
+                        and date_range.end
+                        and df.index.is_monotonic_increasing):
+                    # Fast path: already sorted — slice first, sort slice
+                    df = df.loc[date_range.start : date_range.end]
+                    # NOTE: df is now a VIEW not a copy — sort_index will copy only the slice
+                elif not df.index.is_monotonic_increasing:
+                    # Fallback: unsorted index — must sort full file first
+                    self._log("warning",
+                        f"  ⚠️ {file_path.name} index is unsorted — "
+                        f"sorting full file before slice (856MB peak unavoidable). "
+                        f"Consider re-exporting this Parquet file sorted by timestamp."
+                    )
+                    df = df.sort_index()
+                # If sorted but apply_date_range=False (e.g. artf): sort happens below
+
                 df = df.sort_index()
                 if not df.index.is_unique:
                     dup_count = df.index.duplicated().sum()
@@ -318,18 +358,20 @@ class DataLoader:
                 f"{data_type} data loaded from '{file_path}' produced an empty DataFrame."
             )
 
-        # ── B9O-006: Slice BEFORE caching ─────────────────────────────────────
-        # Previously: copy → save_to_cache(full_df) → slice (v3.1 bug)
-        # Now:        slice → save_to_cache(slice) → del full_df → return slice
-        #
-        # artf is excluded: it always requires full history for rolling indicators,
-        # even if apply_date_range=True is accidentally passed.
+        # ── B9O-006 + B9O-008: Slice BEFORE caching ───────────────────────────
+        # B9O-006: cache stores slice not full file.
+        # B9O-008: for sorted Parquet files, slice already happened above
+        #          (before sort_index) to avoid the 856MB sort_index copy peak.
+        #          df is now already the window slice — .copy() is cheap (~20MB).
+        # For CSV files and unsorted Parquet: df is still the full file here,
+        #          and the slice + del below applies as before.
         if apply_date_range and date_range and data_type != "artf":
             start = date_range.start
             end = date_range.end
             if start or end:
                 df_sliced = df.loc[start:end].copy()
-                del df  # Release full DataFrame immediately — do not hold in memory
+                del df  # Release DataFrame (may be full file for CSV/unsorted Parquet,
+                        # or already-sliced view for sorted Parquet — del either way)
                 if df_sliced.empty:
                     raise ValueError(
                         f"{data_type} data from '{file_path}' is empty after applying "
