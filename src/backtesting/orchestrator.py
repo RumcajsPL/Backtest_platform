@@ -197,13 +197,50 @@ def _initialise_run(
 
 # ── Pipeline stage execution ───────────────────────────────────────────────────
 
+"""
+PATCH for src/backtesting/orchestrator.py
+==========================================
+Replace _execute_pipeline() entirely with the version below.
+
+B9O-005: Add stages: toggle guards to _execute_pipeline().
+  The YAML stages: block (mc_prefilter, genetic_algorithm, walk_forward,
+  monte_carlo_deep, sensitivity) was parsed but never consulted — every
+  stage ran unconditionally regardless of the toggle value. This caused:
+    - ga_engine.run_ga() called with no genetic: config block → KeyError
+    - mc_engine.run_mc() called with no mc_prefilter: config block → KeyError
+    - Both now fixed by B9O-003/B9O-004, but the root cause (ignored toggles)
+      must also be fixed to avoid future issues as new stages are added.
+
+  When a stage is disabled:
+    - Its checkpoint is advanced immediately (pipeline continues to next stage)  
+    - A clear INFO log is emitted: "Stage N disabled in config — skipping"
+    - No store writes are made for the disabled stage
+
+  Defaults: all stages default to True (enabled) when the stages: block is
+  absent or a key is missing — preserves backward compatibility with production
+  YAMLs that rely on all stages running.
+"""
+
+
 def _execute_pipeline(
     config: dict,
-    store: CandidateStore,
-    run_metadata: RunMetadata,
+    store,
+    run_metadata,
 ) -> None:
     """Execute all pipeline stages in order with checkpoint skip logic."""
+    import time
+    from src.backtesting.contracts import Checkpoint
+
     run_id = run_metadata.run_id
+
+    # B9O-005: Read stage toggles once — default all to True for backward compat.
+    stages_cfg = config.get("stages", {})
+    stage_mc_prefilter    = stages_cfg.get("mc_prefilter",      True)
+    stage_ga              = stages_cfg.get("genetic_algorithm", True)
+    stage_wfo             = stages_cfg.get("walk_forward",      True)
+    stage_mc_deep         = stages_cfg.get("monte_carlo_deep",  True)
+    stage_sensitivity     = stages_cfg.get("sensitivity",       True)
+    stage_report          = stages_cfg.get("report",            True)
 
     # ── Stage 0: Validation & Init ────────────────────────────────────────────
     if store.get_checkpoint(run_id).value < Checkpoint.RUN_INITIALISED.value:
@@ -221,21 +258,33 @@ def _execute_pipeline(
 
     # ── Stage 2: MC Pre-Filter ────────────────────────────────────────────────
     if store.get_checkpoint(run_id).value < Checkpoint.MC_PREFILTER_COMPLETE.value:
-        _run_stage_2_mc_prefilter(config, store, run_metadata)
+        if stage_mc_prefilter:
+            _run_stage_2_mc_prefilter(config, store, run_metadata)
+        else:
+            logger.info("Stage 2 (MC Pre-Filter) disabled in config — skipping")
+            # Promote all RANDOM-pass candidates to MC_PREFILTER_PASS so Stage 3+
+            # can consume them. Without this, Stage 3 GA guard fires and GA skips.
+            _promote_random_to_mc_pass(config, store, run_metadata)
         store.set_checkpoint(run_id, Checkpoint.MC_PREFILTER_COMPLETE)
     else:
         logger.info("Stage 2 (MC Pre-Filter) already complete — skipping")
 
     # ── Stage 3: Genetic Algorithm ────────────────────────────────────────────
     if store.get_checkpoint(run_id).value < Checkpoint.GA_COMPLETE.value:
-        _run_stage_3_ga(config, store, run_metadata)
+        if stage_ga:
+            _run_stage_3_ga(config, store, run_metadata)
+        else:
+            logger.info("Stage 3 (Genetic Algorithm) disabled in config — skipping")
         store.set_checkpoint(run_id, Checkpoint.GA_COMPLETE)
     else:
         logger.info("Stage 3 (GA) already complete — skipping")
 
     # ── Stage 4: Full WFO ─────────────────────────────────────────────────────
     if store.get_checkpoint(run_id).value < Checkpoint.WFO_COMPLETE.value:
-        _run_stage_4_wfo(config, store, run_metadata)
+        if stage_wfo:
+            _run_stage_4_wfo(config, store, run_metadata)
+        else:
+            logger.info("Stage 4 (Full WFO) disabled in config — skipping")
         store.set_checkpoint(run_id, Checkpoint.WFO_COMPLETE)
     else:
         logger.info("Stage 4 (Full WFO) already complete — skipping")
@@ -243,7 +292,10 @@ def _execute_pipeline(
     # ── Stage 5: MC Deep ──────────────────────────────────────────────────────
     _t5 = time.perf_counter()
     if store.get_checkpoint(run_id).value < Checkpoint.MONTE_CARLO_COMPLETE.value:
-        _run_stage_5_mc_deep(config, store, run_metadata)
+        if stage_mc_deep:
+            _run_stage_5_mc_deep(config, store, run_metadata)
+        else:
+            logger.info("Stage 5 (MC Deep) disabled in config — skipping")
         store.set_checkpoint(run_id, Checkpoint.MONTE_CARLO_COMPLETE)
     else:
         logger.info("Stage 5 (MC Deep) already complete — skipping")
@@ -252,7 +304,10 @@ def _execute_pipeline(
     # ── Stage 6: Parameter Sensitivity ───────────────────────────────────────
     _t6 = time.perf_counter()
     if store.get_checkpoint(run_id).value < Checkpoint.SENSITIVITY_COMPLETE.value:
-        _run_stage_6_sensitivity(config, store, run_metadata)
+        if stage_sensitivity:
+            _run_stage_6_sensitivity(config, store, run_metadata)
+        else:
+            logger.info("Stage 6 (Sensitivity) disabled in config — skipping")
         store.set_checkpoint(run_id, Checkpoint.SENSITIVITY_COMPLETE)
     else:
         logger.info("Stage 6 (Sensitivity) already complete — skipping")
@@ -261,15 +316,16 @@ def _execute_pipeline(
     # ── Stage 7: Report & Output ──────────────────────────────────────────────
     _t7 = time.perf_counter()
     if store.get_checkpoint(run_id).value < Checkpoint.COMPLETE.value:
-        _run_stage_7_report(config, store, run_metadata)
+        if stage_report:
+            _run_stage_7_report(config, store, run_metadata)
+        else:
+            logger.info("Stage 7 (Report) disabled in config — skipping")
     else:
         logger.info("Stage 7 (Report) already complete — skipping")
     _elapsed_7 = time.perf_counter() - _t7
 
     _elapsed_total = _elapsed_5 + _elapsed_6 + _elapsed_7
     _budget = 14400.0
-    # NOTE (B8-008): Timing covers stages 5–7 only. When Stage 1–4 stubs are
-    # replaced, move _t_total to the top of this function and sum all stage durations.
     logger.info("TIMING stage_5_mc_deep elapsed=%.1fs", _elapsed_5)
     logger.info("TIMING stage_6_sensitivity elapsed=%.1fs", _elapsed_6)
     logger.info("TIMING stage_7_report elapsed=%.1fs", _elapsed_7)
@@ -279,6 +335,52 @@ def _execute_pipeline(
         "PASS" if _elapsed_total <= _budget else "OVER BUDGET",
     )
 
+
+def _promote_random_to_mc_pass(config, store, run_metadata) -> None:
+    """
+    B9O-005: When MC Pre-Filter is disabled, promote all RANDOM-pass candidates
+    to MC_PREFILTER_PASS stage so downstream stages (GA, WFO) can consume them.
+
+    Without this, the GA guard (B9F-002) fires — rank(stage=MC_PREFILTER_PASS)
+    returns empty — and GA is skipped even when enabled. Stage 4 WFO uses
+    rank_combined([RANDOM, MC_PREFILTER_PASS, GA]) so it would still find
+    RANDOM candidates, but GA would have nothing to seed from.
+    """
+    from src.backtesting.ranker import rank
+    from src.backtesting.contracts import CandidateStage
+    from datetime import UTC
+    from datetime import datetime
+    import json
+
+    run_id = run_metadata.run_id
+    input_count = config.get("mc_prefilter", {}).get("input_count", 200)
+
+    random_pass = rank(
+        store=store,
+        run_id=run_id,
+        stage=CandidateStage.RANDOM,
+        top_n=input_count,
+    )
+
+    if not random_pass:
+        logger.info("Stage 2 (disabled): no RANDOM-pass candidates to promote")
+        return
+
+    promoted = 0
+    for record in random_pass:
+        from src.backtesting.orchestrator import _build_candidate_record_from_existing
+        updated = _build_candidate_record_from_existing(
+            existing=record,
+            run_id=run_id,
+            new_stage=CandidateStage.MC_PREFILTER_PASS,
+        )
+        store.write_candidate(updated)
+        promoted += 1
+
+    store.flush()
+    logger.info(
+        "Stage 2 (disabled): promoted %d RANDOM-pass → MC_PREFILTER_PASS", promoted
+    )
 
 # ── Stage 0: Validation & Init ────────────────────────────────────────────────
 
@@ -361,7 +463,6 @@ def _validate_wfo_windows(windows_config: list) -> None:
             raise ValueError(
                 f"WFO window '{window_id}': start ({start}) must be before end ({end})"
             )
-
 
 def _validate_parameter_names(config: dict) -> None:
     """

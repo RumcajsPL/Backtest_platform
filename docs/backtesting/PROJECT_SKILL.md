@@ -12,10 +12,12 @@ description: >
   decision for this project.
 ---
 # CTP Project Skill — Backtesting + Broker Integration
-## Project Status (2026-03-08, Block 9N)
+## Project Status (2026-03-09, Block 9O)
 ```
 BACKTESTING ENGINE:    V1 PRODUCTION DECLARED (f545f0f2, 2026-03-08)
-                       Full-history calibration IN PROGRESS (v3 needed — see below)
+                       Full-history calibration IN PROGRESS — Block 9O run in progress
+                       6 calibration runs attempted; all B9O patches applied; run live now
+                       Next: extract _SIGMOID_SCALE from current run → update consistency_scorer.py
                        Paper trade candidates: c4f0aea11a3e (primary), da38ecc0ddc6 (secondary)
 
 BROKER INTEGRATION:    broker_support package — connection confirmed, 4 bugs to fix
@@ -28,32 +30,38 @@ CTP ROADMAP:           5-phase plan agreed. Phase 0 (broker fixes) + Phase 1 (fu
 ## DUAL-TRACK CONTEXT
 
 ### Track A — Backtesting Full-History (in progress)
-Three calibration runs attempted. First two failed:
-- `d1ce2b1d` — Stage 0 KeyError: scenario.py ct["max_drawdown"] hard lookup. Fixed.
-- `46d6edc7` — Stage 1 0/200: constraints calibrated for 3-month windows fail on 38-month continuous eval.
+Six calibration runs attempted (Block 9O). Multiple bugs discovered and fixed — all triggered
+by the 38-month full-history evaluation regime, never seen in 3-month production runs.
 
-**Calibration v3 — required changes to full-history YAML**:
+**Current calibration YAML: `configs/backtesting/backtest_calibration_fullhistory_v3.yaml` (v4.0.0)**
+
+Calibration run in progress. When complete:
+1. Extract `net_pnl` from `wfo_window_results` (Stage 4) via `query_run.py`
+2. `_SIGMOID_SCALE = stdev(net_pnl across all windows × passers) × 0.5`
+3. Update `consistency_scorer.py`: `_SIGMOID_SCALE = <new value>`
+4. Update `backtest_V1_01.yaml`: `max_workers: 2`, `min_win_rate: 0.11`, `min_expectancy: -2.0`
+5. Run `backtest_V1_01.yaml` overnight
+
+**Pre-calibration also check:** `d9a81454` — pipeline ran 55 min before B9O-004 crash. Stage 4 WFO may already be complete. Query this run_id before waiting for the current run.
+
+**Stage 1 distributions (38-month — stable across 3+ runs):**
+```
+win_rate:      min=0.0945  avg=0.1486  max=0.2265
+expectancy:    min=-2.56   avg=-1.69   max=+0.35
+profit_factor: min=0.67    avg=0.8295  max=1.02
+trades/week:   min=4.11    avg=35.38   max=87.35
+losing_streak: min=25      avg=46.8    max=82
+max_drawdown:  min=0.0858  avg=0.8203  max=1.0000  (do not constrain — 38-month accumulation)
+```
+
+**Constraint rationale (v4.0.0):**
 ```yaml
-constraints:
-  expectancy: -1.0          # loosened: observed avg=-1.83, max=+0.41 over 38 months
-  win_rate: 0.12            # loosened: observed avg=0.155, min=0.082
-  # max_drawdown: REMOVED   (confirmed correct — accumulates over 38 months)
-  max_losing_streak: 200    # confirmed correct — observed max=78
-  # trades_per_week: keep current
-```
-Target: 20–60 Stage 1 passers. Stage 4 WFO does the real filtering.
-
-After v3 produces passers: `_SIGMOID_SCALE = stdev(Stage 4 net_pnl of passers) × 0.5`.
-
-**Calibration data (run 46d6edc7 — 2023-01-02 → 2026-02-28)**:
-```
-metric              min        avg        max
-win_rate          0.0816     0.1553     0.2378
-max_drawdown      0.0501     0.7906     1.0000   (unconstrained — correct)
-expectancy       -3.4000    -1.8348     0.4100
-profit_factor     0.6700     0.8161     1.0300
-trades/week       1.3100    33.5200    96.5000
-losing_streak    20.0000    44.3000    78.0000   (unconstrained — correct)
+min_win_rate: 0.11        # removes bottom ~5% only — avg=0.1486
+min_expectancy: -2.0      # targets top ~60-65% — avg=-1.69
+max_losing_streak: 200    # correct — 38-month max observed=82
+min_profit_factor: 0.90   # unchanged
+min_trades_per_week: 3.0  # unchanged
+# max_drawdown: REMOVED   — accumulates over 38 months
 ```
 
 ### Track B — Broker Integration (pending fixes)
@@ -118,8 +126,17 @@ All stages fully implemented. OOS gate: implemented but off by default (enforce_
 # Stage 0 validates all zone param names against _PARAM_KEY_MAP before any evaluation
 # scenario.py constraint loader: use ct.get(key, default) NOT ct[key] — hard lookup = Stage 0 KeyError (B9N-001)
 # max_drawdown constraint: DO NOT use for Stage 1 date ranges > 3 months (accumulates across full range)
-# max_losing_streak: DO NOT set ≤50 for Stage 1 date ranges > 3 months (observed max 78 over 38 months)
+# max_losing_streak: DO NOT set ≤50 for Stage 1 date ranges > 3 months (observed max 82 over 38 months)
 # _MAX_EXPECTED_DRAWDOWN is dataset-range-specific — 3-month: 1_000.0, 38-month: 2_500.0 — do NOT mix tracks
+# config["key"] hard lookup fails for any optional stage config block when that stage is
+#   disabled and the YAML omits the block. Pattern: config.get("key", {}) + defaults dict.
+#   Confirmed affected: mc_prefilter (B9O-003), genetic (B9O-004). Others TBD — audit before new stages.
+# TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for LTF tick resolution.
+#   max_workers must be ≤ floor(available_RAM_GB / 0.85) for full-history runs. 3-month unaffected.
+#   This is architectural — not fixable in DataLoader. max_workers: 2 for full-history.
+# stages: toggle block in YAML is now enforced by orchestrator (B9O-005). Default all True.
+#   When mc_prefilter disabled: _promote_random_to_mc_pass() must run to seed Stage 3 GA.
+# Pre-run cache clear mandatory after data_loader.py upgrades. run_cleaner.py handles automatically.
 ```
 ---
 ## Calibration Constants — TWO TRACKS (NEVER MIX)
@@ -192,15 +209,20 @@ actual_profit_factor    # raw float
 ---
 ## Open Issues (prioritised)
 ```
-BROKER-TEST [P1 — now]  Empirical test: does /trade/history return demo trades? Run first.
-BROKER-BUGS [P1 — now]  Four broker_support bugs (see Track B section above)
-RSI-SENS-2  [P2]        RSI zero delta × 6 runs. Remove from V2 search space.
-B9N-001     [P3]        scenario.py systematic ct.get() fix for all constraint fields → V2
-CAL-01      [P3]        normalisation_freq_ref_trades_per_week 20.0 → 50.0 → V2
-RR-CEILING-2 [P3]       Revert safe zone rr_target.max 8.5 → 7.0 in next YAML
-V2-RAR      [P1/V2]     Dimensionless normalisation via Rolling Annual Range
-DYN-WFO     [P2/V2]     Dynamic window generation from data_range + window_size
-B8C-002/003 [P3]        report_generator.py cosmetic HTML — deferred
+SIGMOID-SCALE [P1 — now]   Extract net_pnl from d9a81454 or current run. Calculate _SIGMOID_SCALE.
+                            Query: SELECT net_pnl FROM wfo_window_results WHERE run_id='d9a81454-...'
+PROD-RUN      [P1 — next]  Update backtest_V1_01.yaml (max_workers=2, constraints). Run overnight.
+BROKER-TEST   [P1 — now]   Empirical test: does /trade/history return demo trades? Run first.
+BROKER-BUGS   [P1 — now]   Four broker_support bugs (see Track B section above)
+ORCH-AUDIT    [P2]         Verify no other config["key"] hard lookups remain. Check: walk_forward,
+                            sensitivity, report blocks in orchestrator.py and any sub-modules.
+RSI-SENS-2    [P2]         RSI zero delta × 6 runs. Remove from V2 search space.
+B9N-001       [P3]         scenario.py systematic ct.get() fix for all constraint fields → V2
+CAL-01        [P3]         normalisation_freq_ref_trades_per_week 20.0 → 50.0 → V2
+RR-CEILING-2  [P3]         Revert safe zone rr_target.max 8.5 → 7.0 in next YAML
+V2-RAR        [P1/V2]      Dimensionless normalisation via Rolling Annual Range
+DYN-WFO       [P2/V2]      Dynamic window generation from data_range + window_size
+B8C-002/003   [P3]         report_generator.py cosmetic HTML — deferred
 ```
 ---
 ## Production YAML State
@@ -209,8 +231,15 @@ Active (3-month):  configs/backtesting/backtest_production_v1.yaml  (V1.0.0) —
 Planned:           configs/backtesting/backtest_production_v1.1.yaml
   Changes:         rr_target safe zone max: 8.5 → 7.0  (RR-CEILING-2)
 
-Active (full-hist): outputs\9M\backtest_calibration_fullhistory_v3.yaml  ← create this next
-                    outputs\9M\backtest_production_fullhistory_v2.yaml    ← use after v3 calibration
+Active (full-hist calib): configs/backtesting/backtest_calibration_fullhistory_v3.yaml (v4.0.0)
+  Status: IN PROGRESS
+
+Pending (full-hist prod): configs/backtesting/backtest_V1_01.yaml
+  Required before running:
+    max_workers: 6 → 2         (MANDATORY — OOM risk identical to calibration)
+    min_win_rate: 0.15 → 0.11  (align with full-history distribution)
+    min_expectancy: 0.0 → -2.0 (align with full-history distribution)
+    _SIGMOID_SCALE: TBD        (update consistency_scorer.py first)
 ```
 ---
 ## V2 Backlog
@@ -249,14 +278,18 @@ Do not use: 3a149e208a62 — fragile (7/9 sensitivity params at constraint bound
 ---
 ## Run History
 ```
-87712cab  9I   calibration       _SIGMOID_SCALE=131.0
-4e7135ed  9J   production        3 auto_go — COLLAPSE-UNIT validated
-1fcc6398  9J   production        3+2 borderline — best: 1bfa417dc8bb
-2ab4fd0e  9K   production        3+2 borderline — RSI active Stage 1; W03-only
-b3237ec9  9L   production        3+2 borderline — patch validation; no regression
-f545f0f2  9M   production        5 auto_go — V1 DECLARED. First exploration auto_go. W03 broken.
-d1ce2b1d  9M   FH-calib-v1       0/200 — Stage 0 KeyError: scenario.py ct["max_drawdown"]. Fixed.
-46d6edc7  9N   FH-calib-v2       0/200 — Stage 1: constraints too tight for 38-month eval. Fixed.
+87712cab  9I   calibration (3M)     _SIGMOID_SCALE=131.0
+4e7135ed  9J   production           3 auto_go — COLLAPSE-UNIT validated
+1fcc6398  9J   production           3+2 borderline — best: 1bfa417dc8bb
+2ab4fd0e  9K   production           3+2 borderline — RSI active Stage 1; W03-only
+b3237ec9  9L   production           3+2 borderline — patch validation; no regression
+f545f0f2  9M   production           5 auto_go — V1 DECLARED. First exploration auto_go. W03 broken.
+d1ce2b1d  9M   FH-calib-v1          0/200 — Stage 0 KeyError: scenario.py ct["max_drawdown"]. Fixed.
+46d6edc7  9N   FH-calib-v2          0/200 — Stage 1: constraints too tight for 38-month eval. Fixed.
+756a7829  9O   FH-calib-v3 (v4.0.0) 1/60 — fitness_weights sum=1.50 bug; OOM max_workers=6
+9d4669a7  9O   FH-calib-v4 (v4.0.0) 9/60 — OOM persists (TradeSimulator arch); mc_engine KeyError
+d9a81454  9O   FH-calib-v5 (v4.0.0) 9/60 — stopped t=3310s; KeyError 'genetic'; WFO may be complete
+CURRENT   9O   FH-calib-v6 (v4.0.0) IN PROGRESS — all B9O patches applied
 ```
 ---
 ## eToro API — Confirmed Reference
@@ -294,9 +327,11 @@ instrument IDs:     all eToro endpoints use integer InstrumentID, not ticker sym
                     DAX ID must be confirmed via /api/v1/market/instruments search
 ```
 ---
-## Module Map (current state — all from 9K patches)
+## Module Map (current state — all from 9K patches + 9O patches)
 ```
 orchestrator.py          — All stages. B8-009 store API. B8B-013 ruin_threshold.
+                           B9O-005: stages: toggle guards in _execute_pipeline().
+                           _promote_random_to_mc_pass() helper added.
 fitness.py               — B8B-003: normalisation_expectancy_ref_pts.
 contracts.py             — B8B-003: new field. All invariants current.
 candidate_store.py       — B8-009: get_incomplete_run/get_any_incomplete_run.
@@ -305,9 +340,13 @@ parameter_space.py       — B9F-001.
 sampler.py               — B9I-001.
 scenario.py              — COLLAPSE-UNIT + B8B-003 wired + B9N-001 ct.get() fix (partial).
 ga/crossover.py          — B9B-001: zone guard.
-monte_carlo/mc_engine.py — B8B-013: ruin_threshold param.
+ga/ga_engine.py          — B9O-004: config.get("genetic", {}) + _GA_DEFAULTS dict.
+monte_carlo/mc_engine.py — B8B-013: ruin_threshold param. B9O-003: config.get() fixes.
 wfo/consistency_scorer.py — B8B-012: scale=131.0. _MAX_EXPECTED_DRAWDOWN=2_500.0 (full-hist track).
+strategies/core/data_loader.py — B9O-001 v3.3: sliced strategy cache keyed by date range.
 report_generator.py      — B8C-002/003 open (deferred).
+src/utils/run_cleaner.py — B9O-002: new utility. Pre-run cache + temp cleaner.
+scripts/runners/run_backtester.py — B9O-002: calls clean_environment() before every run.
 ```
 ---
 ## Evaluate / Strategy Signatures
@@ -347,6 +386,15 @@ L-43: Constraints calibrated for short windows (3 months) are invalid for long c
       granularity for these constraints is the WFO window (Stage 4), not the full dataset.
 L-44: Before removing a YAML field, verify the loader uses dict.get() not dict[].
       Hard key access causes Stage 0 failure — pipeline does not run at all.
+L-45: config["key"] hard lookup fails for any optional stage config block when that stage is
+      disabled and the YAML omits the block. Pattern: config.get("key", {}) + defaults dict.
+      Affects: mc_prefilter, genetic, walk_forward, sensitivity, monte_carlo.deep — audit all.
+L-46: TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for LTF tick
+      resolution. max_workers must be ≤ floor(available_RAM_GB / 0.85) for full-history runs.
+      3-month runs unaffected (~20MB per worker). This is architectural — not fixable in DataLoader.
+L-47: Pre-run cache clear is mandatory after data_loader.py upgrades. run_cleaner.py automates this.
+L-48: The stages: toggle block in YAML was parsed but never enforced until B9O-005. Any code
+      that relies on stages being conditionally disabled must verify the orchestrator guard exists.
 ```
 ---
 ## What NOT To Do
@@ -384,6 +432,10 @@ L-44: Before removing a YAML field, verify the loader uses dict.get() not dict[]
 - Do not call eToro GET /demo/portfolio — correct endpoint is /demo/pnl
 - Do not use 'from'/'fromDate' for eToro trade history — correct param is 'minDate'
 - Do not architecture broker close-price enrichment before running empirical demo history test
+- Do not use config["key"] hard access for any optional stage config block — use config.get("key", {}) (L-45, B9O-003/004)
+- Do not set max_workers > 2 for full-history WFO runs — TradeSimulator holds df_full per worker (L-46)
+- Do not run full-history YAML without pre-clearing cache — use run_cleaner.py (L-47)
+- Do not assume stages: YAML toggles are enforced without checking orchestrator guard (L-48, B9O-005)
 ---
 ## Platform
 - **OS**: Windows 10, Python 3.13.12

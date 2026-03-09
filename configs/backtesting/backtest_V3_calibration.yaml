@@ -1,0 +1,238 @@
+# =============================================================================
+# backtest_calibration_fullhistory_v4.yaml
+# Version: 4.0.0
+# Date: 2026-03-09  (Block 9O)
+#
+# CHANGES FROM v3 (backtest_calibration_fullhistory_v3.yaml):
+#
+#   ISSUE: Calibration v3 (run 756a7829) produced 1/60 Stage 1 passers.
+#   Stage 1 distributions confirmed constraints still too tight:
+#     avg win_rate  = 0.1486   (constraint was 0.12 — cutting ~top 65% still too strict)
+#     avg expectancy = -1.69   (constraint was -1.0  — cutting ~top 25% — main blocker)
+#     43/59 failures on expectancy; 16/59 on win_rate
+#
+#   FIX 1: Loosen min_expectancy: -1.0 → -2.0
+#     Observed range: -2.56 → +0.35, avg=-1.69.
+#     -2.0 is below the average — targets top ~60-65% of candidates.
+#     Combined with win_rate gate, estimated 20-40 Stage 1 passers from 60 candidates.
+#
+#   FIX 2: Loosen min_win_rate: 0.12 → 0.11
+#     Observed range: 0.0945 → 0.2265, avg=0.1486.
+#     0.11 removes only extreme outliers (bottom ~5%). Win_rate is a weak
+#     38-month signal — Stage 4 WFO per-window is the real filter.
+#
+#   FIX 3 (code): data_loader.py patched — B9O-001 (deploy alongside this YAML)
+#     ROOT CAUSE: DataLoader.load_data() always loaded the FULL 38-month dataset
+#     (~22M rows, ~850MB) into memory and cached it without a date_range key.
+#     With max_workers=6, six parallel WFO workers competed for the same 850MB pkl
+#     simultaneously → ~5.1GB peak RAM → malloc failures and WinError 32 file locks.
+#     Error evidence: "malloc of size 8388608 failed", array shape (5, 22428607).
+#
+#     FIX: data_loader.py v3.3 now caches the SLICED strategy DataFrame under a
+#     date-range-keyed cache entry ("sliced:v1" version tag). Each WFO worker loads
+#     only its own window slice (~20MB) rather than the full file (~850MB).
+#     Peak memory: ~120MB (6 workers × 20MB) vs ~5.1GB. No OOM, no file locks.
+#     Deploy data_loader.py v3.3 before running this YAML.
+#     File: src/strategies/core/data_loader.py
+#
+# WHAT THIS RUN PRODUCES:
+#   Stage 1 + Stage 4 (WFO) results only.
+#   Purpose: obtain net_pnl distribution from wfo_window_results to calibrate
+#   _SIGMOID_SCALE for the full-history dataset.
+#
+# AFTER THIS RUN:
+#   1. Run query_run.py, collect all net_pnl values from Stage 4 WFO window results
+#   2. Calculate stdev(net_pnl) across all windows × all passing candidates
+#   3. New _SIGMOID_SCALE = stdev × 0.5
+#   4. Update consistency_scorer.py: _SIGMOID_SCALE = <new value>
+#   5. Apply same loosened constraints to backtest_V1_01.yaml
+#      (min_win_rate: 0.11, min_expectancy: -2.0)
+#   6. Run backtest_V1_01.yaml (full 13-window production run) overnight
+#
+# PRE-REQUISITE (deploy before running):
+#   src/strategies/core/data_loader.py → replace with v3.3 (B9O-001 patch)
+#   consistency_scorer.py: _MAX_EXPECTED_DRAWDOWN = 2_500.0 (must still be set)
+#   scenario.py: all constraint loads use ct.get(key, default) (B9N-001)
+#
+# EXPECTED RUNTIME: ~1.5–2.5 hours
+#   Stage 1: ~10-15 min  (60 candidates, max_workers=6)
+#   Stage 4: ~1.5-2 hrs  (estimated 20-40 passers × 7 windows)
+#
+# CONSTRAINT RATIONALE — 38-month evaluation:
+#   max_drawdown:      REMOVED — accumulates over 38 months. Stage 4 WFO gates via
+#                      wfo_collapse_drawdown_threshold (400 pts/window).
+#   max_losing_streak: 200 — 38-month max observed=91 (runs 044b24a5, 756a7829).
+#   min_win_rate:      0.11 — removes bottom ~5% only. avg=0.1486 over 38 months.
+#   min_expectancy:    -2.0 — targets top ~60-65%. avg=-1.69 over 38 months.
+#   min_profit_factor: 0.90 — unchanged (no observed failures at this threshold).
+#   min_trades_per_week: 3.0 — unchanged (1 failure observed across all runs).
+# =============================================================================
+
+backtester_version: "1.0.0"
+scenario: "capital_accumulation"
+
+strategy:
+  base_yaml_path: "configs/strategies/strategy_template.yaml"
+
+run:
+  mode: "full_pipeline"
+  output_dir: "outputs/backtesting"
+  temp_dir: "temp/backtesting"
+  retain_temp_yamls: false
+  max_workers: 2     # Reduced from 6 — full-history WFO: each worker holds ~850MB (df_full
+                     # passed to TradeSimulator for LTF tick resolution). 6×850MB=~5.1GB peak.
+                     # 2 workers = ~1.7GB peak. Restore to 6 only after V2-RAR.
+                     # Runtime: ~24 min for 9 passers × 7 windows at 45s/eval.
+  log_level: "INFO"
+
+# Stage 1 + Stage 4 only — minimal pipeline for calibration
+stages:
+  random_search:     true
+  mc_prefilter:      false
+  genetic_algorithm: false
+  walk_forward:      true    # Required — net_pnl lives in wfo_window_results
+  monte_carlo_deep:  false
+  sensitivity:       false
+  report:            true
+
+random_search:
+  method: "lhs"
+  samples_per_zone: 30       # 30 × 2 zones = 60 total — sufficient for stdev estimate
+  min_significant_trades: 30
+  seed: 42
+
+walk_forward:
+  input_count: 60            # Accept all Stage 1 passers (GA disabled — pass all through)
+  enforce_oos_gate: false
+  oos_degradation_threshold: 0.50
+
+  # 7 rolling 3-month windows — 2023-01-02 → 2024-09-30
+  # Reduced from 13 windows for calibration runtime only.
+  # Covers 2023 recovery trend (W01-W04) and 2024 H1 ECB stress (W05-W07).
+  # Distribution of net_pnl across these windows is sufficient for stdev(_SIGMOID_SCALE).
+  # Full 13-window set is used in production run (backtest_V1_01.yaml).
+  windows:
+    - id: "W01"
+      start: "2023-01-02"
+      end:   "2023-03-31"
+    - id: "W02"
+      start: "2023-04-03"
+      end:   "2023-06-30"
+    - id: "W03"
+      start: "2023-07-03"
+      end:   "2023-09-29"
+    - id: "W04"
+      start: "2023-10-02"
+      end:   "2023-12-29"
+    - id: "W05"
+      start: "2024-01-02"
+      end:   "2024-03-28"
+    - id: "W06"
+      start: "2024-04-01"
+      end:   "2024-06-28"
+    - id: "W07"
+      start: "2024-07-01"
+      end:   "2024-09-30"
+
+output:
+  shortlist_count: 5
+  formats:
+    html: true
+    json: true
+    parquet: true
+  save_intermediates:
+    equity_curves: false
+    trade_logs: false
+    candidate_yamls: false
+
+perturbation_profiles:
+  default:
+    version: "1.0"
+    spread_noise_bps_range: [0, 3]
+    slippage_pips_range: [0, 1]
+    risk_noise_fraction: 0.05
+    shuffle_trades: true
+    resample_returns: true
+    execution_delay_bars: 0
+
+scenarios:
+  capital_accumulation:
+    description: "Steadily grow account balance with controlled risk"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.25
+      max_drawdown: 0.20
+      win_rate: 0.15
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.11         # Loosened from 0.12 (v3) — run 756a7829 avg=0.1486, min=0.0945
+                                 # 0.11 targets top ~80% by win_rate — removes only extreme outliers
+      # max_drawdown REMOVED for full-history Stage 1 evaluation.
+      # Rationale: 38-month continuous evaluation accumulates drawdowns of 500-1000+ pts.
+      # The 0.15 threshold is calibrated for 3-month windows only.
+      # Stage 4 WFO filters drawdown correctly via wfo_collapse_drawdown_threshold (400 pts/window).
+      # Restore max_drawdown only when Stage 1 date range ≤ 3 months.
+      max_losing_streak: 200     # Confirmed correct — 38-month max observed=91 (run 756a7829)
+      min_trades_per_week: 3.0   # Unchanged — only 1 failure observed at this threshold
+      min_expectancy: -2.0       # Loosened from -1.0 (v3) — run 756a7829 avg=-1.69, min=-2.56
+                                 # -2.0 targets top ~60-65% by expectancy. Combined with win_rate:
+                                 # target 20-40 Stage 1 passers from 60 candidates.
+      min_profit_factor: 0.90    # Unchanged
+    mc_prefilter_ruin_threshold: 0.25
+    wfo_collapse_drawdown_threshold: 400.0    # Per-window — correct granularity (unchanged)
+    normalisation_expectancy_ref_pts: 3.0
+    wfo_temporal_weights:
+      median_return: 0.30
+      variance: 0.30
+      worst_drawdown: 0.20
+      fraction_positive: 0.20
+    verdict_thresholds:
+      go_wfo_floor: 0.65
+      borderline_wfo_floor: 0.40
+      go_mc_ruin_ceiling: 0.05
+      borderline_mc_ruin_ceiling: 0.15
+      sensitivity_spike_threshold: 0.15
+    report_emphasis:
+      - wfo_consistency_score
+      - fraction_positive_windows
+      - actual_trades_per_week
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+zones:
+  safe:
+    enabled: true
+    parameters:
+      rsi_period:           {type: int,   min: 8,  max: 20, step: 1}
+      rsi_overbought:       {type: int,   min: 51, max: 80, step: 1}
+      rsi_oversold:         {type: int,   min: 20, max: 49, step: 1}
+      atr_length:           {type: int,   min: 6,  max: 20, step: 1}
+      atr_multiplier:       {type: float, min: 1.2, max: 2.5, step: 0.1}
+      rr_target:            {type: float, min: 3.0, max: 8.5, step: 0.1}
+      risk_percentile:      {type: float, min: 0.2, max: 0.65, step: 0.01}
+      bollinger_length:     {type: int,   min: 8,  max: 20, step: 1}
+      bollinger_multiplier: {type: float, min: 0.3, max: 1.1, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 10, max: 50, step: 1}
+
+  exploration:
+    enabled: true
+    parameters:
+      rsi_period:           {type: int,   min: 8,  max: 24, step: 1}
+      rsi_overbought:       {type: int,   min: 52, max: 82, step: 1}
+      rsi_oversold:         {type: int,   min: 18, max: 48, step: 1}
+      atr_length:           {type: int,   min: 7,  max: 24, step: 1}
+      atr_multiplier:       {type: float, min: 1.2, max: 3.0, step: 0.1}
+      rr_target:            {type: float, min: 3.0, max: 10.0, step: 0.1}
+      risk_percentile:      {type: float, min: 0.15, max: 0.70, step: 0.01}
+      bollinger_length:     {type: int,   min: 8,  max: 22, step: 1}
+      bollinger_multiplier: {type: float, min: 0.3, max: 1.5, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 15, max: 55, step: 1}
+      choppiness_length:    {type: int,   min: 12, max: 22, step: 1}
+      choppiness_threshold: {type: float, min: 55.0, max: 65.0, step: 0.5}
+      dpo_length:           {type: int,   min: 15, max: 25, step: 1}
+      dpo_smooth:           {type: int,   min: 8,  max: 18, step: 1}
+      dpo_threshold:        {type: float, min: 0.15, max: 0.40, step: 0.05}
+
+  discovery:
+    enabled: false

@@ -701,3 +701,410 @@ The eToro API does not document a demo-equivalent of `/api/v1/trading/info/trade
 
 ### Architectural Principle: Demo/Real Symmetry
 eToro demo and real account endpoints share identical schemas and auth. The only difference is the path prefix (`/demo/` vs `/`). The signal bridge built for demo paper trading requires zero code changes at go-live — only a configuration flag changes. All broker integration work is production code from day one.
+# ARCHITECTURE_9O_DELTA.md — Block 9O Patch Record
+**Date:** 2026-03-09  
+**Block:** 9O — Full-History Calibration  
+**Author:** Session transcript  
+
+---
+
+## CRITICAL READ: Patch Audit and Rollback Guidance
+
+This document answers: *what was changed, why, is it confirmed necessary, and what to revert if needed.*
+
+Every change in this session came from observing actual pipeline failures on the full-history (38-month) calibration run. **None of these issues existed in production 3-month runs** — they are all triggered exclusively by the extended data range and the calibration YAML's disabled stages (which expose code paths never hit before).
+
+---
+
+## Summary Table
+
+| ID | File | Change | Status | Rollback? |
+|----|------|--------|--------|-----------|
+| B9O-001 | `data_loader.py` | Add sliced strategy cache keyed by date range | **CONFIRMED — KEEP** with caveat (see below) | Partial rollback available |
+| B9O-002 | `run_cleaner.py` (new) + `run_backtester.py` | Pre-run environment cleaner | **KEEP** — independently useful | Safe to keep, no risk |
+| B9O-003 | `mc_engine.py` | `config["mc_prefilter"]` → `config.get("mc_prefilter", {})` | **CONFIRMED — KEEP** | Simple revert to hard access |
+| B9O-004 | `ga_engine.py` | `config["genetic"]` → `config.get("genetic", {})` | **CONFIRMED — KEEP** | Simple revert to hard access |
+| B9O-005 | `orchestrator.py` | Add `stages:` toggle guards to `_execute_pipeline()` | **CONFIRMED — KEEP** | Remove guard blocks |
+| YAML-001 | `backtest_calibration_fullhistory_v3.yaml` | `fitness_weights` sum fix | **CONFIRMED — KEEP** | Was a bug, must stay fixed |
+| YAML-002 | `backtest_calibration_fullhistory_v3.yaml` | `max_workers: 6 → 2` | **CONFIRMED — KEEP** (calibration) | Production YAML also needs this |
+| YAML-003 | `backtest_calibration_fullhistory_v3.yaml` | `min_expectancy: -1.0 → -2.0`, `min_win_rate: 0.12 → 0.11` | **CONFIRMED — KEEP** | Based on observed distributions |
+
+---
+
+## Detailed Patch Records
+
+---
+
+### B9O-001 — `data_loader.py` v3.3
+**File:** `src/strategies/core/data_loader.py`  
+**Deployed:** Yes  
+**Origin:** Observed `malloc of size 8388608 failed` and `array shape (5, 22428607)` OOM errors in every WFO window evaluation.
+
+**Root cause confirmed:**  
+`load_data()` always called `_load_file_with_cache(..., apply_date_range=False)` for the strategy DataFrame — loading the full 38-month file (~22M rows, ~850MB) into memory on every evaluation. With `max_workers=6`, six workers competed for the same 850MB pickle simultaneously → ~5.1GB peak → `malloc` failures and WinError 32 file locks.
+
+The cache key had no date-range component, so all 6 workers tried to read/write the same `~850MB` pkl file simultaneously.
+
+**Fix:** Added `_load_sliced_strategy_cache()` / `_save_sliced_strategy_cache()` methods. The strategy DataFrame is now cached **after** slicing to the date range, under a `"sliced:v1"` + date_range key. Each WFO worker loads only its own ~20MB window slice.
+
+**Confirmed necessary:** Yes — OOM was observed in runs `756a7829`, `9d4669a7`.
+
+**IMPORTANT CAVEAT — Partial OOM still present:**  
+After deploying B9O-001, OOM errors persisted in runs `9d4669a7` and `d9a81454` with `max_workers=6`.  
+
+Investigation revealed the real architectural constraint: **`TradeSimulator` receives `df_full` (the full 22M-row dataset) by design** for LTF tick-accurate SL/TP execution. This is not in `data_loader.py` — it is in `src/strategies/orchestrator.py` and is correct behaviour. The DataLoader slice only helps for initial data loading; the trade simulation itself still requires the full dataset per worker.
+
+**This means B9O-001 is still correct and helpful** (reduces initial load time, eliminates cache lock contention), but it does NOT fully solve the per-worker memory issue. The correct fix for that is YAML-002 (`max_workers: 2`).
+
+**Rollback guidance:**  
+B9O-001 can be reverted to v3.2 if needed — the only regression would be slightly slower initial cache loads and the return of cache file lock contention. The OOM would persist regardless with `max_workers > 2`. If reverting, ensure the cache is also cleared (`~/.wbws_data_cache/*.pkl`).
+
+**Code change summary:**
+```python
+# ADDED: two new private methods in DataLoader class
+
+def _get_sliced_cache_key(self, file_path: str, date_range: str) -> str:
+    """Cache key for the sliced strategy DataFrame. Includes 'sliced:v1' version tag."""
+    mtime = Path(file_path).stat().st_mtime
+    return f"sliced:v1:{file_path}:{mtime}:{date_range}"
+
+def _load_sliced_strategy_cache(self, file_path: str, date_range: str) -> Optional[pd.DataFrame]:
+    """Load cached sliced DataFrame. Returns None on miss or error."""
+    # ... pickle load under sliced cache key
+
+def _save_sliced_strategy_cache(self, df: pd.DataFrame, file_path: str, date_range: str) -> None:
+    """Save sliced DataFrame to cache. Silent on failure."""
+    # ... pickle save under sliced cache key
+
+# MODIFIED: load_data() — strategy file handling
+# BEFORE:
+df_full = self._load_file_with_cache(self.data_config.strategy_data, "strategy", apply_date_range=False)
+df_strategy = df_full.loc[start:end].copy()
+
+# AFTER:
+sliced = self._load_sliced_strategy_cache(str_path, date_range_key)
+if sliced is None:
+    df_full = self._load_file_with_cache(str_path, "strategy", apply_date_range=False)
+    sliced = df_full.loc[start:end].copy()
+    del df_full  # release full DataFrame immediately
+    self._save_sliced_strategy_cache(sliced, str_path, date_range_key)
+df_strategy = sliced
+```
+
+---
+
+### B9O-002 — Pre-run cleaner (new utility)
+**Files:** `src/utils/run_cleaner.py` (new), `scripts/runners/run_backtester.py` (updated)  
+**Deployed:** Yes  
+**Origin:** NoneType YAML errors observed from temp YAMLs left by crashed workers from previous OOM runs. Cache file lock errors from workers competing for the same pkl.
+
+**Root cause confirmed:**  
+When a worker crashes mid-write (due to OOM), it leaves:
+- Truncated/incomplete temp YAML files in `temp/backtesting/*.yaml`  
+- Locked or partial pickle files in `~/.wbws_data_cache/*.pkl`
+
+A subsequent run reading these files fails at parsing. The simplest fix is to clear both before every run.
+
+**Fix:** `run_cleaner.py` provides `clean_environment()` called automatically by the runner before every pipeline start. Database is never cleared without explicit `--clean-db` flag.
+
+**Confirmed necessary:** Yes — independently useful beyond this session. Prevents an entire class of "stale temp file" failures.
+
+**Rollback guidance:** Safe to keep indefinitely. No functional risk. If reverting (not recommended): remove the `clean_environment()` call from `run_backtester.py` main function.
+
+**Usage:**
+```bash
+python scripts/runners/run_backtester.py --config <yaml>            # normal — auto-clean
+python scripts/runners/run_backtester.py --config <yaml> --no-clean # resume checkpoint
+python scripts/runners/run_backtester.py --config <yaml> --clean-db # fresh start
+python src/utils/run_cleaner.py                                       # manual clean only
+```
+
+---
+
+### B9O-003 — `mc_engine.py` KeyError `'mc_prefilter'`
+**File:** `src/backtesting/monte_carlo/mc_engine.py`  
+**Deployed:** Yes  
+**Origin:** Error observed in run `9d4669a7`:
+```
+KeyError: 'mc_prefilter'
+  File "mc_engine.py", line 105, in _run_mc_internal
+    mc_cfg = config["mc_prefilter"]
+```
+
+**Root cause confirmed:**  
+The calibration YAML has `mc_prefilter: false` in the `stages:` block **and no top-level `mc_prefilter:` config block** (the block was intentionally omitted to shorten the YAML since the stage is disabled). But the orchestrator was still calling Stage 2 MC unconditionally (B9O-005 root cause), and `mc_engine.py` used hard dict access `config["mc_prefilter"]` which raises `KeyError` when the block is absent.
+
+In the production YAML, the `mc_prefilter:` block is always present and the hard access never fails. This code path was only exposed by the calibration YAML's disabled-stage configuration.
+
+**Fix:** Changed to `config.get("mc_prefilter", {})` merged over `_MC_PREFILTER_DEFAULTS` dict. Same pattern applied to the deep MC path and `_get_profile_name()`. Identical pattern to B9N-001 (scenario.py `ct.get()`).
+
+**Confirmed necessary:** Yes — crash observed. Same pattern as B9N-001 lesson.
+
+**Rollback guidance:** Revert to `config["mc_prefilter"]` hard access. Safe to revert ONLY if the `mc_prefilter:` config block is guaranteed present in all YAMLs (i.e., if you always add the block even when the stage is disabled). Not recommended — defensive `.get()` is strictly safer.
+
+**Code change summary:**
+```python
+# BEFORE (line 105):
+mc_cfg = config["mc_prefilter"]
+
+# AFTER:
+_MC_PREFILTER_DEFAULTS = {"iterations": 300, "perturbation_profile": "default", "ruin_threshold": 0.25}
+_MC_DEEP_DEFAULTS      = {"iterations": 3000, "perturbation_profile": "default", "ruin_threshold": 0.20}
+
+if mode == MCMode.PRE_FILTER:
+    mc_cfg = {**_MC_PREFILTER_DEFAULTS, **config.get("mc_prefilter", {})}
+else:
+    deep_block = config.get("monte_carlo", {}).get("deep", {})
+    mc_cfg = {**_MC_DEEP_DEFAULTS, **deep_block}
+
+# ALSO fixed in _get_profile_name():
+# BEFORE: config["mc_prefilter"]["perturbation_profile"]
+# AFTER:  config.get("mc_prefilter", {}).get("perturbation_profile", _MC_PREFILTER_DEFAULTS["perturbation_profile"])
+```
+
+---
+
+### B9O-004 — `ga_engine.py` KeyError `'genetic'`
+**File:** `src/backtesting/ga/ga_engine.py`  
+**Deployed:** Yes  
+**Origin:** Error observed in run `d9a81454` at t=3310s:
+```
+KeyError: 'genetic'
+  File "ga_engine.py", line 85, in run_ga
+    ga_config: dict = config["genetic"]
+```
+
+**Root cause confirmed:**  
+Same pattern as B9O-003. The calibration YAML has `genetic_algorithm: false` in `stages:` and no top-level `genetic:` config block. Before B9O-005 was applied, the orchestrator called Stage 3 GA unconditionally regardless of the stage toggle. `ga_engine.run_ga()` used `config["genetic"]` hard access → `KeyError`.
+
+**Fix:** Changed all config key accesses in `ga_engine.py` to use `.get()` with defaults. Added `_GA_DEFAULTS` dict at module level documenting all default values. Also hardened `config["run"]["max_workers"]` and `config["random_search"]["min_significant_trades"]` to `.get()` for consistency (those keys are required by Stage 0 but defensive access is better practice).
+
+**Confirmed necessary:** Yes — crash observed. Both B9O-004 (defensive access) and B9O-005 (stage toggle guard) are needed; B9O-004 alone does not prevent calling GA with no config, but it makes GA safe to call with a minimal/missing config block.
+
+**Rollback guidance:** Revert to `config["genetic"]` hard access ONLY if the `genetic:` config block is guaranteed present in all YAMLs. Not recommended — same reasoning as B9O-003.
+
+**Code change summary:**
+```python
+# ADDED at module level:
+_GA_DEFAULTS = {
+    "population_size": 60,
+    "generations": 30,
+    "elite_fraction": 0.10,
+    "mutation_rate": 0.15,
+    "crossover_rate": 0.70,
+    "tournament_size": 5,
+    "stagnation_generations": 10,
+    "diversity_penalty_weight": 0.10,
+    "diversity_distance_threshold": 0.15,
+}
+
+# BEFORE (line 85-95):
+ga_config: dict = config["genetic"]
+population_size: int = ga_config["population_size"]
+generations: int = ga_config["generations"]
+# ... (all hard accesses)
+max_workers: int = config["run"]["max_workers"]
+min_significant_trades: int = config["random_search"]["min_significant_trades"]
+
+# AFTER:
+ga_config: dict = config.get("genetic", {})
+population_size: int = ga_config.get("population_size", _GA_DEFAULTS["population_size"])
+generations: int = ga_config.get("generations", _GA_DEFAULTS["generations"])
+# ... (all .get() with defaults)
+max_workers: int = config.get("run", {}).get("max_workers", 6)
+min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
+```
+
+---
+
+### B9O-005 — `orchestrator.py` Stage toggle guards
+**File:** `src/backtesting/orchestrator.py`  
+**Deployed:** Yes  
+**Origin:** Root cause of both B9O-003 and B9O-004. The `stages:` block in the YAML was being parsed but never consulted — `_execute_pipeline()` called every stage unconditionally.
+
+**Root cause confirmed:**  
+The orchestrator read `config["stages"]` nowhere in `_execute_pipeline()`. Every stage ran regardless of the toggle value. This meant:
+- Stage 2 MC ran even with `mc_prefilter: false` → B9O-003 crash
+- Stage 3 GA ran even with `genetic_algorithm: false` → B9O-004 crash
+- The `stages:` feature in the YAML was effectively non-functional since it was first written
+
+This entire bug cluster exists because the full-history calibration YAML was the first YAML to actually disable stages. The 3-month production YAML has all stages enabled — the toggle code path was never exercised.
+
+**Fix:** Added stage toggle reads at the top of `_execute_pipeline()`, then added `if stage_X:` guards around each stage call. All toggles default to `True` when the `stages:` block is absent (backward compat with production YAML).
+
+**Additional fix:** Added `_promote_random_to_mc_pass()` helper. When `mc_prefilter: false`, RANDOM-pass candidates must be promoted to `MC_PREFILTER_PASS` stage so that Stage 3 GA's B9F-002 guard (which queries `MC_PREFILTER_PASS`) doesn't fire and skip GA when it should run.
+
+**Confirmed necessary:** Yes — the stage toggle system was functionally broken. Required for any future YAML that disables stages.
+
+**Rollback guidance:** Remove the `stages_cfg = config.get("stages", {})` block and the `if stage_X:` guards, restoring all stages to unconditional execution. Do NOT revert unless you also remove the `_promote_random_to_mc_pass()` helper (it would be called when it shouldn't be).
+
+**Code change summary (logical diff):**
+```python
+# BEFORE _execute_pipeline():
+# ... Stage 2:
+if store.get_checkpoint(run_id).value < Checkpoint.MC_PREFILTER_COMPLETE.value:
+    _run_stage_2_mc_prefilter(config, store, run_metadata)   # always called
+    store.set_checkpoint(run_id, Checkpoint.MC_PREFILTER_COMPLETE)
+
+# Stage 3:
+if store.get_checkpoint(run_id).value < Checkpoint.GA_COMPLETE.value:
+    _run_stage_3_ga(config, store, run_metadata)              # always called
+    store.set_checkpoint(run_id, Checkpoint.GA_COMPLETE)
+
+# AFTER _execute_pipeline():
+stages_cfg = config.get("stages", {})
+stage_mc_prefilter    = stages_cfg.get("mc_prefilter",      True)
+stage_ga              = stages_cfg.get("genetic_algorithm", True)
+# ... (all toggles read once)
+
+# Stage 2:
+if store.get_checkpoint(run_id).value < Checkpoint.MC_PREFILTER_COMPLETE.value:
+    if stage_mc_prefilter:
+        _run_stage_2_mc_prefilter(config, store, run_metadata)
+    else:
+        logger.info("Stage 2 (MC Pre-Filter) disabled in config — skipping")
+        _promote_random_to_mc_pass(config, store, run_metadata)  # NEW helper
+    store.set_checkpoint(run_id, Checkpoint.MC_PREFILTER_COMPLETE)
+
+# Stage 3:
+if store.get_checkpoint(run_id).value < Checkpoint.GA_COMPLETE.value:
+    if stage_ga:
+        _run_stage_3_ga(config, store, run_metadata)
+    else:
+        logger.info("Stage 3 (Genetic Algorithm) disabled in config — skipping")
+    store.set_checkpoint(run_id, Checkpoint.GA_COMPLETE)
+```
+
+---
+
+### YAML-001 — Calibration YAML `fitness_weights` bug fix
+**File:** `configs/backtesting/backtest_calibration_fullhistory_v3.yaml`  
+**Deployed:** Yes  
+**Origin:** Observed in run `756a7829` — `fitness_weights` block summed to 1.50 instead of 1.00.
+
+**Root cause confirmed:**  
+The calibration YAML was copied from an earlier version that had `expectancy: 0.50, win_rate: 0.25`. The production YAML's weights were not matched. Weights summing to 1.50 distort all fitness comparisons.
+
+**Fix:** Updated weights to match production YAML exactly:
+```yaml
+# BEFORE (sum = 1.50 — bug):
+fitness_weights:
+  expectancy: 0.50
+  win_rate: 0.25
+  ...
+
+# AFTER (sum = 1.00 — correct):
+fitness_weights:
+  net_pnl: 0.20
+  expectancy: 0.25
+  max_drawdown: 0.20
+  win_rate: 0.15
+  trade_frequency: 0.10
+  profit_factor: 0.10
+```
+
+**Confirmed necessary:** Yes — was a direct bug. Must remain fixed.
+
+---
+
+### YAML-002 — Calibration YAML `max_workers: 6 → 2`
+**File:** `configs/backtesting/backtest_calibration_fullhistory_v3.yaml`  
+**Deployed:** Yes  
+**Origin:** OOM persisted in `9d4669a7` even after B9O-001. Investigation revealed the architectural constraint: `TradeSimulator` holds `df_full` (~850MB for 38 months) per worker by design for LTF tick-accurate SL/TP execution.
+
+**Root cause confirmed:**  
+`TradeSimulator` receives `df_full` unconditionally. 6 workers × 850MB = ~5.1GB peak. This is architectural and correct — `TradeSimulator` needs the full LTF data for bar-accurate SL/TP execution. It cannot be fixed in `data_loader.py`.
+
+Standalone strategy run confirms: `evaluate()` takes 45s on 38 months vs 5s on 3 months. This is expected and correct — the runtime is proportional to the data range.
+
+**Fix:** `max_workers: 2` → ~1.7GB peak. Runtime cost for calibration: ~9 candidates × 7 windows × 45s ÷ 2 workers ≈ 24 minutes for Stage 4. Acceptable.
+
+**Confirmed necessary:** Yes — OOM observed repeatedly.
+
+**CRITICAL: Also apply to `backtest_V1_01.yaml` before production run.**  
+The production YAML still has `max_workers: 6`. It will hit the same OOM on the full 13-window run. Update before the overnight run.
+
+---
+
+### YAML-003 — Calibration YAML constraint loosening
+**File:** `configs/backtesting/backtest_calibration_fullhistory_v3.yaml`  
+**Deployed:** Yes  
+**Origin:** Run `756a7829` produced 1/60 Stage 1 passers. Distributions confirmed constraints were too tight:
+- `min_expectancy: -1.0` was cutting at ~75th percentile (avg = -1.69)
+- `min_win_rate: 0.12` was cutting the bottom 40% instead of just extremes
+
+**Fix:**
+```yaml
+# BEFORE:
+min_win_rate:   0.12   # too tight — cutting bottom ~35-40%
+min_expectancy: -1.0   # too tight — cutting ~75% of candidates
+
+# AFTER:
+min_win_rate:   0.11   # loosened — removes only bottom ~5% (extreme outliers)
+min_expectancy: -2.0   # loosened — targets top ~60-65%; avg=-1.69
+```
+
+**Confirmed necessary:** Yes — based on observed Stage 1 distributions from 3 independent runs. The full-history (38-month) distribution is fundamentally different from the 3-month production distribution. These constraints are calibration-track only and must also be applied to `backtest_V1_01.yaml`.
+
+---
+
+## What NOT to Roll Back
+
+The following changes from this session must stay:
+
+1. **B9O-003, B9O-004, B9O-005** — The `config["key"]` pattern is a systemic bug in any code path where optional YAML config blocks can be absent. These fixes harden the engine against future YAML configurations that disable stages. Do not revert to hard dict access.
+
+2. **YAML-001** — `fitness_weights` summing to 1.50 was a straightforward bug. Do not revert.
+
+3. **B9O-002** — The pre-run cleaner prevents an entire class of stale-temp-file failures. No downside to keeping.
+
+---
+
+## Data Loader — Rollback Clarification
+
+The `data_loader.py` B9O-001 patch is **correctly applied and must stay**. However, it is important to understand its scope:
+
+- ✅ **B9O-001 solves:** cache file lock contention, initial load memory peak, pickle collision between workers  
+- ❌ **B9O-001 does NOT solve:** `TradeSimulator` df_full per-worker allocation (YAML-002 solves this)
+
+These are two separate memory issues. Both fixes are needed. Neither replaces the other.
+
+If someone asks "did data_loader.py solve the OOM?" — the answer is: partially. It reduced the initial load footprint. The per-worker trade simulation footprint required reducing `max_workers`. Both must stay.
+
+---
+
+## New Architecture Rules (add to SKILL.md)
+
+```python
+# config["key"] hard lookup fails for any optional stage config block when that stage is
+# disabled and the YAML omits the block. Pattern: config.get("key", {}) + defaults dict.
+# Confirmed affected: mc_prefilter, genetic, walk_forward, sensitivity, monte_carlo.deep
+# Audit status: mc_prefilter (fixed B9O-003), genetic (fixed B9O-004), others TBD
+
+# TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for LTF tick
+# resolution. max_workers must be ≤ floor(available_RAM_GB / 0.85) for full-history runs.
+# 3-month runs unaffected (~20MB per worker). This is architectural — not fixable in DataLoader.
+
+# stages: toggle block in YAML was non-functional until B9O-005. Now correctly guarded.
+# All stages default to True when stages: block absent (backward compat).
+# When mc_prefilter disabled: _promote_random_to_mc_pass() must run to seed Stage 3 GA.
+
+# Pre-run cache clear is mandatory after data_loader.py upgrades. run_cleaner.py automates this.
+```
+
+## New Lessons
+
+```
+L-45: config["key"] hard lookup fails for any optional stage config block when that stage is
+      disabled and the YAML omits the block. Pattern: config.get("key", {}) + defaults dict.
+      Affects: mc_prefilter, genetic, walk_forward, sensitivity, monte_carlo.deep — audit all.
+
+L-46: TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for LTF tick
+      resolution. max_workers must be ≤ floor(available_RAM_GB / 0.85) for full-history runs.
+      3-month runs unaffected (~20MB per worker). This is architectural — not fixable in DataLoader.
+
+L-47: Pre-run cache clear is mandatory after data_loader.py upgrades. run_cleaner.py automates this.
+
+L-48: The stages: toggle block in YAML was parsed but never enforced until B9O-005. Any code
+      that relies on stages being conditionally disabled must verify the orchestrator guard exists.
+```

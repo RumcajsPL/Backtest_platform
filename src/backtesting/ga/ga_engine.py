@@ -15,6 +15,14 @@ Core design principles (from TECHNICAL_SPEC.md, FUNCTIONAL_SPEC.md Stage 3):
 
 Single responsibility: GA evolution loop. Does not own strategy evaluation —
 that is delegated to wfo_evaluator.evaluate_window.
+
+B9O-004: Fix KeyError config["genetic"] when genetic_algorithm stage is disabled
+  in the YAML and no top-level genetic: config block is present. Changed all
+  config["genetic"] hard accesses to config.get("genetic", {}).get(key, default).
+  Same pattern as B9N-001 (ct.get()) and B9O-003 (mc_engine config.get()).
+  Also hardened config["run"]["max_workers"] and
+  config["random_search"]["min_significant_trades"] to use .get() with defaults
+  for consistency (those keys are required by Stage 0, but defensive is better).
 """
 from __future__ import annotations
 
@@ -50,6 +58,20 @@ from src.backtesting.ga.diversity import compute_penalty
 
 logger = logging.getLogger(__name__)
 
+# Defaults for all GA config keys — used when the genetic: block is absent
+# (e.g. calibration YAMLs with genetic_algorithm: false that omit the block).
+_GA_DEFAULTS = {
+    "population_size": 60,
+    "generations": 30,
+    "elite_fraction": 0.10,
+    "mutation_rate": 0.15,
+    "crossover_rate": 0.70,
+    "tournament_size": 5,
+    "stagnation_generations": 10,
+    "diversity_penalty_weight": 0.10,
+    "diversity_distance_threshold": 0.15,
+}
+
 
 def run_ga(
     store: CandidateStore,
@@ -82,18 +104,20 @@ def run_ga(
             f"GA requires minimum 3 WFO windows for random sampling; got {len(wfo_windows)}"
         )
 
-    ga_config: dict = config["genetic"]
-    population_size: int = ga_config["population_size"]
-    generations: int = ga_config["generations"]
-    elite_fraction: float = ga_config["elite_fraction"]
-    mutation_rate: float = ga_config["mutation_rate"]
-    crossover_rate: float = ga_config["crossover_rate"]
-    tournament_size: int = ga_config["tournament_size"]
-    stagnation_limit: int = ga_config["stagnation_generations"]
-    diversity_penalty_weight: float = ga_config["diversity_penalty_weight"]
-    diversity_distance_threshold: float = ga_config["diversity_distance_threshold"]
-    max_workers: int = config["run"]["max_workers"]
-    min_significant_trades: int = config["random_search"]["min_significant_trades"]
+    # B9O-004: Use .get() with defaults — genetic: block may be absent when
+    # genetic_algorithm stage is disabled in the YAML.
+    ga_config: dict = config.get("genetic", {})
+    population_size: int = ga_config.get("population_size", _GA_DEFAULTS["population_size"])
+    generations: int = ga_config.get("generations", _GA_DEFAULTS["generations"])
+    elite_fraction: float = ga_config.get("elite_fraction", _GA_DEFAULTS["elite_fraction"])
+    mutation_rate: float = ga_config.get("mutation_rate", _GA_DEFAULTS["mutation_rate"])
+    crossover_rate: float = ga_config.get("crossover_rate", _GA_DEFAULTS["crossover_rate"])
+    tournament_size: int = ga_config.get("tournament_size", _GA_DEFAULTS["tournament_size"])
+    stagnation_limit: int = ga_config.get("stagnation_generations", _GA_DEFAULTS["stagnation_generations"])
+    diversity_penalty_weight: float = ga_config.get("diversity_penalty_weight", _GA_DEFAULTS["diversity_penalty_weight"])
+    diversity_distance_threshold: float = ga_config.get("diversity_distance_threshold", _GA_DEFAULTS["diversity_distance_threshold"])
+    max_workers: int = config.get("run", {}).get("max_workers", 6)
+    min_significant_trades: int = config.get("random_search", {}).get("min_significant_trades", 30)
 
     base_yaml_path = Path(config["_base_yaml_path"])
     temp_dir = Path(config["run"]["temp_dir"])
@@ -262,8 +286,6 @@ def _evaluate_generation(
     }
 
     # ── B9G-001: Register all candidates before writing window results ────────
-    # write_candidate_stub uses INSERT OR IGNORE — safe for seed candidates
-    # already in the DB. Required for offspring that have not yet been persisted.
     for candidate in population:
         store.write_candidate_stub(
             candidate=candidate,
@@ -271,9 +293,6 @@ def _evaluate_generation(
             stage="GA",
             generation=gen_num,
         )
-    # Flush stubs before pool writes results to guarantee FK constraint is satisfied.
-    # The writer queue is single-threaded and FIFO — flush ensures all stub INSERTs
-    # complete before any wfo_window_results INSERT is attempted.
     store.flush()
     # ── end B9G-001 ────────────────────────────────────────────────────────────
 
@@ -313,9 +332,9 @@ def _evaluate_generation(
             continue
         consistency = compute_consistency(
             window_results=window_results,
-            windows_total=len(window_results),  # GA lightweight: total = results received this gen
+            windows_total=len(window_results),
             scenario=scenario,
-            oos_gate_enabled=False,  # IS/OOS gate not applied in GA lightweight mode
+            oos_gate_enabled=False,
         )
         fitness_map[cid] = consistency.composite_score
 

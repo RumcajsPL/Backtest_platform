@@ -15,6 +15,12 @@ Deep mode (Stage 5):
 
 Single responsibility: CandidateResult → MCResult.
 Never raises — all failures surface as MCResult with error set.
+
+B9O-003: Fix KeyError on config["mc_prefilter"] when the top-level mc_prefilter
+  config block is absent from the YAML (calibration YAMLs omit it because
+  mc_prefilter stage is disabled). Changed to config.get("mc_prefilter", {})
+  with safe fallbacks for all sub-keys. Same pattern as B9N-001 (ct.get()).
+  Also fixed _get_profile_name() to use .get() consistently.
 """
 from __future__ import annotations
 
@@ -37,6 +43,19 @@ from src.backtesting.monte_carlo.mc_metrics import compute_metrics
 
 logger = logging.getLogger(__name__)
 
+# Safe defaults used when the YAML config block is absent (e.g. calibration runs
+# with mc_prefilter stage disabled — the config block may be omitted entirely).
+_MC_PREFILTER_DEFAULTS = {
+    "iterations": 300,
+    "perturbation_profile": "default",
+    "ruin_threshold": 0.25,
+}
+_MC_DEEP_DEFAULTS = {
+    "iterations": 3000,
+    "perturbation_profile": "default",
+    "ruin_threshold": 0.20,
+}
+
 
 def run_mc(
     candidate: CandidateParameterSet,
@@ -55,6 +74,7 @@ def run_mc(
         mode:             MCMode.PRE_FILTER or MCMode.DEEP.
         config:           Full backtest config dict.
         seed:             RNG seed for this MC run.
+        ruin_threshold:   Optional override from scenario profile.
 
     Returns:
         MCResult — always. On failure, ruin_probability is None and error is set.
@@ -100,16 +120,20 @@ def _run_mc_internal(
             "cannot run MC simulation without valid trade history"
         )
 
-    # Load mode-specific config
+    # B9O-003: Use .get() with safe defaults — config block may be absent when
+    # the stage is disabled in the YAML (calibration runs omit the mc_prefilter
+    # top-level block). Hard dict access config["mc_prefilter"] raises KeyError.
     if mode == MCMode.PRE_FILTER:
-        mc_cfg = config["mc_prefilter"]
+        mc_cfg = {**_MC_PREFILTER_DEFAULTS, **config.get("mc_prefilter", {})}
         deep_mode = False
     else:
-        mc_cfg = config["monte_carlo"]["deep"]
+        deep_block = config.get("monte_carlo", {}).get("deep", {})
+        mc_cfg = {**_MC_DEEP_DEFAULTS, **deep_block}
         deep_mode = True
 
     iterations: int = mc_cfg["iterations"]
     profile_name: str = mc_cfg["perturbation_profile"]
+
     # B8B-013: ruin_threshold resolved from caller override first (scenario value),
     # then YAML config block, then hardcoded default.
     # ruin_threshold_override is set by orchestrator from scenario.mc_prefilter_ruin_threshold
@@ -117,10 +141,7 @@ def _run_mc_internal(
     if ruin_threshold_override is not None:
         ruin_threshold: float = ruin_threshold_override
     else:
-        ruin_threshold = mc_cfg.get(
-            "ruin_threshold",
-            config["monte_carlo"]["deep"].get("ruin_threshold", 0.20)
-        )
+        ruin_threshold = mc_cfg.get("ruin_threshold", 0.20)
 
     profile: PerturbationProfile = load_profile(config, profile_name)
 
@@ -174,11 +195,17 @@ def _run_mc_internal(
 
 
 def _get_profile_name(config: dict, mode: MCMode) -> str:
-    """Extract profile name from config without raising."""
+    """Extract profile name from config without raising. B9O-003: use .get() throughout."""
     try:
         if mode == MCMode.PRE_FILTER:
-            return config["mc_prefilter"]["perturbation_profile"]
-        return config["monte_carlo"]["deep"]["perturbation_profile"]
+            return config.get("mc_prefilter", {}).get(
+                "perturbation_profile",
+                _MC_PREFILTER_DEFAULTS["perturbation_profile"],
+            )
+        return config.get("monte_carlo", {}).get("deep", {}).get(
+            "perturbation_profile",
+            _MC_DEEP_DEFAULTS["perturbation_profile"],
+        )
     except (KeyError, TypeError):
         return "unknown"
 
