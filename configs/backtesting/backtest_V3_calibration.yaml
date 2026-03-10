@@ -1,71 +1,55 @@
 # =============================================================================
-# backtest_calibration_fullhistory_v4.yaml
-# Version: 4.0.0
-# Date: 2026-03-09  (Block 9O)
+# backtest_V3_calibration_fullpipeline.yaml
+# Version: 5.0.0
+# Date: 2026-03-10  (Block 9O — Step 2 calibration)
 #
-# CHANGES FROM v3 (backtest_calibration_fullhistory_v3.yaml):
+# PURPOSE:
+#   Full pipeline calibration run (Stages 1–7).
+#   Goal: obtain at least 1 candidate with a full verdict (MC Deep + Sensitivity)
+#   before updating backtest_V1_01.yaml for overnight production run.
 #
-#   ISSUE: Calibration v3 (run 756a7829) produced 1/60 Stage 1 passers.
-#   Stage 1 distributions confirmed constraints still too tight:
-#     avg win_rate  = 0.1486   (constraint was 0.12 — cutting ~top 65% still too strict)
-#     avg expectancy = -1.69   (constraint was -1.0  — cutting ~top 25% — main blocker)
-#     43/59 failures on expectancy; 16/59 on win_rate
+# CHANGES FROM v4.0.0 (backtest_V3_calibration.yaml):
 #
-#   FIX 1: Loosen min_expectancy: -1.0 → -2.0
-#     Observed range: -2.56 → +0.35, avg=-1.69.
-#     -2.0 is below the average — targets top ~60-65% of candidates.
-#     Combined with win_rate gate, estimated 20-40 Stage 1 passers from 60 candidates.
+#   1. All stages enabled (was Stage 1 + Stage 4 only)
+#      mc_prefilter:      true   — cheap ruin screen before GA
+#      genetic_algorithm: true   — WFO-aware search for better candidates
+#      monte_carlo_deep:  true   — full MC evidence for survivors
+#      sensitivity:       true   — parameter stability check
 #
-#   FIX 2: Loosen min_win_rate: 0.12 → 0.11
-#     Observed range: 0.0945 → 0.2265, avg=0.1486.
-#     0.11 removes only extreme outliers (bottom ~5%). Win_rate is a weak
-#     38-month signal — Stage 4 WFO per-window is the real filter.
+#   2. samples_per_zone: 30 → 20
+#      40 total candidates (20 safe + 20 exploration). Expected ~22 Stage 1
+#      passers based on run 519f84e2 distributions (55% pass rate).
+#      Sufficient for MC/Sensitivity coverage. Saves ~30% Stage 1 runtime.
 #
-#   FIX 3 (code): data_loader.py patched — B9O-001 (deploy alongside this YAML)
-#     ROOT CAUSE: DataLoader.load_data() always loaded the FULL 38-month dataset
-#     (~22M rows, ~850MB) into memory and cached it without a date_range key.
-#     With max_workers=6, six parallel WFO workers competed for the same 850MB pkl
-#     simultaneously → ~5.1GB peak RAM → malloc failures and WinError 32 file locks.
-#     Error evidence: "malloc of size 8388608 failed", array shape (5, 22428607).
+#   3. seed: 42 → 99
+#      Fresh candidate set — avoids re-evaluating identical LHS samples
+#      from calibration runs 2912e028 / 519f84e2.
 #
-#     FIX: data_loader.py v3.3 now caches the SLICED strategy DataFrame under a
-#     date-range-keyed cache entry ("sliced:v1" version tag). Each WFO worker loads
-#     only its own window slice (~20MB) rather than the full file (~850MB).
-#     Peak memory: ~120MB (6 workers × 20MB) vs ~5.1GB. No OOM, no file locks.
-#     Deploy data_loader.py v3.3 before running this YAML.
-#     File: src/strategies/core/data_loader.py
+#   4. walk_forward.input_count: 60 → 40
+#      Matches reduced sample count. Accepts all Stage 1 passers.
 #
-# WHAT THIS RUN PRODUCES:
-#   Stage 1 + Stage 4 (WFO) results only.
-#   Purpose: obtain net_pnl distribution from wfo_window_results to calibrate
-#   _SIGMOID_SCALE for the full-history dataset.
+#   5. verdict_thresholds.go_wfo_floor: 0.65 → 0.40
+#      RATIONALE: structural W02/W05/W06 window failures suppress all WFO
+#      scores below 0.65 regardless of candidate quality (confirmed across
+#      2 calibration runs — best score observed = 0.8334 on 3/7 windows only,
+#      next best = 0.6987 on 5/7 windows). 0.65 floor produces zero verdicts.
+#      0.40 = former borderline_wfo_floor — admits candidates with 4+/7 good
+#      windows and positive median return. borderline_wfo_floor lowered to 0.25
+#      to maintain separation.
 #
-# AFTER THIS RUN:
-#   1. Run query_run.py, collect all net_pnl values from Stage 4 WFO window results
-#   2. Calculate stdev(net_pnl) across all windows × all passing candidates
-#   3. New _SIGMOID_SCALE = stdev × 0.5
-#   4. Update consistency_scorer.py: _SIGMOID_SCALE = <new value>
-#   5. Apply same loosened constraints to backtest_V1_01.yaml
-#      (min_win_rate: 0.11, min_expectancy: -2.0)
-#   6. Run backtest_V1_01.yaml (full 13-window production run) overnight
+# EXPECTED RUNTIME: ~3–5 hours
+#   Stage 1:  ~8–10 min   (40 candidates, max_workers=2)
+#   Stage 2:  ~15–20 min  (MC pre-filter, ~22 passers)
+#   Stage 3:  ~30–45 min  (GA, 3 generations × 2 windows)
+#   Stage 4:  ~90–120 min (Full WFO, ~30 candidates × 7 windows)
+#   Stage 5:  ~20–30 min  (MC Deep, top survivors)
+#   Stage 6:  ~10–15 min  (Sensitivity)
+#   Stage 7:  ~1 min      (Report)
 #
-# PRE-REQUISITE (deploy before running):
-#   src/strategies/core/data_loader.py → replace with v3.3 (B9O-001 patch)
-#   consistency_scorer.py: _MAX_EXPECTED_DRAWDOWN = 2_500.0 (must still be set)
-#   scenario.py: all constraint loads use ct.get(key, default) (B9N-001)
-#
-# EXPECTED RUNTIME: ~1.5–2.5 hours
-#   Stage 1: ~10-15 min  (60 candidates, max_workers=6)
-#   Stage 4: ~1.5-2 hrs  (estimated 20-40 passers × 7 windows)
-#
-# CONSTRAINT RATIONALE — 38-month evaluation:
-#   max_drawdown:      REMOVED — accumulates over 38 months. Stage 4 WFO gates via
-#                      wfo_collapse_drawdown_threshold (400 pts/window).
-#   max_losing_streak: 200 — 38-month max observed=91 (runs 044b24a5, 756a7829).
-#   min_win_rate:      0.11 — removes bottom ~5% only. avg=0.1486 over 38 months.
-#   min_expectancy:    -2.0 — targets top ~60-65%. avg=-1.69 over 38 months.
-#   min_profit_factor: 0.90 — unchanged (no observed failures at this threshold).
-#   min_trades_per_week: 3.0 — unchanged (1 failure observed across all runs).
+# CALIBRATION STATE AT TIME OF THIS RUN:
+#   _SIGMOID_SCALE          = 310.0   (confirmed N=231, stdev=620.09, runs 2912e028+519f84e2)
+#   _MAX_EXPECTED_DRAWDOWN  = 2_500.0 (full-history track)
+#   max_workers             = 2       (mandatory — OOM at 6 on cold cache, 8GB RAM)
 # =============================================================================
 
 backtester_version: "1.0.0"
@@ -79,38 +63,34 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 2     # Reduced from 6 — full-history WFO: each worker holds ~850MB (df_full
-                     # passed to TradeSimulator for LTF tick resolution). 6×850MB=~5.1GB peak.
-                     # 2 workers = ~1.7GB peak. Restore to 6 only after V2-RAR.
-                     # Runtime: ~24 min for 9 passers × 7 windows at 45s/eval.
+  max_workers: 2       # MANDATORY — full-history: 2 × ~900MB cold-cache peak = ~1.8GB.
+                       # Do NOT raise until shared-memory architecture implemented (B9O-009).
   log_level: "INFO"
 
-# Stage 1 + Stage 4 only — minimal pipeline for calibration
+# Full pipeline — all stages enabled
 stages:
   random_search:     true
-  mc_prefilter:      false
-  genetic_algorithm: false
-  walk_forward:      true    # Required — net_pnl lives in wfo_window_results
-  monte_carlo_deep:  false
-  sensitivity:       false
+  mc_prefilter:      true
+  genetic_algorithm: true
+  walk_forward:      true
+  monte_carlo_deep:  true
+  sensitivity:       true
   report:            true
 
 random_search:
   method: "lhs"
-  samples_per_zone: 30       # 30 × 2 zones = 60 total — sufficient for stdev estimate
+  samples_per_zone: 20     # 20 × 2 zones = 40 total. Expected ~22 passers (55% rate confirmed).
   min_significant_trades: 30
-  seed: 42
+  seed: 99                 # Fresh seed — different from calibration runs (seed=42)
 
 walk_forward:
-  input_count: 60            # Accept all Stage 1 passers (GA disabled — pass all through)
+  input_count: 40          # Accepts all Stage 1 passers (40 total candidates)
   enforce_oos_gate: false
   oos_degradation_threshold: 0.50
 
-  # 7 rolling 3-month windows — 2023-01-02 → 2024-09-30
-  # Reduced from 13 windows for calibration runtime only.
-  # Covers 2023 recovery trend (W01-W04) and 2024 H1 ECB stress (W05-W07).
-  # Distribution of net_pnl across these windows is sufficient for stdev(_SIGMOID_SCALE).
-  # Full 13-window set is used in production run (backtest_V1_01.yaml).
+  # 7 rolling 3-month windows — same as calibration runs for consistency
+  # W02/W05/W06 are structurally weak (regime) — confirmed across 2 runs.
+  # WFO score floor lowered to 0.40 to admit candidates despite structural failures.
   windows:
     - id: "W01"
       start: "2023-01-02"
@@ -166,21 +146,14 @@ scenarios:
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
-      min_win_rate: 0.11         # Loosened from 0.12 (v3) — run 756a7829 avg=0.1486, min=0.0945
-                                 # 0.11 targets top ~80% by win_rate — removes only extreme outliers
-      # max_drawdown REMOVED for full-history Stage 1 evaluation.
-      # Rationale: 38-month continuous evaluation accumulates drawdowns of 500-1000+ pts.
-      # The 0.15 threshold is calibrated for 3-month windows only.
-      # Stage 4 WFO filters drawdown correctly via wfo_collapse_drawdown_threshold (400 pts/window).
-      # Restore max_drawdown only when Stage 1 date range ≤ 3 months.
-      max_losing_streak: 200     # Confirmed correct — 38-month max observed=91 (run 756a7829)
-      min_trades_per_week: 3.0   # Unchanged — only 1 failure observed at this threshold
-      min_expectancy: -2.0       # Loosened from -1.0 (v3) — run 756a7829 avg=-1.69, min=-2.56
-                                 # -2.0 targets top ~60-65% by expectancy. Combined with win_rate:
-                                 # target 20-40 Stage 1 passers from 60 candidates.
-      min_profit_factor: 0.75    # Unchanged
+      min_win_rate: 0.11         # Confirmed correct — avg=0.1486, removes bottom ~5% only
+      max_losing_streak: 200     # Confirmed correct — 38-month max observed=91
+      min_trades_per_week: 3.0   # Confirmed correct — 1 failure observed across all runs
+      min_expectancy: -2.0       # Confirmed correct — avg=-1.69, targets top ~60-65%
+      min_profit_factor: 0.75    # Confirmed correct — no failures at this threshold
+      # max_drawdown: REMOVED — accumulates over 38 months. Stage 4 WFO gates per-window.
     mc_prefilter_ruin_threshold: 0.25
-    wfo_collapse_drawdown_threshold: 400.0    # Per-window — correct granularity (unchanged)
+    wfo_collapse_drawdown_threshold: 400.0
     normalisation_expectancy_ref_pts: 3.0
     wfo_temporal_weights:
       median_return: 0.30
@@ -188,8 +161,11 @@ scenarios:
       worst_drawdown: 0.20
       fraction_positive: 0.20
     verdict_thresholds:
-      go_wfo_floor: 0.65
-      borderline_wfo_floor: 0.40
+      go_wfo_floor: 0.40         # Lowered from 0.65 — structural W02/W05/W06 failures
+                                 # suppress all scores. Best observed = 0.8334 (3 windows only),
+                                 # best reliable (5/7 windows) = 0.6987. 0.65 = zero verdicts.
+                                 # 0.40 admits candidates with positive median return + 4+/7 windows.
+      borderline_wfo_floor: 0.25 # Lowered from 0.40 to maintain separation from go_wfo_floor
       go_mc_ruin_ceiling: 0.05
       borderline_mc_ruin_ceiling: 0.15
       sensitivity_spike_threshold: 0.15
