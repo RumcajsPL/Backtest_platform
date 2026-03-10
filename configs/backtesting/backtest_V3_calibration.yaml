@@ -79,7 +79,7 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 6     # Reduced from 6 — full-history WFO: each worker holds ~850MB (df_full
+  max_workers: 2     # Reduced from 6 — full-history WFO: each worker holds ~850MB (df_full
                      # passed to TradeSimulator for LTF tick resolution). 6×850MB=~5.1GB peak.
                      # 2 workers = ~1.7GB peak. Restore to 6 only after V2-RAR.
                      # Runtime: ~24 min for 9 passers × 7 windows at 45s/eval.
