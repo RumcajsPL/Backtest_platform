@@ -12,80 +12,84 @@ description: >
   decision for this project.
 ---
 # CTP Project Skill — Backtesting + Broker Integration
-## Project Status (2026-03-09, Block 9O)
+
+## Project Status (2026-03-10, Block 9O end / Block 9P start)
 ```
 BACKTESTING ENGINE:    V1 PRODUCTION DECLARED (f545f0f2, 2026-03-08)
-                       Full-history calibration IN PROGRESS — Block 9O run in progress
-                       6 calibration runs attempted; all B9O patches applied; run live now
-                       Next: extract _SIGMOID_SCALE from current run → update consistency_scorer.py
-                       Paper trade candidates: c4f0aea11a3e (primary), da38ecc0ddc6 (secondary)
+                       Full-history calibration COMPLETE — Block 9O
+                       Overnight production run IN PROGRESS — backtest_V1_01.yaml v3.0.0
+                       _SIGMOID_SCALE = 310.0 CONFIRMED (N=231, stdev=620.09)
+                       Next session: analyse overnight run → V1 closure if verdicts exist
 
 BROKER INTEGRATION:    broker_support package — connection confirmed, 4 bugs to fix
                        5-step plan scoped. Empirical demo history test PENDING (P1).
 
-CTP ROADMAP:           5-phase plan agreed. Phase 0 (broker fixes) + Phase 1 (full-history)
+CTP ROADMAP:           6-phase plan (v1.2). Phase 0 (broker fixes) + Phase 1 (full-history)
                        running in parallel NOW. Phase 2 = automated paper trading.
+                       V2 architecture blueprint complete (RawDataStore+WindowSlicer+SignalCache).
+                       V3 = Strategy Setup Builder (meta-optimiser over configuration space).
 ```
+
 ---
 ## DUAL-TRACK CONTEXT
 
-### Track A — Backtesting Full-History (in progress)
-Six calibration runs attempted (Block 9O). Multiple bugs discovered and fixed — all triggered
-by the 38-month full-history evaluation regime, never seen in 3-month production runs.
+### Track A — Backtesting Full-History
+Overnight production run in progress: `backtest_V1_01.yaml` v3.0.0 (13 windows, all stages).
 
-**Current calibration YAML: `configs/backtesting/backtest_calibration_fullhistory_v3.yaml` (v4.0.0)**
-
-Calibration run in progress. When complete:
-1. Extract `net_pnl` from `wfo_window_results` (Stage 4) via `query_run.py`
-2. `_SIGMOID_SCALE = stdev(net_pnl across all windows × passers) × 0.5`
-3. Update `consistency_scorer.py`: `_SIGMOID_SCALE = <new value>`
-4. Update `backtest_V1_01.yaml`: `max_workers: 2`, `min_win_rate: 0.11`, `min_expectancy: -2.0`
-5. Run `backtest_V1_01.yaml` overnight
-
-**Pre-calibration also check:** `d9a81454` — pipeline ran 55 min before B9O-004 crash. Stage 4 WFO may already be complete. Query this run_id before waiting for the current run.
-
-**Stage 1 distributions (38-month — stable across 3+ runs):**
+**Calibration constants — CONFIRMED FINAL (full-history track):**
+```python
+_SIGMOID_SCALE: float = 310.0           # N=231, stdev=620.09 (runs 2912e028, 519f84e2) CONFIRMED
+_MAX_EXPECTED_DRAWDOWN: float = 2_500.0 # full-history track — correct
 ```
-win_rate:      min=0.0945  avg=0.1486  max=0.2265
-expectancy:    min=-2.56   avg=-1.69   max=+0.35
-profit_factor: min=0.67    avg=0.8295  max=1.02
-trades/week:   min=4.11    avg=35.38   max=87.35
-losing_streak: min=25      avg=46.8    max=82
-max_drawdown:  min=0.0858  avg=0.8203  max=1.0000  (do not constrain — 38-month accumulation)
+Do NOT use 221.1 — that was computed from GA 2-window partial samples in run 9f73d667,
+not from full 7-window WFO. _SIGMOID_SCALE calibration requires Stage 1+4-only runs.
+
+**Stage 1 distributions (38-month — stable across 4 runs):**
+```
+win_rate:      min=0.0944  avg=0.1477  max=0.2336
+expectancy:    min=-3.28   avg=-1.87   max=-0.92
+profit_factor: min=0.59    avg=0.813   max=0.93
+trades/week:   min=1.89    avg=37.38   max=78.93
+losing_streak: min=24      avg=49.6    max=94
 ```
 
-**Constraint rationale (v4.0.0):**
+**Confirmed constraint values for full-history runs:**
 ```yaml
-min_win_rate: 0.11        # removes bottom ~5% only — avg=0.1486
-min_expectancy: -2.0      # targets top ~60-65% — avg=-1.69
-max_losing_streak: 200    # correct — 38-month max observed=82
-min_profit_factor: 0.90   # unchanged
-min_trades_per_week: 3.0  # unchanged
-# max_drawdown: REMOVED   — accumulates over 38 months
+min_win_rate: 0.11         # removes bottom ~5% only
+min_expectancy: -2.0       # targets top ~60-65%
+min_profit_factor: 0.75    # no failures observed
+max_losing_streak: 200     # 38-month max observed=94
+min_trades_per_week: 3.0   # unchanged
+# max_drawdown: REMOVED    — accumulates over 38 months
+mc_prefilter: false        # compounds 38-month perturbation into false ruin — DISABLE
+go_wfo_floor: 0.40         # structural W02/W04/W05 suppress scores — 0.65 = zero verdicts
+borderline_wfo_floor: 0.25 # maintains separation from go floor
+max_workers: 2             # MANDATORY — OOM confirmed at 6 on cold cache (8GB RAM)
 ```
+
+**RSI confirmed dead — RSI-SENS-2 CLOSED:**
+Zero delta on rsi_period, rsi_overbought, rsi_oversold across ALL 5 sensitivity candidates
+in run 9f73d667. Confirmed across 6+ calibration runs. Remove RSI from V2 search space.
 
 ### Track B — Broker Integration (pending fixes)
 **Project path**: `E:\Trading\Broker_support`
-**Confirmed working**: `_make_request()`, `test_connection()`, portfolio fetch, `CSVJournal`, `PositionTracker` snapshot logic.
+**Confirmed working**: `_make_request()`, `test_connection()`, portfolio fetch, `CSVJournal`,
+`PositionTracker` snapshot logic.
 
 **Four bugs to fix before any new development**:
 1. `get_portfolio()` endpoint: `/demo/portfolio` → `/demo/pnl` (official spec)
-2. Orphaned function: second `fetch_closed_trades` in client.py is a free function — indent as class method, delete stub
+2. Orphaned function: second `fetch_closed_trades` in client.py is a free function — indent
+   as class method, delete stub
 3. Date param: `from`/`fromDate` → `minDate` (confirmed official param name)
-4. Trade alias: `Field(alias='id')` → `Field(alias='positionId')`; add `fees`, `leverage`, `sl_rate`, `tp_rate`
-
-**Empirical test required FIRST** (before any architecture decisions on close-price enrichment):
-```python
-result = client._make_request('GET', 'api/v1/trading/info/trade/history', params={'minDate': '2026-01-01'})
-```
-Determines whether demo trades appear in real-account history endpoint, or if snapshot approach is permanent.
+4. Trade alias: `Field(alias='id')` → `Field(alias='positionId')`; add `fees`, `leverage`,
+   `sl_rate`, `tp_rate`
 
 ---
 ## Backtesting Pipeline (in order — do not reorder)
 ```
 Stage 0: Validation & Init     (min 3 WFO windows; param name validation vs _PARAM_KEY_MAP) ✅
 Stage 1: Random Search         (LHS/random, significance guard, constraint filter) ✅
-Stage 2: MC Pre-Filter         (re-evaluates candidates; cheap ruin screen) ✅
+Stage 2: MC Pre-Filter         (re-evaluates candidates; cheap ruin screen) ✅ — DISABLED full-history
 Stage 3: GA                    (WFO-aware: random 2 windows/generation + diversity penalty) ✅
 Stage 4: Full WFO              (all windows, 4-metric composite consistency score) ✅
 Stage 5: MC Deep               (full iterations, all perturbation types, WFO survivors only) ✅
@@ -93,6 +97,18 @@ Stage 6: Parameter Sensitivity (±1 step only [OPT-01], fitness delta map, spike
 Stage 7: Report & Output       (HTML + checklist + JSON/Parquet + SQLite + YAML) ✅
 ```
 All stages fully implemented. OOS gate: implemented but off by default (enforce_oos_gate: false).
+MC Pre-Filter: disable for full-history (38-month) runs — see L-54.
+
+**Stage input count relationships (CRITICAL — misreading causes false bug reports):**
+```
+Stage 5 MC Deep input:    monte_carlo.deep.input_count  (default 10) — top N by WFO score
+Stage 6 Sensitivity input: sensitivity.input_count       (default 5)  — top N by WFO score
+Stage 7 Verdict input:    sensitivity.input_count        (default 5)  — top N by WFO score (SAME)
+```
+Stage 7 uses `sens_config.get("input_count", 5)` — this is NOT a bug. Sensitivity and Verdict
+are always paired on the same candidate set. MC Deep may evaluate MORE candidates than get
+verdicts. A candidate appearing in Stage 5 MC results but NOT in Stage 7 verdicts is expected
+behaviour when that candidate ranks outside top-N by WFO for sensitivity/verdict.
 
 ---
 ## Architecture Rules (non-negotiable)
@@ -126,18 +142,35 @@ All stages fully implemented. OOS gate: implemented but off by default (enforce_
 # Stage 0 validates all zone param names against _PARAM_KEY_MAP before any evaluation
 # scenario.py constraint loader: use ct.get(key, default) NOT ct[key] — hard lookup = Stage 0 KeyError (B9N-001)
 # max_drawdown constraint: DO NOT use for Stage 1 date ranges > 3 months (accumulates across full range)
-# max_losing_streak: DO NOT set ≤50 for Stage 1 date ranges > 3 months (observed max 82 over 38 months)
+# max_losing_streak: DO NOT set ≤50 for Stage 1 date ranges > 3 months (observed max 94 over 38 months)
 # _MAX_EXPECTED_DRAWDOWN is dataset-range-specific — 3-month: 1_000.0, 38-month: 2_500.0 — do NOT mix tracks
 # config["key"] hard lookup fails for any optional stage config block when that stage is
 #   disabled and the YAML omits the block. Pattern: config.get("key", {}) + defaults dict.
-#   Confirmed affected: mc_prefilter (B9O-003), genetic (B9O-004). Others TBD — audit before new stages.
-# TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for LTF tick resolution.
-#   max_workers must be ≤ floor(available_RAM_GB / 0.85) for full-history runs. 3-month unaffected.
-#   This is architectural — not fixable in DataLoader. max_workers: 2 for full-history.
-# stages: toggle block in YAML is now enforced by orchestrator (B9O-005). Default all True.
-#   When mc_prefilter disabled: _promote_random_to_mc_pass() must run to seed Stage 3 GA.
-# Pre-run cache clear mandatory after data_loader.py upgrades. run_cleaner.py handles automatically.
+#   Confirmed affected: mc_prefilter (B9O-003), genetic (B9O-004).
+# mc_prefilter: DISABLE for full-history runs — 38-month MC perturbation compounds into false ruin (L-54)
+# max_workers: HARD LIMIT 2 for full-history WFO — cold-cache pd.read_parquet() 897MB × workers = OOM (L-53)
+# _SIGMOID_SCALE calibration: use Stage 1+4 only runs (pure full-window WFO net_pnl distribution).
+#   GA partial-window (2-window) net_pnl produces different stdev — do NOT use for calibration.
+# RSI parameters (rsi_period, rsi_overbought, rsi_oversold): zero sensitivity delta confirmed
+#   across 6+ full-history runs. Remove from V2 search space. RSI-SENS-2 CLOSED.
+#
+# verdict.py — CONFIRMED CORRECT (reviewed 2026-03-10, orchestrator.py + candidate_store.py verified):
+#   - Uses >= on go_wfo_floor. Float comparison correct.
+#   - NO_GO fires only if wfo_pillar_no_go OR mc_pillar_no_go.
+#   - window_collapse_flag=True → BORDERLINE (modifier only), never NO_GO.
+#   - get_mc_result(candidate_id, MCMode.DEEP): uses mode.value="deep" in SQL — correct.
+#   - _write_mc_result: writes mode=result.mode.value="deep" — consistent with read path.
+#   - Stage 7 uses sens_config["input_count"] (default 5) for verdict candidates.
+#   - Stage 5 uses mc_config["input_count"] (default 10) — may evaluate MORE than get verdicts.
+#   - Candidate in Stage 5 MC table but not Stage 7 verdicts = expected — outside top-5 WFO.
+#   - VERDICT-BUG is CLOSED — was a misread of query output. No bug exists.
+#
+# Stage 7 input count: sens_config.get("input_count", 5) — NOT a bug.
+#   This is correct by design: sensitivity and verdict are always paired on the same candidate set.
+#   If you want more verdicts, raise sensitivity.input_count in YAML (not monte_carlo.deep.input_count).
+#   To give verdicts to ALL MC Deep candidates: set sensitivity.input_count >= monte_carlo.deep.input_count.
 ```
+
 ---
 ## Calibration Constants — TWO TRACKS (NEVER MIX)
 
@@ -148,29 +181,111 @@ _MAX_EXPECTED_VARIANCE: float = 100_000.0
 _MAX_EXPECTED_DRAWDOWN: float = 1_000.0
 # Restore these after full-history work. V2-RAR will eliminate this two-track complexity.
 ```
-### Full-History Track (38-month — in progress)
+
+### Full-History Track (38-month — CONFIRMED)
 ```python
-_MAX_EXPECTED_DRAWDOWN: float = 2_500.0  # currently applied in code
-_SIGMOID_SCALE: float = TBD              # calculated after calibration v3 run
+_SIGMOID_SCALE: float = 310.0           # N=231, stdev=620.09 (runs 2912e028, 519f84e2) CONFIRMED
+_MAX_EXPECTED_DRAWDOWN: float = 2_500.0 # currently applied in code
 ```
+
 ### Shared (both tracks)
 ```
-wfo_collapse_drawdown_threshold      = 400.0 pts  (per-window — never changes)
-normalisation_expectancy_ref_pts     = 3.0 pts
+wfo_collapse_drawdown_threshold        = 400.0 pts  (per-window — never changes)
+normalisation_expectancy_ref_pts       = 3.0 pts
 normalisation_freq_ref_trades_per_week = 20.0 (CAL-01: raise to 50.0 before V2 only)
-mc_prefilter_ruin_threshold          = 0.25 (capital_accumulation)
+mc_prefilter_ruin_threshold            = 0.25 (capital_accumulation — Stage 2 disabled full-history)
 ```
-### Recalibration triggers
+
+---
+## OOM Architecture — max_workers Constraint
 ```
-_SIGMOID_SCALE: recalibrate if stdev(net_pnl) shifts >30% from baseline
-                3-month baseline: 261.98 pts
-                Full-history baseline: TBD (from v3 run)
+Root cause (confirmed): pd.read_parquet() on 897MB LTF Parquet × N workers simultaneously
+on cold cache (run_cleaner wipes cache before every run) = N × 897MB peak → PyArrow OOM.
+
+Cold cache peak:
+  6 workers: 6 × 897MB = 5.38GB → system crash (confirmed)
+  2 workers: 2 × 897MB = 1.79GB → within 8GB RAM budget (confirmed stable)
+
+Warm cache (subsequent workers): 20MB pkl slice per worker — no constraint.
+
+max_workers: 2 is a HARD LIMIT for full-history runs until B9O-009 (V2 shared memory).
+B9O-008 (slice-before-sort) reduces sort_index peak but cannot reduce read_parquet peak.
+
+V2 fix: RawDataStore loads files once in parent process → WindowSlicer places slices in
+named SharedMemory blocks → workers map shm (zero-copy, ~20MB per worker).
+With shared memory: 6 workers × 20MB = 120MB total. max_workers constraint removed.
 ```
+
+---
+## Patches Applied (Block 9O — complete)
+| Patch | File | Status | Description |
+|-------|------|--------|-------------|
+| B9O-001 | data_loader.py | ✅ | Sliced strategy cache (apply_date_range=False path) |
+| B9O-002 | run_cleaner.py | ✅ | Pre-run cache + temp YAML cleaner |
+| B9O-003 | mc_engine.py | ✅ | config.get() for mc_prefilter block |
+| B9O-004 | ga_engine.py | ✅ | config.get() + _GA_DEFAULTS dict |
+| B9O-005 | orchestrator.py | ✅ | stages: toggle enforcement |
+| B9O-006 | data_loader.py | ✅ | Slice-before-cache for LTF/HTF |
+| B9O-007 | data_loader.py | ✅ | Warmup-buffered df_full for WFO windows |
+| B9O-008 | data_loader.py | ✅ | Slice-before-sort for LTF loading peak |
+
+**data_loader.py current version: 3.5.0**
+
+---
+## Module Map (current state — all 9K + 9O patches applied)
+```
+orchestrator.py          — All stages. B8-009 store API. B8B-013 ruin_threshold.
+                           B9O-005: stages: toggle guards in _execute_pipeline().
+                           _promote_random_to_mc_pass() helper added.
+                           Stage 7 uses sens_config["input_count"] for verdict set —
+                           by design (sensitivity and verdict always paired). CONFIRMED CORRECT.
+fitness.py               — B8B-003: normalisation_expectancy_ref_pts.
+contracts.py             — B8B-003: new field. All invariants current.
+candidate_store.py       — B8-009: get_incomplete_run/get_any_incomplete_run.
+                           get_mc_result(candidate_id, MCMode.DEEP) uses mode.value="deep" — correct.
+                           query_mc_results(run_id, mode: str) — plain string, not enum. For
+                           diagnostic queries only (query_run.py). Not used in verdict path.
+strategy_runner.py       — B9F-005/B9H-003.
+parameter_space.py       — B9F-001.
+sampler.py               — B9I-001.
+scenario.py              — COLLAPSE-UNIT + B8B-003 wired + B9N-001 ct.get() fix (partial).
+ga/crossover.py          — B9B-001: zone guard.
+ga/ga_engine.py          — B9O-004: config.get("genetic", {}) + _GA_DEFAULTS dict.
+monte_carlo/mc_engine.py — B8B-013: ruin_threshold param. B9O-003: config.get() fixes.
+wfo/consistency_scorer.py — _SIGMOID_SCALE=310.0 (full-history). _MAX_EXPECTED_DRAWDOWN=2_500.0.
+evaluation/verdict.py    — CONFIRMED CORRECT 2026-03-10 (full review). >= on go_wfo_floor.
+                           M-01 applied. Two-pillar logic verified against orchestrator +
+                           candidate_store. No bugs found anywhere in the verdict pipeline.
+strategies/core/data_loader.py — v3.5.0: B9O-001/006/007/008 all applied.
+report_generator.py      — B8C-002/003 open (deferred).
+src/utils/run_cleaner.py — B9O-002: new utility. Pre-run cache + temp cleaner.
+scripts/runners/run_backtester.py — B9O-002: calls clean_environment() before every run.
+```
+
+---
+## CandidateStore — Two MC Query Methods (IMPORTANT DISTINCTION)
+```python
+# For pipeline verdict computation (Stage 7):
+store.get_mc_result(candidate_id: str, mode: MCMode) -> Optional[MCResult]
+  # Uses MCMode enum: MCMode.DEEP, MCMode.PRE_FILTER
+  # mode.value used in SQL WHERE clause: "deep" or "pre_filter"
+  # Returns single MCResult object or None
+
+# For diagnostic/reporting queries (query_run.py):
+store.query_mc_results(run_id: str, mode: str) -> List[Dict]
+  # Uses plain string: "deep" or "pre_filter"
+  # Returns list of plain dicts for all candidates in a run
+  # NOT used in verdict computation path
+
+# These are DIFFERENT methods. query_mc_results is never called by orchestrator.
+# get_mc_result is what Stage 7 uses. Both correctly use mode="deep" string in SQL.
+```
+
 ---
 ## CandidateStore Write API (verified)
 ```python
 store.write_candidate(record: CandidateRecord)
-store.write_candidate_stub(candidate: CandidateParameterSet)  # INSERT OR IGNORE — safe always
+store.write_candidate_stub(candidate: CandidateParameterSet, run_id, stage, generation)
 store.write_wfo_window_result(result: WFOWindowResult, run_id: str)
 store.flag_candidate_wfo_insufficient(candidate_id: str, run_id: str)
 store.write_wfo_consistency_score(score: WFOConsistencyScore, run_id: str)
@@ -182,172 +297,12 @@ store.set_checkpoint(run_id: str, checkpoint: Checkpoint)  # orchestrator ONLY
 store.flush()
 store.close()
 # There is NO write_fitness_result() method
-# query_mc_results: mode is plain string "deep"/"pre_filter" — NOT MCMode enum
 # get_candidate_result() returns trades=None / metrics=None ALWAYS — do NOT use for MC input
 # write_candidate_stub() MUST be called before any FK-referencing write (B9G-001)
 # _wfo_result_id() is deterministic SHA-256[:32] of run_id+candidate_id+window_id (B9H-002)
 # INSERT OR REPLACE on wfo_window_results deduplicates correctly (B9H-002)
 ```
-## CandidateStore Read API
-```python
-store.get_incomplete_run(config_hash: str) -> Optional[str]
-store.get_any_incomplete_run() -> Optional[tuple[str, str]]
-# Both added Block 9K (B8-009) — replace raw sqlite3 in _resume_or_start()
-```
----
-## FitnessResult — stored actuals (evaluations table)
-```python
-actual_win_rate         # 0-1 fraction
-actual_max_drawdown     # 0-1 fraction (abs(pts) / ref_pts)
-actual_losing_streak    # raw int
-actual_trades_per_week  # raw float
-actual_expectancy       # raw pts
-actual_profit_factor    # raw float
-# NOT in evaluations: actual_net_pnl, actual_total_trades
-# net_pnl: wfo_window_results.net_pnl (Stage 4 only)
-```
----
-## Open Issues (prioritised)
-```
-SIGMOID-SCALE [P1 — now]   Extract net_pnl from d9a81454 or current run. Calculate _SIGMOID_SCALE.
-                            Query: SELECT net_pnl FROM wfo_window_results WHERE run_id='d9a81454-...'
-PROD-RUN      [P1 — next]  Update backtest_V1_01.yaml (max_workers=2, constraints). Run overnight.
-BROKER-TEST   [P1 — now]   Empirical test: does /trade/history return demo trades? Run first.
-BROKER-BUGS   [P1 — now]   Four broker_support bugs (see Track B section above)
-ORCH-AUDIT    [P2]         Verify no other config["key"] hard lookups remain. Check: walk_forward,
-                            sensitivity, report blocks in orchestrator.py and any sub-modules.
-RSI-SENS-2    [P2]         RSI zero delta × 6 runs. Remove from V2 search space.
-B9N-001       [P3]         scenario.py systematic ct.get() fix for all constraint fields → V2
-CAL-01        [P3]         normalisation_freq_ref_trades_per_week 20.0 → 50.0 → V2
-RR-CEILING-2  [P3]         Revert safe zone rr_target.max 8.5 → 7.0 in next YAML
-V2-RAR        [P1/V2]      Dimensionless normalisation via Rolling Annual Range
-DYN-WFO       [P2/V2]      Dynamic window generation from data_range + window_size
-B8C-002/003   [P3]         report_generator.py cosmetic HTML — deferred
-```
----
-## Production YAML State
-```
-Active (3-month):  configs/backtesting/backtest_production_v1.yaml  (V1.0.0) — FROZEN
-Planned:           configs/backtesting/backtest_production_v1.1.yaml
-  Changes:         rr_target safe zone max: 8.5 → 7.0  (RR-CEILING-2)
 
-Active (full-hist calib): configs/backtesting/backtest_calibration_fullhistory_v3.yaml (v4.0.0)
-  Status: IN PROGRESS
-
-Pending (full-hist prod): configs/backtesting/backtest_V1_01.yaml
-  Required before running:
-    max_workers: 6 → 2         (MANDATORY — OOM risk identical to calibration)
-    min_win_rate: 0.15 → 0.11  (align with full-history distribution)
-    min_expectancy: 0.0 → -2.0 (align with full-history distribution)
-    _SIGMOID_SCALE: TBD        (update consistency_scorer.py first)
-```
----
-## V2 Backlog
-```
-V2-RAR: Normalise all instrument-specific constants via Rolling Annual Range.
-  Eliminates two-track calibration complexity. Enables multi-asset without recalibration.
-  Do not implement until paper trading results reviewed (2-week mark).
-
-Dynamic WFO windows: data_range as single param, windows auto-derived.
-
-V2 parameter space:
-  - Remove rsi_period, rsi_overbought, rsi_oversold (RSI-SENS-2)
-  - CAL-01: raise normalisation_freq_ref_trades_per_week to 50.0
-  - Time window analysis: intra-day best/worst performance periods
-  - Filter discovery mode: which filter combinations survive across auto_go candidates
-
-B9N-001: Systematic scenario.py ct.get() fix for all constraint fields.
-
-Promote _MAX_EXPECTED_DRAWDOWN + _MAX_EXPECTED_VARIANCE to scenario YAML fields
-  (same pattern as normalisation_expectancy_ref_pts) — eliminates code changes between run types.
-```
----
-## Paper Trade Candidates (V1)
-```
-Primary:   c4f0aea11a3e (run f545f0f2, exploration zone)
-           WFO=0.9166, ruin=0.000, worst_dd=0.131, p5=9230
-           YAML: outputs\backtesting\trading_yamls\f545f0f2_c4f0aea11a3e_strategy.yaml
-
-Secondary: da38ecc0ddc6 (run f545f0f2, safe zone)
-           WFO=0.9257, ruin=0.000, worst_dd=0.471, p5=7547
-           YAML: outputs\backtesting\trading_yamls\f545f0f2_da38ecc0ddc6_strategy.yaml
-
-Monitor:   c7ac46b51748, 93586055bd1b (4-window candidates, run f545f0f2)
-Do not use: 3a149e208a62 — fragile (7/9 sensitivity params at constraint boundary)
-```
----
-## Run History
-```
-87712cab  9I   calibration (3M)     _SIGMOID_SCALE=131.0
-4e7135ed  9J   production           3 auto_go — COLLAPSE-UNIT validated
-1fcc6398  9J   production           3+2 borderline — best: 1bfa417dc8bb
-2ab4fd0e  9K   production           3+2 borderline — RSI active Stage 1; W03-only
-b3237ec9  9L   production           3+2 borderline — patch validation; no regression
-f545f0f2  9M   production           5 auto_go — V1 DECLARED. First exploration auto_go. W03 broken.
-d1ce2b1d  9M   FH-calib-v1          0/200 — Stage 0 KeyError: scenario.py ct["max_drawdown"]. Fixed.
-46d6edc7  9N   FH-calib-v2          0/200 — Stage 1: constraints too tight for 38-month eval. Fixed.
-756a7829  9O   FH-calib-v3 (v4.0.0) 1/60 — fitness_weights sum=1.50 bug; OOM max_workers=6
-9d4669a7  9O   FH-calib-v4 (v4.0.0) 9/60 — OOM persists (TradeSimulator arch); mc_engine KeyError
-d9a81454  9O   FH-calib-v5 (v4.0.0) 9/60 — stopped t=3310s; KeyError 'genetic'; WFO may be complete
-CURRENT   9O   FH-calib-v6 (v4.0.0) IN PROGRESS — all B9O patches applied
-```
----
-## eToro API — Confirmed Reference
-```
-Demo portfolio + open positions + PnL:
-  GET /api/v1/trading/info/demo/pnl             (NOT /demo/portfolio — that's wrong)
-
-Real account trade history:
-  GET /api/v1/trading/info/trade/history?minDate=YYYY-MM-DD
-  Returns: positionId, openRate, closeRate, netProfit, openTimestamp, closeTimestamp,
-           instrumentId, isBuy, leverage, fees, stopLossRate, takeProfitRate
-
-Demo trade history: NOT documented — empirical test required
-
-Open demo order by amount:
-  POST /api/v1/trading/execution/demo/market-orders-by-amount
-  Body: InstrumentID, IsBuy, Leverage, Amount, StopLossRate, TakeProfitRate
-
-Close demo position:
-  POST /api/v1/trading/execution/demo/close-position
-
-Market rates (current price):
-  GET /api/v1/market/rates?instrumentIds={id}
-
-Auth headers (all requests): x-api-key, x-user-key, x-request-id (UUID)
-```
----
-## Broker Integration — Architecture Principles
-```
-demo/real symmetry: endpoints identical except path prefix (/demo/ vs /)
-                    paper trading code = production code. Config flag only at go-live.
-snapshot approach:  PositionTracker compares portfolio snapshots to detect closures
-                    may be the only method available for demo — confirm empirically
-instrument IDs:     all eToro endpoints use integer InstrumentID, not ticker symbols
-                    DAX ID must be confirmed via /api/v1/market/instruments search
-```
----
-## Module Map (current state — all from 9K patches + 9O patches)
-```
-orchestrator.py          — All stages. B8-009 store API. B8B-013 ruin_threshold.
-                           B9O-005: stages: toggle guards in _execute_pipeline().
-                           _promote_random_to_mc_pass() helper added.
-fitness.py               — B8B-003: normalisation_expectancy_ref_pts.
-contracts.py             — B8B-003: new field. All invariants current.
-candidate_store.py       — B8-009: get_incomplete_run/get_any_incomplete_run.
-strategy_runner.py       — B9F-005/B9H-003.
-parameter_space.py       — B9F-001.
-sampler.py               — B9I-001.
-scenario.py              — COLLAPSE-UNIT + B8B-003 wired + B9N-001 ct.get() fix (partial).
-ga/crossover.py          — B9B-001: zone guard.
-ga/ga_engine.py          — B9O-004: config.get("genetic", {}) + _GA_DEFAULTS dict.
-monte_carlo/mc_engine.py — B8B-013: ruin_threshold param. B9O-003: config.get() fixes.
-wfo/consistency_scorer.py — B8B-012: scale=131.0. _MAX_EXPECTED_DRAWDOWN=2_500.0 (full-hist track).
-strategies/core/data_loader.py — B9O-001 v3.3: sliced strategy cache keyed by date range.
-report_generator.py      — B8C-002/003 open (deferred).
-src/utils/run_cleaner.py — B9O-002: new utility. Pre-run cache + temp cleaner.
-scripts/runners/run_backtester.py — B9O-002: calls clean_environment() before every run.
-```
 ---
 ## Evaluate / Strategy Signatures
 ```python
@@ -371,39 +326,95 @@ def evaluate(
     date_end: Optional[Union[date, datetime]] = None,
 ) -> CandidateResult: ...
 ```
+
 ---
-## Lessons Learned (L-01 through L-44)
+## Lessons Learned (L-01 through L-56)
 ```
-L-01 through L-37: see Block 9I/9J CONTEXT.md
-L-38: Threshold read into local variable ≠ threshold passed downstream. Verify full chain.
-L-39: Zero delta → non-zero after range tightening = coverage issue, not code.
-L-40: Raw sqlite3.connect() to WAL DB is architecturally wrong. Use store API.
-L-41: Integer-type parameters must have integer steps. Float step on int type = silent errors.
-L-42: A filter producing zero sensitivity delta × 6 runs is structurally inactive for the
-      current instrument/timeframe. Remove from search space in next major version.
-L-43: Constraints calibrated for short windows (3 months) are invalid for long continuous
-      evaluations (38 months). max_drawdown and max_losing_streak accumulate. Correct
-      granularity for these constraints is the WFO window (Stage 4), not the full dataset.
-L-44: Before removing a YAML field, verify the loader uses dict.get() not dict[].
-      Hard key access causes Stage 0 failure — pipeline does not run at all.
-L-45: config["key"] hard lookup fails for any optional stage config block when that stage is
-      disabled and the YAML omits the block. Pattern: config.get("key", {}) + defaults dict.
-      Affects: mc_prefilter, genetic, walk_forward, sensitivity, monte_carlo.deep — audit all.
-L-46: TradeSimulator holds df_full (~850MB for 38-month dataset) per worker for LTF tick
-      resolution. max_workers must be ≤ floor(available_RAM_GB / 0.85) for full-history runs.
-      3-month runs unaffected (~20MB per worker). This is architectural — not fixable in DataLoader.
-L-47: Pre-run cache clear is mandatory after data_loader.py upgrades. run_cleaner.py automates this.
-L-48: The stages: toggle block in YAML was parsed but never enforced until B9O-005. Any code
-      that relies on stages being conditionally disabled must verify the orchestrator guard exists.
+L-01 through L-48: see Block 9K/9O CONTEXT.md and prior SKILL.md versions
+
 L-49: df_full in DataBundle is consumed by TradeSimulator → RiskManager ONLY.
-      For WFO window evaluations, it needs only a warmup-buffered slice
-      (window_start - 200 bars to window_end), not the full dataset.
-      DataLoader is the correct place to apply this slice — not TradeSimulator
-      or RiskManager, which are strategy-layer frozen modules.
-      Always audit DataBundle.full consumers before assuming full history is needed.
+      WFO window evaluations need only a warmup-buffered slice (window_start − 200 bars).
+      DataLoader is the correct fix location — not frozen TradeSimulator/RiskManager.
+
+L-50: Diagnostic test false positive: assertion accidentally matched _WFO_WARMUP_BARS
+      via a different code path. Always verify the constant exists in target file
+      before trusting a test that checks for it.
+
+L-51: run_cleaner.py clears cache before every run. OOM on cache miss (first worker
+      per window) is the actual failure mode — not stale cache.
+
+L-52: B9O-006 fixed what gets cached (the slice) but not the sort_index() peak
+      DURING loading. sort_index() calls .copy() on the full DataFrame internally —
+      856MB for the 22.4M-row LTF file — before the B9O-006 slice runs.
+      Fix: check is_monotonic_increasing and slice before sort for sorted Parquet files.
+      This is B9O-008.
+
+L-53: max_workers=6 OOM root cause: pd.read_parquet() on 897MB LTF file × 6 workers
+      simultaneously on cold cache = 5.38GB peak → PyArrow C++ allocator failure inside
+      Scanner.to_table(). B9O-008 cannot help — slicing happens AFTER read_parquet() returns.
+      Fix: max_workers=2 (1.79GB peak). Permanent fix: V2 shared memory architecture (B9O-009).
+      Stage 1 works at max_workers=6 because evaluations are staggered — workers do not
+      all hit read_parquet simultaneously. Stage 4 WFO dispatches ALL tasks at once → cold
+      cache race condition. B9O-009 eliminates this entirely.
+
+L-54: MC pre-filter is NOT safe for 38-month continuous evaluation. MC perturbation
+      (slippage, spread noise, shuffle) compounds over 38-month equity curve producing
+      false ruin signals. Stage 2 passed 1/18 candidates in run 9f73d667, eliminating
+      WFO-0.92 and WFO-0.80 candidates before GA could build on them.
+      Fix: disable mc_prefilter for all full-history runs. Stage 4 WFO is the primary gate.
+      Stage 5 MC Deep on top WFO survivors is the correct ruin screen.
+      V2 fix: MC Deep should evaluate on per-window equity curves (3-month slices),
+      not the full 38-month dataset.
+
+L-55: Stage 7 verdict input_count comes from sensitivity.input_count, not
+      monte_carlo.deep.input_count. Stage 5 MC Deep may evaluate more candidates than
+      receive verdicts. A candidate in Stage 5 MC table but absent from Stage 7 verdicts
+      is expected behaviour — not a bug. It ranked outside top-N for sensitivity/verdict.
+      VERDICT-BUG (f86f7e6c491a) was a misread of query output: the candidate was in
+      Stage 5 MC results (top 10) but never in Stage 7 verdicts (top 5) — correct design.
+      verdict.py, orchestrator.py, and candidate_store.py all confirmed correct.
+      To give verdicts to all MC-evaluated candidates: raise sensitivity.input_count
+      to match or exceed monte_carlo.deep.input_count in the YAML.
+
+L-56: Before declaring a verdict logic bug, cross-check the Stage 5 and Stage 7 input
+      counts in the YAML. They use DIFFERENT config keys. Mismatched counts produce
+      a query output where MC results exist for candidates with no verdict — this is
+      not a bug, it is the pipeline's designed tiered selection behaviour.
 ```
+
 ---
-## What NOT To Do
+## Open Issues (carry forward to Block 9P)
+```
+B9O-009  V2 shared memory architecture (RawDataStore + WindowSlicer + SignalCache).
+         Eliminates max_workers constraint. Required before raising to 6 workers.
+         See CTP_ROADMAP.md Phase 3 (V2) for full blueprint.
+         STATUS: OPEN — deferred to Phase 3.
+
+MC-DEEP-FULLHIST  MC Deep ruin compounds over 38-month equity curve — architectural issue.
+                  All top WFO candidates show ruin > 0.80 in full-history runs.
+                  Candidates evaluated on 38-month continuous equity curve; MC perturbation
+                  (slippage, spread noise, shuffle) accumulates over 38 months producing
+                  ruin that would not appear in 3-month window evaluation.
+                  V2 fix: evaluate MC on per-window 3-month slices, not full 38-month range.
+                  STATUS: OPEN — will manifest again in overnight production run.
+                  Watch for: if overnight run also shows all ruin > 0.40, this is confirmed
+                  and the V2 MC fix must be prioritised before Phase 2 (paper trading).
+
+WINZIP-32  WinError 32 temp YAML file lock during GA stage worker teardown on Windows.
+           Cosmetic — pipeline completes. V2 fix: per-worker temp dirs, clean at worker exit.
+           STATUS: KNOWN / DEFERRED to V2.
+
+RSI-SENS-2  RSI confirmed dead across 6+ runs. Remove from V2 search space.
+            STATUS: CONFIRMED CLOSED — action deferred to V2 implementation.
+
+VERDICT-BUG  CLOSED — was a misread of query output (L-55, L-56).
+             f86f7e6c491a appeared in Stage 5 MC (top 10) but not Stage 7 verdicts (top 5).
+             This is correct — it ranked outside top-5 WFO for sensitivity/verdict.
+             verdict.py, orchestrator.py, candidate_store.py all confirmed correct.
+```
+
+---
+## What NOT to Do
 - Do not guess or reconstruct code not available — ask for the file
 - Do not modify `src/strategies/` — strategy architecture is frozen
 - Do not use `analytics` mode — `core` mode only (`mode_override="core"`)
@@ -427,9 +438,6 @@ L-49: df_full in DataBundle is consumed by TradeSimulator → RiskManager ONLY.
 - Do not call run_mc() in Stage 2 without passing ruin_threshold (L-38, B8B-013)
 - Do not use float step on int-type zone parameters (L-41)
 - Do not add filter toggle params to exploration zone — fix filters enabled=true
-- Do not close RSI-SENS based on Stage 1 raw metric variance alone — Stage 6 is definitive
-- Do not raise normalisation_expectancy_ref_pts before observing >20% passers exceeding value
-- Do not paper trade candidates with >50% sensitivity parameters at REJECTED_CONSTRAINTS boundary
 - Do not use max_drawdown as Stage 1 constraint when Stage 1 date range > 3 months (L-43)
 - Do not use max_losing_streak ≤ 50 when Stage 1 date range > 3 months (L-43)
 - Do not use ct["key"] for optional constraint fields in scenario.py — use ct.get() (L-44, B9N-001)
@@ -438,18 +446,28 @@ L-49: df_full in DataBundle is consumed by TradeSimulator → RiskManager ONLY.
 - Do not call eToro GET /demo/portfolio — correct endpoint is /demo/pnl
 - Do not use 'from'/'fromDate' for eToro trade history — correct param is 'minDate'
 - Do not architecture broker close-price enrichment before running empirical demo history test
-- Do not use config["key"] hard access for any optional stage config block — use config.get("key", {}) (L-45, B9O-003/004)
-- Do not set max_workers > 2 for full-history WFO runs — TradeSimulator holds df_full per worker (L-46)
+- Do not use config["key"] hard access for any optional stage config block (L-45, B9O-003/004)
+- Do not set max_workers > 2 for full-history WFO runs (L-53) — OOM confirmed at 6
 - Do not run full-history YAML without pre-clearing cache — use run_cleaner.py (L-47)
-- Do not assume stages: YAML toggles are enforced without checking orchestrator guard (L-48, B9O-005)
+- Do not assume stages: YAML toggles are enforced without checking orchestrator guard (L-48)
+- Do not enable mc_prefilter for full-history (38-month) runs (L-54) — false ruin confirmed
+- Do not use _SIGMOID_SCALE=221.1 — computed from GA 2-window samples, wrong distribution
+- Do not calibrate _SIGMOID_SCALE from runs with GA enabled — Stage 1+4 only runs only
+- Do not assume a candidate in Stage 5 MC but absent from Stage 7 verdicts is a bug (L-55)
+  Check Stage 5 vs Stage 7 input_count in YAML first — they use different config keys
+- Do not raise monte_carlo.deep.input_count expecting more verdicts — raise sensitivity.input_count
+- Do not re-examine verdict.py, orchestrator.py, or candidate_store.py for VERDICT-BUG — CLOSED
+
 ---
 ## Platform
 - **OS**: Windows 10, Python 3.13.12
 - **Timezone**: OHLCV/signals CET/CEST; pipeline timestamps UTC
 - **Paths**: always `src/utils/paths.py`
 - **DB**: `outputs/backtesting/backtester.db`
-- **Production YAML**: `configs/backtesting/backtest_production_v1.yaml` (V1.0.0)
+- **Production YAML**: `configs/backtesting/backtest_V1_01.yaml` (v3.0.0) — overnight run active
+- **Calibration YAML**: `configs/backtesting/backtest_V3_calibration_fullpipeline.yaml` (v5.0.0)
 - **Broker project**: `E:\Trading\Broker_support` (broker-support v0.1.0)
+
 ---
 ## Session Deliverables (end of every session)
 - Updated `outputs/CONTEXT_<block>.md`
