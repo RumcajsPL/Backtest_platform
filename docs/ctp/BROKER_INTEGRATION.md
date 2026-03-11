@@ -4,6 +4,17 @@
 **Package**: `broker-support` v0.1.0
 **Broker**: eToro (demo + real accounts via public API v1)
 ---
+## Development Principles
+These principles are reproduced here as a first-class project constraint (if applicable) — not a reference.
+**1. Single Responsibility** — One module, one concern. No module reaches into another's domain.
+**2. Contracts Are the Interface** — Every inter-module communication uses typed, frozen dataclasses. No raw dicts between pipeline stages. If data needs to cross a boundary, it goes into the contract.
+**3. Immutability** — All contracts use `frozen=True`. Derived fields computed at construction time use `object.__setattr__` in `__post_init__` — the only acceptable use.
+**4. Explicit Over Implicit** — Stage-gated behaviour is explicit at every call site. No hidden promotion logic.
+**5. Vectorisation First** — use numpy/pandas vectorised operations.
+**6. Fail Fast** — Invalid configuration raises immediately at construction. Invalid parameter combinations abort run, not silent, hidden fails.
+**7. Single Source of Truth** — All flows from configuration. No module loads its own configuration.
+**8. Cache Lifecycle Management** — The existing `CacheManager` is used. No new caching mechanism is introduced.
+**9. Code Hygiene** — No debug flags, no print statements, no commented-out blocks, no MagicMocks in production code. Tests are developed in parallel with implementation.
 ## Folder Structure
 Full layout for `broker_support` integrated into the existing CTP project tree.
 `[EXISTS]` = file/folder already created or confirmed working.
