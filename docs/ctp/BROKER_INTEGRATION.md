@@ -14,7 +14,7 @@ E:\Trading\
 │
 ├── configs\
 │   ├── backtesting\                        [EXISTS] — backtester YAMLs
-│   └── broker\
+│   └── broker_support\
 │       ├── broker_settings.env             [EXISTS] — API keys, account type flag
 │       └── instrument_map.yaml             [PLACEHOLDER] Step 2 — DAX InstrumentID + others
 │
@@ -25,7 +25,7 @@ E:\Trading\
 │
 ├── outputs\
 │   ├── backtesting\                        [EXISTS] — backtester DB, trading YAMLs, reports
-│   └── broker\
+│   └── broker_support\
 │       ├── journal\
 │       │   └── trades.csv                  [PLACEHOLDER] Step 1 — CSVJournal output
 │       ├── snapshots\
@@ -35,7 +35,7 @@ E:\Trading\
 │
 ├── scripts\
 │   ├── runners\                            [EXISTS] — backtester runner scripts
-│   └── broker\
+│   └── broker_support\
 │       ├── run_tracker.py                  [EXISTS/BUG] Step 1 — one-shot tracker (fix bugs first)
 │       ├── run_tracker_loop.py             [PLACEHOLDER] Step 4 — polling loop (--once flag)
 │       ├── run_instrument_lookup.py        [PLACEHOLDER] Step 2 — find DAX InstrumentID

@@ -54,7 +54,7 @@ Additionally, live paper trading results will directly inform V2 priorities: if 
 **Objective**: Redesign the backtesting engine based on what live paper trading reveals, and lay the architectural foundation for V3 (Strategy Setup Builder). V2 should be V3-ready: every architectural decision in V2 must not require refactoring to support the V3 meta-optimiser.
 #### V2 Architecture Redesign — Single Responsibility + Shared Data
 **Current V1 violation of single responsibility:**
-V1 `DataLoader` both loads raw files and slices windows. V1 `StrategyOrchestrator` re-runs signal generation on every candidate evaluation, even though signals are deterministic functions of OHLCV data and do not vary per candidate. For 33 candidates × 7 windows = 231 evaluations, the RSI, ATR, and Bollinger series are recomputed 231 times on identical data. This is architecturally wrong and is the root cause of the OOM issues encountered in full-history WFO runs (B9O-006 through B9O-008).
+V1 `DataLoader` both loads raw files and slices windows. V1 `StrategyOrchestrator` re-runs raw signal generation whilst signal are not changing during E2E strategy/backtester (they are calculate on the base of strategy TF and HTF only so both are not changing and can be calculated once only). FilterPipeline is different but can also be optimized it is calculated on every candidate evaluation, even though signals are deterministic functions of OHLCV data and do not vary per candidate. For 33 candidates × 7 windows = 231 evaluations, the RSI, ATR, and Bollinger series are recomputed 231 times on identical data. This is architecturally wrong and is the root cause of the OOM issues encountered in full-history WFO runs (B9O-006 through B9O-008).
 **V2 target architecture — four dedicated modules:**
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -119,6 +119,10 @@ Python `multiprocessing.shared_memory.SharedMemory` is the correct mechanism on 
 Named blocks survive the spawn boundary. Workers never copy the data — they map the same physical pages. At 6 workers × 20MB slice = 120MB total vs V1's 6 × 897MB = 5.38GB.
 **Signal cache design caveat:**
 Signals (RSI, ATR, Bollinger) are functions of OHLCV data AND indicator period parameters (`rsi_period`, `bollinger_length`, `atr_length`). These vary per candidate. However the search space is discrete and bounded (e.g. `rsi_period` ∈ [8..24], step 1 = 17 values). For 60 candidates, the number of unique `(rsi_period, bollinger_length, atr_length)` combinations is far smaller than 60. The `SignalCache` keyed on these indicator-shaping params eliminates most recomputation. Threshold params (`rsi_overbought`, `atr_multiplier`, `rr_target`, `risk_percentile`) are applied only in `TradeSimulator` — they never touch signal generation.
+**Inteligent, dynamic cache and memory share management - to consider during V2 design phase**
+Inteligent cache manager can ensure to keep in cache only data still required by the backtester pipeline. Data won't be reused will be removed. By anticipation it can see what data keep in disk cache and what charge to memory.
+Avoid calculation repetition cache data will be reuse by pipeline. Full computation optional, fisrt check if cache data available then if not exist -> full computation.
+Above feature should be done on purpose but not contrproductive. I we are not winning at least of E2E pipeline perf then abanndon.    
 #### V2 Functional Deliverables (in addition to architecture)
 - **V2-RAR**: Replace DAX-specific normalisation constants with dimensionless Rolling Annual Range fractions. Enables multi-asset backtesting without per-instrument recalibration.
 - **RSI removal**: Remove `rsi_period`, `rsi_overbought`, `rsi_oversold` from search space (RSI-SENS-2 — 6 consecutive zero-delta runs confirmed).
@@ -129,6 +133,34 @@ Signals (RSI, ATR, Bollinger) are functions of OHLCV data AND indicator period p
 - **B9N-001**: Systematic `scenario.py` constraint loader fix — all fields use `ct.get()` with documented defaults.
 - **CAL-01**: Raise `normalisation_freq_ref_trades_per_week` to 50.0.
 **Gate**: V2 produces auto_go candidates on a second instrument (DAX + one other) using the same pipeline without instrument-specific recalibration. `max_workers` constraint removed — 6+ workers stable on 8GB RAM.
+- **Time session as configurable setting**: Currently strategy (and backtester) has a time filter fixed for whole pipeline. What we have today: strategy pipeline is collecting and presenting a following breakdowns:
+Session	Trades	Win Rate	Total P&L	Avg P&L	Largest Win	Largest Loss
+London	760	14.1%	-313.7	-0.41	+114.4	-70.6
+NY	316	11.1%	-795.2	-2.52	+103.1	-38.5
+
+Hour (UTC)	Trades	Win Rate	Total P&L	Avg P&L
+08:00	64	12.5%	-148.0	-2.31
+09:00	100	16.0%	+184.0	+1.84
+10:00	106	15.1%	+59.4	+0.56
+11:00	101	10.9%	-249.7	-2.47
+12:00	119	15.1%	-63.4	-0.53
+13:00	93	19.4%	+414.1	+4.45
+14:00	83	14.5%	+4.8	+0.06
+15:00	94	8.5%	-514.8	-5.48
+16:00	60	13.3%	+0.5	+0.01
+17:00	64	15.6%	-20.9	-0.33
+18:00	67	7.5%	-316.9	-4.73
+19:00	80	8.8%	-372.3	-4.65
+20:00	45	11.1%	-85.7	-1.90
+
+Day	Trades	Win Rate	Total P&L	Avg P&L
+Monday	205	15.6%	+359.9	+1.76
+Tuesday	236	13.1%	-339.9	-1.44
+Wednesday	215	15.3%	+28.0	+0.13
+Thursday	214	13.6%	-153.0	-0.71
+Friday	206	8.3%	-1003.9	-4.87
+
+V2 design phase should decide what can be done as part of V2 and what in V3
 ---
 ### Phase 4 — Backtesting V3: Strategy Setup Builder *(requires Phase 3 gate)*
 **Objective**: Build a meta-optimiser that treats the V2 backtester as a black box and answers the question: *does this strategy configuration have tradeable potential at all?* V3 is a backtester of backtests.
