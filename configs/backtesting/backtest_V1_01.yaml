@@ -169,7 +169,7 @@ monte_carlo:
     seed: 45
 
 sensitivity:
-  input_count: 5
+  input_count: 10
   max_steps: 1
   spike_threshold: 0.15
   seed: 46
