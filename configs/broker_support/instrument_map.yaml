@@ -1,0 +1,20 @@
+# Instrument ID map for eToro API
+# Source: GET /api/v1/market-data/instruments?instrumentIds=<id>
+# DAX confirmed: instrumentId=32, symbolFull=GER40 (2026-03-12)
+#
+# Add entries here as new instruments are traded.
+# Used by InstrumentResolver (src/broker_support/enrichment/instrument_resolver.py)
+#
+# Format:
+#   instrument_id (int): display_name
+#     symbol: eToro symbolFull
+#     display: human-readable name
+
+instruments:
+  32:
+    symbol: "GER40"
+    display: "DAX (GER40 Index)"
+
+# To add more instruments, run:
+#   python scripts/broker_support/inspect_instruments.py
+# and add confirmed entries above.

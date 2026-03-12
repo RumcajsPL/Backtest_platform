@@ -1,203 +1,109 @@
-# CTP Project — Handoff Context Block 9P
-*Generated: 2026-03-11 | Status: Phase 1 closing*
+# CONTEXT — Block 9P+1 End (2026-03-12)
+## Session summary
+- Confirmation run b651ec5c analysed — Phase 1 gate FULLY CLOSED
+- broker_support Phase 0 Steps 1–4 built and confirmed on live API
+- Step 4 (tracker loop) delivered, 37/37 tests passing
+- Tracker confirmed end-to-end: portfolio fetch working, 0 positions (no open trade yet)
 ---
-## Where We Are
-Phase 1 (full-history backtesting) is functionally complete. Run 63b85270 produced viable
-paper trade candidates and confirmed the pipeline is production-stable. One confirmation run
-remains before the Phase 1 gate is formally closed, then the project pivots to Phase 0
-(broker_support fixes) as the active development track.
+## Where we are
+### Active work: Step 5 — Signal Bridge
+Next session starts here. Everything below Step 5 is done.
+**Step 5 goal**: given a signal from a strategy YAML, open/close a demo trade on eToro.
+**Files to create**:
+- `src/broker_support/execution/order_router.py` — `OrderRouter` class
+  - `open_position(signal) -> str` (positionId)
+  - `close_position(position_id, instrument_id) -> bool`
+- `tests/broker_support/test_order_router.py`
+**Client stubs to implement** (currently `raise NotImplementedError`):
+```python
+# src/broker_support/client/client.py
+def place_market_order(self, instrument_id, is_buy, amount, leverage=1,
+                       stop_loss_rate=None, take_profit_rate=None) -> dict:
+    # POST /api/v1/trading/execution/demo/market-open-orders/by-amount
+    # Body PascalCase: { InstrumentID, IsBuy, Leverage, Amount }
+    # StopLossRate / TakeProfitRate = absolute price levels (not distances)
+def close_position(self, position_id, instrument_id, units_to_deduct=None) -> dict:
+    # POST /api/v1/trading/execution/demo/market-close-orders/positions/{positionId}
+    # Body: { "InstrumentId": ..., "UnitsToDeduct": null }  ← null = full close
+```
+**Prerequisite before implementing**: open a demo trade on eToro, then run:
+```
+python scripts/broker_support/inspect_portfolio.py
+```
+This confirms OpenPosition field names match the Pydantic model. `positions=0`
+currently so field names are not yet empirically verified.
+**Signal contract (TBD — agree at session start)**:
+- Could be parsed from a strategy YAML `direction:` field
+- Could be a simple dict `{instrument_id, direction, amount, leverage}`
+- Keep it minimal for Step 5 — no complex queue needed yet
+### Backtesting status (CLOSED — reference only)
+- Phase 1 fully closed. Engine frozen. No further runs planned.
+- Paper trade candidates finalised — see SKILL.md for table.
+- Trading YAMLs in `outputs/backtesting/trading_yamls/b651ec5c_*.yaml`
 ---
-## Immediate Next Action
-**Run the confirmation run** — single YAML change only:
+## Key empirical findings (DO NOT re-derive)
+### API endpoints (confirmed live)
+| Endpoint | Status | Notes |
+|----------|--------|-------|
+| GET /trading/info/portfolio | ✅ 200 | Use this for portfolio. No /demo/ prefix. |
+| GET /trading/info/real/pnl | ✅ 200 | Also works, same response |
+| GET /trading/info/demo/pnl | ❌ 403 | Does not exist for any key type |
+| GET /trading/info/demo/portfolio | ❌ 403 | Does not exist for any key type |
+| GET /trading/info/trade/history | ✅ 200 | Requires Write key. minDate=YYYY-MM-DD |
+| GET /market-data/search?searchText=... | ✅ 200 | Use searchText (not internalSymbolFull) |
+| GET /market-data/instruments?instrumentIds=32 | ✅ 200 | DAX confirmed |
+| GET /watchlists | ✅ 200 | Connection test |
+### Key architecture decisions (already made, do not revisit)
+- RESULT A confirmed: demo trades appear in `/trading/info/trade/history` (Write key required)
+- PositionTracker uses snapshot diff (not direct query — was considered, RESULT A made it optional but snapshot diff retained as primary)
+- TradeEnricher: searches history by positionId, up to 10 pages (1000 trades), 90-day lookback
+- Trading hours guard: 08:00–22:00 Europe/Berlin (CET/CEST auto-handled via zoneinfo)
+- Poll interval: 5 minutes (configurable via --interval flag)
+- Log rotation: daily, 30-day retention, at `outputs/broker_support/logs/`
+### Instrument map
 ```yaml
-# configs/backtesting/backtest_V1_01.yaml
-sensitivity:
-  input_count: 10    # was 5
+# configs/broker_support/instrument_map.yaml
+instruments:
+  DAX:
+    instrument_id: 32
+    symbol_full: GER40
 ```
-This aligns the verdict set with the MC Deep set (both now top 10 by WFO score), giving
-verdicts to all 10 MC-evaluated candidates including c209820886c8 (strongest MC profile,
-ruin=0.000, avg_equity=9370, currently unverdiected because it ranked 10th by WFO).
-After the confirmation run: analyse verdicts, update paper trade candidate list if
-c209820886c8 or others upgrade, then declare Phase 1 closed.
-**No other config changes.** All other settings confirmed correct for full-history runs.
 ---
-## Phase 1 Gate — Status
+## Test suite state
+```
+37/37 passing (2026-03-12, Python 3.13.12, Windows 10)
 
-| Criterion | Status |
-|-----------|--------|
-| Pipeline production-stable (no crashes, clean completion) | ✅ PASS |
-| Full-history calibration constants confirmed | ✅ PASS (310.0, N=231) |
-| At least one GO or BORDERLINE verdict | ✅ PASS (4 borderline) |
-| Runtime acceptable for overnight cadence | ✅ PASS (~7 hours confirmed) |
-| MC-DEEP-FULLHIST severity resolved | ✅ DOWNGRADED (top candidates viable) |
-| All MC-evaluated candidates receive verdicts | ⏳ PENDING (confirmation run) |
-| Phase 1 gate formally closed | ⏳ PENDING |
----
-## Run 63b85270 — Summary
+tests/broker_support/test_models.py          — 8 tests
+tests/broker_support/test_csv_journal.py     — 7 tests
+tests/broker_support/test_position_tracker.py — 11 tests
+tests/broker_support/test_time_utils.py      — 11 tests
 ```
-Config:   backtest_V1_01.yaml v3.0.0 | scenario: capital_accumulation
-Runtime:  25742.5s (~7 hours) ← confirmed acceptable
-Stage 1:  234/400 passed (58.5%) — distributions stable vs prior baseline
-Stage 4:  30 WFO candidates (all collapsed — windows_evaluated < 13 due to structural suppression)
-Stage 5:  10 candidates evaluated; 4 with ruin=0.000; 1 no_go (ruin=0.593)
-Stage 7:  4 BORDERLINE, 1 NO_GO
-Null windows: 7 (4 WINZIP-32 cosmetic, 3 REJECTED_INSUFFICIENT_TRADES — non-blocking)
+Run: `pytest tests/broker_support/ -v`
+---
+## Useful diagnostic commands
+```powershell
+# Single tracker cycle (force run outside hours)
+python scripts/broker_support/run_tracker_loop.py --once --no-hours-guard
+# Continuous loop
+python scripts/broker_support/run_tracker_loop.py
+# Inspect portfolio (useful once you have an open demo trade)
+python scripts/broker_support/inspect_portfolio.py
+# Inspect instrument
+python scripts/broker_support/inspect_instruments.py
 ```
 ---
-## Paper Trade Candidates — Run 63b85270
-### PRIMARY — c424a0e04327
-```
-WFO score:      0.8108  (rank 1)
-Windows:        9/13 evaluated, 9/9 profitable (frac_pos=1.000)
-Median return:  +313 pts/window
-MC ruin:        0.000
-MC avg equity:  8,778
-MC p5 equity:   5,383
-Sensitivity:    1 spike — atr_multiplier (delta=+0.154 at step -1, asymmetric upward)
-                Spike is upward: smaller atr_multiplier performs better.
-                Implication: value is improvable, not fragile on the downside.
-Verdict:        BORDERLINE (spike only)
-YAML:           outputs/backtesting/trading_yamls/63b85270_c424a0e04327_strategy.yaml
-Recommended:    PROMOTE to paper trading. Strongest overall profile.
-```
-### SECONDARY — 20745ca991be
-```
-WFO score:      0.7201  (rank 2)
-Windows:        7/13 evaluated, 7/7 profitable (frac_pos=1.000)
-Median return:  +926 pts/window  ← high
-MC ruin:        0.054            ← marginal
-MC avg equity:  8,099
-Sensitivity:    clean (no spikes)
-Verdict:        BORDERLINE (ruin 0.054 > 0.05 threshold)
-YAML:           outputs/backtesting/trading_yamls/63b85270_20745ca991be_strategy.yaml
-Recommended:    MONITOR in paper trading. High upside but regime-sensitive — observe
-                live performance before full allocation.
-```
-### MONITOR — c42f8b009283
-```
-WFO score:      0.6473  (rank 4)
-Windows:        evaluated, viable
-MC ruin:        0.000
-MC avg equity:  5,147
-Sensitivity:    parameter fragility observed (many REJECTED_CONSTRAINTS on perturbation)
-Verdict:        BORDERLINE
-YAML:           outputs/backtesting/trading_yamls/63b85270_c42f8b009283_strategy.yaml
-Recommended:    LOW PRIORITY paper trade. Fragility concern — watch closely.
-```
-### LOW PRIORITY — c4f0aea11a3e
-```
-WFO score:      0.6233  (rank 5)
-Windows:        12/13 evaluated, 2/12 profitable (frac_pos=0.167)  ← structural concern
-MC ruin:        0.000
-MC avg equity:  5,756
-Verdict:        BORDERLINE
-YAML:           outputs/backtesting/trading_yamls/63b85270_c4f0aea11a3e_strategy.yaml
-Recommended:    DO NOT promote yet. frac_pos=0.167 means only 2 windows are profitable —
-                equity curve is driven by 2 exceptional windows masking 10 losing ones.
-                Await confirmation run; if no improvement, discard.
-```
-### UNVERDIECTED — c209820886c8 (confirmation run target)
-```
-WFO score:      0.5699  (rank ~10 — outside top-5 in run 63b85270)
-MC ruin:        0.000
-MC avg equity:  9,370  ← STRONGEST MC PROFILE of all 10 evaluated candidates
-Verdict:        NONE in run 63b85270 (ranked outside sensitivity.input_count=5)
-Expected:       Will receive verdict in confirmation run (sensitivity.input_count=10)
-Recommended:    HIGH WATCH. If verdict is GO or BORDERLINE (clean), consider promoting
-                above c42f8b009283 and c4f0aea11a3e based on MC profile alone.
-```
-### NO_GO — 5d89157ad626
-```
-WFO score:      0.7094  (rank 3)
-MC ruin:        0.5927  ← disqualifying
-Verdict:        NO_GO
-Action:         Discard. Do not use.
-```
+## Open issues
+| ID | Description | Priority |
+|----|-------------|----------|
+| STEP-5 | Signal bridge / order router | P0 — next session |
+| PORT-FIELDS | OpenPosition field names not empirically verified (positions=0) | P0 — need open trade |
+| B9O-009 | V2 shared memory for backtester | Deferred to Phase 3 |
+| WINZIP-32 | WinError 32 on GA temp YAMLs | Cosmetic, deferred to V2 |
 ---
-## Confirmation Run — What to Watch For
-1. **c209820886c8 verdict**: GO or clean BORDERLINE → promote above c42f8b009283.
-   If NO_GO → strong MC profile was not enough; discard.
-2. **Ranks 6–9 (currently unverdiected)**: Any surprise GO candidates? Unlikely given
-   WFO scores below 0.57, but note if any appear.
-3. **c4f0aea11a3e frac_pos**: sensitivity profile unchanged → discard signal.
-4. **Overall verdict count**: If confirmation run still yields 0 GO verdicts, that is
-   acceptable — BORDERLINE candidates are promotable to paper trading. Phase 1 closes
-   regardless of GO/BORDERLINE split.
-5. **Runtime**: Should remain ~7 hours (sensitivity.input_count change adds negligible compute).
----
-## Phase 0 — Broker Support (next active track)
-Begins after confirmation run analysis. Four bugs to fix in order:
-### Bug 1 — Wrong portfolio endpoint
-```python
-# client.py — change:
-'/demo/portfolio'  →  '/demo/pnl'
-```
-### Bug 2 — Orphaned fetch_closed_trades function
-```python
-# client.py — second fetch_closed_trades is a free function at module level
-# Fix: indent as class method, delete stub
-```
-### Bug 3 — Wrong date parameter name
-```python
-# client.py — change:
-params={'from': date_str}        # or 'fromDate'
-params={'minDate': date_str}     # confirmed official eToro param
-```
-### Bug 4 — Wrong trade field alias + missing fields
-```python
-# models.py — change:
-Field(alias='id')  →  Field(alias='positionId')
-# Add fields: fees, leverage, sl_rate, tp_rate
-```
-### After bug fixes — Empirical demo history test (P1, mandatory before architecture)
-```python
-# Run this before designing any new broker features:
-client._make_request(
-    'GET',
-    'api/v1/trading/info/trade/history',
-    params={'minDate': '2026-01-01'}
-)
-# Question: do demo account trades appear in real-account history endpoint?
-# This determines whether snapshot-comparison is permanent or replaceable.
-# DO NOT design close-price enrichment or position reconciliation until this is answered.
-```
----
-## CTP Roadmap — Phase Sequence
-```
-Phase 0  Broker fixes (4 bugs) + empirical demo history test     ← NEXT
-Phase 1  Full-history backtesting                                 ← CLOSING (confirmation run)
-Phase 2  Automated paper trading (signal → eToro order)          ← blocked on Phase 0
-Phase 3  V2 backtesting engine (RawDataStore + SharedMemory)     ← deferred
-Phase 4  Live trading with risk controls                          ← far future
-Phase 5  Strategy Setup Builder (V3 meta-optimiser)              ← far future
-```
----
-## Key Numbers to Remember
-| Constant | Value | Source |
-|----------|-------|--------|
-| _SIGMOID_SCALE (full-history) | 310.0 | N=231, runs 2912e028 + 519f84e2 |
-| _SIGMOID_SCALE (3-month) | 131.0 | run 87712cab — restore for 3-month runs |
-| _MAX_EXPECTED_DRAWDOWN (full-hist) | 2,500.0 | confirmed |
-| _MAX_EXPECTED_DRAWDOWN (3-month) | 1,000.0 | restore for 3-month runs |
-| max_workers | 2 | HARD LIMIT — OOM at 6 confirmed |
-| Full-history runtime | ~7 hours | confirmed run 63b85270 |
-| Stage 1 pass rate | ~58% | stable across 5 full-history runs |
-| sensitivity.input_count | 5 → **10** | change for confirmation run |
-| monte_carlo.deep.input_count | 10 | unchanged |
----
-## Open Issues (carry forward)
-| ID | Severity | Description |
-|----|----------|-------------|
-| B9O-009 | LOW | V2 shared memory — OOM safety, not runtime urgency |
-| WINZIP-32 | INFO | Cosmetic temp file lock on Windows, ~4 null windows/run |
-| RSI-SENS-2 | CLOSED | RSI dead — remove in V2 implementation |
-| MC-DEEP-FULLHIST | DOWNGRADED | Top candidates viable; V2 per-window fix still recommended |
----
-## Documents Produced This Block
-| File | Description |
-|------|-------------|
-| `outputs/RUN_ANALYSIS_63b85270.md` | Full overnight run analysis |
-| `outputs/ARCHITECTURE.md` | Production-ready v5.0.0 (V2/V3 developer reference) |
-| `outputs/OPERATOR_RUNBOOK.md` | Production-ready v4.0.0 (operator reference) |
-| `outputs/SKILL.md` | Updated skill (replace user skill file) |
-| `outputs/CONTEXT_9P.md` | This file |
+## Candidate shortlist for paper trading (Phase 2)
+When Step 5 is complete and manual demo testing passes, start paper trading with:
+1. **c424a0e04327** (PRIMARY) — `b651ec5c_c424a0e04327_strategy.yaml`
+2. **20745ca991be** (SECONDARY) — `b651ec5c_20745ca991be_strategy.yaml`
+3. Monitor **c42f8b009283** and **c209820886c8** before promoting
+Do NOT promote c209820886c8 above c42f8b009283 despite better MC profile —
+it has a hard cliff on atr_multiplier (delta=-0.1621 at +1 step).

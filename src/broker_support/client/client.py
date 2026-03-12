@@ -1,233 +1,302 @@
 """
-eToro API client with robust error handling and retry logic.
+eToro API client.
+
+Confirmed working endpoints (from official eToro SKILL.md / api-portal.etoro.com):
+  GET  /api/v1/watchlists                                          — connection test
+  GET  /api/v1/trading/info/portfolio                              — portfolio + open positions (empirically confirmed)
+  GET  /api/v1/trading/info/trade/history?minDate=YYYY-MM-DD       — closed trade history (Bug 3 fix)
+  GET  /api/v1/market-data/instruments/rates?instrumentIds=...     — current prices (Step 3)
+  GET  /api/v1/market-data/search?searchText=...                   — instrument lookup (Step 2)
+  POST /api/v1/trading/execution/demo/market-open-orders/by-amount — open demo order (Step 5)
+  POST /api/v1/trading/execution/demo/market-close-orders/positions/{positionId} — close (Step 5)
+
+_make_request() is the core engine — do not refactor.
+All public methods delegate to _make_request(); none implement their own HTTP logic.
 """
-import requests
 import uuid
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, date
+from typing import Any, Dict, List, Optional
+
+import requests
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from broker_support.config.settings import settings
+from src.broker_support.config.settings import settings
 
 
 class EToroClient:
-    """Production-grade API client for eToro."""
-    
-    def __init__(self):
-        self.api_key = settings.etoro_api_key
-        self.user_key = settings.etoro_user_key  # Add this to settings.py
+    """Production-grade API client for eToro public API v1."""
+
+    _BASE_PATH = "api/v1"
+
+    def __init__(self) -> None:
         self.base_url = settings.etoro_base_url.rstrip('/')
+        self._api_key = settings.etoro_api_key
+        self._user_key = settings.etoro_user_key
         self.session = requests.Session()
-        
+
+    # ------------------------------------------------------------------
+    # Core HTTP engine — do not modify
+    # ------------------------------------------------------------------
+
     def _get_headers(self) -> Dict[str, str]:
-        """Generate headers for eToro API requests."""
+        """Generate request headers. x-request-id is unique per call."""
         return {
-            'x-api-key': self.api_key,
-            'x-user-key': self.user_key,
-            'x-request-id': str(uuid.uuid4()),  # Unique ID for each request
+            'x-api-key': self._api_key,
+            'x-user-key': self._user_key,
+            'x-request-id': str(uuid.uuid4()),
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'User-Agent': 'BrokerSupport/0.1.0'
+            'User-Agent': 'BrokerSupport/0.1.0',
         }
-        
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make HTTP request with error handling."""
+
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Execute an HTTP request against the eToro API.
+
+        Args:
+            method:   HTTP verb ('GET', 'POST', 'DELETE').
+            endpoint: Path relative to base URL, e.g. 'api/v1/watchlists'.
+            **kwargs: Forwarded to requests.Session.request (params, json, etc.).
+
+        Returns:
+            Parsed JSON response (dict or list).
+
+        Raises:
+            requests.exceptions.RequestException on HTTP or network errors.
+        """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = self._get_headers()
-        
-        try:
-            logger.debug(f"Making {method} request to {url}")
-            logger.debug(f"Headers: { {k: v[:10] + '...' if k in ['x-api-key', 'x-user-key'] else v for k, v in headers.items()} }")
-            
-            response = self.session.request(
-                method, url, 
-                headers=headers, 
-                timeout=settings.timeout_seconds, 
-                **kwargs
+
+        masked = {
+            k: (v[:8] + '…' if k in ('x-api-key', 'x-user-key') else v)
+            for k, v in headers.items()
+        }
+        logger.debug(f"{method} {url}  headers={masked}  kwargs={kwargs}")
+
+        response = self.session.request(
+            method,
+            url,
+            headers=headers,
+            timeout=settings.timeout_seconds,
+            **kwargs,
+        )
+
+        logger.debug(f"Response {response.status_code} from {url}")
+
+        if not response.ok:
+            logger.error(
+                f"API error {response.status_code}: {response.text[:500]}"
             )
-            
-            # Log response info for debugging
-            logger.debug(f"Response status: {response.status_code}")
-            logger.debug(f"Response headers: {dict(response.headers)}")
-            
-            response.raise_for_status()
-            return response.json()
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response status: {e.response.status_code}")
-                logger.error(f"Response body: {e.response.text[:500]}")
-            raise
-    
+        response.raise_for_status()
+        return response.json()
+
+    # ------------------------------------------------------------------
+    # Connection test
+    # ------------------------------------------------------------------
+
     @retry(
         stop=stop_after_attempt(settings.max_retries),
-        wait=wait_exponential(multiplier=1, min=4, max=10)
+        wait=wait_exponential(multiplier=1, min=4, max=10),
     )
     def test_connection(self) -> bool:
         """
-        Test API connectivity using watchlists endpoint (public).
+        Verify API credentials are valid using the watchlists endpoint.
+        Returns True on success, False on failure.
         """
-        logger.info("Testing eToro API connection...")
-        
+        logger.info("Testing eToro API connection via /watchlists …")
         try:
-            # Try the watchlists endpoint as shown in docs
-            result = self._make_request('GET', 'api/v1/watchlists')
-            logger.success(f"Connection successful! Watchlists: {result}")
+            self._make_request('GET', f"{self._BASE_PATH}/watchlists")
+            logger.info("Connection OK.")
             return True
-        except Exception as e:
-            logger.error(f"Connection failed: {e}")
+        except Exception as exc:
+            logger.error(f"Connection failed: {exc}")
             return False
-    
+
+    # ------------------------------------------------------------------
+    # Portfolio
+    # Empirically confirmed 2026-03-12: /demo/pnl and /demo/portfolio both 403.
+    # Key environment (Virtual/Real) determines which account data is returned.
+    # Correct endpoint: /trading/info/portfolio (no /demo/ prefix needed).
+    # ------------------------------------------------------------------
+
     @retry(
         stop=stop_after_attempt(settings.max_retries),
-        wait=wait_exponential(multiplier=1, min=4, max=10)
+        wait=wait_exponential(multiplier=1, min=4, max=10),
     )
-    def fetch_closed_trades(self, start_date: datetime, end_date: Optional[datetime] = None) -> List[Dict]:
-        """
-        Fetch closed trades within date range.
-        
-        Args:
-            start_date: Start date for trade history
-            end_date: End date (defaults to now)
-            
-        Returns:
-            List of closed trades
-        """
-        if end_date is None:
-            end_date = datetime.now()
-            
-        logger.info(f"Fetching closed trades from {start_date} to {end_date}")
-        
-        # Format dates as required by API (adjust format based on docs)
-        params = {
-            'from': start_date.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-            'to': end_date.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-            'status': 'CLOSED'
-        }
-        
-        # Try different possible endpoints for trade history
-        endpoints = [
-            'api/v1/portfolio/history',
-            'api/v1/trades/history',
-            'api/v1/transactions'
-        ]
-        
-        for endpoint in endpoints:
-            try:
-                result = self._make_request('GET', endpoint, params=params)
-                trades = result.get('data', []) if isinstance(result, dict) else result
-                if trades:
-                    logger.info(f"Retrieved {len(trades)} closed trades from {endpoint}")
-                    return trades
-            except Exception as e:
-                logger.debug(f"Endpoint {endpoint} failed: {e}")
-                continue
-        
-        logger.warning("No trades found with any endpoint")
-        return []
-    
-    def get_instruments(self) -> List[Dict]:
-        """Fetch available trading instruments."""
-        try:
-            result = self._make_request('GET', 'api/v1/market/instruments')
-            return result.get('data', [])
-        except Exception as e:
-            logger.error(f"Failed to fetch instruments: {e}")
-            return []
-    
     def get_portfolio(self) -> Dict[str, Any]:
         """
-        Get comprehensive portfolio information including positions and orders.
-        
-        Returns:
-            Dictionary containing portfolio data with positions, orders, mirrors, and credit
-        """
-        logger.info("Fetching portfolio information...")
-        
-        try:
-            result = self._make_request('GET', 'api/v1/trading/info/demo/portfolio')
-            
-            # The response structure has clientPortfolio as the main container
-            portfolio = result.get('clientPortfolio', {})
-            
-            positions = portfolio.get('positions', [])
-            logger.info(f"Retrieved {len(positions)} open positions")
-            
-            return portfolio
-        except Exception as e:
-            logger.error(f"Failed to fetch portfolio: {e}")
-            return {}
+        Fetch portfolio including open positions, orders, mirrors, credit.
 
-def fetch_closed_trades(self, from_date: datetime = None, to_date: datetime = None) -> List[Dict]:
-    """
-    Fetch closed trades history from demo account.
-    
-    Args:
-        from_date: Start date for trade history (default: 7 days ago)
-        to_date: End date for trade history (default: now)
-    
-    Returns:
-        List of closed trades with details
-    """
-    if to_date is None:
-        to_date = datetime.now()
-    if from_date is None:
-        from_date = to_date - timedelta(days=7)
-    
-    logger.info(f"Fetching closed trades from {from_date} to {to_date}")
-    
-    # Correct endpoints based on documentation
-    endpoints = [
-        'api/v1/trading/info/trade/history',                    # Real account pattern
-        'api/v1/trading/info/demo/trade/history',               # Demo pattern
-        'api/v1/trading/info/portfolio/history',                # Portfolio history
-        'api/v1/trading/info/demo/portfolio/history',           # Demo portfolio history
-        'api/v1/trading/info/positions/closed',                 # Closed positions
-        'api/v1/trading/info/demo/positions/closed',            # Demo closed positions
-    ]
-    
-    # Format dates for API - try different formats
-    date_formats = [
-        ('fromDate', 'toDate'),  # CamelCase
-        ('from_date', 'to_date'), # Snake case
-        ('from', 'to'),           # Simple
-    ]
-    
-    for endpoint in endpoints:
-        for from_key, to_key in date_formats:
-            params = {
-                from_key: from_date.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                to_key: to_date.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-            }
-            
-            try:
-                logger.debug(f"Trying endpoint: {endpoint} with params: {params}")
-                result = self._make_request('GET', endpoint, params=params)
-                
-                # Handle different response formats
-                if isinstance(result, list):
-                    trades = result
-                elif isinstance(result, dict):
-                    # Check common response wrappers
-                    trades = (result.get('data') or 
-                             result.get('trades') or 
-                             result.get('items') or 
-                             result.get('positions') or 
-                             [])
-                else:
-                    trades = []
-                
-                if trades:
-                    logger.success(f"Found {len(trades)} trades via {endpoint}")
-                    return trades
-                else:
-                    logger.debug(f"Endpoint {endpoint} returned empty list")
-                    
-            except Exception as e:
-                logger.debug(f"Endpoint {endpoint} with {from_key} failed: {e}")
-                continue
-    
-    logger.warning("No trades found with any endpoint")
-    return []
+        Endpoint: GET /api/v1/trading/info/portfolio
+        Account type (demo vs real) is determined by the key environment,
+        not by the endpoint path. Returns the raw clientPortfolio dict.
+        """
+        logger.info("Fetching portfolio …")
+        result = self._make_request(
+            'GET', f"{self._BASE_PATH}/trading/info/portfolio"
+        )
+        portfolio = result.get('clientPortfolio', {})
+        logger.info(f"Portfolio: credit={portfolio.get('credit')}, "
+                    f"positions={len(portfolio.get('positions', []))}")
+        return portfolio
+
+    # ------------------------------------------------------------------
+    # Trade history — Bug 2 fix (orphaned function → class method)
+    #               — Bug 3 fix: 'from'/'fromDate' → 'minDate' (YYYY-MM-DD)
+    # ------------------------------------------------------------------
+
+    @retry(
+        stop=stop_after_attempt(settings.max_retries),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+    )
+    def fetch_closed_trades(
+        self,
+        from_date: Optional[datetime] = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch closed trade history.
+
+        Endpoint: GET /api/v1/trading/info/trade/history
+        Required param: minDate (YYYY-MM-DD format — confirmed official param name).
+
+        NOTE: Whether demo-account trades appear here must be verified empirically
+        (Phase 0 Step 1 — empirical demo history test). This is the only confirmed
+        history endpoint in the official API.
+
+        Args:
+            from_date:  Start date. Defaults to settings.default_days_back ago.
+            page:       Page number (1-based).
+            page_size:  Items per page.
+
+        Returns:
+            List of raw trade dicts.
+        """
+        if from_date is None:
+            from datetime import timedelta
+            from_date = datetime.now() - timedelta(days=settings.default_days_back)
+
+        min_date_str = from_date.strftime('%Y-%m-%d')
+        logger.info(f"Fetching trade history from {min_date_str} …")
+
+        result = self._make_request(
+            'GET',
+            f"{self._BASE_PATH}/trading/info/trade/history",
+            params={'minDate': min_date_str, 'page': page, 'pageSize': page_size},
+        )
+
+        trades: List[Dict] = result if isinstance(result, list) else result.get('data', [])
+        logger.info(f"Received {len(trades)} trades (page {page}).")
+        return trades
+
+    # ------------------------------------------------------------------
+    # Market data
+    # ------------------------------------------------------------------
+
+    @retry(
+        stop=stop_after_attempt(settings.max_retries),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+    )
+    def get_current_rates(self, instrument_ids: List[int]) -> Dict[str, Any]:
+        """
+        Fetch current bid/ask rates for one or more instruments.
+
+        Endpoint: GET /api/v1/market-data/instruments/rates
+        Required: instrumentIds as comma-separated string.
+
+        Used by TradeEnricher (Step 3) when demo history endpoint is unavailable.
+        """
+        ids_param = ','.join(str(i) for i in instrument_ids)
+        logger.info(f"Fetching rates for instrumentIds={ids_param}")
+        return self._make_request(
+            'GET',
+            f"{self._BASE_PATH}/market-data/instruments/rates",
+            params={'instrumentIds': ids_param},
+        )
+
+    @retry(
+        stop=stop_after_attempt(settings.max_retries),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+    )
+    def search_instrument(self, symbol: str) -> List[Dict[str, Any]]:
+        """
+        Resolve a ticker symbol to an instrumentId.
+
+        Endpoint: GET /api/v1/market-data/search
+        Required: searchText (fuzzy text search). fields is required by the API.
+        Note: internalSymbolFull as a filter param returns empty — use searchText.
+
+        Used by InstrumentResolver (Step 2).
+        """
+        logger.info(f"Searching instrument for symbol={symbol!r}")
+        result = self._make_request(
+            'GET',
+            f"{self._BASE_PATH}/market-data/search",
+            params={
+                'searchText': symbol,
+                'fields': 'instrumentId,internalSymbolFull,displayname',
+                'pageSize': 5,
+            },
+        )
+        # Response wraps results under various keys depending on API version
+        instruments = (
+            result if isinstance(result, list)
+            else result.get('instruments')
+            or result.get('data')
+            or []
+        )
+        return instruments
+
+    # ------------------------------------------------------------------
+    # Execution — Step 5 placeholders (correct endpoints from SKILL.md)
+    # ------------------------------------------------------------------
+
+    def place_market_order(
+        self,
+        instrument_id: int,
+        is_buy: bool,
+        amount: float,
+        leverage: int = 1,
+        stop_loss_rate: Optional[float] = None,
+        take_profit_rate: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Open a demo market order by amount.
+
+        Endpoint: POST /api/v1/trading/execution/demo/market-open-orders/by-amount
+        Body uses PascalCase per official API convention.
+        Note: StopLossRate / TakeProfitRate are absolute price levels, not distances.
+
+        Implementation deferred to Step 5 (signal bridge). Raises NotImplementedError
+        until Step 5 is complete to prevent accidental live calls.
+        """
+        raise NotImplementedError(
+            "place_market_order() is a Step 5 deliverable. "
+            "Implement in execution/order_router.py after empirical demo history test."
+        )
+
+    def close_position(
+        self,
+        position_id: int,
+        instrument_id: int,
+        units_to_deduct: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Close a demo position (full or partial).
+
+        Endpoint: POST /api/v1/trading/execution/demo/market-close-orders/positions/{positionId}
+        Body: { "InstrumentId": ..., "UnitsToDeduct": null }  ← null = full close.
+
+        Implementation deferred to Step 5.
+        """
+        raise NotImplementedError(
+            "close_position() is a Step 5 deliverable. "
+            "Implement in execution/order_router.py after empirical demo history test."
+        )
