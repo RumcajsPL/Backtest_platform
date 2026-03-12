@@ -102,7 +102,6 @@ V1 `DataLoader` both loads raw files and slices windows. V1 `StrategyOrchestrato
 └─────────────────────────────────────────────────────────────┘
 ```
 **Memory impact of V2 architecture:**
-
 | Metric | V1 (current) | V2 (target) |
 |--------|-------------|-------------|
 | Raw file loads per run | Up to 231 (cold cache) | 1 |
@@ -161,6 +160,7 @@ Thursday	214	13.6%	-153.0	-0.71
 Friday	206	8.3%	-1003.9	-4.87
 
 V2 design phase should decide what can be done as part of V2 and what in V3
+- **Replace number of trades by avg P&L ?**: Open question to decide if the avarage p&l or net p&l is not better that quite mechanic number of trades. Here exemple of idea how cadidates can be evaluated (for capital accumulation scenario): canditate pass if weekly avg p&l is slightly negative or better; no negative or better be-weekly and positive monthly. Only example to discuss. If decided number of trades stays only a matrics but no more a constraint 
 ---
 ### Phase 4 — Backtesting V3: Strategy Setup Builder *(requires Phase 3 gate)*
 **Objective**: Build a meta-optimiser that treats the V2 backtester as a black box and answers the question: *does this strategy configuration have tradeable potential at all?* V3 is a backtester of backtests.

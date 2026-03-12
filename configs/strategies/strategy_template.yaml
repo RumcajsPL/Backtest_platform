@@ -177,13 +177,12 @@ trade_management:
 # -----------------------------------------------------------------------------
 output:
   reports:
-    enabled: false
+    enabled: true
     output_dir: "outputs/strategies/reports/wbws"
     theme: "dark"           # "dark" | "light"
     chart_height_px: 300    # Valid range: 100–800
     brand_name: "WBWSStrategy"
     include_raw_data: true
-
   logging:
     level: "INFO"           # DEBUG | INFO | WARNING | ERROR
     output_dir: "outputs/strategies/logs/wbws"
