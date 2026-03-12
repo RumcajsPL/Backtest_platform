@@ -7,23 +7,23 @@ description: >
   engine, fitness evaluator, scenario profile, backtest_template.yaml, sensitivity
   evaluator, verdict engine, report generator, any module from src/backtesting/,
   broker_support, EToroClient, PositionTracker, CSVJournal, paper trading automation,
-  eToro API, signal bridge, or CTP roadmap.
+  eToro API, signal bridge, CTP roadmap, WBWS+, time filter, hour filter.
   Read this SKILL.md before writing any code, creating any file, or making any design
   decision for this project.
 ---
 # CTP Project Skill — Backtesting + Broker Integration
-## Project Status (2026-03-12, Block 9P+2)
+## Project Status (2026-03-12, Block 9P+3)
 ```
 BACKTESTING ENGINE:    V1 PRODUCTION — PHASE 1 GATE FULLY CLOSED. Engine frozen.
-
 BROKER INTEGRATION:    Steps 1–5 COMPLETE. 71/71 tests passing.
                        Full signal bridge built and tested.
-                       Phase 2 (automated paper trading) ready to start.
-
-CTP ROADMAP:           Phase 0 DONE. Phase 2 = wire strategy YAML → OrderRouter.
+                       Documentation complete (API_REFERENCE.md + BROKER_INTEGRATION.md).
+CTP ROADMAP:           Phase 0 DONE.
+                       Phase 2 = graduated automation + WBWS+ filter layer.
+                       Stage 1 (signal validation) → Stage 2 (1 trade) → Stage 3 (3 trades) → Stage 4 (loop).
 ```
 ---
-## ACTIVE TRACK — broker_support
+## ACTIVE TRACK — broker_support / Phase 2
 ### Project path
 `E:\Trading\Backtest_platform` — package `src/broker_support/` (editable install)
 ### Test suite (71/71 passing as of 2026-03-12)
@@ -40,37 +40,29 @@ Run: `pytest tests/broker_support/ -v`
 KEY TYPE:               ETORO_USER_KEY = Demo Write key.
                         Real key → 403 on ALL /demo/ endpoints.
                         Key type determines account (demo vs real), not URL prefix.
-
 Portfolio:              GET /api/v1/trading/info/demo/portfolio  ← REQUIRES Demo Write key
                         Returns { clientPortfolio: { credit, positions, orders, ordersForOpen, mirrors } }
                         Field: 'credit' here. /demo/pnl uses 'credits' — do NOT mix.
                         Position aliases: PascalCase + capital ID (positionID, instrumentID).
-
 Live position data:     positionID: 3464232739, instrumentID: 32 (DAX), isBuy: false
                         openConversionRate: 1.15137, settlementTypeID: 0 (CFD)
                         isNoTakeProfit/isNoStopLoss: false = ENABLED (inverted semantics)
-
 Order info:             GET /api/v1/trading/info/demo/orders/{orderId}
                         statusID: 0=Pending, 1=Executed, 2=Cancelled, 3=Rejected, 4=Partial
                         positions[0].positionID = use this for all close calls
-
 Two-step open flow:     POST market-open-orders/by-amount → orderForOpen.orderID
                         GET demo/orders/{orderID} poll until statusID==1 → positions[0].positionID
                         positionID is NOT in the open-order response
-
 Execution body:         PascalCase + capital ID: InstrumentID, IsBuy, Amount, Leverage
                         Close body key: InstrumentID (capital) — NOT InstrumentId (lowercase d)
                         UnitsToDeduct: null = full close
-
 Trade history:          GET /api/v1/trading/info/trade/history?minDate=YYYY-MM-DD
                         Requires Read+Write key. Demo trades appear here (RESULT A).
                         Returns array directly. Field casing: camelCase + lowercase id.
-
 Instrument search:      GET /api/v1/market-data/search
                         'fields' param REQUIRED (omit → empty results)
                         Use searchText; exact-match on internalSymbolFull in results
                         Response: { items: [...] }
-
 DAX:                    instrumentId=32, symbolFull="GER40"
 ```
 ### Package structure (Steps 1–5 complete)
@@ -90,6 +82,7 @@ src/broker_support/
   execution/order_router.py     ← OrderRouter: two-step open (poll positionID), close
   execution/__init__.py         ← exports OrderRouter, OutsideTradingHoursError
   utils/time_utils.py           ← is_trading_hours(), seconds_until_open()
+                                   PHASE 2: add is_valid_trading_window(dt) for WBWS+ filter
 configs/broker_support/
   instrument_map.yaml           ← DAX: {instrument_id: 32, symbol_full: GER40}
   broker_settings.env           ← ETORO_API_KEY, ETORO_USER_KEY (Demo Write required)
@@ -112,12 +105,53 @@ openDateTime → open_date_time
 - Do NOT refactor _make_request() — solid, do not touch
 - Do NOT confuse 'credit' (/demo/portfolio) with 'credits' (/demo/pnl)
 - Do NOT set LIVE_APPROVED in code — operator-only
-### Phase 2 — next work
-Wire strategy YAML → OrderRouter → live demo trades:
-1. Parse signal from `b651ec5c_c424a0e04327_strategy.yaml` (PRIMARY candidate)
-2. Run `OrderRouter.open_position()` manually, confirm positionID journaled
-3. Let tracker loop detect close, confirm journal entry
-4. Only then consider automation loop
+---
+## Phase 2 — Graduated Automation Plan
+### Stage sequence
+```
+Stage 1: Signal validation — print only, no trades
+Stage 2: 1 trade manually via run_signal.py → confirm journal → full review
+Stage 3: 3-trade automation batch → analysis
+Stage 4: Full loop with abort conditions
+```
+### Stage 4 abort conditions
+```python
+max_open_positions = 3          # halt if exceeded
+min_available_cash = 200.0      # USD — halt if below
+max_consecutive_losses = 5      # halt streak
+hours_guard = True              # 08:00-22:00 CET (time_utils)
+trading_window_filter = True    # WBWS+ hour filter
+kill_switch_file = 'STOP'       # create this file to halt loop
+```
+### First script to build
+`scripts/broker_support/run_signal.py`:
+- Instantiate EToroClient, InstrumentResolver, OrderRouter
+- Call `router.open_position('DAX', 'SELL', amount=60.0, leverage=20)`
+- Print returned positionID
+- Confirm in inspect_portfolio.py output
+---
+## WBWS+ Strategy Filter
+### Analysis results (2026-03-12, full history 1,498 trades)
+**Consistent across both full history AND last 3 months (reliable filters):**
+- London session (08–16 UTC): 74–80% of all profit — protect this window
+- Hour 17 UTC: consistently negative both periods → skip
+- Hour 11, 14, 16 UTC: positive in both periods → prioritise
+**Regime-dependent (do NOT hard-filter):**
+- Monday: -493 pts full history BUT +287 pts last 3 months → reduce size, not skip
+- Wednesday: +179 pts full history BUT -213 pts recent → monitor
+- Hour 10, 13 UTC: opposite sign across periods → no filter
+**Proposed WBWS+ filter config:**
+```yaml
+# strategy YAML or broker_settings.env
+allowed_hours_utc: [9, 10, 11, 12, 13, 14, 15, 16]   # skip 17–18 UTC
+session_preference: london                              # primary focus
+monday_size_reduction: 0.5                             # half size on Monday (optional)
+```
+**Expected impact (conservative estimate from full history):**
+- Skipping hours 17–18: removes ~320 trades, saves ~+730 pts of losses
+- Profit factor improves from 1.08 → estimated 1.3–1.5 range
+- Drawdown reduction: meaningful but not modelled yet
+**Implementation location:** `utils/time_utils.py` → `is_valid_trading_window(signal_dt)`
 ---
 ## CLOSED TRACK — Backtesting (reference only)
 ### Paper trade candidates (run b651ec5c)
@@ -153,7 +187,8 @@ max_workers = 2               # OOM at 6 — mandatory
 - Project: `E:\Trading\Backtest_platform`
 - API base: `https://public-api.etoro.com/api/v1`
 - Credentials: `configs/broker_support/broker_settings.env`
-- Full API reference: `docs/ctp/BROKER_INTEGRATION.md`
+- CTP API reference: `docs/ctp/BROKER_INTEGRATION.md`
+- Full API reference: `docs/ctp/API_REFERENCE.md`
 ## Session Deliverables (end of every session)
 - Updated `docs/backtesting/CONTEXT.md`
 - Updated `SKILL.md` in outputs/ (replace user skill)
