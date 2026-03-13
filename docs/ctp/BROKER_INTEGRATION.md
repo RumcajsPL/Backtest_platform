@@ -1,186 +1,141 @@
-# BROKER_INTEGRATION.md
-# eToro Broker Integration — CTP Paper Trading Reference
-# Full API reference (all endpoints, schemas, WebSocket, social features): docs/ctp/API_REFERENCE.md
+# BROKER_INTEGRATION.md — eToro Broker Integration Reference
+# Empirical facts + flows used by CTP. Full API catalogue: docs/ctp/API_REFERENCE.md
+# Updated: 2026-03-13
 ---
-## CTP Integration Status
-| Step | Description | Status |
-|------|-------------|--------|
-| Step 1 | Client fixes + empirical demo history test | ✅ COMPLETE |
-| Step 2 | Instrument resolver (YAML + API fallback) | ✅ COMPLETE |
-| Step 3 | Trade enricher (exit price + P&L) | ✅ COMPLETE |
-| Step 4 | Tracker loop (polling daemon + hours guard) | ✅ COMPLETE |
-| Step 5 | Signal bridge / order router | ✅ COMPLETE |
-| Phase 2 | Wire strategy YAML → OrderRouter → live demo trades | 🔲 NEXT |
+## Integration Status
+| Component | Status |
+|-----------|--------|
+| Steps 1–5 (client, resolver, enricher, tracker, router) | ✅ COMPLETE |
+| Phase 2 live pipeline | ✅ CONFIRMED 2026-03-13 |
+| First live demo order | 🔲 Awaiting signal |
 ---
 ## Authentication
-Three headers required on **every** request:
 | Header | Value |
 |--------|-------|
 | `x-api-key` | `ETORO_API_KEY` from `broker_settings.env` |
-| `x-user-key` | `ETORO_USER_KEY` from `broker_settings.env` — **must be Demo Write key** |
+| `x-user-key` | `ETORO_USER_KEY` — **must be Demo Write key** |
 | `x-request-id` | Fresh UUID per request |
-**Base URL:** `https://public-api.etoro.com/api/v1`
-**Our setup:** Demo Write key for `ETORO_USER_KEY`. Demo Write = read + write on demo account.
-Real key → 403 on ALL `/demo/` endpoints. Key type, not URL prefix, determines the account.
+Real key → 403 on ALL `/demo/` endpoints. Key type, not URL prefix, determines account.
 ---
 ## Endpoints Used by CTP
-| Purpose | Method | Endpoint | Key |
-|---------|--------|----------|-----|
-| Portfolio snapshot | GET | `/trading/info/demo/portfolio` | Demo Write |
-| Portfolio + PnL | GET | `/trading/info/demo/pnl` | Demo Write |
-| Order status (two-step) | GET | `/trading/info/demo/orders/{orderId}` | Demo Write |
-| Open position | POST | `/trading/execution/demo/market-open-orders/by-amount` | Demo Write |
-| Close position | POST | `/trading/execution/demo/market-close-orders/positions/{positionId}` | Demo Write |
-| Cancel open order | DELETE | `/trading/execution/demo/market-open-orders/{orderId}` | Demo Write |
-| Cancel close order | DELETE | `/trading/execution/demo/market-close-orders/{orderId}` | Demo Write |
-| Trade history | GET | `/trading/info/trade/history` | Real Write |
-| Instrument search | GET | `/market-data/search` | Any |
-| Instrument metadata | GET | `/market-data/instruments` | Any |
-| Current rates | GET | `/market-data/instruments/rates` | Any |
-| Historical candles | GET | `/market-data/instruments/{id}/history/candles/{dir}/{interval}/{count}` | Any |
+| Purpose | Method | Endpoint |
+|---------|--------|----------|
+| Portfolio snapshot | GET | `/trading/info/demo/portfolio` |
+| Portfolio + PnL | GET | `/trading/info/demo/pnl` |
+| Order status | GET | `/trading/info/demo/orders/{orderId}` |
+| Open position | POST | `/trading/execution/demo/market-open-orders/by-amount` |
+| Close position | POST | `/trading/execution/demo/market-close-orders/positions/{positionId}` |
+| Trade history | GET | `/trading/info/trade/history` (Real Write key) |
+| Instrument search | GET | `/market-data/search` |
+| Historical candles | GET | `/market-data/instruments/{id}/history/candles/{dir}/{interval}/{count}` |
 ---
-## Critical Field Casing Rules
-| Context | Style | Key Examples |
-|---------|-------|-------------|
-| Open order request body | PascalCase + capital ID | `InstrumentID`, `IsBuy`, `Amount`, `Leverage` |
-| Close order request body | PascalCase + capital ID | `InstrumentID` (NOT `InstrumentId`) |
-| Portfolio positions | PascalCase + capital ID | `positionID`, `instrumentID`, `CID` |
-| Portfolio wrapper (`/portfolio`) | camelCase | `credit` (NOT `credits`) |
-| Portfolio wrapper (`/pnl`) | camelCase | `credits` (NOT `credit`) |
-| Trade history fields | camelCase + lowercase id | `positionId`, `instrumentId`, `openTimestamp` |
+## Critical Field Casing
+| Context | Style |
+|---------|-------|
+| Open/close request body | PascalCase + capital ID: `InstrumentID`, `IsBuy`, `Amount` |
+| Portfolio positions | PascalCase + capital ID: `positionID`, `instrumentID` |
+| `/portfolio` wrapper | camelCase: `credit` |
+| `/pnl` wrapper | camelCase: `credits` ← different name |
+| Trade history | camelCase + lowercase id: `positionId`, `instrumentId` |
+| Candles outer wrapper | camelCase lowercase id: `instrumentId` |
+| Candles inner objects | camelCase capital ID: `instrumentID` |
 ---
-## Key API Flows
+## Key Flows
 ### Two-Step Open Position
 ```
-Step 1: POST /trading/execution/demo/market-open-orders/by-amount
-        Body: { InstrumentID, IsBuy, Leverage, Amount }
-        → response.orderForOpen.orderID
-Step 2: GET /trading/info/demo/orders/{orderID}
-        Poll until statusID == 1 (Executed)
-        → response.positions[0].positionID  ← use for close calls
+POST /trading/execution/demo/market-open-orders/by-amount
+  Body: { InstrumentID, IsBuy, Leverage, Amount, [StopLossRate, TakeProfitRate] }
+  → response.orderForOpen.orderID
+
+GET /trading/info/demo/orders/{orderID}
+  Poll until statusID == 1 (Executed)
+  → response.positions[0].positionID   ← use for all close calls
 ```
-statusID values: 0=Pending, 1=Executed, 2=Cancelled, 3=Rejected, 4=Partial
-⚠️ `positionID` is NOT in the open-order response. Must poll order info endpoint.
+statusID: 0=Pending, 1=Executed, 2=Cancelled, 3=Rejected, 4=Partial
+⚠️ positionID is NOT in the open-order response — must poll.
 ### Close Position
 ```
 POST /trading/execution/demo/market-close-orders/positions/{positionId}
 Body: { "InstrumentID": <id>, "UnitsToDeduct": null }   ← null = full close
 ```
-### Fetch Closed Trades (RESULT A)
+### Trade History
 ```
 GET /trading/info/trade/history?minDate=YYYY-MM-DD
-Headers: Demo Write key
+Key: Real Write (Demo key → 403)
 Returns: array directly (not wrapped). Demo trades appear here.
 ```
 ### Instrument Resolution
 ```
 GET /market-data/search?internalSymbolFull=GER40&fields=instrumentId,internalSymbolFull,displayname
-→ find item where item.internalSymbolFull == 'GER40'
-→ use item.instrumentId
+→ item where item.internalSymbolFull == 'GER40' → item.instrumentId
 ```
-`fields` param is REQUIRED — omit → empty results. Instrument IDs are immutable; cache in YAML.
+`fields` param REQUIRED — omit → empty results.
+Instrument IDs are immutable — cache in instrument_map.yaml.
 ---
-## Portfolio Schema (used by PositionTracker)
-### `/demo/portfolio` Response
-```
-clientPortfolio.credit          ← available cash (NOT 'credits')
-clientPortfolio.positions[]     ← open positions
-clientPortfolio.ordersForOpen[] ← pending open orders
-```
-### OpenPosition Fields (PascalCase + capital ID)
-| Field | Python alias | Notes |
-|-------|-------------|-------|
-| `positionID` | `position_id` | ← capital ID |
-| `instrumentID` | `instrument_id` | ← capital ID |
-| `isBuy` | `is_buy` | true=long, false=short |
-| `openDateTime` | `open_date_time` | ISO 8601 UTC |
-| `openRate` | `open_rate` | Entry price |
-| `amount` | `amount` | USD invested |
-| `units` | `units` | Number of units |
-| `stopLossRate` | `stop_loss_rate` | 0.0001 = not set |
-| `takeProfitRate` | `take_profit_rate` | 0 = not set |
-| `leverage` | `leverage` | |
-| `isNoStopLoss` | — | ⚠️ true = SL **DISABLED** (inverted) |
-| `isNoTakeProfit` | — | ⚠️ true = TP **DISABLED** (inverted) |
-| `mirrorID` | — | 0 = manual trade |
-| `settlementTypeID` | — | 0=CFD, 1=Real Asset, 2=SWAP, 3=Crypto, 4=Future |
-### Available Cash Formula (requires `/demo/pnl`)
-```
-available_cash = credits
-               - sum(ordersForOpen[i].amount for i where mirrorID == 0)
-               - sum(orders[i].amount for all i)
-```
+## Empirical API Facts (confirmed on live API — override any docs)
+| Fact | Detail |
+|------|--------|
+| OHLC fields can be None | Key present, value None — bars during market closure. Use `bar.get("field") or 0.0` not `bar.get("field", 0.0)` |
+| Candles max per request | 1000 bars hard limit. Current config (500+120) within limit. Pagination not implemented. |
+| DAX symbol key | GER40 in instrument_map.yaml. `execution.symbol` must match key exactly. |
+| DAX instrument_id | 32 — immutable, confirmed. |
+| volume field (DAX) | Always 0 — kept for schema compatibility. |
+| Candle direction | Always fetch 'desc', reverse to asc — guarantees most recent N bars. |
+| Demo trades in history | Real Write key required. Demo key → 403 on trade/history. |
 ---
-## Trade History Schema (camelCase + lowercase id)
-| API field | Model field | Notes |
-|-----------|-------------|-------|
-| `positionId` | `trade_id` | lowercase id, coerced to str |
-| `instrumentId` | `instrument_id` | lowercase id |
-| `isBuy` | `direction` | true→'BUY', false→'SELL' |
-| `openTimestamp` | `open_time` | NOT openDateTime |
-| `closeTimestamp` | `close_time` | |
-| `openRate` | `entry_price` | |
-| `closeRate` | `exit_price` | |
-| `investment` | `volume` | |
-| `netProfit` | `profit_loss` | |
-| `fees` | `fees` | default 0.0 |
-| `leverage` | `leverage` | |
+## Portfolio Schema
+```
+GET /demo/portfolio
+clientPortfolio.credit           ← available cash (NOT 'credits')
+clientPortfolio.positions[]      ← open positions (PascalCase + capital ID)
+clientPortfolio.ordersForOpen[]  ← pending open orders
+```
+### OpenPosition Key Fields
+| Field | Notes |
+|-------|-------|
+| `positionID` | capital ID |
+| `instrumentID` | capital ID |
+| `isBuy` | true=long, false=short |
+| `openDateTime` | ISO 8601 UTC |
+| `openRate` | Entry price |
+| `stopLossRate` | 0.0001 = not set |
+| `takeProfitRate` | 0 = not set |
+| `isNoStopLoss` | ⚠️ true = SL **DISABLED** (inverted) |
+| `isNoTakeProfit` | ⚠️ true = TP **DISABLED** (inverted) |
 ---
-## Instrument Resolution
-**YAML primary** → `configs/broker_support/instrument_map.yaml`
-```yaml
-DAX:
-  instrument_id: 32
-  symbol_full: GER40
-```
-**API fallback:**
-```
-GET /market-data/search?internalSymbolFull=GER40&fields=instrumentId,internalSymbolFull,displayname
-```
-Instrument IDs are immutable. Cache once, trust forever.
+## Trade History Key Fields (camelCase + lowercase id)
+| API field | Model field |
+|-----------|-------------|
+| `positionId` | `trade_id` (str) |
+| `instrumentId` | `instrument_id` |
+| `isBuy` | `direction` (BUY/SELL) |
+| `openTimestamp` | `open_time` |
+| `closeTimestamp` | `close_time` |
+| `openRate` / `closeRate` | `entry_price` / `exit_price` |
+| `netProfit` | `profit_loss` |
+| `investment` | `volume` |
 ---
 ## Package Structure
 ```
 src/broker_support/
-  client/client.py              ← EToroClient — _make_request() is core, do not refactor
-  config/settings.py            ← Pydantic settings, loads broker_settings.env
-  models/trade.py               ← Trade model (camelCase aliases — trade history)
-  models/portfolio.py           ← OpenPosition (PascalCase aliases), OrderForOpen, available_cash()
-  tracking/csv_journal.py       ← CSVJournal (dedup, header-on-empty)
-  tracking/position_tracker.py  ← PositionTracker (snapshot diff + enrich + journal)
-  enrichment/instrument_resolver.py ← YAML primary + API fallback
-  enrichment/trade_enricher.py      ← RESULT A: history search by positionId, 10 pages max
-  execution/order_router.py     ← OrderRouter: two-step open (poll positionID), close
-  execution/__init__.py         ← exports OrderRouter, OutsideTradingHoursError
-  utils/time_utils.py           ← is_trading_hours(), seconds_until_open()
-configs/broker_support/
-  instrument_map.yaml           ← DAX: {instrument_id: 32, symbol_full: GER40}
-  broker_settings.env           ← ETORO_API_KEY + ETORO_USER_KEY (must be Demo Write key)
+  client/client.py                    ← EToroClient — do not refactor _make_request()
+  config/broker_support_config.py     ← BrokerSupportConfig typed schema
+  models/trade.py + portfolio.py      ← typed contracts
+  tracking/csv_journal.py             ← CSVJournal
+  tracking/position_tracker.py        ← PositionTracker
+  enrichment/instrument_resolver.py   ← YAML primary + API fallback
+  enrichment/trade_enricher.py        ← exit price + P&L (10 pages, 90-day window)
+  execution/order_router.py           ← two-step open, close
+  utils/time_utils.py                 ← is_trading_hours(), is_valid_trading_window()
+  live/
+    live_data_fetcher.py              ← candles → DataFrame
+    live_config_patcher.py            ← patches strategy YAML for live context
+    live_data_bundle.py               ← DataBundle from live DataFrames + artf
+    order_signal.py                   ← OrderSignal contract
+    signal_bridge.py                  ← full pipeline → OrderSignal
 scripts/broker_support/
-  run_tracker_loop.py           ← polling loop (5 min, hours guard 08:00-22:00 CET)
-  inspect_portfolio.py          ← diagnostic
-  inspect_instruments.py        ← diagnostic
+  run_signal_loop.py                  ← polls 60s, places 1 order, stops
+  run_signal.py                       ← single run dry-run / --place-order
+  run_tracker_loop.py                 ← tracks open positions, journals closes
+  inspect_portfolio.py                ← diagnostic
 ```
----
-## What NOT To Do
-- Do NOT call `/demo/` endpoints with a Real key → 403
-- Do NOT call `/trading/info/portfolio` (missing `/demo/`) with Demo key → wrong account
-- Do NOT omit `fields` param on market-data/search → empty results
-- Do NOT use `from` or `fromDate` for trade history → use `minDate=YYYY-MM-DD`
-- Do NOT use Read-only key for `trade/history` → 403
-- Do NOT assume `positionID` is in the open-order response → must poll order info
-- Do NOT send `InstrumentId` (lowercase d) in close body → must be `InstrumentID`
-- Do NOT confuse `credit` (/portfolio) with `credits` (/pnl) — different field names
-- Do NOT refactor `_make_request()` — retry logic is solid, do not touch
-- Do NOT set `deployment_status = LIVE_APPROVED` in code — operator-only
-- Do NOT use `print()` — use `logger.info/debug`
-- Do NOT skip pre-trade rate check — validate SL/TP against current ask/bid first
----
-## Phase 2 — Next Steps
-Wire strategy YAML → OrderRouter → live demo trades:
-1. Parse signal from `b651ec5c_c424a0e04327_strategy.yaml` (PRIMARY candidate)
-2. Run `OrderRouter.open_position()` manually, confirm positionID journaled
-3. Let tracker loop detect close, confirm journal entry
-4. Only then consider automation loop
-Full API reference for real account trading, WebSocket, social features, user info:
-→ `docs/ctp/API_REFERENCE.md`

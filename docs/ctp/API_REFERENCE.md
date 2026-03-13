@@ -561,11 +561,22 @@ Rate message content fields: `Ask`, `Bid`, `LastExecution`, `Date`, `PriceRateID
 | GET `/market-data/instruments?instrumentIds=32` | Any | ✅ 200 | DAX confirmed |
 | GET `/trading/info/demo/pnl` | Real Write | ❌ 403 | Wrong key type |
 | GET `/trading/info/demo/portfolio` | Real Write | ❌ 403 | Wrong key type |
+| GET candles (live, 2026-03-13) | Any | ✅ 200 | 500 1-min + 120 1H bars confirmed |
+Candle OHLC fields can be None (confirmed 2026-03-13):
+Key is present in the response but value is None — occurs for bars during market closure
+or instrument suspension. bar.get("field", 0.0) does NOT handle this (default only fires
+when key is absent). Use bar.get("field") or 0.0 instead.
+Candles per request — hard maximum 1000 bars (confirmed 2026-03-13):
+candlesCount path param is capped at 1000. Requests above this limit are rejected.
+For windows > 1000 bars, multiple paginated requests with date offsets are required.
+CTP current config: 500 strategy + 120 HTF — well within limit.
 **Live position observed (2026-03-12):**
 ```
 positionID: 3464232739, instrumentID: 32 (DAX/GER40)
 isBuy: false, openConversionRate: 1.15137, settlementTypeID: 0 (CFD)
 isNoTakeProfit: false = TP ENABLED; isNoStopLoss: false = SL ENABLED
+strategy=500 bars [2026-03-13 06:38 → 14:57 UTC], htf=120 bars [2026-03-06 → 14:00 UTC]
+Raw signals: buy=42, sell=12 → after filters: 1 (pass_rate=1.9%) — pipeline healthy
 ```
 ---
 ## SECTION 10 — What NOT To Do
