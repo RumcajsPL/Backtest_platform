@@ -1,0 +1,58 @@
+# broker_support_config.yaml
+# Live paper trading configuration for broker_support Phase 2.
+# This file is the single source of truth for all live-execution overrides.
+# Strategy signal logic lives in the strategy YAML — this file only governs
+# what is specific to live execution: data fetching, trading window, order sizing.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Strategy candidate to run
+# ---------------------------------------------------------------------------
+strategy:
+  yaml_path: outputs/backtesting/trading_yamls/b651ec5c_c424a0e04327_strategy.yaml
+
+# ---------------------------------------------------------------------------
+# Live data fetching
+# Overrides strategy YAML data.paths (parquet files not used in live context).
+# artf_ohlcv_path is injected explicitly — keeps live config self-contained.
+# ---------------------------------------------------------------------------
+live_data:
+  artf_ohlcv_path: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
+  strategy_bars_to_fetch: 500    # 1-min bars (~8h 20min, enough for ATR(11) + all filters)
+  htf_bars_to_fetch: 120         # 1H bars (~5 days, enough for HTF signal context)
+  strategy_interval: OneMinute   # eToro candles interval — must match strategy TF
+  htf_interval: OneHour          # eToro candles interval — must match htf_period in YAML
+  candle_direction: desc         # desc = newest first, reversed to asc before pipeline
+
+# ---------------------------------------------------------------------------
+# WBWS+ trading window filter
+# Applied as a second gate AFTER the strategy time_filter (08:30–20:30 CET).
+# Controls execution quality — not signal validity.
+# allowed_hours_utc: hours during which order placement is permitted.
+# skip_hours_utc: explicit block list (belt-and-suspenders, subset of above).
+# ---------------------------------------------------------------------------
+trading_window:
+  enabled: true
+  allowed_hours_utc: [9, 10, 11, 12, 13, 14, 15, 16]  # London core + early NY overlap
+  skip_hours_utc: [17, 18]                              # Consistently negative both periods
+  monday_size_factor: 1.0   # 1.0 = full size; 0.5 = half size on Monday
+
+# ---------------------------------------------------------------------------
+# Order execution parameters
+# No equivalent in strategy YAML — broker_support owns these entirely.
+# ---------------------------------------------------------------------------
+execution:
+  instrument_map_path: configs/broker_support/instrument_map.yaml
+  symbol: DAX
+  amount_usd: 60.0
+  leverage: 20
+
+# ---------------------------------------------------------------------------
+# Abort / safety conditions (Stage 4 — automation loop)
+# Stage 2 (supervised single trade) ignores these entirely.
+# ---------------------------------------------------------------------------
+safety:
+  max_open_positions: 3
+  min_available_cash_usd: 200.0
+  max_consecutive_losses: 5
+  kill_switch_file: STOP         # Create this file in project root to halt loop
