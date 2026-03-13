@@ -161,6 +161,11 @@ Friday	206	8.3%	-1003.9	-4.87
 
 V2 design phase should decide what can be done as part of V2 and what in V3
 - **Replace number of trades by avg P&L ?**: Open question to decide if the avarage p&l or net p&l is not better that quite mechanic number of trades. Here exemple of idea how cadidates can be evaluated (for capital accumulation scenario): canditate pass if weekly avg p&l is slightly negative or better; no negative or better be-weekly and positive monthly. Only example to discuss. If decided number of trades stays only a matrics but no more a constraint 
+- **Simple improvment in risk management**: 
+    * Break even(s) - decide the mechanism
+    * Trailing stop - decide the mechanism
+    * More advances SL and TP management (if complex -> V3)
+    Above should integrate strategy as optional features. Strategy integration would alow backtesting of new mecanics. Currently was considered as part of broker support 
 ---
 ### Phase 4 — Backtesting V3: Strategy Setup Builder *(requires Phase 3 gate)*
 **Objective**: Build a meta-optimiser that treats the V2 backtester as a black box and answers the question: *does this strategy configuration have tradeable potential at all?* V3 is a backtester of backtests.
@@ -252,3 +257,6 @@ These tracks converge at Phase 2 (automated paper trading), which requires both 
 | 2026-03-10 | V2 architecture redesign scoped: RawDataStore + WindowSlicer + SignalCache | V1 DataLoader violates single responsibility (loads + slices). V1 recomputes signals 231× per run on identical data. V2 redesign eliminates OOM constraint (max_workers: 2) and reduces signal computation by ~90%. |
 | 2026-03-10 | V2 must be V3-ready: backtester as callable function, config as dataclass, stateless evaluation | V3 meta-optimiser requires programmatic backtester invocation. V2 decisions made now must not require refactoring for V3. |
 | 2026-03-10 | V3 = Strategy Setup Builder (meta-optimiser over configuration space) | V2 optimises parameters within a fixed setup. V3 optimises setups — answers "is this strategy architecture tradeable at all?" before parameter optimisation. Two-phase: broad discovery (unconstrained) then confirmation (full pipeline + temporal stability check). |
+**V4 free open list of evolution ideas**
+    - Graphical interface, lite charing, application like layout
+    - Agentic platform management, machine learning  

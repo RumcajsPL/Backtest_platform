@@ -1,11 +1,8 @@
 # BROKER_INTEGRATION.md
 # eToro Broker Integration — CTP Paper Trading Reference
-# Last updated: 2026-03-12 (Block 9P+2 — Steps 1–5 COMPLETE)
 # Full API reference (all endpoints, schemas, WebSocket, social features): docs/ctp/API_REFERENCE.md
 ---
-
 ## CTP Integration Status
-
 | Step | Description | Status |
 |------|-------------|--------|
 | Step 1 | Client fixes + empirical demo history test | ✅ COMPLETE |
@@ -27,7 +24,6 @@ Three headers required on **every** request:
 Real key → 403 on ALL `/demo/` endpoints. Key type, not URL prefix, determines the account.
 ---
 ## Endpoints Used by CTP
-
 | Purpose | Method | Endpoint | Key |
 |---------|--------|----------|-----|
 | Portfolio snapshot | GET | `/trading/info/demo/portfolio` | Demo Write |
