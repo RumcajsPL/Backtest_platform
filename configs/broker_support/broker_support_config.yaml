@@ -43,7 +43,7 @@ trading_window:
 # ---------------------------------------------------------------------------
 execution:
   instrument_map_path: configs/broker_support/instrument_map.yaml
-  symbol: DAX
+  symbol: GER40
   amount_usd: 60.0
   leverage: 20
 

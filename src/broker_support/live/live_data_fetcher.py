@@ -200,11 +200,11 @@ class LiveDataFetcher:
                 continue
             records.append({
                 "timestamp": from_date,
-                "open":   float(bar.get("open",   0.0)),
-                "high":   float(bar.get("high",   0.0)),
-                "low":    float(bar.get("low",    0.0)),
-                "close":  float(bar.get("close",  0.0)),
-                "volume": float(bar.get("volume", 0.0)),
+                "open":   float(bar.get("open")   or 0.0),
+                "high":   float(bar.get("high")   or 0.0),
+                "low":    float(bar.get("low")    or 0.0),
+                "close":  float(bar.get("close")  or 0.0),
+                "volume": float(bar.get("volume") or 0.0),
             })
 
         if not records:
