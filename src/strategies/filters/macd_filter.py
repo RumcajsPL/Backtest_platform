@@ -60,30 +60,30 @@ class MACDFilter:
     # ------------------------------------------------------------------
     # Indicator computation
     # ------------------------------------------------------------------
-
     def _calculate_macd(self, series: pd.Series) -> pd.Series:
         """Return MACD histogram only."""
-        if len(series) < self.slow_length:
+        min_required = self.slow_length + self.signal_length + 1
+        if len(series) < min_required:
             return pd.Series(np.nan, index=series.index, dtype="float32")
 
         macd_df = pta.macd(series, fast=self.fast, slow=self.slow, signal=self.signal)
+
         if macd_df is None or macd_df.empty:
             return pd.Series(np.nan, index=series.index, dtype="float32")
 
+        # Guard against None columns — pandas_ta_classic bug on short series
         hist_col = f"MACDh_{self.fast}_{self.slow}_{self.signal}"
         if hist_col not in macd_df.columns:
-            raise KeyError(f"MACD histogram column '{hist_col}' not found in pandas_ta output.")
+            raise KeyError(f"MACD histogram column '{hist_col}' not found.")
 
-        return macd_df[hist_col].astype("float32")
+        hist = macd_df[hist_col]
+        if hist is None:
+            return pd.Series(np.nan, index=series.index, dtype="float32")
 
-    def compute_indicators(
-        self,
-        df: pd.DataFrame,
-        indicators: Dict[str, pd.Series],
-        ind_np: Dict[str, np.ndarray],
-    ) -> None:
-        """Compute MACD histogram — NaN retained for short history bars."""
-        min_length = self.slow + self.signal
+        return hist.astype("float32")
+
+    def compute_indicators(self, df, indicators, ind_np):
+        min_length = self.slow_length + self.signal_length + 1  # match _calculate_macd
         if len(df) < min_length:
             empty = pd.Series(np.nan, index=df.index, dtype="float32")
             indicators["macd_histogram"] = empty
