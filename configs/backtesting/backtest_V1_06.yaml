@@ -1,0 +1,268 @@
+# =============================================================================
+# backtest_V1_06.yaml
+# Version: 1.1.0
+# Date: 2026-03-14
+#
+# CONFIGURATION: STF=15min / HTF=1D
+# BASE FILTERS:  DPO + MACD
+# EXPLORATION:   DPO + MACD + CCI
+#
+# ZONE STRATEGY:
+#   safe zone        — DPO + MACD always active. Tighter param ranges.
+#   exploration zone — DPO + MACD + CCI always active. Wider ranges.
+#   No choice parameters — discovery zone (type: choice) untested in V1.
+#
+# PARAMETER NAMING (verified against strategy_template.yaml + discovery zone):
+#   macd_fast (step:2) / macd_slow (step:2) / macd_signal
+#   cci_length (step:5) / cci_overbought (step:10) / cci_oversold (step:10)
+#   dpo_length (step:2) / dpo_smooth / dpo_threshold (step:0.1)
+#   atr_length (step:2) / atr_multiplier (step:0.25) / rr_target (step:1.0)
+#   risk_percentile (step:0.05)
+#   All steps match discovery zone convention.
+#
+# DATA PATHS — ACTION REQUIRED BEFORE RUNNING:
+#     strategy_ohlcv: data/processed/ohlcv/DEUIDXEUR_15min_20221201_20260301.parquet
+#     htf_ohlcv:      data/processed/ohlcv/DEUIDXEUR_1d_20221201_20260301.parquet
+#     htf_period:     "1d"
+#
+# CONSTRAINT CALIBRATION (~100–300 trades / 38mo ≈ 0.5–1.5/week):
+#   min_trades_per_week: 0.1   (was 3.0 — floor only eliminates dead zones)
+#   max_losing_streak:   12    (was 50 — on 150 trades, 12 = 8% of all trades)
+#   min_expectancy:     -1.0   (tightened from -2.0 — each trade must carry weight)
+#   min_profit_factor:   0.80  (tightened from 0.75 — less noise tolerance)
+#   min_win_rate:        0.18  (unchanged)
+#
+# SIGMOID: _SIGMOID_SCALE=310.0 hardcoded. Fitness NOT comparable to other runs.
+#   15min trades have substantially larger P&L per trade than 1min.
+#
+# WFO WINDOW NOTE:
+#   ~200 trades / 13 windows ≈ 15 trades/window average.
+#   min_significant_trades REDUCED to 15 for this run only.
+#   Do NOT copy this value to 1min/5min/10min configs.
+#   If REJECTED_INSUFFICIENT_TRADES still dominates, the follow-up action
+#   is to widen windows to 6 months (7 windows) in a subsequent run.
+#
+# RUNTIME ESTIMATE: 6–10 hours at max_workers=2
+#   Stage 1: ~30–45 min  (300 candidates — very low trade count per eval)
+#   Stage 3: ~2–3 hrs    (GA 25gen × 50pop)
+#   Stage 4: ~3–5 hrs    (many REJECTED windows = faster per-candidate)
+#   Stage 5: ~15–25 min
+#   Stage 6: ~10–15 min
+#   Stage 7: ~5 min
+#
+# KEY QUESTIONS:
+#   1. Does the backtester handle ~15 trades/window gracefully?
+#   2. Does DPO+MACD on 15min produce any viable candidates?
+#   3. Does CCI add signal quality over DPO+MACD at this TF?
+#   4. Does 1D HTF provide regime context or just suppress trade frequency?
+#   5. At what collapse rate should windows be widened to 6 months?
+# =============================================================================
+
+backtester_version: "1.0.0"
+scenario: "capital_accumulation"
+
+strategy:
+  base_yaml_path: "configs/strategies/strategy_template.yaml"
+
+run:
+  mode: "full_pipeline"
+  output_dir: "outputs/backtesting"
+  temp_dir: "temp/backtesting"
+  retain_temp_yamls: false
+  max_workers: 2
+  log_level: "INFO"
+
+stages:
+  random_search:     true
+  mc_prefilter:      false
+  genetic_algorithm: true
+  walk_forward:      true
+  monte_carlo_deep:  true
+  sensitivity:       true
+  report:            true
+
+random_search:
+  method: "lhs"
+  samples_per_zone: 150      # 150 × 2 zones = 300 total
+  min_significant_trades: 15 # REDUCED from 30 — necessary at 15min TF only.
+                             # ~15 trades/window average. Do NOT copy to other configs.
+  seed: 42
+
+genetic:
+  population_size: 50        # Reduced — fewer params, tighter space
+  generations: 25
+  elite_fraction: 0.10
+  mutation_rate: 0.15
+  crossover_rate: 0.70
+  tournament_size: 5
+  stagnation_generations: 8
+  diversity_penalty_weight: 0.10
+  diversity_distance_threshold: 0.15
+  seed: 44
+
+walk_forward:
+  input_count: 30
+  enforce_oos_gate: false
+  oos_degradation_threshold: 0.50
+  windows:
+    - {id: "W01", start: "2023-01-02", end: "2023-03-31"}
+    - {id: "W02", start: "2023-04-03", end: "2023-06-30"}
+    - {id: "W03", start: "2023-07-03", end: "2023-09-29"}
+    - {id: "W04", start: "2023-10-02", end: "2023-12-29"}
+    - {id: "W05", start: "2024-01-02", end: "2024-03-28"}
+    - {id: "W06", start: "2024-04-01", end: "2024-06-28"}
+    - {id: "W07", start: "2024-07-01", end: "2024-09-30"}
+    - {id: "W08", start: "2024-10-01", end: "2024-12-31"}
+    - {id: "W09", start: "2025-01-02", end: "2025-03-31"}
+    - {id: "W10", start: "2025-04-01", end: "2025-06-30"}
+    - {id: "W11", start: "2025-07-01", end: "2025-09-30"}
+    - {id: "W12", start: "2025-10-01", end: "2025-12-31"}
+    - {id: "W13", start: "2026-01-02", end: "2026-02-28"}
+
+monte_carlo:
+  deep:
+    input_count: 10
+    iterations: 3000
+    perturbation_profile: "default"
+    ruin_threshold: 0.20
+    seed: 45
+
+sensitivity:
+  input_count: 10
+  max_steps: 1
+  spike_threshold: 0.15
+  seed: 46
+
+output:
+  shortlist_count: 5
+  formats:
+    html: true
+    json: true
+    parquet: true
+  save_intermediates:
+    equity_curves: false
+    trade_logs: false
+    candidate_yamls: false
+
+perturbation_profiles:
+  default:
+    version: "1.0"
+    spread_noise_bps_range: [0, 3]
+    slippage_pips_range: [0, 1]
+    risk_noise_fraction: 0.05
+    shuffle_trades: true
+    resample_returns: true
+    execution_delay_bars: 0
+
+scenarios:
+  capital_accumulation:
+    description: "Steadily grow account balance with controlled risk"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.25
+      max_drawdown: 0.20
+      win_rate: 0.20
+      trade_frequency: 0.05
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.18
+      max_losing_streak: 12
+      min_trades_per_week: 0.1
+      min_expectancy: -1.0
+      min_profit_factor: 0.80
+    mc_prefilter_ruin_threshold: 0.25
+    wfo_collapse_drawdown_threshold: 400.0
+    normalisation_expectancy_ref_pts: 3.0
+    wfo_temporal_weights:
+      median_return: 0.30
+      variance: 0.30
+      worst_drawdown: 0.20
+      fraction_positive: 0.20
+    verdict_thresholds:
+      go_wfo_floor: 0.40
+      borderline_wfo_floor: 0.25
+      go_mc_ruin_ceiling: 0.05
+      borderline_mc_ruin_ceiling: 0.15
+      sensitivity_spike_threshold: 0.15
+    report_emphasis:
+      - wfo_consistency_score
+      - fraction_positive_windows
+      - actual_trades_per_week
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+  e2e_test:
+    description: "Pipeline validation only — NOT FOR TRADING USE"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.20
+      max_drawdown: 0.20
+      win_rate: 0.20
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.05
+      max_drawdown: 0.99
+      max_losing_streak: 9999
+      min_trades_per_week: 0.01
+      min_expectancy: -10.0
+      min_profit_factor: 0.05
+    mc_prefilter_ruin_threshold: 0.99
+    wfo_collapse_drawdown_threshold: 400.0
+    wfo_temporal_weights:
+      median_return: 0.25
+      variance: 0.25
+      worst_drawdown: 0.25
+      fraction_positive: 0.25
+    verdict_thresholds:
+      go_wfo_floor: 0.01
+      borderline_wfo_floor: 0.005
+      go_mc_ruin_ceiling: 0.99
+      borderline_mc_ruin_ceiling: 0.999
+      sensitivity_spike_threshold: 0.99
+    report_emphasis:
+      - actual_win_rate
+      - actual_trades_per_week
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+zones:
+  safe:
+    # Filters active: DPO + MACD (always on)
+    # Tighter MACD ranges calibrated for 15min bars.
+    # Slower MACD settings than 5min — longer periods to avoid noise.
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 8,   max: 20,  step: 1}
+      atr_multiplier:       {type: float, min: 1.5, max: 3.5, step: 0.1}
+      rr_target:            {type: float, min: 3.0, max: 10.0, step: 0.2}
+      risk_percentile:      {type: float, min: 0.7, max: 1.0, step: 0.01}
+      dpo_length:           {type: int,   min: 14,  max: 30,  step: 1}
+      dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.40, step: 0.02}
+      macd_fast:            {type: int,   min: 6,   max: 16,  step: 1}   # same as discovery
+      macd_slow:            {type: int,   min: 15,  max: 30,  step: 1}   # same as discovery
+      macd_signal:          {type: int,   min: 3,   max: 12,  step: 1}
+
+  exploration:
+    # Filters active: DPO + MACD + CCI (all always on)
+    # Wider ranges + CCI parameters.
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 5,   max: 35,  step: 1}
+      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.1}
+      rr_target:            {type: float, min: 2.0, max: 12.0, step: 0.2}
+      risk_percentile:      {type: float, min: 0.6, max: 1.2, step: 0.01}
+      dpo_length:           {type: int,   min: 10,  max: 35,  step: 1}
+      dpo_smooth:           {type: int,   min: 1,   max: 25,  step: 1}
+      dpo_threshold:        {type: float, min: 0.05, max: 0.50, step: 0.05}
+      macd_fast:            {type: int,   min: 3,   max: 16,  step: 1}
+      macd_slow:            {type: int,   min: 12,  max: 38,  step: 1}
+      macd_signal:          {type: int,   min: 1,   max: 15,  step: 1}
+      cci_length:           {type: int,   min: 10,  max: 30,  step: 1}
+      cci_overbought:       {type: int,   min: 51,  max: 120, step: 1}
+      cci_oversold:         {type: int,   min: -120, max: -51, step: 1}
+
+  discovery:
+    enabled: false

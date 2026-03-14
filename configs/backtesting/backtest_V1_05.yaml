@@ -1,0 +1,266 @@
+# =============================================================================
+# backtest_V1_05.yaml
+# Version: 1.1.0
+# Date: 2026-03-14
+#
+# CONFIGURATION: STF=10min / HTF=4H
+# BASE FILTERS:  DPO + MA
+# EXPLORATION:   DPO + MA + Bollinger Bands
+#
+# ZONE STRATEGY:
+#   safe zone        — DPO + MA always active. Tighter param ranges.
+#   exploration zone — DPO + MA + BB always active. Wider ranges.
+#   No choice parameters — discovery zone (type: choice) untested in V1.
+#
+# PARAMETER NAMING (verified against strategy_template.yaml + discovery zone):
+#   ma_length / ma_slope_length  (template: ma_filter.length / ma_filter.slope_length)
+#   bollinger_length / bollinger_multiplier / bollinger_width_ma
+#   dpo_length (step:2) / dpo_smooth / dpo_threshold (step:0.1)
+#   atr_length / atr_multiplier / rr_target / risk_percentile
+#
+# MA FILTER NOTE:
+#   template: ma_filter.ma_type = "TEMA", length, slope_length
+#   ma_length maps to ma_filter.length
+#   ma_slope_length maps to ma_filter.slope_length
+#   ma_type is fixed in template (TEMA) — not a searchable parameter here.
+#   On 10min bars: ma_length 15–50 (per discovery zone) spans 2.5–8.3 hours.
+#   With 4H HTF context this range gives meaningful trend filtering.
+#
+# DATA PATHS — ACTION REQUIRED BEFORE RUNNING:
+#     strategy_ohlcv: data/processed/ohlcv/DEUIDXEUR_10min_20221201_20260301.parquet
+#     htf_ohlcv:      data/processed/ohlcv/DEUIDXEUR_4h_20221201_20260301.parquet
+#     htf_period:     "4h"
+#
+# CONSTRAINT CALIBRATION (~500–1,000 trades / 38mo ≈ 2.5–5/week):
+#   min_trades_per_week: 0.5   (was 3.0 — floor at ~15% of expected minimum)
+#   max_losing_streak:   20    (was 50 — on 500 total trades, 20 = 4% of all trades)
+#   min_expectancy:     -2.0   (unchanged)
+#   min_profit_factor:   0.75  (unchanged)
+#   min_win_rate:        0.18  (unchanged)
+#
+# SIGMOID: _SIGMOID_SCALE=310.0 hardcoded. Fitness NOT comparable to 1min runs.
+#   10min trades have larger individual P&L — different stdev from 1min.
+#
+# WFO WINDOW NOTE:
+#   ~750 trades / 13 windows ≈ 58/window average. Most windows should clear
+#   min_significant_trades=30. W07, W09, W13 likely to fire REJECTED still.
+#
+# RUNTIME ESTIMATE: 8–12 hours at max_workers=2
+#   Stage 1: ~40–55 min  (400 candidates — fewer trades = faster per-eval)
+#   Stage 3: ~2.5–3.5 hrs
+#   Stage 4: ~5–7 hrs
+#   Stage 5: ~20–30 min
+#   Stage 6: ~15–20 min
+#   Stage 7: ~5 min
+#
+# KEY QUESTIONS:
+#   1. Does DPO+MA on 10min produce viable candidates?
+#   2. Does 4H HTF add regime filtering value vs no-HTF?
+#   3. Does BB meaningfully complement DPO+MA at this TF?
+#   4. How many WFO windows survive with only ~58 trades/window?
+# =============================================================================
+
+backtester_version: "1.0.0"
+scenario: "capital_accumulation"
+
+strategy:
+  base_yaml_path: "configs/strategies/strategy_template.yaml"
+
+run:
+  mode: "full_pipeline"
+  output_dir: "outputs/backtesting"
+  temp_dir: "temp/backtesting"
+  retain_temp_yamls: false
+  max_workers: 2
+  log_level: "INFO"
+
+stages:
+  random_search:     true
+  mc_prefilter:      false
+  genetic_algorithm: true
+  walk_forward:      true
+  monte_carlo_deep:  true
+  sensitivity:       true
+  report:            true
+
+random_search:
+  method: "lhs"
+  samples_per_zone: 200      # 200 × 2 zones = 400 total
+  min_significant_trades: 30
+  seed: 42
+
+genetic:
+  population_size: 60
+  generations: 30
+  elite_fraction: 0.10
+  mutation_rate: 0.15
+  crossover_rate: 0.70
+  tournament_size: 5
+  stagnation_generations: 10
+  diversity_penalty_weight: 0.10
+  diversity_distance_threshold: 0.15
+  seed: 44
+
+walk_forward:
+  input_count: 30
+  enforce_oos_gate: false
+  oos_degradation_threshold: 0.50
+  windows:
+    - {id: "W01", start: "2023-01-02", end: "2023-03-31"}
+    - {id: "W02", start: "2023-04-03", end: "2023-06-30"}
+    - {id: "W03", start: "2023-07-03", end: "2023-09-29"}
+    - {id: "W04", start: "2023-10-02", end: "2023-12-29"}
+    - {id: "W05", start: "2024-01-02", end: "2024-03-28"}
+    - {id: "W06", start: "2024-04-01", end: "2024-06-28"}
+    - {id: "W07", start: "2024-07-01", end: "2024-09-30"}
+    - {id: "W08", start: "2024-10-01", end: "2024-12-31"}
+    - {id: "W09", start: "2025-01-02", end: "2025-03-31"}
+    - {id: "W10", start: "2025-04-01", end: "2025-06-30"}
+    - {id: "W11", start: "2025-07-01", end: "2025-09-30"}
+    - {id: "W12", start: "2025-10-01", end: "2025-12-31"}
+    - {id: "W13", start: "2026-01-02", end: "2026-02-28"}
+
+monte_carlo:
+  deep:
+    input_count: 10
+    iterations: 3000
+    perturbation_profile: "default"
+    ruin_threshold: 0.20
+    seed: 45
+
+sensitivity:
+  input_count: 10
+  max_steps: 1
+  spike_threshold: 0.15
+  seed: 46
+
+output:
+  shortlist_count: 5
+  formats:
+    html: true
+    json: true
+    parquet: true
+  save_intermediates:
+    equity_curves: false
+    trade_logs: false
+    candidate_yamls: false
+
+perturbation_profiles:
+  default:
+    version: "1.0"
+    spread_noise_bps_range: [0, 3]
+    slippage_pips_range: [0, 1]
+    risk_noise_fraction: 0.05
+    shuffle_trades: true
+    resample_returns: true
+    execution_delay_bars: 0
+
+scenarios:
+  capital_accumulation:
+    description: "Steadily grow account balance with controlled risk"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.25
+      max_drawdown: 0.20
+      win_rate: 0.20
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.18
+      max_losing_streak: 20
+      min_trades_per_week: 0.5
+      min_expectancy: -2.0
+      min_profit_factor: 0.75
+    mc_prefilter_ruin_threshold: 0.25
+    wfo_collapse_drawdown_threshold: 400.0
+    normalisation_expectancy_ref_pts: 3.0
+    wfo_temporal_weights:
+      median_return: 0.30
+      variance: 0.30
+      worst_drawdown: 0.20
+      fraction_positive: 0.20
+    verdict_thresholds:
+      go_wfo_floor: 0.40
+      borderline_wfo_floor: 0.25
+      go_mc_ruin_ceiling: 0.05
+      borderline_mc_ruin_ceiling: 0.15
+      sensitivity_spike_threshold: 0.15
+    report_emphasis:
+      - wfo_consistency_score
+      - fraction_positive_windows
+      - actual_trades_per_week
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+  e2e_test:
+    description: "Pipeline validation only — NOT FOR TRADING USE"
+    fitness_weights:
+      net_pnl: 0.20
+      expectancy: 0.20
+      max_drawdown: 0.20
+      win_rate: 0.20
+      trade_frequency: 0.10
+      profit_factor: 0.10
+    constraints:
+      min_win_rate: 0.05
+      max_drawdown: 0.99
+      max_losing_streak: 9999
+      min_trades_per_week: 0.05
+      min_expectancy: -10.0
+      min_profit_factor: 0.05
+    mc_prefilter_ruin_threshold: 0.99
+    wfo_collapse_drawdown_threshold: 400.0
+    wfo_temporal_weights:
+      median_return: 0.25
+      variance: 0.25
+      worst_drawdown: 0.25
+      fraction_positive: 0.25
+    verdict_thresholds:
+      go_wfo_floor: 0.01
+      borderline_wfo_floor: 0.005
+      go_mc_ruin_ceiling: 0.99
+      borderline_mc_ruin_ceiling: 0.999
+      sensitivity_spike_threshold: 0.99
+    report_emphasis:
+      - actual_win_rate
+      - actual_trades_per_week
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+zones:
+  safe:
+    # Filters active: DPO + MA (always on)
+    # ma_slope_length included — required companion to ma_length in template.
+    # Ranges match discovery zone bounds where applicable.
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 8,   max: 20,  step: 2}
+      atr_multiplier:       {type: float, min: 1.5, max: 3.0, step: 0.25}
+      rr_target:            {type: float, min: 3.0, max: 8.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.10, max: 0.50, step: 0.05}
+      dpo_length:           {type: int,   min: 14,  max: 30,  step: 2}
+      dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.30, step: 0.10}
+      ma_length:            {type: int,   min: 15,  max: 50,  step: 5}
+      ma_slope_length:      {type: int,   min: 5,   max: 20,  step: 5}
+
+  exploration:
+    # Filters active: DPO + MA + Bollinger Bands (all always on)
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 5,   max: 35,  step: 2}
+      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
+      rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.05, max: 0.50, step: 0.05}
+      dpo_length:           {type: int,   min: 14,  max: 35,  step: 2}
+      dpo_smooth:           {type: int,   min: 2,   max: 25,  step: 1}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.50, step: 0.10}
+      ma_length:            {type: int,   min: 15,  max: 50,  step: 5}
+      ma_slope_length:      {type: int,   min: 5,   max: 20,  step: 5}
+      bollinger_length:     {type: int,   min: 5,   max: 40,  step: 2}
+      bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 15,  max: 60,  step: 5}
+
+  discovery:
+    enabled: false
