@@ -141,7 +141,7 @@ scenarios:
       net_pnl: 0.20
       expectancy: 0.25
       max_drawdown: 0.20
-      win_rate: 0.20
+      win_rate: 0.15
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
