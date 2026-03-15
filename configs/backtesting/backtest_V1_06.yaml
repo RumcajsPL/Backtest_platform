@@ -260,16 +260,16 @@ zones:
     # MACD: fast max=12 / slow min=14 — structurally prevents fast >= slow
     enabled: true
     parameters:
-      atr_length:           {type: int,   min: 8,   max: 20,  step: 1}
-      atr_multiplier:       {type: float, min: 1.5, max: 3.5, step: 0.1}
-      rr_target:            {type: float, min: 3.0, max: 10.0, step: 0.2}
+      atr_length:           {type: int,   min: 8,   max: 18,  step: 1}
+      atr_multiplier:       {type: float, min: 1.5, max: 2.2, step: 0.1}
+      rr_target:            {type: float, min: 3.0, max: 8.0, step: 0.1}
       risk_percentile:      {type: float, min: 0.85, max: 1.10, step: 0.01}
       dpo_length:           {type: int,   min: 14,  max: 30,  step: 1}
-      dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
-      dpo_threshold:        {type: float, min: 0.10, max: 0.40, step: 0.02}
+      dpo_smooth:           {type: int,   min: 6,   max: 20,  step: 1}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.3, step: 0.02}
       macd_fast:            {type: int,   min: 6,   max: 12,  step: 1}  # max < slow min
       macd_slow:            {type: int,   min: 14,  max: 30,  step: 1}  # min > fast max
-      macd_signal:          {type: int,   min: 3,   max: 12,  step: 1}
+      macd_signal:          {type: int,   min: 4,   max: 12,  step: 1}
 
   exploration:
     # Filters active: DPO + MACD + CCI (always on)
@@ -277,16 +277,16 @@ zones:
     # MACD: fast max=12 / slow min=14 — same structural separation
     enabled: true
     parameters:
-      atr_length:           {type: int,   min: 5,   max: 35,  step: 1}
-      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.1}
-      rr_target:            {type: float, min: 2.0, max: 12.0, step: 0.2}
+      atr_length:           {type: int,   min: 6,   max: 25,  step: 1}
+      atr_multiplier:       {type: float, min: 1, max: 3.0, step: 0.1}
+      rr_target:            {type: float, min: 2.0, max: 12.0, step: 0.1}
       risk_percentile:      {type: float, min: 0.80, max: 1.20, step: 0.01}
       dpo_length:           {type: int,   min: 10,  max: 35,  step: 1}
       dpo_smooth:           {type: int,   min: 1,   max: 25,  step: 1}
       dpo_threshold:        {type: float, min: 0.05, max: 0.50, step: 0.05}
-      macd_fast:            {type: int,   min: 3,   max: 12,  step: 1}  # max < slow min
-      macd_slow:            {type: int,   min: 14,  max: 38,  step: 1}  # min > fast max
-      macd_signal:          {type: int,   min: 1,   max: 15,  step: 1}
+      macd_fast:            {type: int,   min: 3,   max: 15,  step: 1}  # max < slow min
+      macd_slow:            {type: int,   min: 16,  max: 38,  step: 1}  # min > fast max
+      macd_signal:          {type: int,   min: 2,   max: 16,  step: 1}
       cci_length:           {type: int,   min: 10,  max: 30,  step: 1}
       cci_overbought:       {type: int,   min: 51,  max: 120, step: 1}
       cci_oversold:         {type: int,   min: -120, max: -51, step: 1}

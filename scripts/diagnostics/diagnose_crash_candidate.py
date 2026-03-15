@@ -14,7 +14,7 @@ YAML_PATH   = Path("configs/backtesting/backtest_V1_06.yaml")
 TARGET_ZONE = "exploration"   # change to "safe" if needed
 TARGET_IDX  = 1               # 0-based index within zone (0=first, 1=second, ...)
 SEED        = 42
-N_SAMPLES   = 100             # samples_per_zone from yaml
+N_SAMPLES   = 300             # samples_per_zone from yaml
 # ──────────────────────────────────────────────────────────────────────────
 
 def lhs_sample(params: dict, n: int, seed: int) -> list[dict]:

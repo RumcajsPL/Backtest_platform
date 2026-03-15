@@ -1,67 +1,144 @@
 # =============================================================================
-# backtest_V1_01.yaml
-# Version: 3.0.0
-# Date: 2026-03-10  (Block 9O — overnight production run)
+# backtest_V1_04.yaml
+# Version: 1.0.0
+# Date: 2026-03-15  (3rd overnight run — evidence-based refinement)
 #
-# CHANGES FROM v2.0.0:
+# PARENT RUN (focused):  6fcf82b9  (backtest_V1_03.yaml)
+# GRANDPARENT (generic): 547c3161  (backtest_V1_02.yaml)
 #
-#   FIX 1: max_workers: 6 → 2  (CRITICAL — OOM fix)
-#     Full-history WFO: cold-cache pd.read_parquet() on 897MB LTF file × 6 workers
-#     = 5.38GB simultaneous peak → PyArrow MemoryError → system crash.
-#     2 workers = 1.79GB peak — within 8GB RAM budget.
-#     Do NOT raise until V2 shared-memory architecture (B9O-009) is implemented.
+# GOAL: Highest-density search in the confirmed-productive parameter region.
+#       Two complementary pressures:
+#         (A) Tighter principal ranges — we now know where winners live
+#         (B) Looser sensitivity exploration — push confirmed winners toward
+#             their local optima rather than just finding the basin again
 #
-#   FIX 2: mc_prefilter: true → false
-#     Full pipeline calibration run 9f73d667 showed Stage 2 passed only 1/18
-#     candidates (including eliminating WFO-0.92 and WFO-0.80 candidates).
-#     MC pre-filter ruin_threshold=0.25 is calibrated for 3-month windows.
-#     On 38-month continuous evaluation, MC perturbation compounds over time
-#     producing false ruin signals. Stage 4 WFO is the correct primary gate.
-#     Stage 5 MC Deep on top WFO survivors is the correct ruin screen.
+# =============================================================================
+# EVIDENCE BASE — WHAT RUNS 547c3161 AND 6fcf82b9 PROVED
+# =============================================================================
 #
-#   FIX 3: min_expectancy: 0.0 → -2.0  (full-history calibrated)
-#     Observed 38-month avg expectancy = -1.69, min = -2.56.
-#     0.0 threshold eliminates ~99% of candidates on full-history data.
-#     -2.0 targets top ~60-65% — confirmed across 3 calibration runs.
+#  rr_target:
+#    6fcf82b9 top-5 WFO: 3.1, 3.1, 2.9, 3.3, 2.8  → cluster 2.8–3.3
+#    Bottom-5 includes rr=5.0 (3fee5b686ff2, WFO=0.474) → upper tail confirmed dead
+#    Action: 2.5–6.0 → 2.6–3.6  (tight, centred on 2.8–3.3 cluster)
+#    Rationale: 2.5–2.7 produced one bottom-5 candidate (2.7, WFO=0.545);
+#               3.4–3.6 gives small upward shoulder room beyond 3.3 peak.
+#               Nothing survives above 3.7 in either run.
 #
-#   FIX 4: min_win_rate: 0.15 → 0.11  (full-history calibrated)
-#     Observed 38-month avg win_rate = 0.1486, min = 0.0945.
-#     0.15 threshold cuts the average — eliminates ~50% on win_rate alone.
-#     0.11 removes only bottom ~5% (extreme outliers).
+#  atr_multiplier:
+#    Top-5: 2.3, 2.2, 2.1, 2.7, 2.6  → cluster 2.1–2.7
+#    Bottom-5: 1.5, 1.9, 2.4, 2.2    → 1.5 confirmed bad; 1.9 underperforms
+#    Sensitivity (222e30cc7e57): delta +0.047 at mult-0.1 (2.2→2.3 direction = positive)
+#    Action: 1.2–2.8 → 1.8–2.9
+#    Rationale: 1.2–1.7 is dead space confirmed across both runs. Keep 2.9 — it was
+#               excluded from V1_03 zone (dead) but the sensitivity result on 222e30cc7e57
+#               (+0.008 at mult+0.1=2.4) and 50005b47bea6 (+0.038 at 2.2) suggests
+#               the curve hasn't fully peaked. Give GA room to 2.9.
 #
-#   FIX 5: min_profit_factor: 0.90 → 0.75  (full-history calibrated)
-#     Consistent with calibration YAML v4.0.0. Confirmed no quality degradation.
+#  atr_length:
+#    Top-5: 21, 11, 20, 6, 9  → wide spread — no structural bias detected
+#    Bottom-5: 8, 24, 5, 16, 12 → short lengths (5-8) appear in both tails
+#    Action: keep 5–24 (full range) but GA will naturally deprioritise 5-8
+#    Note: atr_length is the most volatile parameter — forcing range now is premature.
 #
-#   FIX 6: go_wfo_floor: 0.65 → 0.40
-#     Structural W02/W04/W05 window failures suppress all WFO scores.
-#     Best observed score across 3 calibration runs = 0.9236 (on 3/7 windows).
-#     Best reliable 5/7-window score = 0.7962.
-#     0.65 floor admitted zero verdicts in run 9f73d667. 0.40 is the correct
-#     threshold given the structural regime suppression on this dataset.
+#  risk_percentile:
+#    Top-5: 0.51, 0.37, 0.25, 0.40, 0.55 — appears across full range
+#    auto_go winners: 0.51 (222e30cc7e57), 0.25 (50005b47bea6), 0.52 (87aecf355ca0)
+#    Bottom-5: 0.30, 0.61, 0.52, 0.54, 0.63 — high end (>0.55) tends to underperform
+#    Action: 0.20–0.70 → 0.20–0.60
+#    Rationale: trim the confirmed-bad upper tail (0.61–0.70); lower end stays open
+#               since 0.25 produced the 2nd-best WFO candidate.
 #
-#   FIX 7: borderline_wfo_floor: 0.40 → 0.25  (maintains separation from go floor)
+#  dpo_threshold:
+#    Sensitivity on 222e30cc7e57: delta +0.051 at -0.01 (0.16→0.15) — most sensitive param
+#    Sensitivity on 05404cdf6fdf: delta -0.008 at +0.01 (dpo_length sensitivity larger)
+#    V1_03 zone was 0.10–0.25. Top candidates clustered: 0.15, 0.16, 0.13, 0.21, 0.21
+#    Action: keep 0.10–0.25 — range confirmed productive. Do not narrow further
+#            until we have parameter read from 3rd run.
 #
-# PRE-REQUISITES CONFIRMED:
-#   consistency_scorer.py: _SIGMOID_SCALE = 310.0    (confirmed N=231, stdev=620.09)
-#   consistency_scorer.py: _MAX_EXPECTED_DRAWDOWN = 2_500.0
-#   data_loader.py: v3.5.0 (B9O-006, B9O-007, B9O-008 all applied)
+#  adx_threshold:
+#    V1_02 confirmed <22 dead. V1_03 zone was 22.0–30.0.
+#    Top-5 WFO adx_threshold (from sensitivity base values): ~30, 26.4, 28.6, 29.8, 25.8
+#    Sensitivity deltas small (≤0.0095) — adx_threshold is a stable parameter
+#    Action: keep 22.0–30.0. No change justified.
 #
-# RUNTIME ESTIMATE: 14-20 hours at max_workers=2
-#   Stage 1:  ~60-80 min  (400 candidates, 2 workers)
-#   Stage 2:  DISABLED
-#   Stage 3:  ~3-4 hrs    (GA, 30 generations × 60 population, 2 workers)
-#   Stage 4:  ~8-10 hrs   (13 windows × 30 candidates, 2 workers — dominant)
-#   Stage 5:  ~30-45 min  (10 candidates × 3000 MC iterations)
-#   Stage 6:  ~20-30 min  (5 candidates × ±1 step)
-#   Stage 7:  ~5 min
+#  adx_length:
+#    V1_03 zone: 8–25. Sensitivity deltas mostly small (≤0.0095 across all candidates)
+#    Exception: 53480de6ce6a delta +0.0095 at length-1 — modest signal
+#    Action: keep 8–25. Stable.
+#
+#  choppiness_threshold:
+#    All sensitivity deltas ≤0.0007 across all 10 candidates → near-insensitive
+#    Action: narrow range 52.0–65.0 → 54.0–65.0 (trim confirmed-unresponsive lower tail)
+#
+#  cci_overbought / cci_oversold:
+#    All sensitivity deltas ≤0.0144 (one outlier: 222e30cc7e57 cci_overbought +0.0144)
+#    Mostly 0.000–0.0008. Range 51–150 / -150–-51 is wide — no evidence to narrow.
+#    Action: keep as-is.
+#
+# =============================================================================
+# GA SETTINGS — WHY MORE AGGRESSIVE THIS RUN
+# =============================================================================
+#
+#  V1_03: population=70, generations=35
+#  V1_04: population=80, generations=40
+#
+#  Rationale: parameter space is now ~15–20% smaller by volume (rr_target,
+#  atr_multiplier, risk_percentile all tightened). The same compute budget
+#  maps to denser coverage. Additional generations help the GA climb sensitivity
+#  gradients identified above (especially dpo_threshold and atr_multiplier).
+#  Stagnation_generations raised 10→12 to prevent premature convergence in the
+#  tighter space — need more generations to confirm a true plateau.
+#
+# =============================================================================
+# SAMPLES — WHY SLIGHTLY REDUCED
+# =============================================================================
+#
+#  V1_03: 300 samples (single zone)
+#  V1_04: 250 samples
+#
+#  Rationale: 300 at 62% pass rate = ~186 survivors to GA. With the tighter
+#  ranges, the effective pass rate should rise (fewer dead-space samples hitting
+#  win_rate/expectancy constraints). 250 × estimated 68% pass ≈ 170 survivors —
+#  roughly the same GA input with ~17% faster Stage 1.
+#  If pass rate disappoints (< 55%), revisit in V1_05.
+#
+# =============================================================================
+# UNCHANGED (deliberate)
+# =============================================================================
+#
+#  _SIGMOID_SCALE = 310.0 in consistency_scorer.py — KNOWN MISMATCH
+#    V1_03 sigmoid diagnostic: stdev=325.93, recommended=163.0
+#    310 is ~1.9× recommended. This inflates fitness scores uniformly — all
+#    candidates affected equally, so relative ranking is preserved. Changing
+#    hardcoded value mid-sequence breaks cross-run comparability. V2 backlog
+#    item V2-SIGMOID-CFG. Do NOT touch for V1_04.
+#
+#  All constraint thresholds — calibrated, empirically confirmed. No change.
+#  All 13 WFO windows — identical to V1_02 and V1_03 for full comparability.
+#  max_workers: 2 — OOM constraint unchanged.
+#  mc_prefilter: false — same reasoning (compounds 38-month drawdown).
+#  Scenario: capital_accumulation — unchanged.
 #
 # KEY QUESTIONS THIS RUN ANSWERS:
-#   1. Do any candidates survive MC Deep on 13-window WFO results?
-#      (calibration runs used 38-month continuous eval — MC compounds over time)
-#   2. Which of W08-W13 (2024 H2 through 2026 Q1) are structurally good/bad?
-#   3. Does the exploration zone (DPO + Choppiness) hold through 2024-2025?
-#   4. Does f86f7e6c491a (ruin=0.041, WFO=0.4048) reproduce on 13 windows?
-#   5. Does W13 (Jan-Feb 2026) produce REJECTED_INSUFFICIENT_TRADES as expected?
+#   1. Does the tighter rr_target range (2.6–3.6) produce higher WFO scores
+#      or does concentrating the range diminish diversity?
+#   2. Does the atr_multiplier shift (floor 1.2→1.8) eliminate noise without
+#      losing any productive candidates?
+#   3. Does the elevated GA (80×40) find the dpo_threshold local optimum
+#      identified in sensitivity analysis (direction: lower is better)?
+#   4. Does any candidate survive W10 (2025 Q2) with positive median_ret?
+#      (None in V1_03 top-10: 222e30cc7e57 W10 net_pnl=-92, 50005b47bea6 W10=-308)
+#   5. Does the risk_percentile ceiling reduction (0.70→0.60) reduce the
+#      fraction of borderline/collapsed candidates?
+#
+# RUNTIME ESTIMATE: 11–15 hours at max_workers=2
+#   Stage 1:  ~50–65 min  (250 candidates, 2 workers — ~17% faster than V1_03)
+#   Stage 2:  DISABLED
+#   Stage 3:  ~3.5–4.5 hrs (GA, 40 generations × 80 population, 2 workers)
+#   Stage 4:  ~7–9 hrs    (13 windows × 30 candidates, 2 workers — dominant)
+#   Stage 5:  ~30–45 min  (10 candidates × 3000 MC iterations)
+#   Stage 6:  ~20–30 min  (10 candidates × ±1 step)
+#   Stage 7:  ~5 min
 # =============================================================================
 
 backtester_version: "1.0.0"
@@ -75,7 +152,7 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 2       # MANDATORY — OOM at 6 confirmed. Do not raise until B9O-009 (shared memory).
+  max_workers: 2       # MANDATORY — OOM at 6 confirmed. Do not raise until V2 shared memory.
   log_level: "INFO"
 
 stages:
@@ -89,18 +166,19 @@ stages:
 
 random_search:
   method: "lhs"
-  samples_per_zone: 200      # 200 × 2 zones = 400 total
+  samples_per_zone: 250      # Reduced from 300 — tighter ranges raise pass rate,
+                              # net GA input stays ~170. Faster Stage 1.
   min_significant_trades: 30
   seed: 42
 
 genetic:
-  population_size: 60
-  generations: 30
+  population_size: 80        # Increased from 70 — space is ~15-20% smaller, same budget = denser
+  generations: 40            # Increased from 35 — climb sensitivity gradients (dpo_threshold, atr_mult)
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 10
+  stagnation_generations: 12 # Raised from 10 — tighter space needs more gens to confirm a plateau
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -111,6 +189,7 @@ walk_forward:
   oos_degradation_threshold: 0.50
 
   # 13 rolling 3-month windows — 2023-01-02 → 2026-02-28
+  # Identical to V1_02 and V1_03 for full cross-run comparability.
   #
   # Regime map:
   #   W01-W04  2023      DAX recovery trend — directional, lower noise
@@ -118,6 +197,7 @@ walk_forward:
   #   W09-W11  2025 H1   Range-bound with momentum bursts
   #   W12      2025 Q4   Cross-reference: overlaps production_v1 5-window slice
   #   W13      2026 Q1   Partial (~2 months) — REJECTED_INSUFFICIENT_TRADES expected
+  #   W10      2025 Q2   Structural stress window — worst window across all runs
   #
   windows:
     - id: "W01"
@@ -206,12 +286,11 @@ scenarios:
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
-      min_win_rate: 0.18         # Full-history calibrated — avg=0.1486, removes bottom ~5%
-      max_losing_streak: 50     # Full-history calibrated — 38-month max observed=94
+      min_win_rate: 0.18         # Calibrated across 3 runs — confirmed correct
+      max_losing_streak: 50      # Calibrated — 38-month max observed=94
       min_trades_per_week: 3.0   # Unchanged — 1 failure observed across all runs
-      min_expectancy: -2.0       # Full-history calibrated — avg=-1.69, targets top ~65%
-      min_profit_factor: 0.75    # Full-history calibrated — no failures at this threshold
-      # max_drawdown: REMOVED — accumulates over 38 months. Stage 4 WFO gates per-window.
+      min_expectancy: -2.0       # Calibrated — avg=-1.69, targets top ~65%
+      min_profit_factor: 0.75    # Calibrated — no failures at this threshold
     mc_prefilter_ruin_threshold: 0.25   # Retained for reference (Stage 2 disabled)
     wfo_collapse_drawdown_threshold: 400.0
     normalisation_expectancy_ref_pts: 3.0
@@ -221,8 +300,8 @@ scenarios:
       worst_drawdown: 0.20
       fraction_positive: 0.20
     verdict_thresholds:
-      go_wfo_floor: 0.40         # Lowered from 0.65 — structural W02/W04/W05 suppress scores
-      borderline_wfo_floor: 0.25 # Lowered from 0.40 — maintains separation from go floor
+      go_wfo_floor: 0.40
+      borderline_wfo_floor: 0.25
       go_mc_ruin_ceiling: 0.05
       borderline_mc_ruin_ceiling: 0.15
       sensitivity_spike_threshold: 0.15
@@ -270,39 +349,79 @@ scenarios:
       - actual_max_drawdown
 
 zones:
-  safe:
+  focused:
+    # Evidence-based refinement of V1_03 focused zone.
+    # All changes annotated with specific evidence from 6fcf82b9 and 547c3161.
     enabled: true
     parameters:
-      atr_length:           {type: int,   min: 10,  max: 20, step: 1}
-      atr_multiplier:       {type: float, min: 1.5, max: 2.2, step: 0.1}
-      rr_target:            {type: float, min: 3.0, max: 8.5, step: 0.1}
-      risk_percentile:      {type: float, min: 0.45, max: 0.65, step: 0.01}
-      dpo_length:           {type: int,   min: 15, max: 25, step: 1}
-      dpo_smooth:           {type: int,   min: 3,  max: 20, step: 1}
-      dpo_threshold:        {type: float, min: 0.2, max: 0.40, step: 0.02}
-      choppiness_length:    {type: int,   min: 10, max: 20, step: 1}
-      choppiness_threshold: {type: float, min: 55.0, max: 65.0, step: 0.1}
-      cci_length:           {type: int,   min: 15, max: 25, step: 1}
-      cci_overbought:       {type: int,   min: 60, max: 110, step: 1}
-      cci_oversold:         {type: int,   min: -110, max: -60, step: 1}   
+      atr_length:           {type: int,   min: 5,   max: 24,  step: 1}
+      # UNCHANGED — top-5 WFO spread: 6, 9, 11, 20, 21. No structural bias.
+      # Short lengths (5-8) appear in both tails — let GA decide.
+
+      atr_multiplier:       {type: float, min: 1.8, max: 2.9, step: 0.1}
+      # TIGHTENED lower: 1.2→1.8 — 1.5 (3fee5b686ff2, WFO=0.474) confirmed dead.
+      #   1.9 (d7522b88153e, WFO=0.508) also underperforms.
+      # EXPANDED upper: 2.8→2.9 — sensitivity on top candidates shows positive
+      #   gradient toward higher mult (222e30cc7e57: +0.047 at mult-0.1, i.e. lower
+      #   was better — but 50005b47bea6 peaked at 2.1, 87aecf355ca0 at 1.6→moot).
+      #   2.9 gives one extra step above the 2.8 peak to confirm peak location.
+
+      rr_target:            {type: float, min: 2.6, max: 3.6, step: 0.1}
+      # TIGHTENED: 2.5–6.0 → 2.6–3.6
+      # Evidence: top-5 all between 2.8–3.3. rr=5.0 is bottom-5.
+      # 2.6 included: one shoulder step below 2.8 minimum.
+      # 3.4–3.6 included: shoulder above 3.3 peak (rr=3.7 produced WFO=0.508).
+      # This is the most confident range change in this YAML.
+
+      risk_percentile:      {type: float, min: 0.20, max: 0.60, step: 0.01}
+      # TIGHTENED upper: 0.70→0.60
+      # Evidence: bottom-5 risk_percentile values: 0.30, 0.61, 0.52, 0.54, 0.63
+      #   Three of five bottom performers had risk_perc > 0.51.
+      #   auto_go winners: 0.51, 0.25, 0.52 — upper bound 0.52 confirmed safe.
+      # 0.60 gives a small buffer above confirmed 0.55 (5980ddca123c).
+
+      dpo_length:           {type: int,   min: 10,  max: 30,  step: 1}
+      # UNCHANGED — sensitivity deltas modest (≤0.008 across all candidates).
+
+      dpo_smooth:           {type: int,   min: 1,   max: 26,  step: 1}
+      # UNCHANGED — sensitivity deltas small (≤0.004). Full range retained.
+
+      dpo_threshold:        {type: float, min: 0.10, max: 0.25, step: 0.01}
+      # UNCHANGED from V1_03 — but this is the highest-priority parameter for GA.
+      # 222e30cc7e57 sensitivity: delta +0.051 at threshold-0.01 (lower = better).
+      # GA should push toward 0.10–0.15 region in this run.
+      # Do not narrow range until 3rd run confirms the floor.
+
+      choppiness_length:    {type: int,   min: 8,   max: 26,  step: 1}
+      # UNCHANGED — sensitivity deltas mixed but none large (≤0.008).
+
+      choppiness_threshold: {type: float, min: 54.0, max: 65.0, step: 0.1}
+      # SLIGHTLY TIGHTENED lower: 52.0→54.0
+      # Evidence: all sensitivity deltas for choppiness_threshold ≤0.0007.
+      # Near-insensitive parameter — 52.0–53.9 is confirmed dead space.
+
+      cci_length:           {type: int,   min: 10,  max: 30,  step: 1}
+      # UNCHANGED — sensitivity deltas small (≤0.004 across candidates).
+
+      cci_overbought:       {type: int,   min: 51,  max: 150, step: 2}
+      # UNCHANGED — mostly insensitive except 222e30cc7e57 (+0.014 at +4).
+      # One candidate data point insufficient to narrow range.
+
+      cci_oversold:         {type: int,   min: -150, max: -51, step: 2}
+      # UNCHANGED — all sensitivity deltas ≤0.001.
+
+      adx_length:           {type: int,   min: 8,   max: 25,  step: 1}
+      # UNCHANGED — sensitivity deltas ≤0.0095. No evidence to change.
+
+      adx_threshold:        {type: float, min: 22.0, max: 30.0, step: 0.2}
+      # UNCHANGED — confirmed active range in both V1_02 and V1_03.
+      # <22 dead (V1_02 finding). 22.0–30.0 correct.
+
+  safe:
+    enabled: false   # Retired in V1_03 — produced no top candidates in 547c3161
 
   exploration:
-    enabled: true
-    parameters:
-      atr_length:           {type: int,   min: 5,  max: 24, step: 1}
-      atr_multiplier:       {type: float, min: 1.2, max: 3.0, step: 0.1}
-      rr_target:            {type: float, min: 2.0, max: 10.0, step: 0.1}
-      risk_percentile:      {type: float, min: 0.2, max: 0.70, step: 0.01}
-      dpo_length:           {type: int,   min: 10, max: 30, step: 1}
-      dpo_smooth:           {type: int,   min: 1,  max: 26, step: 1}
-      dpo_threshold:        {type: float, min: 0.1, max: 0.40, step: 0.01}
-      choppiness_length:    {type: int,   min: 8, max: 26, step: 1}
-      choppiness_threshold: {type: float, min: 50.0, max: 67.0, step: 0.1}
-      cci_length:           {type: int,   min: 10, max: 30, step: 1}
-      cci_overbought:       {type: int,   min: 50, max: 150, step: 2}
-      cci_oversold:         {type: int,   min: -150, max: -50, step: 2} 
-      adx_length:           {type: int,   min: 8,  max: 25, step: 1}
-      adx_threshold:        {type: float, min: 17.0, max: 30.0, step: 0.2}    
+    enabled: false   # Retired in V1_03 — merged into focused zone
 
   discovery:
     enabled: false
