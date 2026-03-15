@@ -301,8 +301,8 @@ zones:
       choppiness_length:    {type: int,   min: 8,   max: 26,  step: 1}
       choppiness_threshold: {type: float, min: 52.0, max: 65.0, step: 0.1} # trimmed tails
       cci_length:           {type: int,   min: 10,  max: 30,  step: 1}
-      cci_overbought:       {type: int,   min: 50,  max: 150, step: 2}
-      cci_oversold:         {type: int,   min: -50, max: -150, step: 2}
+      cci_overbought:       {type: int,   min: 51,  max: 150, step: 2}
+      cci_oversold:         {type: int,   min: -150, max: -51, step: 2}
       adx_length:           {type: int,   min: 8,   max: 25,  step: 1}
       adx_threshold:        {type: float, min: 22.0, max: 30.0, step: 0.2} # <22 was dead space
 
