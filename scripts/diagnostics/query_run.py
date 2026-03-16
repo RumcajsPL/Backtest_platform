@@ -3,6 +3,7 @@ query_run.py — Pipeline Result Analysis
 ========================================
 Auto-discovers the latest run_id from the DB.
 Pass --run-id <id> to analyse a specific run.
+
 Usage:
     python query_run.py
     python query_run.py --run-id b0faec30-5860-4e1d-a796-7353ad1aaf7c
@@ -11,15 +12,12 @@ Usage:
     python query_run.py --section health
     python query_run.py --section schema
     python query_run.py --section sigmoid
-Sections: all | health | summary | stages | stage1 | ga | wfo | mc | sensitivity | verdicts | params | bollinger | schema | sigmoid
-From project root:
-python scripts/diagnostics/query_run.py --section schema
-python scripts/diagnostics/query_run.py --run-id <id> --section sigmoid
-python scripts/diagnostics/query_run.py --run-id <id> --section all
-scripts/diagnostics/ directory:
-python query_run.py --section schema
-python query_run.py --run-id <id> --section sigmoid
-Sections: all | health | summary | stages | stage1 | ga | wfo | mc | sensitivity | verdicts | params | bollinger | schema | sigmoid
+    python query_run.py --section zone
+    python query_run.py --section jsonparams
+
+Sections:
+    all | health | summary | stages | stage1 | ga | wfo | mc | sensitivity |
+    verdicts | params | jsonparams | schema | sigmoid | zone | wincoverage
 """
 import argparse
 import json
@@ -27,14 +25,15 @@ import sqlite3
 import sys
 import statistics
 from pathlib import Path
-# Adjust path for the new location (scripts/diagnostics/)
-# This allows the script to still find the DB when run from project root
+
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent  # Go up 2 levels to reach project root
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DB_PATH = PROJECT_ROOT / "outputs/backtesting/backtester.db"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 def connect(db_path: str) -> sqlite3.Connection:
     if not Path(db_path).exists():
         print(f"ERROR: DB not found at {db_path}")
@@ -45,6 +44,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def resolve_run_id(conn: sqlite3.Connection, requested: str | None) -> str:
     if requested:
@@ -70,19 +70,23 @@ def resolve_run_id(conn: sqlite3.Connection, requested: str | None) -> str:
             sys.exit(1)
         return row["run_id"]
 
+
 def section(title: str) -> None:
     print()
     print("=" * 72)
     print(f"  {title}")
     print("=" * 72)
 
+
 def subsection(title: str) -> None:
     print(f"\n  [{title}]")
+
 
 def cell(v) -> str:
     if v is None:            return "None"
     if isinstance(v, float): return f"{v:.4f}"
     return str(v)
+
 
 def fmt_table(rows: list, cols: list[str] | None = None) -> None:
     if not rows:
@@ -97,14 +101,71 @@ def fmt_table(rows: list, cols: list[str] | None = None) -> None:
     for row in rows:
         print("  " + "  ".join(cell(row[c]).ljust(col_widths[c]) for c in cols))
 
+
+def _get_direct_param_cols(conn: sqlite3.Connection, run_id: str) -> list[str]:
+    """
+    Dynamically discover which candidate_parameters columns are worth showing:
+    - Exclude bookkeeping cols (candidate_id, parameters_json, created_at, run_id etc.)
+    - Exclude columns that are NULL for every WFO candidate in this run
+      (e.g. rsi_period, rsi_overbought, bollinger_length — early-dev relics that
+      don't apply to the current strategy family).
+    Returns a list of column names in their natural schema order.
+    """
+    # All columns in the table
+    all_cols = [
+        row[1] for row in
+        conn.execute("PRAGMA table_info(candidate_parameters)").fetchall()
+    ]
+    # Columns that are purely bookkeeping / not parameters
+    skip = {"candidate_id", "run_id", "parameters_json", "created_at", "updated_at"}
+    candidate_cols = [c for c in all_cols if c not in skip]
+
+    if not candidate_cols:
+        return []
+
+    # For this run, find which columns have at least one non-NULL value among
+    # WFO-scored candidates (broader than top-5 so we don't miss sparse params)
+    wfo_ids = [
+        row[0] for row in
+        conn.execute(
+            "SELECT candidate_id FROM wfo_consistency_scores WHERE run_id = ?",
+            (run_id,)
+        ).fetchall()
+    ]
+    if not wfo_ids:
+        return candidate_cols  # can't filter — return all
+
+    placeholders = ",".join("?" * len(wfo_ids))
+    active_cols = []
+    for col in candidate_cols:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM candidate_parameters "
+            f"WHERE candidate_id IN ({placeholders}) AND {col} IS NOT NULL",
+            wfo_ids
+        ).fetchone()
+        if row and row[0] > 0:
+            active_cols.append(col)
+
+    return active_cols
+
+
+def _decode_json_params(parameters_json: str | None) -> dict:
+    """Safely decode parameters_json; return {} on any failure."""
+    try:
+        return json.loads(parameters_json or "{}")
+    except Exception:
+        return {}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Schema Inspection (from inspect_schema.py)
+# Schema Inspection
 # ─────────────────────────────────────────────────────────────────────────────
+
 def q_schema(conn, run_id=None):
-    """Inspect database schema - run_id is ignored but kept for interface consistency"""
     section("DATABASE SCHEMA INSPECTION")
-    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
-    
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
     for t in tables:
         name = t[0]
         print(f"\n=== {name} ===")
@@ -112,28 +173,24 @@ def q_schema(conn, run_id=None):
         for c in cols:
             print(f"  {c[1]:35s} {c[2]}")
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Sigmoid Scale Calibration (from calibrate_sigmoid.py)
+# Sigmoid Scale Calibration
 # ─────────────────────────────────────────────────────────────────────────────
+
 def q_sigmoid(conn, run_id):
-    """Compute sigmoid scale from WFO window net_pnl distribution"""
     section("SIGMOID SCALE CALIBRATION")
-    
-    # All net_pnl values from Stage 4 WFO window results for this run
     rows = conn.execute("""
         SELECT window_id, net_pnl
         FROM wfo_window_results
-        WHERE run_id = ?
-        AND net_pnl IS NOT NULL
+        WHERE run_id = ? AND net_pnl IS NOT NULL
         ORDER BY window_id
     """, (run_id,)).fetchall()
 
-    # Also get null count to understand coverage
     null_rows = conn.execute("""
         SELECT window_id, evaluation_error, COUNT(*) as cnt
         FROM wfo_window_results
-        WHERE run_id = ?
-        AND net_pnl IS NULL
+        WHERE run_id = ? AND net_pnl IS NULL
         GROUP BY window_id, evaluation_error
         ORDER BY window_id
     """, (run_id,)).fetchall()
@@ -157,7 +214,7 @@ def q_sigmoid(conn, run_id):
     print(f"  Mean   : {mean:.2f}")
     print(f"  Max    : {max(vals):.2f}")
     print(f"  Stdev  : {stdev:.2f}")
-    print(f"")
+    print()
     print(f"  _SIGMOID_SCALE = stdev × 0.5 = {sigmoid_scale:.1f}")
     print("=" * 60)
 
@@ -175,14 +232,15 @@ def q_sigmoid(conn, run_id):
         print("  (none — all windows have net_pnl)")
     print("=" * 60)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Original query_run.py sections (unchanged)
+# Pipeline Health
 # ─────────────────────────────────────────────────────────────────────────────
+
 def q_pipeline_health(conn, run_id):
     section("PIPELINE HEALTH CHECK")
     checks = []
 
-    # Stage 1
     r = conn.execute("""
         SELECT COUNT(*) as total, SUM(passed_constraints) as passed
         FROM evaluations WHERE run_id = ? AND stage = 'RANDOM'
@@ -193,16 +251,14 @@ def q_pipeline_health(conn, run_id):
                    f"{passed}/{total} ({rate:.0%})",
                    "OK" if passed > 0 else "FAIL: 0 candidates passed - check constraints"))
 
-    # Stage 3 GA — query candidates table (stubs write no evaluations row)
     r = conn.execute("""
-        SELECT COUNT(*) as n
-        FROM candidates WHERE run_id = ? AND origin_stage = 'GA'
+        SELECT COUNT(*) as n FROM candidates
+        WHERE run_id = ? AND origin_stage = 'GA'
     """, (run_id,)).fetchone()
     ga_n = r["n"] or 0
     checks.append(("Stage 3 GA candidates", str(ga_n),
                    "OK" if ga_n > 0 else "WARN: No GA candidates"))
 
-    # Stage 4 WFO
     r = conn.execute("""
         SELECT COUNT(*) as scored,
                SUM(CASE WHEN window_collapse_flag = 1 THEN 1 ELSE 0 END) as collapsed
@@ -213,7 +269,6 @@ def q_pipeline_health(conn, run_id):
                    f"{scored} candidates ({collapsed} collapsed)",
                    "OK" if scored > 0 else "FAIL: No WFO scores"))
 
-    # Stage 5 MC Deep
     r = conn.execute("""
         SELECT COUNT(*) as total,
                SUM(CASE WHEN evaluation_error IS NOT NULL THEN 1 ELSE 0 END) as errors,
@@ -225,7 +280,6 @@ def q_pipeline_health(conn, run_id):
                    f"{mc_ok} success / {mc_err} errors / {mc_total} total",
                    "OK" if mc_ok > 0 else "WARN: All MC failed"))
 
-    # Stage 6 Sensitivity
     r = conn.execute("""
         SELECT COUNT(*) as n, SUM(spike_detected) as spikes
         FROM sensitivity_profiles WHERE run_id = ?
@@ -235,7 +289,6 @@ def q_pipeline_health(conn, run_id):
                    f"{sens_n} profiles, {sens_sp} spike(s)",
                    "OK" if sens_n > 0 else "WARN: No sensitivity profiles"))
 
-    # Stage 7 Verdicts
     rows = conn.execute("""
         SELECT verdict, COUNT(*) as count FROM verdicts
         WHERE run_id = ? GROUP BY verdict ORDER BY count DESC
@@ -245,7 +298,6 @@ def q_pipeline_health(conn, run_id):
     checks.append(("Stage 7 verdicts", summary,
                    "OK" if has_go else "WARN: No auto_go/borderline verdicts"))
 
-    # Trading YAMLs
     r = conn.execute("""
         SELECT COUNT(*) as c FROM verdicts
         WHERE run_id = ? AND verdict IN ('auto_go', 'borderline')
@@ -262,6 +314,11 @@ def q_pipeline_health(conn, run_id):
         if not status.startswith("OK"):
             print(f"         {'':>{label_w}}  ^ {status}")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run Summary
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_run_summary(conn, run_id):
     section("RUN SUMMARY")
     row = conn.execute("""
@@ -274,6 +331,11 @@ def q_run_summary(conn, run_id):
     if row:
         for k in row.keys():
             print(f"  {k:35s} {row[k]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage Counts
+# ─────────────────────────────────────────────────────────────────────────────
 
 def q_stage_counts(conn, run_id):
     section("CANDIDATE COUNTS BY STAGE")
@@ -292,6 +354,11 @@ def q_stage_counts(conn, run_id):
     """, (run_id,)).fetchall()
     fmt_table(rows, ["stage", "total", "passed", "failed", "avg_fitness", "best_fitness"])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 Analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_rejection_breakdown(conn, run_id):
     section("STAGE 1 - REJECTION BREAKDOWN")
     rows = conn.execute("""
@@ -306,6 +373,7 @@ def q_rejection_breakdown(conn, run_id):
         ORDER BY count DESC
     """, (run_id,)).fetchall()
     fmt_table(rows, ["result", "reason", "constraint", "count"])
+
 
 def q_constraint_margins(conn, run_id):
     section("STAGE 1 - METRIC DISTRIBUTIONS (all candidates)")
@@ -347,6 +415,7 @@ def q_constraint_margins(conn, run_id):
         def f(v): return f"{v:.4f}" if isinstance(v, float) else str(v) if v is not None else "None"
         print(f"  {name:20s}  {f(mn):>10s}  {f(avg):>10s}  {f(mx):>10s}")
 
+
 def q_closest_to_passing(conn, run_id):
     section("STAGE 1 - CLOSEST-TO-PASSING FAILURES (top 10 by fitness)")
     subsection("Candidates that failed one constraint — key for threshold tuning")
@@ -372,6 +441,7 @@ def q_closest_to_passing(conn, run_id):
     fmt_table(rows, ["candidate", "failing_constraint", "failing_val",
                      "win_rate", "drawdown", "expectancy", "pf", "tpw", "fitness"])
 
+
 def q_top_stage1(conn, run_id):
     section("STAGE 1 - TOP 10 PASSED CANDIDATES")
     rows = conn.execute("""
@@ -393,6 +463,11 @@ def q_top_stage1(conn, run_id):
     fmt_table(rows, ["candidate", "zone", "win_rate", "drawdown", "expectancy",
                      "pf", "tpw", "fitness"])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GA Generations
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_ga_generations(conn, run_id):
     section("STAGE 3 - GA GENERATION PROGRESSION")
     rows = conn.execute("""
@@ -408,33 +483,39 @@ def q_ga_generations(conn, run_id):
     if not rows:
         subsection("generation column not populated for GA stage - showing totals")
         r = conn.execute("""
-            SELECT COUNT(*) as n
-            FROM candidates WHERE run_id = ? AND origin_stage = 'GA'
+            SELECT COUNT(*) as n FROM candidates
+            WHERE run_id = ? AND origin_stage = 'GA'
         """, (run_id,)).fetchone()
         print(f"  Total GA candidates: {r['n']}  (fitness scores not stored for GA stubs)")
     else:
         fmt_table(rows, ["generation", "candidates", "best", "avg", "worst"])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WFO Scores + Window Detail
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_wfo_scores(conn, run_id):
     section("STAGE 4 - WFO CONSISTENCY SCORES")
     rows = conn.execute("""
         SELECT
-            SUBSTR(w.candidate_id, 1, 12)         as candidate,
-            ROUND(w.wfo_consistency_score, 4)     as wfo_score,
+            SUBSTR(w.candidate_id, 1, 12)          as candidate,
+            ROUND(w.wfo_consistency_score, 4)      as wfo_score,
             w.windows_evaluated,
             w.windows_total,
-            ROUND(w.median_window_return, 4)      as median_ret,
-            ROUND(w.window_return_variance, 4)    as variance,
-            ROUND(w.worst_window_drawdown, 4)     as worst_dd,
-            ROUND(w.fraction_positive_windows, 4) as frac_pos,
-            w.window_collapse_flag                as collapsed,
-            w.oos_gate_triggered                  as oos_fail
+            ROUND(w.median_window_return, 4)       as median_ret,
+            ROUND(w.window_return_variance, 4)     as variance,
+            ROUND(w.worst_window_drawdown, 4)      as worst_dd,
+            ROUND(w.fraction_positive_windows, 4)  as frac_pos,
+            w.window_collapse_flag                 as collapsed,
+            w.oos_gate_triggered                   as oos_fail
         FROM wfo_consistency_scores w
         WHERE w.run_id = ?
         ORDER BY w.wfo_consistency_score DESC
     """, (run_id,)).fetchall()
     fmt_table(rows, ["candidate", "wfo_score", "windows_evaluated", "windows_total",
                      "median_ret", "variance", "worst_dd", "frac_pos", "collapsed", "oos_fail"])
+
 
 def q_wfo_window_detail(conn, run_id):
     section("STAGE 4 - PER-WINDOW DETAIL (top 5 WFO candidates)")
@@ -472,6 +553,11 @@ def q_wfo_window_detail(conn, run_id):
                              "win_rate", "net_pnl", "drawdown", "expectancy",
                              "oos_delta", "error"])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MC Results
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_mc_results(conn, run_id):
     section("STAGE 5 - MC DEEP RESULTS")
     rows = conn.execute("""
@@ -489,6 +575,11 @@ def q_mc_results(conn, run_id):
     """, (run_id,)).fetchall()
     fmt_table(rows, ["candidate", "ruin_prob", "p5_equity", "avg_equity",
                      "worst_dd", "iters", "error"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sensitivity
+# ─────────────────────────────────────────────────────────────────────────────
 
 def q_sensitivity(conn, run_id):
     section("STAGE 6 - SENSITIVITY PROFILES")
@@ -525,6 +616,11 @@ def q_sensitivity(conn, run_id):
     fmt_table(results, ["candidate", "parameter_name", "step", "perturbed_value",
                         "base", "perturbed", "delta", "is_spike", "error"])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Verdicts
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_verdicts(conn, run_id):
     section("STAGE 7 - FINAL VERDICTS")
     rows = conn.execute("""
@@ -544,107 +640,517 @@ def q_verdicts(conn, run_id):
     fmt_table(rows, ["candidate", "verdict", "wfo_score", "ruin_prob",
                      "spike", "oos_fail", "collapsed", "yaml"])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameter Spread — dynamic, no hardcoded strategy columns
+# ─────────────────────────────────────────────────────────────────────────────
+
 def q_param_spread(conn, run_id):
+    """
+    Parameter spread across WFO winners vs losers.
+    Columns are discovered dynamically: only direct candidate_parameters columns
+    that are non-NULL for at least one WFO candidate in this run are shown.
+    Strategy-specific params stored in parameters_json are shown separately
+    via q_json_params. This means no hardcoded RSI/Bollinger/etc. columns.
+    """
     section("PARAMETER SPREAD - Winners vs Losers")
+    subsection(
+        "Direct columns only — strategy-specific params: use --section jsonparams"
+    )
 
-    cols = ["rsi_period", "rsi_overbought", "rsi_oversold",
-            "atr_length", "atr_multiplier", "rr_target", "risk_percentile"]
+    cols = _get_direct_param_cols(conn, run_id)
+    if not cols:
+        print("  (no active direct parameter columns found for this run)")
+        return
 
-    def print_group(group, label):
+    def print_group(group: list, label: str) -> None:
         print(f"\n  {label}")
-        hdr = f"  {'candidate':14s}  {'wfo':7s}  " + "  ".join(f"{c:16s}" for c in cols)
+        hdr = f"  {'candidate':14s}  {'wfo':7s}  {'zone':12s}  " + \
+              "  ".join(f"{c:14s}" for c in cols)
         print(hdr)
         print("  " + "-" * (len(hdr) - 2))
         for row in group:
-            cid = row["candidate_id"]
-            wfo = row["wfo_score"]
+            cid  = row["candidate_id"]
+            wfo  = row["wfo_score"]
+            zone = row["zone_name"] or "unknown"
             p = conn.execute(
-                f"SELECT {', '.join(cols)} FROM candidate_parameters WHERE candidate_id = ?",
-                (cid,)
+                f"SELECT {', '.join(cols)} FROM candidate_parameters "
+                f"WHERE candidate_id = ?", (cid,)
             ).fetchone()
             if p:
-                vals = "  ".join(str(p[c] if p[c] is not None else "n/a").ljust(16) for c in cols)
-                print(f"  {cid[:12]:14s}  {wfo:7.4f}  {vals}")
+                vals = "  ".join(
+                    str(p[c] if p[c] is not None else "n/a").ljust(14)
+                    for c in cols
+                )
+                print(f"  {cid[:12]:14s}  {wfo:7.4f}  {zone:12s}  {vals}")
             else:
-                print(f"  {cid[:12]:14s}  {wfo:7.4f}  (no params)")
+                print(f"  {cid[:12]:14s}  {wfo:7.4f}  {zone:12s}  (no params)")
 
     top5 = conn.execute("""
-        SELECT candidate_id, ROUND(wfo_consistency_score,4) as wfo_score
-        FROM wfo_consistency_scores WHERE run_id = ?
-        ORDER BY wfo_consistency_score DESC LIMIT 5
+        SELECT w.candidate_id,
+               ROUND(w.wfo_consistency_score, 4) as wfo_score,
+               COALESCE(c.zone_name, 'unknown')  as zone_name
+        FROM wfo_consistency_scores w
+        LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+        WHERE w.run_id = ?
+        ORDER BY w.wfo_consistency_score DESC LIMIT 5
     """, (run_id,)).fetchall()
 
     bottom5 = conn.execute("""
-        SELECT candidate_id, ROUND(wfo_consistency_score,4) as wfo_score
-        FROM wfo_consistency_scores WHERE run_id = ?
-        ORDER BY wfo_consistency_score ASC LIMIT 5
+        SELECT w.candidate_id,
+               ROUND(w.wfo_consistency_score, 4) as wfo_score,
+               COALESCE(c.zone_name, 'unknown')  as zone_name
+        FROM wfo_consistency_scores w
+        LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+        WHERE w.run_id = ?
+        ORDER BY w.wfo_consistency_score ASC LIMIT 5
     """, (run_id,)).fetchall()
 
-    print_group(top5, "TOP 5 (highest WFO score)")
+    print_group(top5,    "TOP 5 (highest WFO score)")
     print_group(bottom5, "BOTTOM 5 (lowest WFO score)")
 
-    subsection("Range summary across all WFO-scored candidates")
-    print(f"\n  {'param':20s}  {'min':>8s}  {'avg':>8s}  {'max':>8s}")
-    print(f"  {'-'*20}  {'-'*8}  {'-'*8}  {'-'*8}")
-    for col in cols:
-        r = conn.execute(f"""
-            SELECT MIN(cp.{col}), AVG(cp.{col}), MAX(cp.{col})
-            FROM candidate_parameters cp
-            JOIN wfo_consistency_scores w ON w.candidate_id = cp.candidate_id
-            WHERE w.run_id = ?
-        """, (run_id,)).fetchone()
-        mn, avg, mx = r[0], r[1], r[2]
-        def f(v): return f"{v:.4f}" if isinstance(v, float) else str(v) if v is not None else "n/a"
-        print(f"  {col:20s}  {f(mn):>8s}  {f(avg):>8s}  {f(mx):>8s}")
+    subsection("Range summary across all WFO-scored candidates (by zone)")
+    zones = conn.execute("""
+        SELECT DISTINCT COALESCE(c.zone_name, 'unknown') as zone_name
+        FROM wfo_consistency_scores w
+        LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+        WHERE w.run_id = ?
+        ORDER BY zone_name
+    """, (run_id,)).fetchall()
+    zone_names = [z["zone_name"] for z in zones]
 
-def q_bollinger_params(conn, run_id):
-    section("BOLLINGER PARAMETERS (decoded from parameters_json)")
-    subsection("bollinger_length and bollinger_multiplier are not individual columns")
+    print(f"\n  {'param':22s}  {'zone':12s}  {'min':>8s}  {'avg':>8s}  {'max':>8s}")
+    print(f"  {'-'*22}  {'-'*12}  {'-'*8}  {'-'*8}  {'-'*8}")
+
+    def _f(v):
+        if v is None: return "n/a"
+        return f"{v:.4f}" if isinstance(v, float) else str(v)
+
+    for col in cols:
+        first = True
+        for zone in zone_names:
+            r = conn.execute(f"""
+                SELECT MIN(cp.{col}), AVG(cp.{col}), MAX(cp.{col})
+                FROM candidate_parameters cp
+                JOIN wfo_consistency_scores w ON w.candidate_id = cp.candidate_id
+                LEFT JOIN candidates c ON c.candidate_id = cp.candidate_id
+                WHERE w.run_id = ?
+                  AND COALESCE(c.zone_name, 'unknown') = ?
+                  AND cp.{col} IS NOT NULL
+            """, (run_id, zone)).fetchone()
+            mn, avg, mx = r[0], r[1], r[2]
+            col_label = col if first else ""
+            print(f"  {col_label:22s}  {zone:12s}  {_f(mn):>8s}  {_f(avg):>8s}  {_f(mx):>8s}")
+            first = False
+        if len(zone_names) > 1:
+            # All-zones combined row
+            r = conn.execute(f"""
+                SELECT MIN(cp.{col}), AVG(cp.{col}), MAX(cp.{col})
+                FROM candidate_parameters cp
+                JOIN wfo_consistency_scores w ON w.candidate_id = cp.candidate_id
+                WHERE w.run_id = ? AND cp.{col} IS NOT NULL
+            """, (run_id,)).fetchone()
+            mn, avg, mx = r[0], r[1], r[2]
+            print(f"  {'':22s}  {'(all zones)':12s}  {_f(mn):>8s}  {_f(avg):>8s}  {_f(mx):>8s}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON Params — replaces q_bollinger_params with a generic decoder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def q_json_params(conn, run_id):
+    """
+    Decode parameters_json for all WFO-scored candidates and display the
+    strategy-specific parameters not captured as direct columns.
+    Columns shown are whatever keys actually appear in the JSON for this run
+    (DPO, MACD, CCI, ADX, etc.) — fully dynamic, no hardcoded filter names.
+    """
+    section("STRATEGY PARAMETERS (decoded from parameters_json)")
+    subsection(
+        "All non-direct params for WFO-scored candidates — sorted by WFO score"
+    )
+
     rows = conn.execute("""
         SELECT cp.candidate_id, cp.parameters_json,
-               ROUND(w.wfo_consistency_score, 4) as wfo_score
+               ROUND(w.wfo_consistency_score, 4) as wfo_score,
+               COALESCE(c.zone_name, 'unknown')  as zone_name
         FROM candidate_parameters cp
         JOIN wfo_consistency_scores w ON w.candidate_id = cp.candidate_id
+        LEFT JOIN candidates c ON c.candidate_id = cp.candidate_id
         WHERE w.run_id = ?
-        ORDER BY w.wfo_consistency_score DESC LIMIT 10
+        ORDER BY w.wfo_consistency_score DESC
     """, (run_id,)).fetchall()
 
     if not rows:
         print("  (no rows)")
         return
 
-    print(f"\n  {'candidate':14s}  {'wfo':7s}  {'boll_len':>8s}  {'boll_mult':>9s}")
-    print(f"  {'-'*14}  {'-'*7}  {'-'*8}  {'-'*9}")
+    # Also get the direct columns so we can exclude them from the JSON display
+    direct_cols = set(_get_direct_param_cols(conn, run_id))
+
+    # Collect all JSON keys that appear across all candidates
+    all_keys: list[str] = []
+    decoded: list[dict] = []
     for row in rows:
-        cid  = row["candidate_id"][:12]
-        wfo  = row["wfo_score"] or 0.0
+        p = _decode_json_params(row["parameters_json"])
+        # Exclude keys already shown as direct columns
+        p_filtered = {k: v for k, v in p.items() if k not in direct_cols}
+        decoded.append(p_filtered)
+        for k in p_filtered:
+            if k not in all_keys:
+                all_keys.append(k)
+
+    if not all_keys:
+        print("  (no strategy-specific JSON params found — all params are direct columns)")
+        return
+
+    # Header
+    col_w = 10
+    cand_w = 12
+    zone_w = 12
+    wfo_w  = 7
+    hdr = (
+        f"  {'candidate':{cand_w}s}  {'wfo':>{wfo_w}s}  {'zone':{zone_w}s}  " +
+        "  ".join(f"{k[:col_w]:{col_w}s}" for k in all_keys)
+    )
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+
+    for i, row in enumerate(rows):
+        cid  = row["candidate_id"][:cand_w]
+        wfo  = row["wfo_score"]
+        zone = row["zone_name"][:zone_w]
+        p    = decoded[i]
+        vals = "  ".join(
+            str(p.get(k, "n/a"))[:col_w].ljust(col_w)
+            for k in all_keys
+        )
+        print(f"  {cid:{cand_w}s}  {wfo:>{wfo_w}.4f}  {zone:{zone_w}s}  {vals}")
+
+    # Summary: range per JSON param, split by zone
+    subsection("JSON param ranges across WFO candidates (by zone)")
+    zones = list({row["zone_name"] for row in rows})
+    zones.sort()
+
+    def _f(v):
+        if v is None: return "n/a"
         try:
-            p  = json.loads(row["parameters_json"] or "{}")
-            bl = p.get("bollinger_length", "n/a")
-            bm = p.get("bollinger_multiplier", "n/a")
-        except Exception:
-            bl, bm = "err", "err"
-        print(f"  {cid:14s}  {wfo:7.4f}  {str(bl):>8s}  {str(bm):>9s}")
+            return f"{float(v):.4f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    print(f"\n  {'param':22s}  {'zone':12s}  {'min':>10s}  {'avg':>10s}  {'max':>10s}")
+    print(f"  {'-'*22}  {'-'*12}  {'-'*10}  {'-'*10}  {'-'*10}")
+
+    for key in all_keys:
+        first = True
+        for zone in (zones if len(zones) > 1 else zones):
+            zone_vals = [
+                float(decoded[i].get(key))
+                for i, row in enumerate(rows)
+                if row["zone_name"] == zone
+                and decoded[i].get(key) is not None
+                and _is_numeric(decoded[i].get(key))
+            ]
+            if not zone_vals:
+                continue
+            mn  = min(zone_vals)
+            avg = statistics.mean(zone_vals)
+            mx  = max(zone_vals)
+            key_label = key if first else ""
+            print(f"  {key_label:22s}  {zone:12s}  {_f(mn):>10s}  {_f(avg):>10s}  {_f(mx):>10s}")
+            first = False
+
+        if len(zones) > 1:
+            all_vals = [
+                float(decoded[i].get(key))
+                for i in range(len(rows))
+                if decoded[i].get(key) is not None and _is_numeric(decoded[i].get(key))
+            ]
+            if all_vals:
+                print(f"  {'':22s}  {'(all zones)':12s}  "
+                      f"{_f(min(all_vals)):>10s}  "
+                      f"{_f(statistics.mean(all_vals)):>10s}  "
+                      f"{_f(max(all_vals)):>10s}")
+
+
+def _is_numeric(v) -> bool:
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Zone Funnel — NEW: CCI exploration diagnostic
+# ─────────────────────────────────────────────────────────────────────────────
+
+def q_zone_funnel(conn, run_id):
+    """
+    Zone-level survival rate at each pipeline stage.
+    Shows how many candidates from each zone (safe, exploration, discovery…)
+    made it through Stage 1 → GA → WFO → final verdict.
+    Primary use: diagnose whether CCI exploration candidates are dying at
+    Stage 1 (constraint mismatch), WFO (trade starvation / poor consistency),
+    or simply scoring lower than safe-zone candidates at the final verdict stage.
+    """
+    section("ZONE FUNNEL — SURVIVAL BY ZONE")
+    subsection(
+        "Use this to diagnose why exploration-zone candidates disappear from top-10"
+    )
+
+    # Stage 1: all random search candidates, pass/fail by zone
+    s1 = conn.execute("""
+        SELECT
+            COALESCE(c.zone_name, 'unknown')     as zone,
+            COUNT(*)                              as s1_total,
+            SUM(e.passed_constraints)             as s1_passed,
+            COUNT(*) - SUM(e.passed_constraints)  as s1_failed,
+            ROUND(
+                100.0 * SUM(e.passed_constraints) / COUNT(*), 1
+            )                                     as s1_pass_pct
+        FROM evaluations e
+        JOIN candidates c ON c.candidate_id = e.candidate_id
+        WHERE e.run_id = ? AND e.stage = 'RANDOM'
+        GROUP BY c.zone_name
+        ORDER BY c.zone_name
+    """, (run_id,)).fetchall()
+
+    print(f"\n  Stage 1 — Random search (pass rate by zone)")
+    fmt_table(s1, ["zone", "s1_total", "s1_passed", "s1_failed", "s1_pass_pct"])
+
+    # Stage 1: rejection reasons by zone (only FAIL rows)
+    s1_rej = conn.execute("""
+        SELECT
+            COALESCE(c.zone_name, 'unknown')       as zone,
+            COALESCE(e.failing_constraint, 'n/a')  as failing_constraint,
+            COUNT(*)                                as count
+        FROM evaluations e
+        JOIN candidates c ON c.candidate_id = e.candidate_id
+        WHERE e.run_id = ? AND e.stage = 'RANDOM'
+          AND e.passed_constraints = 0
+        GROUP BY c.zone_name, e.failing_constraint
+        ORDER BY c.zone_name, count DESC
+    """, (run_id,)).fetchall()
+
+    print(f"\n  Stage 1 — Rejection reasons by zone")
+    fmt_table(s1_rej, ["zone", "failing_constraint", "count"])
+
+    # GA: candidates produced per zone
+    ga = conn.execute("""
+        SELECT
+            COALESCE(c.zone_name, 'unknown') as zone,
+            COUNT(*)                          as ga_candidates
+        FROM candidates c
+        WHERE c.run_id = ? AND c.origin_stage = 'GA'
+        GROUP BY c.zone_name
+        ORDER BY c.zone_name
+    """, (run_id,)).fetchall()
+
+    print(f"\n  Stage 3 — GA candidates by zone")
+    fmt_table(ga, ["zone", "ga_candidates"])
+
+    # WFO: how many WFO-scored candidates per zone, avg windows evaluated
+    wfo = conn.execute("""
+        SELECT
+            COALESCE(c.zone_name, 'unknown')          as zone,
+            COUNT(*)                                   as wfo_candidates,
+            ROUND(AVG(w.windows_evaluated), 2)         as avg_windows,
+            ROUND(AVG(w.wfo_consistency_score), 4)     as avg_wfo_score,
+            ROUND(MAX(w.wfo_consistency_score), 4)     as best_wfo_score,
+            SUM(w.window_collapse_flag)                as collapsed_count
+        FROM wfo_consistency_scores w
+        LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+        WHERE w.run_id = ?
+        GROUP BY c.zone_name
+        ORDER BY c.zone_name
+    """, (run_id,)).fetchall()
+
+    print(f"\n  Stage 4 — WFO results by zone")
+    fmt_table(wfo, ["zone", "wfo_candidates", "avg_windows",
+                    "avg_wfo_score", "best_wfo_score", "collapsed_count"])
+
+    # WFO top-5 per zone
+    print(f"\n  Stage 4 — Top 5 WFO candidates per zone")
+    zones = conn.execute("""
+        SELECT DISTINCT COALESCE(c.zone_name, 'unknown') as zone_name
+        FROM wfo_consistency_scores w
+        LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+        WHERE w.run_id = ?
+        ORDER BY zone_name
+    """, (run_id,)).fetchall()
+
+    for z in zones:
+        zone = z["zone_name"]
+        top = conn.execute("""
+            SELECT
+                SUBSTR(w.candidate_id, 1, 12)          as candidate,
+                ROUND(w.wfo_consistency_score, 4)      as wfo_score,
+                w.windows_evaluated,
+                ROUND(w.median_window_return, 2)       as median_ret,
+                w.window_collapse_flag                 as collapsed
+            FROM wfo_consistency_scores w
+            LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+            WHERE w.run_id = ?
+              AND COALESCE(c.zone_name, 'unknown') = ?
+            ORDER BY w.wfo_consistency_score DESC
+            LIMIT 5
+        """, (run_id, zone)).fetchall()
+        print(f"\n    Zone: {zone}")
+        fmt_table(top, ["candidate", "wfo_score", "windows_evaluated",
+                        "median_ret", "collapsed"])
+
+    # Final verdicts by zone
+    verd = conn.execute("""
+        SELECT
+            COALESCE(c.zone_name, 'unknown') as zone,
+            v.verdict,
+            COUNT(*)                          as count
+        FROM verdicts v
+        LEFT JOIN candidates c ON c.candidate_id = v.candidate_id
+        WHERE v.run_id = ?
+        GROUP BY c.zone_name, v.verdict
+        ORDER BY c.zone_name, count DESC
+    """, (run_id,)).fetchall()
+
+    print(f"\n  Stage 7 — Final verdicts by zone")
+    fmt_table(verd, ["zone", "verdict", "count"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Window Coverage by Zone — NEW: per-window fitness=None breakdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+def q_wfo_window_coverage(conn, run_id):
+    """
+    Per-window fitness=None (REJECTED_INSUFFICIENT_TRADES) breakdown by zone.
+    Shows which windows are killing which zones. Key for deciding whether the
+    CCI exploration zone is dying because of a specific window or universally.
+    Also shows avg trades per window per zone so you can spot starvation.
+    """
+    section("WFO WINDOW COVERAGE BY ZONE")
+    subsection(
+        "fitness=None counts and avg trades per window — key for trade starvation diagnosis"
+    )
+
+    # Null (rejected) counts per window per zone
+    null_by_window = conn.execute("""
+        SELECT
+            wr.window_id,
+            COALESCE(c.zone_name, 'unknown')                    as zone,
+            COUNT(*)                                             as total_windows,
+            SUM(CASE WHEN wr.fitness_score IS NULL THEN 1 ELSE 0 END) as null_count,
+            SUM(CASE WHEN wr.fitness_score IS NOT NULL THEN 1 ELSE 0 END) as scored_count,
+            ROUND(
+                100.0 * SUM(CASE WHEN wr.fitness_score IS NULL THEN 1 ELSE 0 END)
+                / COUNT(*), 1
+            )                                                    as null_pct,
+            ROUND(AVG(CASE WHEN wr.total_trades IS NOT NULL
+                      THEN wr.total_trades ELSE NULL END), 1)   as avg_trades,
+            ROUND(MIN(CASE WHEN wr.total_trades IS NOT NULL
+                      THEN wr.total_trades ELSE NULL END), 0)   as min_trades
+        FROM wfo_window_results wr
+        LEFT JOIN candidates c ON c.candidate_id = wr.candidate_id
+        WHERE wr.run_id = ? AND wr.is_ga_fitness_window = 0
+        GROUP BY wr.window_id, c.zone_name
+        ORDER BY wr.window_id, c.zone_name
+    """, (run_id,)).fetchall()
+
+    fmt_table(null_by_window, ["window_id", "zone", "total_windows",
+                                "null_count", "scored_count", "null_pct",
+                                "avg_trades", "min_trades"])
+
+    # Rejection error breakdown per window per zone
+    subsection("Rejection error reasons per window per zone (fitness=None only)")
+    errors = conn.execute("""
+        SELECT
+            wr.window_id,
+            COALESCE(c.zone_name, 'unknown')                         as zone,
+            COALESCE(wr.evaluation_error, 'no_error_recorded')       as error,
+            COUNT(*)                                                  as count
+        FROM wfo_window_results wr
+        LEFT JOIN candidates c ON c.candidate_id = wr.candidate_id
+        WHERE wr.run_id = ?
+          AND wr.is_ga_fitness_window = 0
+          AND wr.fitness_score IS NULL
+          AND wr.evaluation_error IS NOT NULL
+        GROUP BY wr.window_id, c.zone_name, wr.evaluation_error
+        ORDER BY wr.window_id, c.zone_name, count DESC
+    """, (run_id,)).fetchall()
+
+    # Separately count silent failures (fitness=None, error=None)
+    silent = conn.execute("""
+        SELECT
+            wr.window_id,
+            COALESCE(c.zone_name, 'unknown') as zone,
+            COUNT(*)                          as count
+        FROM wfo_window_results wr
+        LEFT JOIN candidates c ON c.candidate_id = wr.candidate_id
+        WHERE wr.run_id = ?
+          AND wr.is_ga_fitness_window = 0
+          AND wr.fitness_score IS NULL
+          AND wr.evaluation_error IS NULL
+        GROUP BY wr.window_id, c.zone_name
+        ORDER BY wr.window_id, c.zone_name
+    """, (run_id,)).fetchall()
+
+    if errors:
+        fmt_table(errors, ["window_id", "zone", "error", "count"])
+    else:
+        print("  (no windows with recorded rejection errors)")
+
+    if silent:
+        subsection("Silent failures (fitness=None, no error recorded)")
+        fmt_table(silent, ["window_id", "zone", "count"])
+
+    # Summary: avg windows_evaluated per zone (honest coverage bar)
+    subsection("Avg windows evaluated per zone (honest coverage — higher is better)")
+    coverage = conn.execute("""
+        SELECT
+            COALESCE(c.zone_name, 'unknown')             as zone,
+            COUNT(*)                                      as wfo_candidates,
+            ROUND(AVG(w.windows_evaluated), 2)            as avg_windows_evaluated,
+            ROUND(AVG(w.windows_total), 0)                as windows_total,
+            SUM(CASE WHEN w.windows_evaluated >= 3
+                     THEN 1 ELSE 0 END)                   as honest_count,
+            SUM(CASE WHEN w.windows_evaluated < 3
+                     THEN 1 ELSE 0 END)                   as phantom_risk_count
+        FROM wfo_consistency_scores w
+        LEFT JOIN candidates c ON c.candidate_id = w.candidate_id
+        WHERE w.run_id = ?
+        GROUP BY c.zone_name
+        ORDER BY c.zone_name
+    """, (run_id,)).fetchall()
+
+    fmt_table(coverage, ["zone", "wfo_candidates", "avg_windows_evaluated",
+                          "windows_total", "honest_count", "phantom_risk_count"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(description="Backtesting pipeline result analyser")
     parser.add_argument("--run-id", default=None)
-    parser.add_argument("--section", default="all",
-                        help="all | health | summary | stages | stage1 | ga | "
-                             "wfo | mc | sensitivity | verdicts | params | bollinger | "
-                             "schema | sigmoid")
+    parser.add_argument(
+        "--section", default="all",
+        help=(
+            "all | health | summary | stages | stage1 | ga | wfo | mc | "
+            "sensitivity | verdicts | params | jsonparams | schema | sigmoid | "
+            "zone | wincoverage"
+        )
+    )
     args = parser.parse_args()
 
     conn = connect(str(DB_PATH))
-    
-    # Special case: schema doesn't need a run_id
+
     if args.section == "schema":
         q_schema(conn, None)
         conn.close()
         return
-    
-    # For all other sections, we need a run_id
+
     run_id = resolve_run_id(conn, args.run_id)
     print(f"\nAnalysing run: {run_id}")
 
@@ -667,11 +1173,14 @@ def main():
     if run_all or s == "sensitivity":  q_sensitivity(conn, run_id)
     if run_all or s == "verdicts":     q_verdicts(conn, run_id)
     if run_all or s == "params":       q_param_spread(conn, run_id)
-    if run_all or s == "bollinger":    q_bollinger_params(conn, run_id)
-    if run_all or s == "sigmoid":      q_sigmoid(conn, run_id)  # <-- Added sigmoid to run_all
+    if run_all or s == "jsonparams":   q_json_params(conn, run_id)
+    if run_all or s == "sigmoid":      q_sigmoid(conn, run_id)
+    if run_all or s == "zone":         q_zone_funnel(conn, run_id)
+    if run_all or s == "wincoverage":  q_wfo_window_coverage(conn, run_id)
 
     print()
     conn.close()
+
 
 if __name__ == "__main__":
     main()

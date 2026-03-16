@@ -1,179 +1,149 @@
 # =============================================================================
-# backtest_V1_06_v4.yaml
-# Version: 4.0.0
+# backtest_V1_06_v5.yaml
+# Version: 5.0.0
 # Date: 2026-03-16
 #
 # CONFIGURATION: STF=15min / HTF=1D
 # BASE FILTERS:  DPO + MACD (safe zone)
-# EXPLORATION:   DPO + MACD + CCI (exploration zone)
+# EXPLORATION:   DPO + MACD + CCI (exploration zone — tightened)
 #
-# PARENT RUN: 1fd58c85  (backtest_V1_06 v3.0)
-# SERIES:     V1_06 v1.3 → v2.0 → v3.0 → v4.0
+# PARENT RUN: 7bfe6300  (backtest_V1_06 v4.0)
+# SERIES:     V1_06 v1.3 → v2.0 → v3.0 → v4.0 → v5.0
 #
 # =============================================================================
-# EVIDENCE BASE — WHAT v1.3, v2.0, v3.0 PROVED
+# EVIDENCE BASE — WHAT v4.0 PROVED (run 7bfe6300)
 # =============================================================================
 #
 #  SERIES PROGRESSION (honest candidates — windows_evaluated >= 3 only):
 #    v1.3: fadaf986a898  5 windows  WFO=0.747  best honest
 #    v2.0: fa0be02aa749  3 windows  WFO=0.882  best honest
-#    v3.0: 89703d22bf44  4 windows  WFO=0.960  best honest  ← new series high
+#    v3.0: 89703d22bf44  4 windows  WFO=0.960  phantom (2 windows) — discard
+#    v4.0: b0aed9f94266  4 windows  WFO=0.800  best honest  ← new benchmark
+#           Note: 021146e09d85 WFO=0.975 phantom (2/4 windows) — discard
 #
-#  The series is converging. Each run has improved coverage and WFO quality.
-#  Two structural problems remain that parameter tuning cannot fully solve:
-#    (A) Stage 1 pass rate at 36% — win_rate constraint is over-filtering
-#    (B) W05 (2025 H1 range-bound) — structurally dead for DPO+MACD family
+#  KEY v4.0 FINDINGS DRIVING v5.0 CHANGES:
 #
-# =============================================================================
-# MAJOR CHANGE 1: WINDOW RESTRUCTURE — 6 × 6-month → 4 × ~9-month
-# =============================================================================
+#    (A) win_rate floor 0.15: CONFIRMED CORRECT. Pass rate 64.6% (was 36%).
+#        Top-5 win_rate 0.20–0.25. Floor not load-bearing. Unchanged in v5.0.
 #
-#  RATIONALE:
-#    Current 6-window structure:
-#      W01 2023 H1  — partial scorer (~18-20 trades)
-#      W02 2023 H2  — most reliable
-#      W03 2024 H1  — partially unlocked at min_trades=12 (30 rejections in v3.0)
-#      W04 2024 H2  — scores well
-#      W05 2025 H1  — STRUCTURALLY DEAD (86 rejections in v3.0)
-#      W06 2025 H2 + 2026 Q1 — most recent, reliable
+#    (B) 4×9-month windows: CONFIRMED. avg windows_evaluated=3.0 for top-10.
+#        W01 (2023 H1) remains the weakest window — acceptable. Unchanged.
 #
-#    The problem: W05 generates 86 rejected windows per run — pure wasted
-#    compute. A candidate that wins W01+W02+W03+W04+W06 gets 5/6 windows
-#    scored, but one of those six slot is always dead. Raising to 4 windows
-#    of ~9 months each achieves two things:
+#    (C) Phantom problem: CONTAINED. go_wfo_floor=0.70 + 4 windows prevented
+#        auto_go. V2-VERDICT-GATE (windows>=3) remains P1 V2 item.
 #
-#    (1) More trades per window: 9 months at 15min ≈ 30–50 trades vs 13–20.
-#        This directly attacks starvation. min_significant_trades=12 can
-#        stay — we need fewer marginal cases to rescue with a low threshold.
+#    (D) atr_multiplier: zero winners at 1.5 across v2, v3, v4. Floor raised.
+#        safe zone: 1.5–1.9 → 1.6–1.9
+#        exploration zone: 1.2–2.0 → 1.4–2.0
 #
-#    (2) W05's dead regime is absorbed into a larger window (W03 below,
-#        covering 2024-07 → 2025-06). The productive 2024-H2 portion dilutes
-#        the 2025-H1 dead portion. Net effect: the window scores if the
-#        candidate performs in ANY part of the 9-month span. This is a
-#        deliberate trade-off — we lose the ability to isolate the exact
-#        regime failure, but we gain window utilisation.
+#    (E) CCI exploration zone: zero candidates in final top-10. Hypotheses:
+#        H1 — GA budget insufficient for 12-parameter space
+#        H2 — CCI ranges too wide, degenerate configs waste evaluations
+#        H3 — third filter too restrictive at 15min trade rates
+#        v5.0 addresses H1 (more GA budget) and H2 (tighter CCI ranges).
+#        If still zero in v5.0: H3 confirmed → retire CCI in v6.0.
+#        New section in query_run.py (--section zone, --section wincoverage)
+#        will provide the diagnostic to confirm which hypothesis is correct.
 #
-#    TRADE-OFF ACCEPTED:
-#      We lose per-regime diagnostic resolution on W05 specifically.
-#      We gain: ~30% reduction in REJECTED_INSUFFICIENT_TRADES, higher
-#      windows_evaluated counts, and the phantom verdict problem becomes
-#      less severe (harder to score 0.95+ on 1 window out of 4 than 1 of 6).
-#      The phantom V2-VERDICT-GATE fix still needed — but 4 windows raises
-#      the practical bar.
-#
-#    NEW WINDOW DESIGN (4 × ~9 months):
-#      W01  2023-01-02 → 2023-09-29  (9 months — DAX recovery + ECB start)
-#      W02  2023-10-02 → 2024-06-28  (9 months — rate cycle peak, choppy)
-#      W03  2024-07-01 → 2025-03-31  (9 months — DAX 2024 H2 + 2025 H1 dead)
-#      W04  2025-04-01 → 2026-02-28  (11 months — most recent regime, partial)
-#
-#    Regime map for 4-window structure:
-#      W01: 2023 DAX recovery — generally directional, lower volatility
-#      W02: 2023 Q4 + 2024 H1 — ECB rate decisions, choppy. KEY STRESS.
-#      W03: 2024 H2 + early 2025 — mixed: productive H2 absorbs dead H1
-#      W04: 2025 Q2 onwards — most recent, partial (2026 Q1 truncated)
-#           This window covers the period that was W10 stress in the 1min
-#           series. It includes the 2025 regime shift.
-#
-#    WHAT TO WATCH IN RESULTS:
-#      - If windows_evaluated drops to 1–2 for many candidates → window
-#        design wrong, revert to 6-window with W05 accepted as dead.
-#      - If windows_evaluated is consistently 3–4 → improvement confirmed.
-#      - Check W03 specifically: does absorbing W05 help or just add noise?
+#    (F) Sigmoid: stdev=706, recommended=353 vs hardcoded 310 (1.14×).
+#        BEFORE RUNNING: update _SIGMOID_SCALE to 353 in consistency_scorer.py.
 #
 # =============================================================================
-# MAJOR CHANGE 2: win_rate FLOOR REDUCTION — 0.18 → 0.15
+# CHANGE 1: _SIGMOID_SCALE 310 → 353
 # =============================================================================
 #
-#  EVIDENCE:
-#    v3.0 Stage 1: 190/192 failures were win_rate violations.
-#    Average win_rate across all 300 candidates = 0.1686.
-#    Current floor 0.18 was cutting 63% of the parameter space before GA.
-#    All genuine v3.0 winners had win_rate 0.20–0.27 — the floor is not wrong
-#    in principle, but it is generating massive waste in the random search
-#    phase. GA never sees candidates that might evolve to 0.20+ win_rate.
+#  MANUAL ACTION REQUIRED before running v5.0:
+#    src/backtesting/consistency_scorer.py → _SIGMOID_SCALE = 353.0
 #
-#    Root cause: at 15min, DPO+MACD is a selective filter. Many parameter
-#    combinations produce <0.18 win_rate not because they are bad strategies
-#    but because the filter combination is strict — it fires infrequently and
-#    takes only high-confidence setups. Those setups, when they hit, have
-#    better expectancy. The 0.18 floor is a 1min calibration value that was
-#    never re-validated at 15min.
+#  15min sigmoid history:
+#    v1.3  stdev≈628  recommended≈314  ran@310  (1.01×)
+#    v2.0  stdev≈566  recommended≈283  ran@310  (1.10×)
+#    v3.0  stdev≈598  recommended≈299  ran@310  (1.04×)
+#    v4.0  stdev=706  recommended=353  ran@310  (1.14× — action threshold)
+#    v5.0  target: ran@353
 #
-#  ACTION: 0.18 → 0.15
-#    0.15 is a loose filter — it will pass more marginal candidates, and the
-#    fitness function + GA will sort them out. If this produces a pass rate
-#    above 60% and the WFO top candidates still show win_rate 0.20+, the
-#    change is correct. If top candidates drop below 0.20 win_rate, reconsider.
+#  Note: v5.0 fitness absolute values NOT comparable to v4.0. Within-run
+#  relative ranking is always valid.
 #
 # =============================================================================
-# MINOR CHANGES FROM v3.0
+# CHANGE 2: atr_multiplier floor raised (both zones)
 # =============================================================================
 #
-#  atr_multiplier (safe zone): 1.5–2.0 → 1.5–1.9
-#    Evidence: v3.0 genuine top-5 range 1.6–1.9. Nothing at 2.0 in winners.
-#    Sensitivity across all candidates: degradation at higher mult confirmed.
-#    Keep 1.5 floor — not yet tested below 1.6, may have downside room.
+#  EVIDENCE: No winner at atr_mult=1.5 across v2, v3, v4. Three runs confirmed.
+#  v4.0 top-5 atr_mult: 1.8, 1.8, 1.7, 1.7, 1.8
+#  v3.0 top-5 atr_mult: 1.7, 1.6, 1.9, 1.8, 1.7
 #
-#  atr_multiplier (exploration zone): 1.2–2.3 → 1.2–2.0
-#    Aligning upper bound across zones. >2.0 has never produced a top-5
-#    candidate across three 15min runs.
+#  safe zone:        1.5–1.9 → 1.6–1.9  (floor only — ceiling confirmed)
+#  exploration zone: 1.2–2.0 → 1.4–2.0  (less aggressive — downside unexplored)
 #
-#  risk_percentile (exploration): 0.80–1.12 → 0.83–1.10
-#    Minor trim on both tails. v3.0 top-5 range 0.85–1.09. Nothing at
-#    0.80–0.82 or 1.10–1.12 in winners.
+#  WATCH: if atr_mult=1.6 disappears from top-5, raise floor to 1.7.
+#         Do not raise above 1.7 without two more runs of evidence.
 #
-#  samples_per_zone: 150 → 175
-#    Partially compensates for the tighter atr_multiplier range reducing
-#    GA input diversity. With win_rate floor lowered, pass rate should
-#    recover to 55–65%. 175 × estimated 60% = ~105 per zone → 210 GA input.
+# =============================================================================
+# CHANGE 3: GA budget increase
+# =============================================================================
 #
-#  go_wfo_floor: 0.65 → 0.70
-#    With only 4 windows, a 2-window phantom can still score ~0.93+.
-#    Raising to 0.70 further reduces phantom auto_go rate. Still not a
-#    proper fix — V2-VERDICT-GATE remains the only real solution.
+#  RATIONALE: CCI exploration zone has 12 parameters vs 9 for safe zone.
+#  Same 30gen×60pop budget covers a larger search space per evaluation.
+#  Increasing to 40gen×70pop adds ~56% more GA evaluations (1800→2800),
+#  directly addressing hypothesis H1 for CCI zone underperformance.
+#  Runtime impact: +45–60 min. Acceptable for the diagnostic value.
 #
-#  UNCHANGED (deliberate):
-#    rr_target: 6.0–9.5 (safe) / 5.5–10.0 (exploration) — productive range
-#               confirmed, no new evidence to narrow.
-#    min_significant_trades: 12 — already at the statistical floor.
-#    max_workers: 4 — confirmed stable at 15min TF.
-#    Sigmoid: 310 — stdev=597.7, recommended=298.8, 1.04× inflation. No action.
-#    macd_signal min=2 — never revert.
-#    wfo_collapse_drawdown_threshold: 600.0 — correct for 15min drawdowns.
-#    borderline_wfo_floor: 0.45 — unchanged, was already conservative.
+#  stagnation_generations raised to 10 (from 8) to match larger gen count.
+#
+# =============================================================================
+# CHANGE 4: CCI parameter range tightening
+# =============================================================================
+#
+#  RATIONALE (addressing hypothesis H2):
+#    cci_overbought 51–120 is a 70-point range. At 15min:
+#    - CCI < 75: fires constantly on normal DAX volatility → not a useful filter
+#    - CCI 75–105: productive range for extreme-reading momentum signals
+#    - CCI > 105: fires rarely → trade starvation → REJECTED_INSUFFICIENT_TRADES
+#    Symmetric logic applies to cci_oversold.
+#
+#  cci_overbought: 51–120 → 75–105
+#  cci_oversold:  -120 to -51 → -105 to -75
+#  cci_length:    10–30 → 14–26 (noisy at <14; >26 unvalidated)
+#
+#  POST-RUN DIAGNOSTIC (run after v5.0 completes):
+#    python scripts/diagnostics/query_run.py --section zone
+#    python scripts/diagnostics/query_run.py --section wincoverage
+#    Look for: exploration zone funnel survival rates, per-window null counts
+#    by zone. If exploration candidates are being killed at a specific window
+#    → starvation from CCI. If they score but rank lower → quality issue.
+#
+# =============================================================================
+# CHANGE 5: samples_per_zone 175 → 200
+# =============================================================================
+#
+#  200 × ~62% expected pass rate ≈ 124 per zone → ~248 GA inputs total.
+#  Marginal Stage 1 runtime impact (~15–20 min). Improves GA seed diversity.
 #
 # =============================================================================
 # KEY QUESTIONS THIS RUN ANSWERS
 # =============================================================================
 #
-#  1. Does the 4-window structure produce higher windows_evaluated counts?
-#     Success criterion: avg windows_evaluated for top-10 >= 3.0
-#     (vs 3.1 in v3.0 — marginal improvement expected from window merge).
+#  1. Does CCI exploration produce top-10 candidates after H1+H2 mitigations?
+#     Run: --section zone after completion.
+#     Success: >= 1 exploration candidate in final top-10 with windows_evaluated >= 3.
+#     If fail: H3 confirmed → v6.0 disables CCI, tests ADX or RSI as third filter.
 #
-#  2. Does lowering win_rate floor to 0.15 recover Stage 1 pass rate
-#     without degrading WFO candidate quality?
-#     Success criterion: pass rate >= 55%, top-5 win_rate still >= 0.20.
-#     If top-5 win_rate drops below 0.18 → floor was load-bearing, revert.
+#  2. Does 4/4 window coverage (b0aed9f94266 benchmark) reproduce or improve?
+#     Target: at least one honest candidate with WFO >= 0.80 and 4/4 windows.
 #
-#  3. Does absorbing W05 into W03 help or hurt?
-#     W03 in v3.0 had 30 rejections. In v4.0 W03 covers 9 months including
-#     the formerly-dead H1 2025 — if the 2024-H2 portion is productive
-#     enough to lift the window over min_significant_trades, W03 becomes
-#     the most informative window in the set.
+#  3. Does sigmoid recalibration (310→353) stabilise or shift distributions?
+#     Check --section sigmoid. If stdev >> 706 again → update before v6.0.
 #
-#  4. Does 89703d22bf44-type behaviour (4 windows, high rr, low mult)
-#     reproduce? Is v3.0's best candidate structurally stable?
+#  4. Does atr_mult=1.6 floor produce any winners, or does 1.7 emerge as the
+#     true productive floor?
+#     Check --section params, bottom-5 atr_mult distribution.
 #
-#  5. Does reducing the phantom problem (0.70 floor, 4 windows) reduce
-#     the number of 1-window auto_go promotions?
-#     Success criterion: zero auto_go with windows_evaluated < 3.
-#
-# RUNTIME ESTIMATE: 5–8 hours at max_workers=4
-#   Stage 1:  ~40–55 min  (350 candidates, 4 workers)
+# RUNTIME ESTIMATE: 6–9 hours at max_workers=4
+#   Stage 1:  ~50–65 min  (400 candidates, 4 workers)
 #   Stage 2:  DISABLED
-#   Stage 3:  ~2–3 hrs    (GA 30gen × 60pop, 4 workers)
-#   Stage 4:  ~2–4 hrs    (4 windows × 30 candidates — fewer windows = faster)
+#   Stage 3:  ~3–5 hrs    (GA 40gen × 70pop — increased for CCI diagnostic)
+#   Stage 4:  ~2–4 hrs    (4 windows × 30 candidates)
 #   Stage 5:  ~20–30 min
 #   Stage 6:  ~15–20 min
 #   Stage 7:  ~5 min
@@ -191,7 +161,7 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 4             # Confirmed stable at 15min TF — revert to 2 if OOM observed
+  max_workers: 4
   log_level: "INFO"
 
 stages:
@@ -205,19 +175,19 @@ stages:
 
 random_search:
   method: "lhs"
-  samples_per_zone: 175      # Increased from 150 — compensates for tighter atr_multiplier range
-                              # and win_rate floor reduction (expected higher pass rate)
+  samples_per_zone: 200      # Increased from 175. 200 × ~62% pass rate ≈ 124/zone.
   min_significant_trades: 12  # Absolute floor — do NOT reduce further
   seed: 42
 
 genetic:
-  population_size: 60
-  generations: 30
+  population_size: 70        # Increased from 60. Wider population for 12-param
+                              # CCI exploration space.
+  generations: 40            # Increased from 30. Addresses CCI GA budget hypothesis.
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 8
+  stagnation_generations: 10 # Increased from 8 to match larger generation count.
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -227,34 +197,20 @@ walk_forward:
   enforce_oos_gate: false
   oos_degradation_threshold: 0.50
 
-  # 4 windows of ~9 months each — 2023-01-02 → 2026-02-28
-  #
-  # CHANGE FROM v3.0: 6 × 6-month → 4 × 9-month
-  # Rationale: absorb structurally-dead W05 (2025 H1) into W03.
-  #            More trades per window → fewer REJECTED_INSUFFICIENT_TRADES.
-  #            Harder for phantom 1-window candidates to score near-perfectly.
-  #
-  # Regime identity:
-  #   W01  2023-01 → 2023-09  DAX recovery — directional, moderate volatility
-  #   W02  2023-10 → 2024-06  ECB rate cycle peak — choppy. Primary stress test.
-  #   W03  2024-07 → 2025-03  DAX 2024 H2 (productive) absorbs 2025 H1 (dead).
-  #                            Net result depends on balance of good vs dead months.
-  #   W04  2025-04 → 2026-02  Most recent regime. Partial 2026 Q1 included.
-  #                            Previously isolated as a stress window (W10 in 1min).
-  #
+  # 4 windows of ~9 months — UNCHANGED from v4.0. Structure confirmed correct.
   windows:
     - id: "W01"
       start: "2023-01-02"
-      end:   "2023-09-29"    # 9 months — DAX recovery trend
+      end:   "2023-09-29"    # DAX recovery — directional, moderate volatility
     - id: "W02"
       start: "2023-10-02"
-      end:   "2024-06-28"    # 9 months — ECB cycle, choppy KEY STRESS
+      end:   "2024-06-28"    # ECB rate cycle peak — choppy. Primary stress test.
     - id: "W03"
       start: "2024-07-01"
-      end:   "2025-03-31"    # 9 months — H2 productive + H1 2025 dead absorbed
+      end:   "2025-03-31"    # H2 2024 productive + H1 2025 dead absorbed
     - id: "W04"
       start: "2025-04-01"
-      end:   "2026-02-28"    # 11 months — most recent, partial 2026 Q1
+      end:   "2026-02-28"    # Most recent regime. Partial 2026 Q1 included.
 
 monte_carlo:
   deep:
@@ -303,10 +259,7 @@ scenarios:
       profit_factor:    0.10
       # SUM = 1.00 ✅
     constraints:
-      min_win_rate:        0.15   # REDUCED from 0.18 — 190/192 Stage 1 failures were win_rate.
-                                  # Average candidate win_rate=0.1686 at 15min. 0.18 was cutting
-                                  # 63% of space. Let GA sort marginal candidates via fitness.
-                                  # If top-5 WFO candidates drop below 0.18 win_rate → revert.
+      min_win_rate:        0.15   # CONFIRMED v4.0. Pass rate 64.6%, top-5 WR 0.20–0.25.
       max_losing_streak:   25
       min_trades_per_week: 0.1
       min_expectancy:     -1.0
@@ -320,9 +273,8 @@ scenarios:
       worst_drawdown:   0.20
       fraction_positive: 0.20
     verdict_thresholds:
-      go_wfo_floor:                0.70   # Raised from 0.65. With 4 windows a 1-window phantom
-                                           # can still score ~0.93+ — 0.70 further reduces false
-                                           # positives. V2-VERDICT-GATE (windows>=3) is the fix.
+      go_wfo_floor:                0.70   # Unchanged — phantom mitigation only.
+                                           # V2-VERDICT-GATE is the real fix.
       borderline_wfo_floor:        0.45   # Unchanged
       go_mc_ruin_ceiling:          0.05
       borderline_mc_ruin_ceiling:  0.15
@@ -374,23 +326,22 @@ zones:
   safe:
     # Filters: DPO + MACD
     #
-    # Changes from v3.0:
-    #   atr_multiplier ceiling: 2.0 → 1.9  (v3.0 top-5 max was 1.9, nothing at 2.0)
-    #   All other parameters unchanged — confirmed productive ranges.
-    #   macd_signal min=2 maintained — do not lower.
+    # Changes from v4.0:
+    #   atr_multiplier floor: 1.5 → 1.6  (zero winners at 1.5 across v2+v3+v4)
+    #   All other parameters unchanged.
     #
     enabled: true
     parameters:
       atr_length:       {type: int,   min: 8,   max: 18,  step: 1}
-      atr_multiplier:   {type: float, min: 1.5, max: 1.9, step: 0.1}
-      # TIGHTENED: 2.0 → 1.9 ceiling. v3.0 top-5 genuine: 1.7, 1.7, 1.9, 1.8, 1.7.
-      # Nothing above 1.9 in winners. Sensitivity: universal degradation at +0.1.
+      atr_multiplier:   {type: float, min: 1.6, max: 1.9, step: 0.1}
+      # RAISED FLOOR: 1.5 → 1.6. Three runs, zero winners below 1.6.
+      # Ceiling 1.9 unchanged. v4.0 top-5 range: 1.7–1.8.
 
       rr_target:        {type: float, min: 6.0, max: 9.5, step: 0.1}
-      # UNCHANGED — 6.2–8.8 in v3.0 top-5. Sub-6 confirmed dead. Ceiling 9.5 still in play.
+      # UNCHANGED. v4.0 top-5 range: 6.5–8.8. Sub-6 confirmed dead.
 
       risk_percentile:  {type: float, min: 0.85, max: 1.10, step: 0.01}
-      # UNCHANGED — 0.85–1.09 confirmed productive. b5366b2b39a0 peaked at 1.04.
+      # UNCHANGED. v4.0 top-5 range: 0.89–1.05.
 
       dpo_length:       {type: int,   min: 14,  max: 30,  step: 1}
       dpo_smooth:       {type: int,   min: 6,   max: 20,  step: 1}
@@ -402,23 +353,33 @@ zones:
   exploration:
     # Filters: DPO + MACD + CCI
     #
-    # Changes from v3.0:
-    #   atr_multiplier ceiling: 2.3 → 2.0  (aligning with safe zone evidence)
-    #   risk_percentile: 0.80–1.12 → 0.83–1.10  (minor tail trim)
-    #   macd_signal min=2 maintained — do not lower.
+    # Changes from v4.0:
+    #   atr_multiplier floor: 1.2 → 1.4
+    #   cci_overbought: 51–120 → 75–105  (see Change 4 notes above)
+    #   cci_oversold: -120 to -51 → -105 to -75  (symmetric)
+    #   cci_length: 10–30 → 14–26
+    #
+    # IF v5.0 STILL PRODUCES ZERO EXPLORATION TOP-10 (decision tree for v6.0):
+    #   Check --section zone: where are CCI candidates dying?
+    #   If Stage 1 kill rate similar to safe zone → not a constraint problem
+    #   If WFO window coverage much lower than safe zone → H3 confirmed (starvation)
+    #   If WFO coverage similar but scores lower → CCI is a weak filter at 15min
+    #   → v6.0 action: disable CCI, test ADX (adx_threshold, adx_length) as
+    #     third filter. ADX measures trend strength without requiring extreme
+    #     readings — likely to survive 15min trade frequency constraints better.
     #
     enabled: true
     parameters:
       atr_length:       {type: int,   min: 6,   max: 25,  step: 1}
-      atr_multiplier:   {type: float, min: 1.2, max: 2.0, step: 0.1}
-      # TIGHTENED: 2.3 → 2.0 ceiling. Aligning with safe zone — >2.0 produced
-      # nothing across three runs. 1.2 floor retained — downside unexplored.
+      atr_multiplier:   {type: float, min: 1.4, max: 2.0, step: 0.1}
+      # RAISED FLOOR: 1.2 → 1.4. More conservative than safe zone to preserve
+      # exploration breadth at the low end.
 
       rr_target:        {type: float, min: 5.5, max: 10.0, step: 0.1}
-      # UNCHANGED — slight floor offset from safe zone for exploration breadth.
+      # UNCHANGED.
 
       risk_percentile:  {type: float, min: 0.83, max: 1.10, step: 0.01}
-      # MINOR TRIM: 0.80→0.83 lower (no winner below 0.85), 1.12→1.10 upper.
+      # UNCHANGED from v4.0.
 
       dpo_length:       {type: int,   min: 10,  max: 35,  step: 1}
       dpo_smooth:       {type: int,   min: 1,   max: 25,  step: 1}
@@ -426,9 +387,14 @@ zones:
       macd_fast:        {type: int,   min: 3,   max: 15,  step: 1}
       macd_slow:        {type: int,   min: 16,  max: 38,  step: 1}
       macd_signal:      {type: int,   min: 2,   max: 16,  step: 1}  # min=2 — NEVER lower
-      cci_length:       {type: int,   min: 10,  max: 30,  step: 1}
-      cci_overbought:   {type: int,   min: 51,  max: 120, step: 1}
-      cci_oversold:     {type: int,   min: -120, max: -51, step: 1}
+      cci_length:       {type: int,   min: 14,  max: 26,  step: 1}
+      # TIGHTENED: 10–30 → 14–26.
+      cci_overbought:   {type: int,   min: 75,  max: 105, step: 1}
+      # TIGHTENED: 51–120 → 75–105.
+      # Productive DAX 15min CCI extreme range. Below 75: fires too often.
+      # Above 105: fires too rarely, starves trade count.
+      cci_oversold:     {type: int,   min: -105, max: -75, step: 1}
+      # TIGHTENED: -120 to -51 → -105 to -75. Symmetric with cci_overbought.
 
   discovery:
     enabled: false
