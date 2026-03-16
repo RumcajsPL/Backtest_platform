@@ -14,24 +14,46 @@ description: >
   decision for this project.
 ---
 # CTP Project Skill — Backtesting + Broker Integration
-## Project Status (2026-03-15, end of day)
+## Project Status (2026-03-16, end of day)
 ```
 BACKTESTING ENGINE:    V1 PRODUCTION — PHASE 1 GATE FULLY CLOSED. Engine frozen.
-                       1min series: V1_03 complete, V1_04 overnight.
-                       15min series: V1_06 v1/v2/v3 in progress.
+                       1min series:  V1_04 complete (63f3cc3d). V1_05 queued overnight.
+                       15min series: V1_06 v3.0 complete (1fd58c85). V1_06 v4.0 queued daytime.
 
-BROKER INTEGRATION:    Steps 1-5 COMPLETE. 90/90 tests passing.
-                       Phase 2 pipeline confirmed live 2026-03-13.
-                       First live signal loop: Monday morning (DAX 09:00–16:00 UTC).
-                       Command: python scripts/broker_support/run_signal_loop.py
-                                --config configs/broker_support/broker_support_config.yaml
+BROKER INTEGRATION:    Phase 2 pipeline LIVE. Signal loop running.
+                       First live signal observed 2026-03-16 14:35 UTC — BUY @ 23605.05.
+                       Rejected by RiskManager (threshold_pct=0.45). Expected behaviour.
+                       No executed trades yet. Monitoring continues tomorrow.
+```
+---
+## TWO INDEPENDENT BACKTEST SERIES — DO NOT CROSS-COMPARE
+```
+1min series  (overnight runs, ~8–15 hours):
+  Config family: backtest_V1_0X.yaml
+  Strategy TF:   1min
+  HTF:           1min
+  WFO windows:   13 × 3-month (2023-01 → 2026-02)
+  Filters:       DPO + Choppiness + CCI + ADX
+  Zone:          Single focused zone
+  Production:    c424a0e04327 (run b651ec5c) — active in run_signal.py
+15min series (daytime runs, ~3–6 hours):
+  Config family: backtest_V1_06_vX.yaml
+  Strategy TF:   15min
+  HTF:           1D
+  WFO windows:   4 × ~9-month from v4.0 (previously 6 × 6-month)
+  Filters:       DPO + MACD (safe zone) / DPO + MACD + CCI (exploration)
+  Zone:          Two zones — safe + exploration
+  Production:    Not yet — still in exploratory series
+Rule: NEVER compare fitness scores, WFO scores, risk_percentile values,
+      rr_target values, or parameter ranges across these two series.
+      They are different instruments (same DAX), different regimes, different
+      filter families. All calibration is per-series only.
 ```
 ---
 ## CRITICAL — macd_filter.py crash fix (2026-03-14)
 ```
 BUG: pandas_ta_classic pta.macd() returns None for signalma on short series
      (n < slow_length + signal_length + 1). Causes C extension crash.
-
 FIX APPLIED in src/strategies/filters/macd_filter.py:
   _calculate_macd:    min_required = self.slow_length + self.signal_length + 1
   compute_indicators: min_length   = self.slow_length + self.signal_length + 1
@@ -39,7 +61,6 @@ FIX APPLIED in src/strategies/filters/macd_filter.py:
 ALSO CONFIRMED: macd_signal=1 is a crash/degenerate trigger.
   Zone definitions must enforce macd_signal min=2.
   V2-PARAM-VALID: add ValueError at construction if signal_length < 2.
-
 WRONG APPROACHES (do not retry):
   - gc.disable() around pta.macd() — wrong code path
   - talib=False parameter — same bug in pure Python path
@@ -56,50 +77,60 @@ Behaviour: TRADE FILTER, not position sizer.
   Signal REJECTED if that % > max_risk_percentile.
   Effect is TF-dependent: larger ATR at higher TFs → more signals rejected.
 Empirical calibration (DAX, 38 months):
-  1min:  0.20–0.60 productive zone (V1_03/V1_04 series)
+  1min:  0.20–0.35 confirmed sweet spot (V1_04 top-5 all 0.21–0.29)
          0.45% production value (c424a0e04327)
-  15min: 0.80–1.12 productive zone (V1_06 series, confirmed across 2 runs)
-         <0.80 = trade starvation. >1.12 = consistently underperforms.
+         >0.35 consistently underperforms across three runs
+  15min: 0.83–1.10 productive zone (V1_06 v3.0 confirmed)
+         <0.83 = trade starvation. >1.10 = consistently underperforms.
 Rule: re-calibrate empirically per TF before setting zone ranges.
 Do NOT transfer 1min values to higher TF runs.
 ```
 ---
-## WFO window sizing and starvation — CRITICAL FOR 15min+
+## WFO window sizing — CRITICAL
 ```
 Rule: WFO window must average >= min_significant_trades trades.
-  1min:  3-month windows fine (~150+ trades/window)
-  15min: 6-month windows required (~15–30 trades/window)
-         3-month = widespread REJECTED_INSUFFICIENT_TRADES
-15min structural window behaviour (confirmed V1_06 series):
-  W01 (2023 H1): ~18–20 trades — borderline, often scores
-  W02 (2023 H2): ~24–28 trades — most reliable scoring window
-  W03 (2024 H1): ~13–14 trades — just below threshold at 15, target with 12
-  W04 (2024 H2): ~16–21 trades — scores for some candidates
+  1min:  3-month windows fine (~150+ trades/window). 13 windows confirmed.
+  15min: 9-month windows from v4.0 (previously 6-month — starvation issues)
+15min 4-window structure (v4.0 onwards):
+  W01  2023-01-02 → 2023-09-29  DAX recovery — directional, scores well
+  W02  2023-10-02 → 2024-06-28  ECB rate cycle — choppy, primary stress test
+  W03  2024-07-01 → 2025-03-31  H2 productive absorbs H1 2025 dead months
+  W04  2025-04-01 → 2026-02-28  Most recent regime — partial 2026 Q1
+15min 6-window history (v1.3 → v3.0, for reference):
+  W01 (2023 H1): ~18–20 trades — borderline scorer
+  W02 (2023 H2): ~24–28 trades — most reliable
+  W03 (2024 H1): ~13–14 trades — unlocked at min_trades=12 in v3.0
+  W04 (2024 H2): ~16–21 trades — scores well
   W05 (2025 H1): ~6–10 trades — STRUCTURALLY DEAD for DPO+MACD family
-                 Not fixable by parameter tuning. Accept and move on.
-  W06 (2025 H2+2026 Q1): ~23–32 trades — reliable, most recent regime
+                 Absorbed into W03 in 4-window design from v4.0
+  W06 (2025 H2+2026 Q1): ~23–32 trades — most recent, reliable
 min_significant_trades history:
   v1.3: 20 → widespread starvation, phantom 1-window verdicts
-  v2.0: 15 → improved, but W03 still mostly rejected (13-14 trades)
-  v3.0: 12 → target W03 unlock. Do NOT go below 12.
+  v2.0: 15 → improved, W03 still mostly rejected
+  v3.0: 12 → W03 partially unlocked (30 rejections vs 86 for W05)
+  v4.0: 12 → kept at floor, longer windows solve starvation structurally
+  ABSOLUTE FLOOR: do NOT go below 12.
 ```
 ---
 ## Phantom WFO verdicts — KNOWN STRUCTURAL BUG
 ```
-Problem: WFO scorer assigns near-perfect scores to 1-window candidates.
-  variance=0 and frac_pos=1.0 are trivially true for a single data point.
+Problem: WFO scorer assigns near-perfect scores to low-window candidates.
+  variance=0 and frac_pos=1.0 are trivially true for 1–2 data points.
   go_wfo_floor does NOT prevent this — the issue is upstream in the scorer.
-Observed: 4 phantom auto_go candidates across V1_06 v1.3 and v2.0.
-  Example: 0d921ad4b8a9 WFO=0.9507, windows_evaluated=1. Meaningless score.
-Partial mitigation (applied in YAML):
-  go_wfo_floor raised progressively: 0.40 → 0.55 → 0.65
-  Does not solve the problem but reduces false positive rate.
+Observed across V1_06 series:
+  v1.3: phantom candidates on 1 window
+  v2.0: 2 phantom auto_go (1-window scores)
+  v3.0: 2 phantom auto_go (2-window scores: 09e1609b4a56 WFO=0.9606,
+         c151411ec5ee WFO=0.9043 — both windows_evaluated=2)
+  go_wfo_floor progression: 0.40 → 0.55 → 0.65 → 0.70 (v4.0)
+  None of these mitigations solve the root cause.
 V2 FIX REQUIRED (highest priority V2 backtesting item):
   Minimum windows_evaluated >= 3 gate in verdict engine.
   If windows_evaluated < 3 → verdict = INSUFFICIENT_COVERAGE regardless of score.
 When reading results: always check windows_evaluated column first.
   Discard any candidate with windows_evaluated < 3 regardless of WFO score.
   Honest benchmark: windows_evaluated >= 3, frac_pos >= 0.80.
+  With 4-window structure: minimum honest bar is windows_evaluated >= 3 of 4.
 ```
 ---
 ## Sigmoid scale calibration
@@ -110,10 +141,12 @@ Observed values:
   1min b651ec5c:  stdev=620, recommended=310  ✅ exact match (production)
   1min 547c3161:  stdev=361, recommended=181  (ran at 310 — slight inflation)
   1min 6fcf82b9:  stdev=326, recommended=163  (ran at 310 — inflation ~1.9×)
-  1min V1_04:     sigmoid manually set to 163 before run ← first corrected run
+  1min 63f3cc3d:  stdev=257, recommended=128  (ran at 163 — inflation ~1.27×)
+  1min V1_05:     sigmoid manually set to 128 before run
   15min 6b137540: stdev=628, recommended=314  (ran at 310 — essentially exact)
   15min 2d50b27e: stdev=566, recommended=283  (ran at 310 — inflation ~1.1×)
-
+  15min 1fd58c85: stdev=598, recommended=299  (ran at 310 — inflation ~1.04×) ✅ negligible
+  15min v4.0:     310 unchanged — stdev ~597, essentially correct
 Rules:
   - Scale affects fitness scores uniformly — relative ranking preserved.
   - Fitness scores NOT comparable across TFs (different P&L distributions).
@@ -121,71 +154,98 @@ Rules:
   - Within-run relative ranking always valid regardless of scale value.
   - V2 action: make _SIGMOID_SCALE a per-run config parameter.
   - For now: check sigmoid diagnostic in query_run.py, set manually if >> 310.
+  - 15min series: 310 is effectively correct — no manual override needed.
+  - 1min series:  stdev has been declining. Check diagnostic before each run.
 ```
 ---
-## 1min parameter findings (confirmed across 547c3161 + 6fcf82b9)
+## 1min parameter findings (confirmed across 547c3161 + 6fcf82b9 + 63f3cc3d)
 ```
-rr_target:            2.8–3.3 sweet spot. >3.7 dead. <2.6 underperforms.
-atr_multiplier:       1.5 confirmed dead (bottom-5). 2.1–2.7 productive.
-                      1.8 floor: 1.2–1.7 dead space confirmed.
-risk_percentile:      0.25 and 0.51 both auto_go — wide range productive.
-                      >0.55 tends to underperform. Ceiling 0.60 for V1_04.
-dpo_threshold:        Sensitivity signal: lower is better (0.10–0.15 direction).
-                      GA should find floor — do not narrow range prematurely.
-choppiness_threshold: Near-insensitive (deltas ≤0.0007). 54–65 range confirmed.
-adx_threshold:        <22 dead (V1_02). 22–30 confirmed active range.
-atr_length:           No structural bias. Full 5–24 range productive.
-Safe zone:            Dead — produced zero top candidates in 547c3161.
-                      Retired. Single focused zone approach confirmed correct.
+rr_target:        2.6–3.2 confirmed sweet spot. >3.2 produced nothing in V1_04 top-5.
+                  2.6 floor confirmed (9dc5db154fe1 WFO=0.810). >3.7 dead.
+atr_multiplier:   1.9–2.7 confirmed. 1.8 produced nothing. 2.8–2.9 produced nothing.
+                  V1_04 top-5: 2.6, 1.9, 2.5, 2.2, 2.0
+atr_length:       10–24 productive. 5–9 confirmed underperforming (bottom-5 twice).
+                  12 appeared in V1_04 #2 candidate — do not cut below 10.
+risk_percentile:  0.20–0.35 CONFIRMED sweet spot across three runs.
+                  V1_04 top-5 ALL in 0.21–0.29. Zero top-5 above 0.35 across any run.
+                  Ceiling tightened to 0.35 in V1_05. Critical trade-off:
+                  tighter ceiling = fewer trades passing ATR filter. Monitor
+                  trades_per_week failures — if they spike, widen to 0.20–0.42.
+dpo_threshold:    Mixed signals — lower better for some, higher for others.
+                  Range 0.10–0.25 confirmed productive. Do not narrow until resolved.
+choppiness_threshold: Near-insensitive (deltas ≤0.0011 across all V1_04 candidates).
+                  54.0–65.0 confirmed. No action.
+adx_threshold:    <22 dead (V1_02). 22–30 confirmed active range.
+W10 (2025 Q2):    9dc5db154fe1 is ONLY 1min candidate to post positive W10 net_pnl
+                  (+90.8) across all runs. Structural stress window. Key diagnostic.
+Sigmoid:          1min stdev declining run-over-run (~620→361→326→257).
+                  Set _SIGMOID_SCALE = 128 for V1_05.
+Safe zone:        Dead. Single focused zone confirmed correct since V1_03.
 ```
 ---
-## 15min parameter findings (confirmed across 6b137540 + 2d50b27e)
+## 15min parameter findings (confirmed across 6b137540 + 2d50b27e + 1fd58c85)
 ```
-rr_target:        6–9 sweet spot. Sub-6 consistently bottom-half both runs.
-                  9.3 produced genuine 2-window candidate (a68c06066c4d).
-                  Floor raised to 5.5–6.0 in v3.0.
-atr_multiplier:   Universal sensitivity degradation at higher values.
-                  Strongest signal: da44ec91c996 delta +0.072 at mult -0.1.
-                  1.5–2.0 productive. >2.3 underperforms. Ceiling 2.3 in v3.0.
-risk_percentile:  0.85–1.10 confirmed sweet spot. >1.12 consistently dead.
-                  Ceiling lowered to 1.12 (exploration) in v3.0.
+rr_target:        6.0–9.5 productive. Sub-6 consistently bottom-half all three runs.
+                  V1_06 v3.0 top-5 genuine: 8.8, 8.2, 6.9, 8.3, 6.2
+                  Ceiling 9.5 still in play — do not narrow upper.
+atr_multiplier:   1.5–1.9 confirmed sweet spot (v3.0 genuine top-5: 1.7, 1.6, 1.9, 1.7, 1.8)
+                  Universal sensitivity degradation at higher values across all runs.
+                  >2.0 never produced a top-5 candidate across three 15min runs.
+                  Ceiling: safe 1.9 / exploration 2.0 in v4.0.
+risk_percentile:  0.83–1.10 confirmed. V3.0 top-5: 0.90, 1.01, 0.85, 0.87, 1.07.
+                  >1.10 consistently dead. <0.83 not tested — floor may have room.
+win_rate:         0.18 floor was over-filtering at 15min — killed 190/192 Stage 1
+                  candidates in v3.0 (avg win_rate=0.1686 across all 300 candidates).
+                  Lowered to 0.15 in v4.0. Monitor: if top-5 drop below 0.18 → revert.
 macd_signal:      min=2 enforced. signal=1 crash/degenerate — do not allow.
 MACD structural:  fast_max < slow_min must be maintained in all zone defs.
-                  safe: fast max=12, slow min=14.
-                  exploration: fast max=15, slow min=16.
-max_workers:      4 confirmed stable at 15min. Memory per worker lower than 1min.
-                  Revert to 2 immediately if any OOM or silent crash observed.
+                  safe:        fast max=12, slow min=14
+                  exploration: fast max=15, slow min=16
+max_workers:      4 confirmed stable at 15min. Revert to 2 if any OOM observed.
+Sigmoid 310:      stdev ~597–628 across 15min runs → recommended ~298–314. 310 correct.
+                  No manual override needed for 15min series.
 ```
 ---
-## pandas_ta_classic TA-Lib delegation
+## 15min series progression (honest candidates — windows_evaluated >= 3 only)
 ```
-Delegate to TA-Lib by default when installed:
-  pta.macd() → BUG on short series + signal=1 (fix in macd_filter.py)
-  pta.cci()  → gc.disable added (not needed, remove in cleanup)
-  pta.atr(), pta.bbands(), pta.rsi(), pta.ema(), pta.sma() — all delegate
-
-Safe (no TA-Lib path): pta.dpo() — pure Python/pandas
-To force pure Python: talib=False. Note: does NOT fix short-series None bug.
-```
----
-## MACD zone parameter ranges — structural constraint
-```
-ALWAYS ensure macd_fast_max < macd_slow_min in zone definitions.
-ALWAYS ensure macd_signal_min >= 2 in zone definitions.
-
-Correct zone structure (safe):
-  macd_fast:   {min: 6,  max: 12, step: 1}   # max strictly < slow min
-  macd_slow:   {min: 14, max: 30, step: 1}   # min strictly > fast max
-  macd_signal: {min: 2,  max: 12, step: 1}   # min >= 2, never 1
-
-Correct zone structure (exploration):
-  macd_fast:   {min: 3,  max: 15, step: 1}
-  macd_slow:   {min: 16, max: 38, step: 1}
-  macd_signal: {min: 2,  max: 16, step: 1}
+V1_06 v1.3  6b137540  best: fadaf986a898  5 windows  WFO=0.747
+V1_06 v2.0  2d50b27e  best: fa0be02aa749  3 windows  WFO=0.882
+V1_06 v3.0  1fd58c85  best: 89703d22bf44  4 windows  WFO=0.960  ← series high
+V1_06 v4.0  queued    key question: do 4×9-month windows improve avg coverage?
+             success criterion: avg windows_evaluated for top-10 >= 3.0
+             success criterion: zero auto_go with windows_evaluated < 3
 ```
 ---
-## ACTIVE TRACK — broker_support / Phase 2
-### Live pipeline flow
+## 1min series progression
+```
+V1_02  547c3161  2 auto_go   best WFO=0.734  generic zones, safe zone dead
+V1_03  6fcf82b9  3 auto_go   best WFO=0.766  focused zone confirmed
+V1_04  63f3cc3d  9 auto_go   best WFO=0.810  series high — 9dc5db154fe1
+                              key finding: risk_percentile sweet spot 0.21–0.29
+                              key finding: only candidate to survive W10 (+90.8)
+V1_05  queued    key question: does risk_percentile 0.20–0.35 maintain quality
+                               without causing trade starvation?
+```
+---
+## Live signal loop — observations (2026-03-16)
+```
+First day running: 09:00–16:00 UTC, DAX session.
+Signal observed:   Poll #324, 14:35 UTC. BUY @ 23605.05.
+Filter pipeline:   49 raw → 1 surviving (2% pass rate — consistent with backtest)
+RiskManager:       REJECTED. threshold_pct=0.45. Expected behaviour.
+                   Likely cause: elevated ATR near US open (14:30 UTC). Not a bug.
+Backtest baseline for context:
+  c424a0e04327: 3805 filter survivors / 820 trading days ≈ 4.6 signals/day
+                1498 trades approved / 820 days ≈ 1.8 trades/day
+                RiskManager approval rate ≈ 39% of filter survivors
+Assessment:       1 rejection on day 1 is statistically meaningless (1 vs 820-day
+                  baseline). Run full week before drawing conclusions.
+Plan:             If RiskManager rejects every signal near 14:30 UTC → investigate
+                  whether 0.45% threshold needs recalibration for 2026 DAX volatility
+                  vs 2023–2024 backtest period. Not a code issue — a calibration question.
+```
+---
+## Live pipeline flow
 ```
 broker_support_config.yaml -> BrokerSupportConfig
     |
@@ -246,23 +306,26 @@ OHLC fields: can be None (not missing key — value is None).
 ```
 V2-VERDICT-GATE   [P1 — HIGHEST] windows_evaluated >= 3 minimum gate in verdict engine.
                   If windows_evaluated < 3 → verdict = INSUFFICIENT_COVERAGE.
-                  Confirmed needed across two 15min runs. Phantom auto_go verdicts.
+                  Confirmed needed across all four 15min runs (v1.3→v3.0).
+                  Phantom auto_go verdicts observed at 2-window level in v3.0 despite
+                  go_wfo_floor=0.65. go_wfo_floor raised to 0.70 in v4.0 — not a fix.
 V2-PARAM-VALID    [P1] Parameter constraint validator at candidate construction.
                   - Reject macd_signal_length < 2 before indicator called.
                   - Reject MACD fast >= slow before any indicator called.
                   Extend to other filters with similar constraints.
 V2-SIGMOID-CFG    [P2] Make _SIGMOID_SCALE a per-run config parameter.
                   Currently hardcoded 310.0 in consistency_scorer.py.
-                  Values by TF: 1min≈163–310, 15min≈283–314. Not comparable across TFs.
+                  Values by TF: 1min≈128–310, 15min≈299–314. Not comparable across TFs.
 V2-RISK-PERC-TF   [P2] risk_percentile is TF-dependent. Re-calibrate per TF.
-                  1min: 0.20–0.60. 15min: 0.80–1.12. Never transfer across TFs.
+                  1min: 0.20–0.35 confirmed. 15min: 0.83–1.10 confirmed.
+                  Never transfer across TFs.
 V2-WORKER-CRASH   [P2] Isolated worker crash must not kill parent process.
                   15min: max_workers=4 confirmed stable.
                   1min: confirmed OOM at 6, stable at 2. Do not raise until
-                  V2 shared-memory architecture (B9O-009).
+                  V2 shared-memory architecture.
 V2-WINDOW-TF      [P2] WFO window width should adapt to trade frequency.
+                  Partially addressed by 4×9-month design in V1_06 v4.0.
                   Also: quantify LTF end-of-window coverage gap at 15min.
-                  (98% coverage = ~2% of trades close at end-of-data price)
 V2-PTA-MACD       [P3] Replace pta.macd with pure pandas EMA implementation.
                   Workaround in macd_filter.py sufficient for V1.
 ```
@@ -270,7 +333,8 @@ V2-PTA-MACD       [P3] Replace pta.macd with pure pandas EMA implementation.
 ## Frozen Constants
 ```python
 _SIGMOID_SCALE         = 310.0   # Default — override manually per run if stdev >> 620
-                                  # V1_04: manually set to 163 (stdev=326 in 6fcf82b9)
+                                  # 1min V1_05: manually set to 128 (stdev=257 in 63f3cc3d)
+                                  # 15min V1_06 v4.0: 310 correct (stdev~598, rec~299)
 _MAX_EXPECTED_DRAWDOWN = 2_500.0
 max_workers (1min)     = 2       # OOM at 6 — mandatory until V2 shared memory
 max_workers (15min)    = 4       # Confirmed stable — revert to 2 if any OOM
@@ -312,20 +376,24 @@ max_workers (15min)    = 4       # Confirmed stable — revert to 2 if any OOM
 - Do NOT use broker_support_config.yaml safety.max_open_positions as pyramiding limit
 - Do NOT use datetime.utcnow() — use datetime.now(timezone.utc)
 - Do NOT use ltf_timeframe=None in DataInfo — use "1s"
-# Backtesting — 1min
-- Do NOT use 1min risk_percentile values for higher TF runs — re-calibrate empirically
-- Do NOT set MACD fast >= slow in zone parameter ranges
-- Do NOT use 3-month WFO windows at 15min TF — use 6-month
+# Backtesting — both series
+- Do NOT cross-compare 1min and 15min results — different series, different everything
+- Do NOT transfer risk_percentile, rr_target or any parameter values across TFs
 - Do NOT assume sigmoid scale transfers across TFs or runs
+- Do NOT set MACD fast >= slow in zone parameter ranges
 - Do NOT retry gc.disable() as fix for pandas_ta_classic MACD crash — wrong path
 - Do NOT retry talib=False as fix for MACD crash — same bug in pure Python path
-# Backtesting — 15min
+# Backtesting — 1min specific
+- Do NOT use 3-month WFO windows at 15min TF — use 9-month (v4.0+)
+- Do NOT set risk_percentile ceiling above 0.35 for 1min — 0.35–0.60 confirmed dead
+# Backtesting — 15min specific
 - Do NOT set macd_signal min < 2 — signal=1 confirmed crash/degenerate trigger
 - Do NOT accept WFO auto_go verdict if windows_evaluated < 3 — phantom score
-- Do NOT expect W05 (2025 H1) to score for DPO+MACD — structurally dead window
 - Do NOT set min_significant_trades < 12 — statistical floor
 - Do NOT raise max_workers above 4 at 15min until confirmed stable
 - Do NOT lower wfo_collapse_drawdown_threshold below 600 at 15min TF
+- Do NOT use 6-month WFO windows for 15min from v4.0 onwards — 9-month design adopted
+- Do NOT set win_rate floor above 0.15 for 15min — 0.18 was killing 63% of Stage 1
 ```
 ---
 ## Platform

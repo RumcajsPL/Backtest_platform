@@ -1,16 +1,25 @@
 # CONTEXT.md — CTP Session State
-# Updated: 2026-03-15 (Full day session — 1min recalibration + 15min TF exploration)
+# Updated: 2026-03-16 (Full day session — V1_04 analysis + V1_05 queued, V1_06 v3.0 analysis + v4.0 queued, first live signal observed)
 ---
 ## Where We Are
 ```
 BACKTESTING ENGINE:    V1 PRODUCTION — frozen.
-                       1min exploratory series: V1_03 complete, V1_04 queued overnight.
-                       15min exploratory series: V1_06 v1/v2/v3 in progress.
-BROKER INTEGRATION:    Phase 2 pipeline confirmed live 2026-03-13.
-                       Stage 1 dry-run ✅. Stage 2 place-order path ✅.
-                       First live signal loop: tomorrow morning (DAX 09:00–16:00 UTC).
+                       1min series:  V1_04 complete. V1_05 queued overnight.
+                       15min series: V1_06 v3.0 complete. V1_06 v4.0 queued daytime.
+BROKER INTEGRATION:    Phase 2 pipeline LIVE as of 2026-03-13.
+                       Signal loop running. First signal observed 2026-03-16 14:35 UTC.
+                       Rejected by RiskManager — expected behaviour, not a bug.
+                       Plan: run full week, review RiskManager calibration if pattern repeats.
                        Command: python scripts/broker_support/run_signal_loop.py
                                 --config configs/broker_support/broker_support_config.yaml
+```
+---
+## CRITICAL: Two Independent Backtest Series
+```
+DO NOT cross-compare results between series. Different TF, different filters,
+different parameter ranges, different window structures. All analysis is per-series.
+1min series:  configs/backtesting/backtest_V1_0X.yaml    (overnight, ~8–15 hrs)
+15min series: configs/backtesting/backtest_V1_06_vX.yaml (daytime, ~3–6 hrs)
 ```
 ---
 ## Phase 2 Deliverables (all in place — use phase2_deliverables_v3.zip)
@@ -52,142 +61,130 @@ tests/broker_support/test_signal_pipeline_integration.py
 | Watch | c42f8b009283 | 0.6473 | 0.000 | MONITOR |
 | Watch | c209820886c8 | 0.5699 | 0.000 | SECONDARY MONITOR — do NOT promote |
 ---
+## Live Signal Loop — Status
+```
+First day:  2026-03-16, 09:00–16:00 UTC
+Signal:     Poll #324, 14:35 UTC — BUY @ 23605.05 (bid)
+            49 raw → 1 filter survivor (2% pass rate — consistent with backtest)
+            REJECTED by RiskManager (threshold_pct=0.45)
+            Likely cause: elevated ATR near US open 14:30 UTC
+Backtest baseline (c424a0e04327, 38 months):
+  ~4.6 filter signals/day, ~1.8 trades/day approved (~39% RiskManager pass rate)
+Next steps:
+  - Run full week before any conclusions on RiskManager calibration
+  - If rejections cluster near 14:30 UTC → check whether 0.45% threshold needs
+    recalibration for 2026 DAX volatility vs 2023–2024 backtest period
+  - If random rejections across session → investigate ATR distribution
+  - No code changes until pattern confirmed across 3–5 trading days
+```
+---
 ## 1min Exploratory Runs
 | YAML | Run ID | Status | auto_go | Best WFO | Notes |
 |------|--------|--------|---------|----------|-------|
-| V1_03 (generic, v1.02) | 547c3161 | ✅ Complete | 2 | 0.734 | safe zone dead, exploration only productive |
-| V1_03 (focused, v1.03) | 6fcf82b9 | ✅ Complete | 3 | 0.7655 | confirmed focused zone correct approach |
-| V1_04 (refined, v1.04) | — | 🔄 Queued overnight | — | — | sigmoid=163, GA 80×40 |
-
-### V1_04 Key Settings (overnight run)
+| V1_02 (generic) | 547c3161 | ✅ Complete | 2 | 0.734 | safe zone dead, exploration only productive |
+| V1_03 (focused) | 6fcf82b9 | ✅ Complete | 3 | 0.766 | confirmed focused zone correct |
+| V1_04 (refined) | 63f3cc3d | ✅ Complete | 9 | 0.810 | series high — risk_perc sweet spot 0.21–0.29 |
+| V1_05 (convergence) | — | 🔄 Queued overnight | — | — | sigmoid=128, risk_perc 0.20–0.35 |
+### V1_05 Key Settings (overnight run)
 ```
-_SIGMOID_SCALE = 163  (manually set — stdev=325.93 in 6fcf82b9, recommended=163)
-Zone: focused (single zone, evidence-based bounds)
-rr_target:       2.6–3.6   (confirmed sweet spot 2.8–3.3)
-atr_multiplier:  1.8–2.9   (floor raised: 1.2–1.7 dead)
-risk_percentile: 0.20–0.60 (ceiling: >0.55 underperforms)
-choppiness_threshold: 54.0–65.0 (trimmed dead lower tail)
-GA: population=80, generations=40, stagnation=12
-Samples: 250 (tighter range → ~68% pass rate estimated)
+_SIGMOID_SCALE = 128  (stdev=257 in 63f3cc3d → recommended=128)
+Zone: focused (single zone)
+rr_target:       2.6–3.2   (upper trimmed from 3.6 — nothing above 3.1 in V1_04 top-5)
+atr_multiplier:  1.9–2.7   (both tails trimmed — 1.8 and 2.8–2.9 dead)
+atr_length:      10–24     (floor raised from 5 — 5–9 confirmed underperforming)
+risk_percentile: 0.20–0.35 (KEY CHANGE — V1_04 top-5 ALL in 0.21–0.29)
+GA: population=80, generations=40, stagnation=12 (unchanged from V1_04)
+Samples: 250
+Key question: does 0.20–0.35 ceiling maintain quality without trade starvation?
+Warning trigger: if trades_per_week failures spike beyond ~6/run → widen to 0.20–0.42
 ```
-### 1min Parameter Findings (confirmed across 547c3161 + 6fcf82b9)
+### 1min Parameter Findings (confirmed across 547c3161 + 6fcf82b9 + 63f3cc3d)
 ```
-rr_target:        2.8–3.3 sweet spot. >3.7 dead. <2.6 underperforms.
-atr_multiplier:   1.5 confirmed dead (bottom-5). 2.1–2.7 productive.
-risk_percentile:  0.25 and 0.51 both produced auto_go — wide range valid.
-                  >0.55 tends to underperform. <0.20 not tested.
-dpo_threshold:    sensitivity signal points lower (0.10–0.15). GA should explore.
-choppiness_threshold: near-insensitive parameter (deltas ≤0.0007).
-adx_threshold:    <22 dead (V1_02 confirmed). 22–30 productive.
-Sigmoid:          stdev varies ~325–620 across runs. _SIGMOID_SCALE=163 for V1_04.
-                  Within-run relative ranking preserved regardless of scale value.
+rr_target:        2.6–3.2 sweet spot. >3.2 dead. 2.6 floor confirmed.
+atr_multiplier:   1.9–2.7 productive. 1.8 dead. 2.8–2.9 dead.
+atr_length:       10–24 productive. 5–9 confirmed underperforming (bottom-5 twice).
+risk_percentile:  0.20–0.35 CONFIRMED sweet spot. V1_04 top-5 all 0.21–0.29.
+                  Zero top-5 above 0.35 across any 1min run.
+dpo_threshold:    Mixed signals across candidates. 0.10–0.25 confirmed productive.
+choppiness_threshold: Near-insensitive (≤0.0011). 54–65 correct.
+adx_threshold:    <22 dead. 22–30 confirmed.
+W10 survivor:     9dc5db154fe1 only candidate to survive W10 (+90.8 net_pnl). Key diagnostic.
+Sigmoid trend:    stdev declining: 620→361→326→257. Check before each run.
 ```
 ---
 ## 15min Exploratory Runs
-| YAML | Run ID | Status | auto_go | Best WFO | Notes |
-|------|--------|--------|---------|----------|-------|
-| V1_06 v1.3 | 6b137540 | ✅ Complete | 6* | 0.9731* | *phantom — 1-window scores |
-| V1_06 v2.0 | 2d50b27e | ✅ Complete | 7* | 0.9507* | *2 phantom, 5 genuine |
-| V1_06 v3.0 | — | 🔄 Queued | — | — | min_trades=12, mult ceil lowered |
-### V1_06 v3.0 Key Settings (next run)
+| YAML | Run ID | Status | Honest auto_go | Best honest WFO | Notes |
+|------|--------|--------|----------------|-----------------|-------|
+| V1_06 v1.3 | 6b137540 | ✅ Complete | — | 0.747 (5 win) | phantom problem, min_trades=20 |
+| V1_06 v2.0 | 2d50b27e | ✅ Complete | 5 genuine | 0.882 (3 win) | 2 phantom, min_trades=15 |
+| V1_06 v3.0 | 1fd58c85 | ✅ Complete | 6 genuine | 0.960 (4 win) | 2 phantom (2-window), W03 unlocked |
+| V1_06 v4.0 | — | 🔄 Queued daytime | — | — | 4×9-month windows, win_rate floor 0.15 |
+### V1_06 v4.0 Key Settings (next daytime run)
 ```
-_SIGMOID_SCALE = 310  (stdev=566 in 2d50b27e → recommended=283, but 310≈close enough)
-min_significant_trades: 12  (reduced from 15 — target W03 unlock)
-atr_multiplier: safe 1.5–2.0 / exploration 1.2–2.3  (ceiling reduced)
-rr_target: safe 6.0–9.5 / exploration 5.5–10.0  (floor raised)
-risk_percentile: exploration ceiling 1.20→1.12
-go_wfo_floor: 0.65 (raised from 0.55 — partial phantom mitigation)
-borderline_wfo_floor: 0.45
-max_workers: 4  (confirmed stable at 15min TF)
+Windows:         4 × ~9-month (MAJOR CHANGE from 6 × 6-month)
+  W01: 2023-01-02 → 2023-09-29  (DAX recovery)
+  W02: 2023-10-02 → 2024-06-28  (ECB rate cycle — primary stress)
+  W03: 2024-07-01 → 2025-03-31  (H2 productive absorbs dead H1 2025)
+  W04: 2025-04-01 → 2026-02-28  (most recent regime)
+min_win_rate:    0.15  (reduced from 0.18 — 190/192 Stage 1 failures were win_rate)
+atr_multiplier:  safe 1.5–1.9 / exploration 1.2–2.0  (ceilings reduced)
+risk_percentile: exploration 0.83–1.10  (minor trim)
+go_wfo_floor:    0.70  (raised from 0.65 — partial phantom mitigation)
+samples/zone:    175  (increased from 150)
+_SIGMOID_SCALE = 310 (stdev~598, recommended~299 — essentially correct, no change)
+max_workers: 4
+Key questions:
+  1. Does 4-window structure raise avg windows_evaluated for top-10?
+     Success: avg >= 3.0, zero auto_go with windows_evaluated < 3
+  2. Does win_rate floor 0.15 recover Stage 1 pass rate (was 36% in v3.0)?
+     Success: >= 55% pass rate, top-5 win_rate still >= 0.20
+  3. Does absorbing W05 into W03 help or just add noise?
 ```
-### 15min Structural Findings (confirmed across 6b137540 + 2d50b27e)
+### 15min Parameter Findings (confirmed across 6b137540 + 2d50b27e + 1fd58c85)
 ```
-WINDOW STARVATION: Core problem. W03/W05 structurally under-traded.
-  W03 (2024 H1 ECB cycle): 13–14 trades avg — just below threshold.
-        → Target: min_significant_trades=12 should unlock this window.
-  W05 (2025 H1 range-bound): ~6–10 trades. Structurally dead for DPO+MACD.
-        → Accept as dead window for this filter family. Not fixable by params.
-PHANTOM VERDICTS: WFO scorer assigns near-perfect scores to 1-window candidates
-  (variance=0, frac_pos=1.0 trivially). go_wfo_floor does not prevent this.
-  V2 FIX REQUIRED: windows_evaluated >= 3 gate in verdict engine before
-  any verdict can be issued. Highest-priority V2 backtesting item.
-HONEST BENCHMARKS (windows_evaluated >= 3, frac_pos >= 0.80):
-  fadaf986a898: 5 windows, WFO=0.747, frac_pos=1.0  ← best structurally sound
-  a25c382aa687: 5 windows, WFO=0.573, frac_pos=0.80
-  fa0be02aa749: 3 windows, WFO=0.882, auto_go  ← most trustworthy auto_go
-  fce4168e8c42: 4 windows, WFO=0.861, borderline
-  995d8190bff7: 4 windows, WFO=0.852, borderline
-rr_target:        6–9 sweet spot. Sub-6 consistently bottom-half both runs.
-atr_multiplier:   Universal degradation at higher values. 1.5–2.0 productive.
-                  da44ec91c996 sensitivity: +0.072 at mult-0.1 (strongest signal).
-risk_percentile:  0.85–1.10 confirmed. >1.12 consistently underperforms.
-max_workers=4:    Confirmed stable. LTF slices smaller at 15min → lower mem/worker.
-Sigmoid 310:      stdev=566–628 across 15min runs → recommended ~283–314. 310 close.
-macd_signal=1:    CONFIRMED CRASH TRIGGER. min=2 enforced in all zone definitions.
-                  Also add structural guard in macd_filter.py (V2-PARAM-VALID).
-LTF coverage:     98% at 15min. Trades lasting until window end close at
-                  end-of-data price. More impactful at 15min than 1min.
-                  Quantify % of trades affected in V2 (V2-WINDOW-TF).
+rr_target:        6.0–9.5 productive. Sub-6 dead. V3.0 top-5: 8.8, 8.2, 6.9, 8.3, 6.2.
+atr_multiplier:   1.5–1.9 confirmed sweet spot. >2.0 never in top-5 across 3 runs.
+risk_percentile:  0.83–1.10 confirmed. V3.0 top-5: 0.90, 1.01, 0.85, 0.87, 1.07.
+win_rate:         0.18 floor was over-filtering (63% Stage 1 cut). Lowered to 0.15 in v4.0.
+Sigmoid:          310 correct for 15min series throughout (~1.04× inflation in v3.0).
+W05 (2025 H1):    Structurally dead for DPO+MACD. Absorbed into W03 in 4-window design.
+Phantom verdicts: Still present at 2-window level in v3.0. V2-VERDICT-GATE is the fix.
 ```
----
-## Weekend Exploratory Plan Status
-| YAML | STF | HTF | Filters | Status |
-|------|-----|-----|---------|--------|
-| V1_03 | 1min | 1min | DPO+Chop+CCI+ADX | ✅ Complete (6fcf82b9) |
-| V1_04 | 1min | 1min | DPO+Chop+CCI+ADX | 🔄 Overnight — sigmoid=163 |
-| V1_05 | 10min | 4H | DPO+MA/+BB | 🔲 Pending |
-| V1_06 v3 | 15min | 1D | DPO+MACD/+CCI | 🔄 Queued |
 ---
 ## Open Issues
 | ID | Description | Priority |
 |----|-------------|----------|
-| PHASE-2-STAGE2 | First live signal loop tomorrow morning | P0 — Monday 09:00 UTC |
+| LIVE-RISKMANAGER | Review 0.45% threshold after 1 week of live signals | P0 — next Monday |
 | V2-VERDICT-GATE | windows_evaluated >= 3 minimum before any verdict | P1 — highest V2 priority |
-| MACD-SIGNAL-GUARD | macd_filter.py: raise ValueError if signal_length < 2 at construction | P1 |
+| MACD-SIGNAL-GUARD | macd_filter.py: raise ValueError if signal_length < 2 | P1 |
 | RESOLVER-FIELDS | InstrumentResolver missing 'fields' param + exact-match | P1 |
 | CCI-GC-CLEANUP | Remove gc.disable from cci_filter.py | P2 — cosmetic |
 | WINZIP-32 | WinError 32 on GA temp YAMLs | Cosmetic |
 ---
 ## V2 Backlog
 ```
-V2-VERDICT-GATE   windows_evaluated >= 3 minimum gate in verdict engine.
-                  If windows_evaluated < 3 → verdict = INSUFFICIENT_COVERAGE.
-                  Highest-priority V2 backtesting item — confirmed needed across
-                  two 15min runs. Phantom auto_go verdicts on 1-window candidates.
-V2-PARAM-VALID    Parameter constraint validator at candidate construction.
-                  - Reject MACD signal_length < 2 before indicator called.
-                  - Reject MACD fast >= slow before any indicator library called.
-                  Extend to other filters with similar constraints.
-V2-SIGMOID-CFG    Make _SIGMOID_SCALE a per-run config parameter (currently hardcoded).
-                  Observed values: 1min=310 (b651ec5c), 1min=163 (V1_04),
-                  15min=283–314 (V1_06 series). Not comparable across TFs.
-V2-RISK-PERC-TF   risk_percentile is TF-dependent trade filter (not position sizer).
-                  1min: 0.45% production. 15min: 0.85–1.10% confirmed range.
-                  Re-calibrate empirically per TF. Never transfer 1min values up.
-V2-WORKER-CRASH   Isolated worker crash must not kill parent process.
-                  Currently: silent parent kill at max_workers=2 (1min).
-                  15min: confirmed stable at max_workers=4.
-                  Fix: catch subprocess exit, log candidate, continue pipeline.
-V2-WINDOW-TF      WFO window width should adapt to trade frequency.
-                  1min: 3-month fine. 15min: 6-month required.
-                  Also: quantify LTF coverage impact on 15min results —
-                  trades closing at end-of-data price (98% coverage = 2% affected).
-V2-PTA-MACD       pandas_ta_classic pta.macd() returns None for signalma on short series.
-                  Workaround: length guard in macd_filter.py (applied).
-                  Permanent fix: replace with pure pandas EMA:
-                    ema_fast = series.ewm(span=fast, adjust=False).mean()
-                    ema_slow = series.ewm(span=slow, adjust=False).mean()
-                    macd_line = ema_fast - ema_slow
-                    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-                    histogram = macd_line - signal_line
+V2-VERDICT-GATE   windows_evaluated >= 3 gate in verdict engine.
+                  INSUFFICIENT_COVERAGE verdict if < 3 windows scored.
+                  Highest-priority V2 item — phantom auto_go confirmed across 4 runs.
+                  go_wfo_floor raised to 0.70 in v4.0 — NOT a fix, just mitigation.
+V2-PARAM-VALID    Parameter validator at candidate construction.
+                  Reject macd_signal_length < 2. Reject MACD fast >= slow.
+V2-SIGMOID-CFG    Make _SIGMOID_SCALE a per-run config parameter.
+                  1min: 128 (V1_05) — declining stdev trend.
+                  15min: 310 correct throughout.
+V2-RISK-PERC-TF   risk_percentile TF-dependent. 1min: 0.20–0.35. 15min: 0.83–1.10.
+V2-WORKER-CRASH   Isolated worker crash must not kill parent.
+                  15min stable at 4. 1min stable at 2.
+V2-WINDOW-TF      WFO window width adapt to trade frequency. Partially solved by
+                  4×9-month design. Quantify LTF end-of-window coverage gap.
+V2-PTA-MACD       Replace pta.macd with pure pandas EMA. Workaround sufficient for V1.
 ```
 ---
 ## Backtest YAML Status
 ```
-configs/backtesting/backtest_V1_03.yaml  ✅ Complete (6fcf82b9)
-configs/backtesting/backtest_V1_04.yaml  🔄 Overnight — sigmoid=163, GA 80×40
-configs/backtesting/backtest_V1_05.yaml  🔲 Pending — 10min/4H DPO+MA/+BB
-configs/backtesting/backtest_V1_06.yaml  🔄 v3.0 queued — min_trades=12, mult↓, rr↑
+configs/backtesting/backtest_V1_04.yaml    ✅ Complete (63f3cc3d)
+configs/backtesting/backtest_V1_05.yaml    🔄 Overnight — sigmoid=128, risk_perc 0.20–0.35
+configs/backtesting/backtest_V1_06_v4.yaml 🔄 Queued daytime — 4×9-month windows, win_rate 0.15
 ```
 ---
 ## Useful Commands
@@ -213,18 +210,20 @@ ARTF parquet:     data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
 BS config:        configs/broker_support/broker_support_config.yaml
 Instrument map:   configs/broker_support/instrument_map.yaml  (symbol key: GER40)
 Credentials:      configs/broker_support/broker_settings.env
-1min configs:     configs/backtesting/backtest_V1_03.yaml (complete)
-                  configs/backtesting/backtest_V1_04.yaml (overnight)
-15min configs:    configs/backtesting/backtest_V1_06.yaml (v3.0 queued)
+1min configs:     configs/backtesting/backtest_V1_04.yaml (complete)
+                  configs/backtesting/backtest_V1_05.yaml (overnight)
+15min configs:    configs/backtesting/backtest_V1_06_v4.yaml (queued)
 MACD filter:      src/strategies/filters/macd_filter.py  ← crash fix applied
-CCI filter:       src/strategies/filters/cci_filter.py   ← gc.disable to remove
+CCI filter:       src/strategies/filters/cci_filter.py   ← gc.disable to remove (P2)
 ```
 ---
 ## Next Session Start
-1. Check first live signal: python scripts/broker_support/inspect_portfolio.py
-2. If order placed → confirm journal entry, review tracker loop output
-3. If no order → run_signal_loop.py during DAX hours (09:00–16:00 UTC)
-4. Check V1_04 overnight results → analyse vs 6fcf82b9, note if WFO improves
-5. Check V1_06 v3.0 results → key question: did W03 unlock (rejections < 20)?
-6. Remove gc.disable from cci_filter.py (P2 cosmetic)
-7. After first order confirmed → plan Stage 3 automation loop
+1. Check live signal loop: python scripts/broker_support/inspect_portfolio.py
+2. If trade placed → confirm journal entry, review tracker loop output
+3. If no trade → note time-of-day pattern on any RiskManager rejections
+4. Check V1_05 overnight results → key question: did risk_percentile 0.20–0.35
+   maintain quality? Did trades_per_week failures spike?
+5. Check V1_06 v4.0 daytime results → key question: did 4-window structure
+   improve avg windows_evaluated? Did win_rate floor 0.15 fix pass rate?
+6. Remove gc.disable from cci_filter.py (P2 cosmetic — carry-forward)
+7. After 1 week of live signals → review RiskManager 0.45% calibration
