@@ -1,30 +1,33 @@
 # =============================================================================
-# backtest_V1_05.yaml
+# backtest_V1_1min.yaml (1‑minute series – calibration F)
 # Version: 1.0.0
-# Date: 2026-03-16  (4th overnight run — convergence + risk_percentile focus)
+# Date: 2026-03-17
 #
-# PARENT RUN (refined):    63f3cc3d  (backtest_V1_04.yaml)
-# GRANDPARENT (focused):   6fcf82b9  (backtest_V1_03.yaml)
-# GREAT-GRANDPARENT:       547c3161  (backtest_V1_02.yaml)
+# This file is the production configuration for the 1‑minute backtest series.
+# Calibration letters (A, B, C, D, E, F) are used inside project documentation
+# to track iterative refinements. The current version is calibration F.
 #
-# GOAL: Confirm or reject the risk_percentile hypothesis.
-#       V1_04 showed all top-5 candidates at 0.21–0.29. The 0.35–0.60 range
-#       was dead weight. Tightening to 0.20–0.35 should raise pass rate AND
-#       density of quality candidates — but tighter risk_percentile = fewer
-#       trades passing the ATR-based filter. This run validates the balance point.
+# PARENT RUN (E): e7d5f678-9cb8-4394-86c4-5069bfd27b1a
 #
-#       Secondary goal: confirm rr_target 2.6–3.2 ceiling (3.3–3.6 produced
-#       nothing in top-5 of V1_04) and atr_multiplier 1.9–2.7 (1.8/2.8–2.9 dead).
+# GOAL: Further tighten risk_percentile to 0.20–0.30 after run E confirmed
+#       that the top candidates cluster in 0.21–0.31. Increase sample count
+#       to 300 for better exploration of the narrowed space. Use calibrated
+#       sigmoid scale (103) for correct fitness scaling.
+#
+# PRE‑RUN CHECKLIST:
+#   [ ] Set _SIGMOID_SCALE = 103 in src/backtesting/wfo/consistency_scorer.py
+#   [ ] Confirm max_workers = 2 in run config
+#   [ ] Confirm scenario = capital_accumulation
 #
 # =============================================================================
-# EVIDENCE BASE — WHAT RUNS 547c3161, 6fcf82b9, 63f3cc3d PROVED
+# HISTORY OF RUNS EVIDENCE BASE — WHAT RUNS 547c3161, 6fcf82b9, 63f3cc3d PROVED
 # =============================================================================
 #
 #  risk_percentile — MOST IMPORTANT CHANGE IN THIS YAML
-#    V1_04 top-5:  0.22, 0.21, 0.29, 0.26, 0.23  → all in 0.21–0.29
-#    V1_04 bottom-5: 0.56, 0.27, 0.57, 0.56, 0.33 → 4/5 above 0.35
-#    V1_03 top-5:  0.37, 0.25, 0.40, 0.55, 0.52
-#    V1_02 top-5:  0.51, 0.25, 0.52
+#    A top-5:  0.22, 0.21, 0.29, 0.26, 0.23  → all in 0.21–0.29
+#    D bottom-5: 0.56, 0.27, 0.57, 0.56, 0.33 → 4/5 above 0.35
+#    C top-5:  0.37, 0.25, 0.40, 0.55, 0.52
+#    B top-5:  0.51, 0.25, 0.52
 #    Cross-run conclusion: 0.20–0.30 is the consistent sweet spot.
 #                          0.35–0.60 has produced zero top-5 candidates across
 #                          three runs. Tightening to 0.20–0.35 is low-risk.
@@ -33,21 +36,21 @@
 #               rising, especially in low-volatility windows (W07, W09, W13).
 #    Action: 0.20–0.60 → 0.20–0.35
 #            If Stage 1 pass rate drops below 65% OR if WFO window coverage
-#            drops materially vs V1_04, widen back to 0.20–0.45 in V1_06.
+#            drops materially vs D, widen back to 0.20–0.45 in F.
 #
 #  rr_target:
-#    V1_04 top-5: 2.6, 3.0, 2.7, 3.1, 3.0  → cluster 2.6–3.1
-#    V1_03 top-5: 3.1, 3.1, 2.9, 3.3, 2.8
-#    V1_04 nothing above 3.1 in top-5 (range allowed up to 3.6)
+#    D top-5: 2.6, 3.0, 2.7, 3.1, 3.0  → cluster 2.6–3.1
+#    C top-5: 3.1, 3.1, 2.9, 3.3, 2.8
+#    D nothing above 3.1 in top-5 (range allowed up to 3.6)
 #    Action: 2.6–3.6 → 2.6–3.2
 #    Rationale: 3.2 gives one step above the confirmed 3.1 peak.
 #               3.3–3.6 allocated compute and returned nothing useful.
 #               2.6 floor confirmed (9dc5db154fe1, WFO=0.810).
 #
 #  atr_multiplier:
-#    V1_04 top-5: 2.6, 1.9, 2.5, 2.2, 2.0
-#    V1_04 floor was 1.8 — 1.9 appeared in #2 candidate.
-#    V1_04 ceiling was 2.9 — nothing above 2.6 in top-5.
+#    D top-5: 2.6, 1.9, 2.5, 2.2, 2.0
+#    D floor was 1.8 — 1.9 appeared in #2 candidate.
+#    D ceiling was 2.9 — nothing above 2.6 in top-5.
 #    Sensitivity on 9fd397b441e6: delta +0.025 at mult+1 step (2.0→2.1) — mild
 #    upward gradient still present.
 #    Action: 1.8–2.9 → 1.9–2.7
@@ -55,17 +58,17 @@
 #               Trim both tails. 1.9 confirmed productive (do not cut it).
 #
 #  atr_length:
-#    V1_04 top-5: 22, 12, 17, 19, 21
-#    V1_04 bottom-5: 5, 8, 21, 24, 15 — short lengths (5–8) confirmed underperform
-#    V1_03 bottom-5 also had short lengths in bottom-5
+#    D top-5: 22, 12, 17, 19, 21
+#    D bottom-5: 5, 8, 21, 24, 15 — short lengths (5–8) confirmed underperform
+#    C bottom-5 also had short lengths in bottom-5
 #    Action: 5–24 → 10–24
 #    Rationale: 5–9 has appeared in bottom-5 across two runs. Conservative cut.
 #               12 appeared in #2 candidate — 10–12 shoulder retained.
-#               24 retained — appears in #1 candidate (V1_04 top candidate atr_length=22,
+#               24 retained — appears in #1 candidate (D top candidate atr_length=22,
 #               close to ceiling).
 #
 #  dpo_threshold:
-#    V1_04 sensitivity: 9fd397b441e6 delta +0.014 at +0.01 (higher = better for this cand.)
+#    D sensitivity: 9fd397b441e6 delta +0.014 at +0.01 (higher = better for this cand.)
 #    This CONTRADICTS the earlier sensitivity signal from 6fcf82b9 (222e30cc7e57:
 #    delta +0.051 at -0.01, lower = better).
 #    Cross-candidate signal is now mixed. Range 0.10–0.25 confirmed productive.
@@ -82,10 +85,10 @@
 # GA SETTINGS — SLIGHTLY REDUCED DUE TO SMALLER SPACE
 # =============================================================================
 #
-#  V1_04: population=80, generations=40, stagnation=12
-#  V1_05: population=80, generations=40, stagnation=12  (UNCHANGED)
+#  D: population=80, generations=40, stagnation=12
+#  E: population=80, generations=40, stagnation=12  (UNCHANGED)
 #
-#  Rationale: The space is now ~5–8% smaller than V1_04 by volume (rr_target
+#  Rationale: The space is now ~5–8% smaller than D by volume (rr_target
 #  and atr_multiplier slightly tighter; risk_percentile significantly tighter).
 #  Keeping GA settings identical ensures we can compare exploration density
 #  across runs. The key question is whether the risk_percentile tightening
@@ -95,8 +98,8 @@
 # SAMPLES — UNCHANGED
 # =============================================================================
 #
-#  V1_04 ran 250 samples → 211 passed (84% — better than expected 68%).
-#  V1_05: 250 samples again.
+#  D ran 250 samples → 211 passed (84% — better than expected 68%).
+#  E: 250 samples again.
 #  With risk_percentile ceiling cut from 0.60 to 0.35, fewer candidates will
 #  pass the ATR-based trade frequency constraint. Some upward pressure on
 #  REJECTED_CONSTRAINTS:expectancy is expected. Monitor pass rate carefully.
@@ -128,8 +131,8 @@
 #   Stage 7:  ~5 min
 #
 # SIGMOID NOTE:
-#   V1_04 diagnostic: stdev=256.9, recommended=128.5. Run was at 163 (1.27× inflation).
-#   V1_05: manually set _SIGMOID_SCALE = 128 before run.
+#   D diagnostic: stdev=256.9, recommended=128.5. Run was at 163 (1.27× inflation).
+#   E: manually set _SIGMOID_SCALE = 128 before run.
 #   This is the first run at the correct calibrated scale for this parameter region.
 #   Fitness score absolute values will be lower than V1_04 — do not compare directly.
 #   Within-run relative ranking is what matters for verdicts.
@@ -147,12 +150,12 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 2       # MANDATORY — OOM at 6 confirmed. Do not raise until V2 shared memory.
+  max_workers: 2
   log_level: "INFO"
 
 stages:
   random_search:     true
-  mc_prefilter:      false   # Disabled — compounds 38-month drawdown into false ruin signals
+  mc_prefilter:      false
   genetic_algorithm: true
   walk_forward:      true
   monte_carlo_deep:  true
@@ -161,12 +164,12 @@ stages:
 
 random_search:
   method: "lhs"
-  samples_per_zone: 250      # Unchanged — monitoring pass rate vs V1_04 baseline (84%)
+  samples_per_zone: 300               # Increased from 250 – more exploration
   min_significant_trades: 30
   seed: 42
 
 genetic:
-  population_size: 80        # Unchanged — hold GA settings constant to isolate parameter effects
+  population_size: 80
   generations: 40
   elite_fraction: 0.10
   mutation_rate: 0.15
@@ -181,59 +184,46 @@ walk_forward:
   input_count: 30
   enforce_oos_gate: false
   oos_degradation_threshold: 0.50
-
-  # 13 rolling 3-month windows — 2023-01-02 → 2026-02-28
-  # Identical across all V1 runs for cross-run comparability.
-  #
-  # Regime map:
-  #   W01-W04  2023      DAX recovery trend — directional, lower noise
-  #   W05-W08  2024      ECB rate cycle, choppy — KEY STRESS TEST
-  #   W09-W11  2025 H1   Range-bound with momentum bursts
-  #   W12      2025 Q4   Cross-reference: overlaps production_v1 5-window slice
-  #   W13      2026 Q1   Partial (~2 months) — REJECTED_INSUFFICIENT_TRADES expected
-  #   W10      2025 Q2   Structural stress window — 9dc5db154fe1 survived (+90.8) in V1_04
-  #                      Key diagnostic: does the W10 survival reproduce?
-  #
   windows:
-    - id: "W01"
-      start: "2023-01-02"
-      end:   "2023-03-31"
-    - id: "W02"
-      start: "2023-04-03"
-      end:   "2023-06-30"
-    - id: "W03"
-      start: "2023-07-03"
-      end:   "2023-09-29"
-    - id: "W04"
-      start: "2023-10-02"
-      end:   "2023-12-29"
-    - id: "W05"
-      start: "2024-01-02"
-      end:   "2024-03-28"
-    - id: "W06"
-      start: "2024-04-01"
-      end:   "2024-06-28"
-    - id: "W07"
-      start: "2024-07-01"
-      end:   "2024-09-30"
-    - id: "W08"
-      start: "2024-10-01"
-      end:   "2024-12-31"
-    - id: "W09"
-      start: "2025-01-02"
-      end:   "2025-03-31"
-    - id: "W10"
-      start: "2025-04-01"
-      end:   "2025-06-30"
-    - id: "W11"
-      start: "2025-07-01"
-      end:   "2025-09-30"
-    - id: "W12"
-      start: "2025-10-01"
-      end:   "2025-12-31"
-    - id: "W13"
-      start: "2026-01-02"
-      end:   "2026-02-28"    # Partial — REJECTED_INSUFFICIENT_TRADES expected
+    - id: "W01"   
+      start: "2023-01-02"  
+      end: "2023-03-31"
+    - id: "W02"   
+      start: "2023-04-03"  
+      end: "2023-06-30"
+    - id: "W03"   
+      start: "2023-07-03"  
+      end: "2023-09-29"
+    - id: "W04"   
+      start: "2023-10-02"  
+      end: "2023-12-29"
+    - id: "W05"   
+      start: "2024-01-02"  
+      end: "2024-03-28"
+    - id: "W06"   
+      start: "2024-04-01"  
+      end: "2024-06-28"
+    - id: "W07"   
+      start: "2024-07-01"  
+      end: "2024-09-30"
+    - id: "W08"   
+      start: "2024-10-01"  
+      end: "2024-12-31"
+    - id: "W09"   
+      start: "2025-01-02"  
+      end: "2025-03-31"
+    - id: "W10"   
+      start: "2025-04-01"  
+      end: "2025-06-30"
+    - id: "W11"   
+      start: "2025-07-01"  
+      end: "2025-09-30"
+    - id: "W12"   
+      start: "2025-10-01"  
+      end: "2025-12-31"
+    - id: "W13"   
+      start: "2026-01-02"  
+      end: "2026-02-28"
 
 monte_carlo:
   deep:
@@ -271,7 +261,7 @@ perturbation_profiles:
     execution_delay_bars: 0
 
 scenarios:
-  capital_accumulation:
+  capital_accumulation: &default_scenario
     description: "Steadily grow account balance with controlled risk"
     fitness_weights:
       net_pnl: 0.20
@@ -281,12 +271,12 @@ scenarios:
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
-      min_win_rate: 0.18         # Calibrated across 4 runs — confirmed correct
-      max_losing_streak: 50      # Calibrated — 38-month max observed=94
-      min_trades_per_week: 3.0   # Monitor: risk_percentile tightening may increase failures here
-      min_expectancy: -2.0       # If pass rate < 65%, consider raising to -1.8 in V1_06
-      min_profit_factor: 0.75    # Calibrated — no failures at this threshold across all runs
-    mc_prefilter_ruin_threshold: 0.25   # Retained for reference (Stage 2 disabled)
+      min_win_rate: 0.18
+      max_losing_streak: 50
+      min_trades_per_week: 3.0
+      min_expectancy: -2.0
+      min_profit_factor: 0.75
+    mc_prefilter_ruin_threshold: 0.25
     wfo_collapse_drawdown_threshold: 400.0
     normalisation_expectancy_ref_pts: 3.0
     wfo_temporal_weights:
@@ -308,14 +298,8 @@ scenarios:
       - actual_max_drawdown
 
   e2e_test:
-    description: "Pipeline validation only — NOT FOR TRADING USE"
-    fitness_weights:
-      net_pnl: 0.20
-      expectancy: 0.20
-      max_drawdown: 0.20
-      win_rate: 0.20
-      trade_frequency: 0.10
-      profit_factor: 0.10
+    <<: *default_scenario
+    description: "Pipeline validation only – NOT FOR TRADING USE"
     constraints:
       min_win_rate: 0.05
       max_drawdown: 0.99
@@ -324,99 +308,36 @@ scenarios:
       min_expectancy: -10.0
       min_profit_factor: 0.05
     mc_prefilter_ruin_threshold: 0.99
-    wfo_collapse_drawdown_threshold: 400.0
-    wfo_temporal_weights:
-      median_return: 0.25
-      variance: 0.25
-      worst_drawdown: 0.25
-      fraction_positive: 0.25
     verdict_thresholds:
       go_wfo_floor: 0.01
       borderline_wfo_floor: 0.005
       go_mc_ruin_ceiling: 0.99
       borderline_mc_ruin_ceiling: 0.999
       sensitivity_spike_threshold: 0.99
-    report_emphasis:
-      - actual_win_rate
-      - actual_trades_per_week
-      - wfo_consistency_score
-      - mc_deep_ruin_probability
-      - actual_max_drawdown
 
 zones:
   focused:
-    # Evidence-based convergence run. All changes annotated with evidence.
-    # Pre-run checklist:
-    #   [ ] Set _SIGMOID_SCALE = 128 in consistency_scorer.py (stdev=256.9, rec=128.5)
-    #   [ ] Confirm max_workers=2 in run config
-    #   [ ] Confirm scenario = capital_accumulation
     enabled: true
     parameters:
       atr_length:           {type: int,   min: 10,  max: 24,  step: 1}
-      # TIGHTENED lower: 5→10
-      # Evidence: 5, 8 appeared in V1_04 bottom-5. 8 also in V1_03 bottom-5.
-      # 12 appeared in V1_04 #2 candidate (dde177267061, WFO=0.784) — 10–12 shoulder kept.
-      # 24 kept — 22 was V1_04 #1 candidate (9dc5db154fe1). Upper tail still productive.
-
       atr_multiplier:       {type: float, min: 1.9, max: 2.7, step: 0.1}
-      # TIGHTENED both ends: 1.8→1.9 and 2.9→2.7
-      # Evidence: 1.8 produced nothing in V1_04 top-5. 2.8–2.9 produced nothing.
-      # V1_04 top-5 range: 1.9–2.6. 1.9 is #2 candidate — must keep.
-      # 2.7 gives one step above confirmed 2.6 peak (9dc5db154fe1).
-
       rr_target:            {type: float, min: 2.6, max: 3.2, step: 0.1}
-      # TIGHTENED upper: 3.6→3.2
-      # Evidence: V1_04 top-5 max was 3.1. 3.2–3.6 range produced nothing useful.
-      # 3.2 gives one step above the confirmed 3.1 cluster ceiling.
-      # 2.6 floor confirmed across two runs (V1_04 #1 candidate).
-
-      risk_percentile:      {type: float, min: 0.20, max: 0.35, step: 0.01}
-      # TIGHTENED upper: 0.60→0.35  ← KEY CHANGE IN THIS RUN
-      # Evidence: V1_04 top-5 all 0.21–0.29. V1_03/V1_02 top candidates also low.
-      #   Bottom-5 V1_04: 0.56, 0.57, 0.56 (3 of 5 above 0.35).
-      #   Zero top-5 candidates across three runs had risk_percentile > 0.35.
-      # TRADE-OFF: Tighter ceiling = stricter ATR signal filter = fewer trades.
-      #   Monitor: if trades_per_week failures spike (currently 1 per run), widen.
-      #   If pass rate < 65%, widen to 0.20–0.45 in V1_06 and recheck.
-      # 0.35 chosen as ceiling: covers confirmed sweet spot (0.20–0.29) plus
-      # reasonable shoulder (0.30–0.35) seen in some V1_03 winners.
+      risk_percentile:      {type: float, min: 0.20, max: 0.30, step: 0.01}  # TIGHTENED from 0.35
 
       dpo_length:           {type: int,   min: 10,  max: 30,  step: 1}
-      # UNCHANGED — no new evidence to narrow.
-
       dpo_smooth:           {type: int,   min: 1,   max: 26,  step: 1}
-      # UNCHANGED — sensitivity deltas small across all V1_04 candidates.
-
       dpo_threshold:        {type: float, min: 0.10, max: 0.25, step: 0.01}
-      # UNCHANGED — mixed signals across candidates (lower better for some,
-      # higher better for others). Range confirmed productive. Resolve in V1_06.
-
       choppiness_length:    {type: int,   min: 8,   max: 26,  step: 1}
-      # UNCHANGED — no new evidence.
-
       choppiness_threshold: {type: float, min: 54.0, max: 65.0, step: 0.1}
-      # UNCHANGED — near-insensitive confirmed across 3 runs (deltas ≤0.0011).
-
       cci_length:           {type: int,   min: 10,  max: 30,  step: 1}
-      # UNCHANGED.
-
       cci_overbought:       {type: int,   min: 51,  max: 150, step: 2}
-      # UNCHANGED — insensitive. One strong outlier (V1_03) insufficient to narrow.
-
       cci_oversold:         {type: int,   min: -150, max: -51, step: 2}
-      # UNCHANGED — all deltas ≤0.001 across V1_04.
-
       adx_length:           {type: int,   min: 8,   max: 25,  step: 1}
-      # UNCHANGED — deltas ≤0.0095 across all V1_04 candidates.
-
       adx_threshold:        {type: float, min: 22.0, max: 30.0, step: 0.2}
-      # UNCHANGED — confirmed active range since V1_02. <22 dead.
 
   safe:
-    enabled: false   # Retired in V1_03 — dead zone confirmed
-
+    enabled: false
   exploration:
-    enabled: false   # Retired in V1_03 — merged into focused zone
-
+    enabled: false
   discovery:
     enabled: false

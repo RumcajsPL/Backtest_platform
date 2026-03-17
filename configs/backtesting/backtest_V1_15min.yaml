@@ -1,77 +1,109 @@
 # =============================================================================
-# backtest_V1_06_v5.yaml
-# Version: 5.0.0
-# Date: 2026-03-16
+# backtest_V1_15min.yaml (15‑minute series – calibration G)
+# Version: 7.0.0
+# Date: 2026-03-18
 #
 # CONFIGURATION: STF=15min / HTF=1D
-# BASE FILTERS:  DPO + MACD (safe zone)
-# EXPLORATION:   DPO + MACD + CCI (exploration zone — tightened)
+# SAFE ZONE ONLY: DPO + MACD (exploration zone disabled after two failed attempts)
 #
-# PARENT RUN: 7bfe6300  (backtest_V1_06 v4.0)
-# SERIES:     V1_06 v1.3 → v2.0 → v3.0 → v4.0 → v5.0
+# PARENT RUN: beb3b42a-268d-43bb-a5bd-e74d55bfd688 (calibration F)
+# SERIES:     V1_15min A → B → C → D → E → F → G
 #
 # =============================================================================
-# EVIDENCE BASE — WHAT v4.0 PROVED (run 7bfe6300)
+# WHAT RUN F PROVED
+# =============================================================================
+#
+#  run_id beb3b42a-268d-43bb-a5bd-e74d55bfd688 (calibration F)
+#
+#  Stage 1 pass rate: 64% (254/400). win_rate floor 0.15 confirmed.
+#  Stage 4 WFO: 30 candidates scored (24 collapsed, 6 non‑collapsed).
+#  Verdicts: 2 auto_go, 8 borderline (all borderline due to collapsed flag).
+#  Exploration zone (DPO+MACD only) produced only 2 WFO candidates, both low‑scoring.
+#  Conclusion: wider ranges are not productive; safe zone remains the only viable region.
+#
+#  KEY FINDINGS:
+#    - Safe zone auto_go candidates: e139a3ae1844 (WFO=0.769), 2619734dec6f (WFO=0.734)
+#      with windows_evaluated=3/4, no collapse, ruin prob 0.0.
+#    - Sigmoid stdev = 820.17 → recommended _SIGMOID_SCALE = 410.
+#    - atr_multiplier floor 1.6 remains safe; top candidates use 1.7–1.8.
+#
+# =============================================================================
+# CHANGES FOR CALIBRATION G
+# =============================================================================
+#
+#  1. DISABLE EXPLORATION ZONE – set `enabled: false`.
+#  2. Increase samples_per_zone to 300 for better safe‑zone coverage.
+#  3. Update _SIGMOID_SCALE to 410 in consistency_scorer.py.
+#  4. All safe‑zone parameters unchanged.
+#
+# =============================================================================
+# KEY QUESTIONS FOR CALIBRATION G
+# =============================================================================
+#
+#  1. With 300 samples, do we get more than 2 auto_go candidates?
+#  2. Does any candidate achieve 4/4 windows evaluated without collapse?
+#  3. Can we identify a candidate with WFO > 0.80 and no collapse?
+#
+# RUNTIME ESTIMATE: 7–10 hours at max_workers=4 (slightly longer due to more samples)
+# =============================================================================
+# =============================================================================
+# EVIDENCE HISTORY — WHAT D PROVED (run 7bfe6300)
 # =============================================================================
 #
 #  SERIES PROGRESSION (honest candidates — windows_evaluated >= 3 only):
-#    v1.3: fadaf986a898  5 windows  WFO=0.747  best honest
-#    v2.0: fa0be02aa749  3 windows  WFO=0.882  best honest
-#    v3.0: 89703d22bf44  4 windows  WFO=0.960  phantom (2 windows) — discard
-#    v4.0: b0aed9f94266  4 windows  WFO=0.800  best honest  ← new benchmark
+#    A: fadaf986a898  5 windows  WFO=0.747  best honest
+#    B: fa0be02aa749  3 windows  WFO=0.882  best honest
+#    C: 89703d22bf44  4 windows  WFO=0.960  phantom (2 windows) — discard
+#    D: b0aed9f94266  4 windows  WFO=0.800  best honest  ← new benchmark
 #           Note: 021146e09d85 WFO=0.975 phantom (2/4 windows) — discard
 #
-#  KEY v4.0 FINDINGS DRIVING v5.0 CHANGES:
+#  KEY D FINDINGS DRIVING E CHANGES:
 #
-#    (A) win_rate floor 0.15: CONFIRMED CORRECT. Pass rate 64.6% (was 36%).
+#    (i) win_rate floor 0.15: CONFIRMED CORRECT. Pass rate 64.6% (was 36%).
 #        Top-5 win_rate 0.20–0.25. Floor not load-bearing. Unchanged in v5.0.
 #
-#    (B) 4×9-month windows: CONFIRMED. avg windows_evaluated=3.0 for top-10.
+#    (ii) 4×9-month windows: CONFIRMED. avg windows_evaluated=3.0 for top-10.
 #        W01 (2023 H1) remains the weakest window — acceptable. Unchanged.
 #
-#    (C) Phantom problem: CONTAINED. go_wfo_floor=0.70 + 4 windows prevented
+#    (iii) Phantom problem: CONTAINED. go_wfo_floor=0.70 + 4 windows prevented
 #        auto_go. V2-VERDICT-GATE (windows>=3) remains P1 V2 item.
 #
-#    (D) atr_multiplier: zero winners at 1.5 across v2, v3, v4. Floor raised.
+#    (iv) atr_multiplier: zero winners at 1.5 across B, C, D. Floor raised.
 #        safe zone: 1.5–1.9 → 1.6–1.9
 #        exploration zone: 1.2–2.0 → 1.4–2.0
 #
-#    (E) CCI exploration zone: zero candidates in final top-10. Hypotheses:
+#    (v) CCI exploration zone: zero candidates in final top-10. Hypotheses:
 #        H1 — GA budget insufficient for 12-parameter space
 #        H2 — CCI ranges too wide, degenerate configs waste evaluations
 #        H3 — third filter too restrictive at 15min trade rates
-#        v5.0 addresses H1 (more GA budget) and H2 (tighter CCI ranges).
-#        If still zero in v5.0: H3 confirmed → retire CCI in v6.0.
+#        E addresses H1 (more GA budget) and H2 (tighter CCI ranges).
+#        If still zero in E: H3 confirmed → retire CCI in F.
 #        New section in query_run.py (--section zone, --section wincoverage)
 #        will provide the diagnostic to confirm which hypothesis is correct.
 #
-#    (F) Sigmoid: stdev=706, recommended=353 vs hardcoded 310 (1.14×).
+#    (vi) Sigmoid: stdev=706, recommended=353 vs hardcoded 310 (1.14×).
 #        BEFORE RUNNING: update _SIGMOID_SCALE to 353 in consistency_scorer.py.
 #
 # =============================================================================
 # CHANGE 1: _SIGMOID_SCALE 310 → 353
 # =============================================================================
-#
-#  MANUAL ACTION REQUIRED before running v5.0:
-#    src/backtesting/consistency_scorer.py → _SIGMOID_SCALE = 353.0
-#
 #  15min sigmoid history:
-#    v1.3  stdev≈628  recommended≈314  ran@310  (1.01×)
-#    v2.0  stdev≈566  recommended≈283  ran@310  (1.10×)
-#    v3.0  stdev≈598  recommended≈299  ran@310  (1.04×)
-#    v4.0  stdev=706  recommended=353  ran@310  (1.14× — action threshold)
-#    v5.0  target: ran@353
+#    vA  stdev≈628  recommended≈314  ran@310  (1.01×)
+#    vB  stdev≈566  recommended≈283  ran@310  (1.10×)
+#    vC  stdev≈598  recommended≈299  ran@310  (1.04×)
+#    vD  stdev=706  recommended=353  ran@310  (1.14× — action threshold)
+#    vE  target: ran@353
 #
-#  Note: v5.0 fitness absolute values NOT comparable to v4.0. Within-run
+#  Note: vE fitness absolute values NOT comparable to vD. Within-run
 #  relative ranking is always valid.
 #
 # =============================================================================
 # CHANGE 2: atr_multiplier floor raised (both zones)
 # =============================================================================
 #
-#  EVIDENCE: No winner at atr_mult=1.5 across v2, v3, v4. Three runs confirmed.
-#  v4.0 top-5 atr_mult: 1.8, 1.8, 1.7, 1.7, 1.8
-#  v3.0 top-5 atr_mult: 1.7, 1.6, 1.9, 1.8, 1.7
+#  EVIDENCE: No winner at atr_mult=1.5 across B, C, D. Three runs confirmed.
+#  D top-5 atr_mult: 1.8, 1.8, 1.7, 1.7, 1.8
+#  C top-5 atr_mult: 1.7, 1.6, 1.9, 1.8, 1.7
 #
 #  safe zone:        1.5–1.9 → 1.6–1.9  (floor only — ceiling confirmed)
 #  exploration zone: 1.2–2.0 → 1.4–2.0  (less aggressive — downside unexplored)
@@ -147,7 +179,6 @@
 #   Stage 5:  ~20–30 min
 #   Stage 6:  ~15–20 min
 #   Stage 7:  ~5 min
-#
 # =============================================================================
 
 backtester_version: "1.0.0"
@@ -175,19 +206,18 @@ stages:
 
 random_search:
   method: "lhs"
-  samples_per_zone: 200      # Increased from 175. 200 × ~62% pass rate ≈ 124/zone.
-  min_significant_trades: 12  # Absolute floor — do NOT reduce further
+  samples_per_zone: 300      # Increased from 200
+  min_significant_trades: 12
   seed: 42
 
 genetic:
-  population_size: 70        # Increased from 60. Wider population for 12-param
-                              # CCI exploration space.
-  generations: 40            # Increased from 30. Addresses CCI GA budget hypothesis.
+  population_size: 70
+  generations: 40
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 10 # Increased from 8 to match larger generation count.
+  stagnation_generations: 10
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -196,21 +226,11 @@ walk_forward:
   input_count: 30
   enforce_oos_gate: false
   oos_degradation_threshold: 0.50
-
-  # 4 windows of ~9 months — UNCHANGED from v4.0. Structure confirmed correct.
   windows:
-    - id: "W01"
-      start: "2023-01-02"
-      end:   "2023-09-29"    # DAX recovery — directional, moderate volatility
-    - id: "W02"
-      start: "2023-10-02"
-      end:   "2024-06-28"    # ECB rate cycle peak — choppy. Primary stress test.
-    - id: "W03"
-      start: "2024-07-01"
-      end:   "2025-03-31"    # H2 2024 productive + H1 2025 dead absorbed
-    - id: "W04"
-      start: "2025-04-01"
-      end:   "2026-02-28"    # Most recent regime. Partial 2026 Q1 included.
+    - {id: "W01", start: "2023-01-02", end: "2023-09-29"}
+    - {id: "W02", start: "2023-10-02", end: "2024-06-28"}
+    - {id: "W03", start: "2024-07-01", end: "2025-03-31"}
+    - {id: "W04", start: "2025-04-01", end: "2026-02-28"}
 
 monte_carlo:
   deep:
@@ -248,7 +268,7 @@ perturbation_profiles:
     execution_delay_bars: 0
 
 scenarios:
-  capital_accumulation:
+  capital_accumulation: &default_scenario
     description: "Steadily grow account balance with controlled risk"
     fitness_weights:
       net_pnl:          0.20
@@ -257,9 +277,8 @@ scenarios:
       win_rate:         0.20
       trade_frequency:  0.05
       profit_factor:    0.10
-      # SUM = 1.00 ✅
     constraints:
-      min_win_rate:        0.15   # CONFIRMED v4.0. Pass rate 64.6%, top-5 WR 0.20–0.25.
+      min_win_rate:        0.15
       max_losing_streak:   25
       min_trades_per_week: 0.1
       min_expectancy:     -1.0
@@ -273,9 +292,8 @@ scenarios:
       worst_drawdown:   0.20
       fraction_positive: 0.20
     verdict_thresholds:
-      go_wfo_floor:                0.70   # Unchanged — phantom mitigation only.
-                                           # V2-VERDICT-GATE is the real fix.
-      borderline_wfo_floor:        0.45   # Unchanged
+      go_wfo_floor:                0.70
+      borderline_wfo_floor:        0.45
       go_mc_ruin_ceiling:          0.05
       borderline_mc_ruin_ceiling:  0.15
       sensitivity_spike_threshold: 0.15
@@ -287,14 +305,8 @@ scenarios:
       - actual_max_drawdown
 
   e2e_test:
-    description: "Pipeline validation only — NOT FOR TRADING USE"
-    fitness_weights:
-      net_pnl:          0.20
-      expectancy:       0.20
-      max_drawdown:     0.20
-      win_rate:         0.20
-      trade_frequency:  0.10
-      profit_factor:    0.10
+    <<: *default_scenario
+    description: "Pipeline validation only – NOT FOR TRADING USE"
     constraints:
       min_win_rate:        0.05
       max_drawdown:        0.99
@@ -325,76 +337,23 @@ scenarios:
 zones:
   safe:
     # Filters: DPO + MACD
-    #
-    # Changes from v4.0:
-    #   atr_multiplier floor: 1.5 → 1.6  (zero winners at 1.5 across v2+v3+v4)
-    #   All other parameters unchanged.
-    #
+    # UNCHANGED from calibration F.
     enabled: true
     parameters:
       atr_length:       {type: int,   min: 8,   max: 18,  step: 1}
       atr_multiplier:   {type: float, min: 1.6, max: 1.9, step: 0.1}
-      # RAISED FLOOR: 1.5 → 1.6. Three runs, zero winners below 1.6.
-      # Ceiling 1.9 unchanged. v4.0 top-5 range: 1.7–1.8.
-
       rr_target:        {type: float, min: 6.0, max: 9.5, step: 0.1}
-      # UNCHANGED. v4.0 top-5 range: 6.5–8.8. Sub-6 confirmed dead.
-
       risk_percentile:  {type: float, min: 0.85, max: 1.10, step: 0.01}
-      # UNCHANGED. v4.0 top-5 range: 0.89–1.05.
-
       dpo_length:       {type: int,   min: 14,  max: 30,  step: 1}
       dpo_smooth:       {type: int,   min: 6,   max: 20,  step: 1}
       dpo_threshold:    {type: float, min: 0.10, max: 0.30, step: 0.02}
       macd_fast:        {type: int,   min: 6,   max: 12,  step: 1}
       macd_slow:        {type: int,   min: 14,  max: 30,  step: 1}
-      macd_signal:      {type: int,   min: 2,   max: 12,  step: 1}  # min=2 — NEVER lower
+      macd_signal:      {type: int,   min: 2,   max: 12,  step: 1}
 
   exploration:
-    # Filters: DPO + MACD + CCI
-    #
-    # Changes from v4.0:
-    #   atr_multiplier floor: 1.2 → 1.4
-    #   cci_overbought: 51–120 → 75–105  (see Change 4 notes above)
-    #   cci_oversold: -120 to -51 → -105 to -75  (symmetric)
-    #   cci_length: 10–30 → 14–26
-    #
-    # IF v5.0 STILL PRODUCES ZERO EXPLORATION TOP-10 (decision tree for v6.0):
-    #   Check --section zone: where are CCI candidates dying?
-    #   If Stage 1 kill rate similar to safe zone → not a constraint problem
-    #   If WFO window coverage much lower than safe zone → H3 confirmed (starvation)
-    #   If WFO coverage similar but scores lower → CCI is a weak filter at 15min
-    #   → v6.0 action: disable CCI, test ADX (adx_threshold, adx_length) as
-    #     third filter. ADX measures trend strength without requiring extreme
-    #     readings — likely to survive 15min trade frequency constraints better.
-    #
-    enabled: true
-    parameters:
-      atr_length:       {type: int,   min: 6,   max: 25,  step: 1}
-      atr_multiplier:   {type: float, min: 1.4, max: 2.0, step: 0.1}
-      # RAISED FLOOR: 1.2 → 1.4. More conservative than safe zone to preserve
-      # exploration breadth at the low end.
-
-      rr_target:        {type: float, min: 5.5, max: 10.0, step: 0.1}
-      # UNCHANGED.
-
-      risk_percentile:  {type: float, min: 0.83, max: 1.10, step: 0.01}
-      # UNCHANGED from v4.0.
-
-      dpo_length:       {type: int,   min: 10,  max: 35,  step: 1}
-      dpo_smooth:       {type: int,   min: 1,   max: 25,  step: 1}
-      dpo_threshold:    {type: float, min: 0.05, max: 0.50, step: 0.05}
-      macd_fast:        {type: int,   min: 3,   max: 15,  step: 1}
-      macd_slow:        {type: int,   min: 16,  max: 38,  step: 1}
-      macd_signal:      {type: int,   min: 2,   max: 16,  step: 1}  # min=2 — NEVER lower
-      cci_length:       {type: int,   min: 14,  max: 26,  step: 1}
-      # TIGHTENED: 10–30 → 14–26.
-      cci_overbought:   {type: int,   min: 75,  max: 105, step: 1}
-      # TIGHTENED: 51–120 → 75–105.
-      # Productive DAX 15min CCI extreme range. Below 75: fires too often.
-      # Above 105: fires too rarely, starves trade count.
-      cci_oversold:     {type: int,   min: -105, max: -75, step: 1}
-      # TIGHTENED: -120 to -51 → -105 to -75. Symmetric with cci_overbought.
+    # Disabled after two unsuccessful calibrations (E and F)
+    enabled: false
 
   discovery:
     enabled: false
