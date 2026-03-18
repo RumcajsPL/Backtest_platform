@@ -30,6 +30,8 @@ live_data:
 # Controls execution quality — not signal validity.
 # allowed_hours_utc: hours during which order placement is permitted.
 # skip_hours_utc: explicit block list (belt-and-suspenders, subset of above).
+# NOTE: first hour in allowed_hours_utc is also used as the session-resume
+#       time after a pause_until_next_day consecutive-loss action.
 # ---------------------------------------------------------------------------
 trading_window:
   enabled: true
@@ -48,11 +50,37 @@ execution:
   leverage: 20
 
 # ---------------------------------------------------------------------------
-# Abort / safety conditions (Stage 4 — automation loop)
-# Stage 2 (supervised single trade) ignores these entirely.
+# Safety / circuit-breaker configuration
+# Enforced by PaperTradingGuard in the automated loop.
+# run_signal.py (supervised single trade) ignores these entirely.
 # ---------------------------------------------------------------------------
 safety:
-  max_open_positions: 3
+  # Hard cap on simultaneous open positions (belt-and-suspenders).
+  # Strategy YAML max_positions=1 is the authoritative pyramiding limit.
+  max_open_positions: 5
+
+  # Loop halts if portfolio credit drops below this value (USD).
   min_available_cash_usd: 200.0
-  max_consecutive_losses: 5
-  kill_switch_file: STOP         # Create this file in project root to halt loop
+
+  # Consecutive losing trades before the circuit breaker fires.
+  # A winning trade resets the counter to zero.
+  max_consecutive_losses: 3
+
+  # Action when max_consecutive_losses is reached:
+  #   hard_stop          — loop exits permanently (use this for first live week)
+  #   pause_until_next_day — loop sleeps until first allowed_hours_utc hour
+  #                          on the next calendar day (UTC), then resumes
+  consecutive_loss_action: hard_stop
+
+  # Daily drawdown hard stop: halt if loss today >= X% of session-open credit.
+  # Example: 5.0 means a 5% drop from today's opening credit triggers halt.
+  max_daily_drawdown_pct: 5.0
+
+  # Consecutive SignalBridge / pipeline failures before hard stop.
+  # Protects against silent infrastructure issues (API down, data feed broken).
+  max_pipeline_errors: 5
+
+  # Create a file with this name in the project root to halt the loop
+  # immediately at the next poll cycle (no trade will be placed).
+  # Delete the file before restarting.
+  kill_switch_file: STOP

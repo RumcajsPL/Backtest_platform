@@ -21,6 +21,7 @@ _VALID_INTERVALS = frozenset({
     "ThirtyMinutes", "OneHour", "FourHours", "OneDay", "OneWeek",
 })
 _VALID_DIRECTIONS = frozenset({"asc", "desc"})
+_VALID_LOSS_ACTIONS = frozenset({"hard_stop", "pause_until_next_day"})
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +178,31 @@ class ExecutionConfig:
 
 @dataclass(frozen=True)
 class SafetyConfig:
+    """
+    Safety and circuit-breaker configuration for the automated loop.
+
+    Fields:
+        max_open_positions:       Hard cap on simultaneous open positions
+                                  (belt-and-suspenders; strategy YAML max_positions
+                                  is authoritative for pyramiding).
+        min_available_cash_usd:   Loop halts if portfolio credit drops below this.
+        max_consecutive_losses:   Circuit breaker — N losses in a row triggers action.
+        consecutive_loss_action:  'hard_stop' | 'pause_until_next_day'.
+                                  hard_stop: loop exits permanently.
+                                  pause_until_next_day: loop sleeps until first
+                                  allowed_hours_utc hour on the next calendar day.
+        max_daily_drawdown_pct:   Hard stop if (session_open_credit - current_credit)
+                                  / session_open_credit * 100 >= this value.
+        max_pipeline_errors:      Consecutive SignalBridge failures before hard stop.
+        kill_switch_file:         Create this file in project root to halt loop
+                                  immediately at next poll.
+    """
     max_open_positions: int
     min_available_cash_usd: float
     max_consecutive_losses: int
+    consecutive_loss_action: str
+    max_daily_drawdown_pct: float
+    max_pipeline_errors: int
     kill_switch_file: str
 
     def __post_init__(self) -> None:
@@ -197,13 +220,31 @@ class SafetyConfig:
                 f"safety.max_consecutive_losses must be >= 1, "
                 f"got {self.max_consecutive_losses}"
             )
+        if self.consecutive_loss_action not in _VALID_LOSS_ACTIONS:
+            raise ValueError(
+                f"safety.consecutive_loss_action='{self.consecutive_loss_action}' is invalid. "
+                f"Must be one of: {sorted(_VALID_LOSS_ACTIONS)}"
+            )
+        if not (0.0 < self.max_daily_drawdown_pct <= 100.0):
+            raise ValueError(
+                f"safety.max_daily_drawdown_pct must be in (0, 100], "
+                f"got {self.max_daily_drawdown_pct}"
+            )
+        if self.max_pipeline_errors < 1:
+            raise ValueError(
+                f"safety.max_pipeline_errors must be >= 1, "
+                f"got {self.max_pipeline_errors}"
+            )
 
     @classmethod
     def from_dict(cls, d: dict) -> "SafetyConfig":
         return cls(
             max_open_positions=int(d.get("max_open_positions", 3)),
             min_available_cash_usd=float(d.get("min_available_cash_usd", 200.0)),
-            max_consecutive_losses=int(d.get("max_consecutive_losses", 5)),
+            max_consecutive_losses=int(d.get("max_consecutive_losses", 3)),
+            consecutive_loss_action=str(d.get("consecutive_loss_action", "hard_stop")),
+            max_daily_drawdown_pct=float(d.get("max_daily_drawdown_pct", 5.0)),
+            max_pipeline_errors=int(d.get("max_pipeline_errors", 5)),
             kill_switch_file=str(d.get("kill_switch_file", "STOP")),
         )
 

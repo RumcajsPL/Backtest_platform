@@ -12,6 +12,13 @@ Two-step open flow (CRITICAL — positionID is not in the open-order response):
   Step 2: client.get_order_info(orderID) polling until statusID == 1 (Executed)
           → positions[0].positionID
 
+  Fast-fill shortcut (empirically confirmed 2026-03-17):
+  If orderForOpen.statusID == 1 in the POST response the order already executed
+  before the first poll.  In that case _poll_for_position_id is skipped and
+  positionID is resolved via _find_position_in_portfolio(orderID) instead,
+  because the /demo/orders/{id} endpoint may return 404 or statusID=3 for
+  several seconds after a fast-fill even though the position is live.
+
 Usage:
     router = OrderRouter(client=EToroClient(), resolver=InstrumentResolver(map_path))
 
@@ -32,6 +39,7 @@ Usage:
 import time
 from typing import Optional
 
+import requests
 from loguru import logger
 
 from src.broker_support.client.client import EToroClient
@@ -39,15 +47,20 @@ from src.broker_support.enrichment.instrument_resolver import InstrumentResolver
 from src.broker_support.utils.time_utils import is_trading_hours
 
 # Order statusID values from API
-_STATUS_PENDING = 0
-_STATUS_EXECUTED = 1
+_STATUS_PENDING   = 0
+_STATUS_EXECUTED  = 1
 _STATUS_CANCELLED = 2
-_STATUS_REJECTED = 3
-_STATUS_PARTIAL = 4
+_STATUS_REJECTED  = 3
+_STATUS_PARTIAL   = 4
 
 # Two-step open: polling config
-_ORDER_POLL_INTERVAL_S = 1.0   # seconds between status checks
-_ORDER_POLL_MAX_ATTEMPTS = 15  # total wait ≤ 15s before giving up
+_ORDER_POLL_INTERVAL_S   = 2.0   # seconds between status checks (increased from 1s)
+_ORDER_POLL_MAX_ATTEMPTS = 15    # total wait ≤ 30s before giving up
+_ORDER_POLL_404_GRACE    = 3     # treat 404 as transient for this many attempts
+
+# Portfolio fallback: config for _find_position_in_portfolio
+_PORTFOLIO_POLL_INTERVAL_S   = 2.0
+_PORTFOLIO_POLL_MAX_ATTEMPTS = 10   # total wait ≤ 20s
 
 
 class OutsideTradingHoursError(Exception):
@@ -92,10 +105,12 @@ class OrderRouter:
         Open a demo market position. Uses two-step flow to get positionID.
 
         Step 1: place_market_order() → orderID
-        Step 2: poll get_order_info(orderID) until Executed → positionID
+        Step 2a (normal):     poll get_order_info(orderID) until Executed → positionID
+        Step 2b (fast-fill):  if POST response already has statusID==1, skip polling
+                              and resolve positionID via portfolio scan instead.
 
         Args:
-            symbol:           Instrument key from instrument_map.yaml, e.g. 'DAX'.
+            symbol:           Instrument key from instrument_map.yaml, e.g. 'GER40'.
             direction:        'BUY' or 'SELL' (case-insensitive).
             amount:           USD amount to invest.
             leverage:         Leverage multiplier (default 1).
@@ -142,6 +157,22 @@ class OrderRouter:
                 f"No orderID in place_market_order response. "
                 f"Response keys: {list(response.keys())}"
             )
+
+        # ── Fast-fill detection (empirical: 2026-03-17) ──────────────────
+        # The POST response can already carry statusID=1 when the market fills
+        # the order instantly.  In that case the /demo/orders/{id} endpoint
+        # returns 404 or statusID=3 for several seconds — do NOT poll it.
+        # Resolve positionID from the portfolio instead.
+        post_status_id = order_for_open.get('statusID')
+        if post_status_id == _STATUS_EXECUTED:
+            logger.info(
+                f"Order {order_id}: statusID=1 already set in POST response "
+                f"(fast-fill). Skipping order-info polling — resolving positionID "
+                f"from portfolio."
+            )
+            position_id = self._find_position_in_portfolio(order_id)
+            logger.info(f"Position opened (fast-fill): positionID={position_id}")
+            return position_id
 
         logger.info(f"Order placed: orderID={order_id}. Polling for positionID …")
 
@@ -218,6 +249,10 @@ class OrderRouter:
         statusID: 0=Pending, 1=Executed, 2=Cancelled, 3=Rejected, 4=Partial.
         Polls every _ORDER_POLL_INTERVAL_S seconds up to _ORDER_POLL_MAX_ATTEMPTS.
 
+        404 responses are treated as transient for the first _ORDER_POLL_404_GRACE
+        attempts — the order-info endpoint can lag behind execution by several
+        seconds even for successful orders (empirically confirmed 2026-03-17).
+
         Args:
             order_id: orderID from place_market_order response.
 
@@ -227,8 +262,31 @@ class OrderRouter:
         Raises:
             OrderExecutionError: If rejected, cancelled, timed out, or no positions.
         """
+        status_id = None
+
         for attempt in range(1, _ORDER_POLL_MAX_ATTEMPTS + 1):
-            order_info = self._client.get_order_info(order_id)
+            try:
+                order_info = self._client.get_order_info(order_id)
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    if attempt <= _ORDER_POLL_404_GRACE:
+                        logger.debug(
+                            f"Order poll {attempt}/{_ORDER_POLL_MAX_ATTEMPTS}: "
+                            f"orderID={order_id} → 404 (transient, grace attempt "
+                            f"{attempt}/{_ORDER_POLL_404_GRACE}). "
+                            f"Retrying in {_ORDER_POLL_INTERVAL_S}s …"
+                        )
+                        time.sleep(_ORDER_POLL_INTERVAL_S)
+                        continue
+                    # Beyond grace period — fall back to portfolio
+                    logger.warning(
+                        f"Order poll {attempt}/{_ORDER_POLL_MAX_ATTEMPTS}: "
+                        f"orderID={order_id} → 404 beyond grace period. "
+                        f"Falling back to portfolio scan."
+                    )
+                    return self._find_position_in_portfolio(order_id)
+                raise  # non-404 HTTP errors propagate
+
             status_id = order_info.get('statusID')
 
             logger.debug(
@@ -252,6 +310,16 @@ class OrderRouter:
                 return str(position_id)
 
             if status_id == _STATUS_REJECTED:
+                # Could be stale state on a fast-fill — try portfolio before giving up
+                logger.warning(
+                    f"Order poll {attempt}/{_ORDER_POLL_MAX_ATTEMPTS}: "
+                    f"orderID={order_id} → statusID=3 (REJECTED). "
+                    f"Checking portfolio before raising — may be stale API state."
+                )
+                try:
+                    return self._find_position_in_portfolio(order_id)
+                except OrderExecutionError:
+                    pass  # not in portfolio either — it really is rejected
                 error_msg = order_info.get('errorMessage', 'no error message')
                 raise OrderExecutionError(
                     f"Order {order_id} was REJECTED. errorMessage: {error_msg}"
@@ -282,4 +350,76 @@ class OrderRouter:
             f"{_ORDER_POLL_MAX_ATTEMPTS} polls "
             f"({_ORDER_POLL_MAX_ATTEMPTS * _ORDER_POLL_INTERVAL_S:.0f}s). "
             f"Last statusID={status_id}."
+        )
+
+    def _find_position_in_portfolio(self, order_id: int) -> str:
+        """
+        Resolve positionID by scanning the demo portfolio for a position whose
+        orderID matches the given order_id.
+
+        Used as fallback when:
+          - The POST response already shows statusID=1 (fast-fill), so polling
+            /demo/orders/{id} is skipped entirely.
+          - /demo/orders/{id} returns 404 beyond the grace period.
+          - /demo/orders/{id} returns statusID=3 (REJECTED) which may be stale.
+
+        Polls the portfolio up to _PORTFOLIO_POLL_MAX_ATTEMPTS times with
+        _PORTFOLIO_POLL_INTERVAL_S between attempts.  A short delay before the
+        first attempt is intentional — the portfolio write can lag the execution
+        endpoint by ~1s.
+
+        Args:
+            order_id: The orderID from the place_market_order response.
+
+        Returns:
+            positionID as str.
+
+        Raises:
+            OrderExecutionError: If the position is not found within the timeout.
+        """
+        logger.info(
+            f"Portfolio scan: looking for position with orderID={order_id} "
+            f"(max {_PORTFOLIO_POLL_MAX_ATTEMPTS} attempts, "
+            f"{_PORTFOLIO_POLL_INTERVAL_S}s interval) …"
+        )
+
+        for attempt in range(1, _PORTFOLIO_POLL_MAX_ATTEMPTS + 1):
+            # Small initial delay — portfolio write lags execution by ~1s
+            time.sleep(_PORTFOLIO_POLL_INTERVAL_S)
+
+            try:
+                portfolio = self._client._make_request(
+                    "GET", "api/v1/trading/info/demo/portfolio"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Portfolio scan attempt {attempt}: fetch failed: {exc}. "
+                    f"Retrying …"
+                )
+                continue
+
+            positions = (
+                portfolio.get("clientPortfolio", {}).get("positions", [])
+            )
+
+            for pos in positions:
+                if pos.get("orderID") == order_id:
+                    position_id = pos.get("positionID")
+                    if position_id is not None:
+                        logger.info(
+                            f"Portfolio scan: found positionID={position_id} "
+                            f"for orderID={order_id} (attempt {attempt})."
+                        )
+                        return str(position_id)
+
+            logger.debug(
+                f"Portfolio scan attempt {attempt}/{_PORTFOLIO_POLL_MAX_ATTEMPTS}: "
+                f"orderID={order_id} not yet visible in {len(positions)} position(s)."
+            )
+
+        raise OrderExecutionError(
+            f"Portfolio scan: positionID for orderID={order_id} not found after "
+            f"{_PORTFOLIO_POLL_MAX_ATTEMPTS} attempts "
+            f"({_PORTFOLIO_POLL_MAX_ATTEMPTS * _PORTFOLIO_POLL_INTERVAL_S:.0f}s). "
+            f"Position may not have opened. Check portfolio manually."
         )

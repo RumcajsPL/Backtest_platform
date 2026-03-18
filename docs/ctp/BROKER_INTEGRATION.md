@@ -1,13 +1,14 @@
 # BROKER_INTEGRATION.md — eToro Broker Integration Reference
 # Empirical facts + flows used by CTP. Full API catalogue: docs/ctp/API_REFERENCE.md
-# Updated: 2026-03-13
+# Updated: 2026-03-18
 ---
 ## Integration Status
 | Component | Status |
 |-----------|--------|
 | Steps 1–5 (client, resolver, enricher, tracker, router) | ✅ COMPLETE |
 | Phase 2 live pipeline | ✅ CONFIRMED 2026-03-16 |
-| First live demo order | 🔲 Awaiting signal | - See CONTEXT.md for 1st order placed
+| First live demo order | ✅ CONFIRMED 2026-03-17 — positionID=3466009287 |
+| Phase 2 safeguards + persistent loop | ✅ COMPLETE 2026-03-18 |
 ---
 ## Authentication
 | Header | Value |
@@ -41,18 +42,25 @@ Real key → 403 on ALL `/demo/` endpoints. Key type, not URL prefix, determines
 | Candles inner objects | camelCase capital ID: `instrumentID` |
 ---
 ## Key Flows
-### Two-Step Open Position
+### Two-Step Open Position (updated 2026-03-18)
 ```
 POST /trading/execution/demo/market-open-orders/by-amount
   Body: { InstrumentID, IsBuy, Leverage, Amount, [StopLossRate, TakeProfitRate] }
   → response.orderForOpen.orderID
-
-GET /trading/info/demo/orders/{orderID}
+  → response.orderForOpen.statusID  ← CHECK THIS FIRST (may already be 1)
+FAST-FILL PATH (statusID == 1 in POST response):
+  Skip /demo/orders/{id} polling entirely.
+  GET /demo/portfolio → positions[].orderID == orderID → positionID
+  ⚠️ /demo/orders/{id} returns 404 then statusID=3 for ~4–8s after fast-fill.
+     Both are stale/incorrect — the position IS open. Do not trust them.
+NORMAL PATH (statusID == 0 in POST response):
+  GET /trading/info/demo/orders/{orderID}
   Poll until statusID == 1 (Executed)
-  → response.positions[0].positionID   ← use for all close calls
+  → response.positions[0].positionID
+  ⚠️ 404 on poll is transient (grace period: 3 attempts). Treat as Pending.
+  ⚠️ statusID=3 (REJECTED) may also be stale — check portfolio before raising.
 ```
 statusID: 0=Pending, 1=Executed, 2=Cancelled, 3=Rejected, 4=Partial
-⚠️ positionID is NOT in the open-order response — must poll.
 ### Close Position
 ```
 POST /trading/execution/demo/market-close-orders/positions/{positionId}
@@ -82,6 +90,9 @@ Instrument IDs are immutable — cache in instrument_map.yaml.
 | volume field (DAX) | Always 0 — kept for schema compatibility. |
 | Candle direction | Always fetch 'desc', reverse to asc — guarantees most recent N bars. |
 | Demo trades in history | Real Write key required. Demo key → 403 on trade/history. |
+| Fast-fill: POST statusID=1 | orderForOpen.statusID can be 1 immediately in POST response. Confirmed 2026-03-17 orderID=336588020. In this case /demo/orders/{id} returns 404 then statusID=3 — both incorrect/stale. Position is live. Resolve positionID via portfolio scan. |
+| Fast-fill: /orders/{id} 404 | Even on normal fills, /demo/orders/{id} can return 404 for several seconds. Treat as transient for first 3 poll attempts before falling back to portfolio scan. |
+| Portfolio positions: orderID | Each open position object contains `orderID` (int) matching the orderID from place_market_order response. Confirmed 2026-03-17. Use for positionID resolution in fast-fill path. |
 ---
 ## Portfolio Schema
 ```
@@ -95,6 +106,7 @@ clientPortfolio.ordersForOpen[]  ← pending open orders
 |-------|-------|
 | `positionID` | capital ID |
 | `instrumentID` | capital ID |
+| `orderID` | int — matches orderID from place_market_order response |
 | `isBuy` | true=long, false=short |
 | `openDateTime` | ISO 8601 UTC |
 | `openRate` | Entry price |
@@ -125,7 +137,9 @@ src/broker_support/
   tracking/position_tracker.py        ← PositionTracker
   enrichment/instrument_resolver.py   ← YAML primary + API fallback
   enrichment/trade_enricher.py        ← exit price + P&L (10 pages, 90-day window)
-  execution/order_router.py           ← two-step open, close
+  execution/order_router.py           ← two-step open, close + fast-fill fix
+  safeguards/__init__.py              ← NEW
+  safeguards/paper_trading_guard.py   ← NEW — all loop circuit breakers
   utils/time_utils.py                 ← is_trading_hours(), is_valid_trading_window()
   live/
     live_data_fetcher.py              ← candles → DataFrame
@@ -134,7 +148,7 @@ src/broker_support/
     order_signal.py                   ← OrderSignal contract
     signal_bridge.py                  ← full pipeline → OrderSignal
 scripts/broker_support/
-  run_signal_loop.py                  ← polls 60s, places 1 order, stops
+  run_signal_loop.py                  ← persistent loop, all safeguards, --quiet flag
   run_signal.py                       ← single run dry-run / --place-order
   run_tracker_loop.py                 ← tracks open positions, journals closes
   inspect_portfolio.py                ← diagnostic
