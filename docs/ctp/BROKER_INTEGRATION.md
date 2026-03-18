@@ -6,8 +6,8 @@
 | Component | Status |
 |-----------|--------|
 | Steps 1–5 (client, resolver, enricher, tracker, router) | ✅ COMPLETE |
-| Phase 2 live pipeline | ✅ CONFIRMED 2026-03-13 |
-| First live demo order | 🔲 Awaiting signal |
+| Phase 2 live pipeline | ✅ CONFIRMED 2026-03-16 |
+| First live demo order | 🔲 Awaiting signal | - See CONTEXT.md for 1st order placed
 ---
 ## Authentication
 | Header | Value |

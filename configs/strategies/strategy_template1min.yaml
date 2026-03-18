@@ -32,7 +32,7 @@ asset:
 # -----------------------------------------------------------------------------
 data:
   paths:
-    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_10min_20221201_20260301.parquet"
+    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260301.parquet"
     # -----------------------------------------------------------------------------
     # Existing data files:
     #   - data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260301.parquet
@@ -44,7 +44,7 @@ data:
     #   - data/processed/ohlcv/DEUIDXEUR_4h_20221201_20260301.parquet
     #   - data/processed/ohlcv/DEUIDXEUR_1d_20221201_20260301.parquet
     # -----------------------------------------------------------------------------
-    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_4h_20221201_20260301.parquet"
+    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260301.parquet"
     ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20230101_20260301.parquet"
     artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet"
     
@@ -55,7 +55,7 @@ data:
 
   timezone: "CET"
 
-  htf_period: "4H"         # HTF resampling period passed to WBWSTrigger
+  htf_period: "1min"         # HTF resampling period passed to WBWSTrigger
   ltf_timeframe: "1s"      # LTF bar frequency — must match ltf_ohlcv file content
   artf_timeframe: "1ME"    # ARTF bar frequency — must match artf_ohlcv file content
 
@@ -78,16 +78,17 @@ filters:
 
   filter_sequence:
     - dpo_filter
-    - ma_filter
     - rsi_filter
     - choppiness_filter
     - bollinger_filter
-    - macd_filter
     - cci_filter
     - adx_filter
     - supertrend_filter
+    - ma_filter
     - pivot_filter
+    - macd_filter
    
+
   technical_filters:
     rsi_filter:
       enabled: false
@@ -102,13 +103,13 @@ filters:
       threshold: 0.2
 
     bollinger_filter:
-      enabled: true
+      enabled: false
       length: 14
       width_ma_length: 30
       filter_multiplier: 0.5
 
     choppiness_filter:
-      enabled: false
+      enabled: true
       length: 14
       threshold: 61.8
 
@@ -118,13 +119,13 @@ filters:
       factor: 3.0
 
     cci_filter:
-      enabled: false
+      enabled: true
       length: 20
       overbought: 100
       oversold: -100
 
     adx_filter:
-      enabled: false
+      enabled: true
       adx_length: 14
       threshold: 18.0
 
@@ -135,7 +136,7 @@ filters:
       signal_length: 9
 
     ma_filter:
-      enabled: true
+      enabled: false
       ma_type: "TEMA"
       length: 25
       slope_length: 10
@@ -164,7 +165,7 @@ trade_management:
     tp_mode: "rr_ratio"
     risk_to_reward_ratio: 4
     atr_multiplier_tp: 7.98
-    max_risk_percentile: 0.75 #In % => 0.15 stands for 0.15% | 100 stands for 100% => max risk percentile disabled
+    max_risk_percentile: 0.51 #In % => 0.15 stands for 0.15% | 100 stands for 100% => max risk percentile disabled
 
   position_control:
     pyramiding_enabled: false
