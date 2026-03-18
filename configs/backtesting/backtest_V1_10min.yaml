@@ -238,7 +238,7 @@ zones:
       atr_length:           {type: int,   min: 8,   max: 20,  step: 2}
       atr_multiplier:       {type: float, min: 1.5, max: 3.0, step: 0.25}
       rr_target:            {type: float, min: 3.0, max: 8.0, step: 1.0}
-      risk_percentile:      {type: float, min: 0.10, max: 0.50, step: 0.05}
+      risk_percentile:      {type: float, min: 0.50, max: 0.95, step: 0.05}
       dpo_length:           {type: int,   min: 14,  max: 30,  step: 2}
       dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
       dpo_threshold:        {type: float, min: 0.10, max: 0.30, step: 0.10}
@@ -252,7 +252,7 @@ zones:
       atr_length:           {type: int,   min: 5,   max: 35,  step: 2}
       atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
       rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
-      risk_percentile:      {type: float, min: 0.05, max: 0.50, step: 0.05}
+      risk_percentile:      {type: float, min: 0.30, max: 1.1, step: 0.05}
       dpo_length:           {type: int,   min: 14,  max: 35,  step: 2}
       dpo_smooth:           {type: int,   min: 2,   max: 25,  step: 1}
       dpo_threshold:        {type: float, min: 0.10, max: 0.50, step: 0.10}
