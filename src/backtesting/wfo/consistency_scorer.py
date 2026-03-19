@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 #   worst_window_drawdown is stored as raw negative pts (e.g. -416.81).
 #   Inversion: 1.0 - (abs(raw) / ceiling). Ceiling must be > max observed abs value.
 #   Observed range in calibration run: 282–676 pts → ceiling = 1_000 pts (conservative)
-_SIGMOID_SCALE: float = 310.0 # After calibration standard: 310.0; 128 1min; 283 15min
+_SIGMOID_SCALE: float = 163.0 # After calibration standard: 310.0; 128 1min; 283 15min
 _MAX_EXPECTED_VARIANCE: float = 100_000.0
 _MAX_EXPECTED_DRAWDOWN: float = 2_500.0
 
