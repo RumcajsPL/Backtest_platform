@@ -9,9 +9,17 @@ circuit breaker fires, the kill switch is set, or Ctrl+C is pressed.
 Safety circuit breakers (all configurable in broker_support_config.yaml):
   - Kill switch file (default: STOP in project root) — checked every poll
   - Max consecutive losses — hard_stop or pause_until_next_day
-  - Daily drawdown % of session-open credit — hard stop
+  - Daily CTP drawdown % of session-open credit — hard stop (journal-scoped)
   - Minimum available cash — hard stop
   - Consecutive pipeline error streak — hard stop
+
+Isolation from external account activity:
+  - Pyramiding check filters the live portfolio to CTP-placed positionIDs only.
+    Manual trades or other strategies on the same demo account are invisible.
+  - Daily drawdown uses CTP's own realised P&L from trades.csv only.
+    External losses on the account do NOT trigger CTP's circuit breakers.
+  - CTP-placed positionIDs are tracked in open_positions.json (project root).
+    On restart the loop seeds from this file so pyramiding survives restarts.
 
 Guards also enforced (unchanged from Phase 2):
   - WBWS+ trading window gate
@@ -20,7 +28,7 @@ Guards also enforced (unchanged from Phase 2):
 
 Loop behaviour:
   - Polls every 60 seconds
-  - While a position is open: _check_pyramiding returns False → loop idles
+  - While a CTP position is open: _check_pyramiding returns False → loop idles
   - Daily state (loss streak, drawdown baseline) resets at UTC date rollover
   - All circuit breaker actions are logged with full context before exit/pause
 
@@ -44,6 +52,7 @@ Kill switch:
     restarting.
 """
 import argparse
+import json
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -73,10 +82,11 @@ from src.broker_support.safeguards.paper_trading_guard import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_CONFIG  = "configs/broker_support/broker_support_config.yaml"
-DEFAULT_LOG_DIR = "outputs/broker_support/logs"
-DEFAULT_JOURNAL = "outputs/broker_support/journal/trades.csv"
-POLL_INTERVAL   = 60   # seconds
+DEFAULT_CONFIG        = "configs/broker_support/broker_support_config.yaml"
+DEFAULT_LOG_DIR       = "outputs/broker_support/logs"
+DEFAULT_JOURNAL       = "outputs/broker_support/journal/trades.csv"
+OPEN_POSITIONS_FILE   = "outputs/broker_support/journal/open_positions.json"
+POLL_INTERVAL         = 60   # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +104,6 @@ def _configure_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
     log_path.mkdir(parents=True, exist_ok=True)
     logger.remove()
 
-    # File sink — always active, always DEBUG
     logger.add(
         str(log_path / "run_signal_loop_{time:YYYY-MM-DD}.log"),
         level="DEBUG",
@@ -104,7 +113,6 @@ def _configure_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} | {message}",
     )
 
-    # Console sink — suppressed in quiet mode
     if not quiet:
         level = "DEBUG" if verbose else "INFO"
         logger.add(
@@ -117,7 +125,65 @@ def _configure_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pyramiding guard (inline — no sys.exit, returns bool)
+# CTP open position tracking (isolation from external account activity)
+# ---------------------------------------------------------------------------
+
+def _load_ctp_open_position_ids(open_positions_path: Path) -> set[int]:
+    """
+    Load CTP-placed positionIDs from open_positions.json.
+
+    This file is written by the loop whenever an order is placed and entries
+    are removed when the tracker loop confirms a close.  On restart, seeding
+    from this file prevents double-trading into an already-open CTP position.
+
+    Returns empty set if file absent or unreadable (safe — pyramiding check
+    will then allow a trade if no CTP position is in the live portfolio under
+    the CTP IDs; worst case: one extra poll before tracker loop reconciles).
+    """
+    if not open_positions_path.exists():
+        return set()
+    try:
+        data = json.loads(open_positions_path.read_text(encoding="utf-8"))
+        ids = {int(pid) for pid in data.get("position_ids", [])}
+        if ids:
+            logger.info(
+                f"Seeded {len(ids)} CTP open positionID(s) from "
+                f"{open_positions_path}: {ids}"
+            )
+        return ids
+    except Exception as exc:
+        logger.warning(
+            f"Could not read {open_positions_path}: {exc}. "
+            f"Starting with empty CTP position set."
+        )
+        return set()
+
+
+def _persist_ctp_open_position_ids(
+    open_positions_path: Path,
+    position_ids: set[int],
+) -> None:
+    """
+    Persist the current set of CTP open positionIDs to disk.
+
+    Called after every add or remove so the set survives a loop restart.
+    Writes atomically (build string then write_text).
+    """
+    try:
+        open_positions_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"position_ids": sorted(position_ids)}
+        open_positions_path.write_text(
+            json.dumps(data, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning(
+            f"Could not persist CTP open positions to {open_positions_path}: {exc}. "
+            f"In-memory set is still correct for this session."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pyramiding guard — CTP-scoped
 # ---------------------------------------------------------------------------
 
 def _check_pyramiding(
@@ -125,11 +191,29 @@ def _check_pyramiding(
     resolver: InstrumentResolver,
     symbol: str,
     max_positions: int,
-) -> bool:
+    ctp_open_position_ids: set[int],
+) -> tuple[bool, float]:
     """
-    Return True if safe to place a new order (open positions < max_positions).
-    Return False if already at limit.
-    Raises RuntimeError on API failure (caller handles it as a pipeline error).
+    Return (safe_to_trade, current_credit).
+
+    safe_to_trade is True only if the number of LIVE portfolio positions whose
+    positionID is in ctp_open_position_ids is strictly less than max_positions.
+
+    External positions on the same account (manual trades, other strategies)
+    are invisible — only CTP-placed IDs are counted.
+
+    Args:
+        client:               EToroClient instance.
+        resolver:             InstrumentResolver for symbol → instrument_id.
+        symbol:               Trading symbol (e.g. 'GER40').
+        max_positions:        Maximum allowed concurrent CTP positions.
+        ctp_open_position_ids: Set of positionIDs placed by this CTP loop.
+
+    Returns:
+        (safe_to_trade: bool, current_credit: float)
+
+    Raises:
+        RuntimeError: on instrument resolution failure or API error.
     """
     instrument_id = resolver.instrument_id(symbol)
     if instrument_id is None:
@@ -142,16 +226,30 @@ def _check_pyramiding(
         raise RuntimeError(f"Pyramiding check: portfolio fetch failed: {exc}") from exc
 
     positions = portfolio.get("clientPortfolio", {}).get("positions", [])
-    open_count = sum(1 for p in positions if p.get("instrumentID") == instrument_id)
-    credit = portfolio.get("clientPortfolio", {}).get("credit", 0.0)
+    credit = float(portfolio.get("clientPortfolio", {}).get("credit", 0.0))
+
+    # Count only positions placed by this CTP loop
+    ctp_open_count = sum(
+        1 for p in positions
+        if int(p.get("positionID", -1)) in ctp_open_position_ids
+    )
+
+    # For transparency, also log total account positions on this instrument
+    total_instrument_count = sum(
+        1 for p in positions if p.get("instrumentID") == instrument_id
+    )
+    external_count = total_instrument_count - ctp_open_count
 
     logger.info(
-        f"Pyramiding check: {open_count} open position(s) for {symbol} "
-        f"(max_positions={max_positions}) | credit={credit:.2f}"
+        f"Pyramiding check: {ctp_open_count} CTP position(s) for {symbol} "
+        f"(max_positions={max_positions}) | "
+        f"external positions on same instrument: {external_count} (ignored) | "
+        f"credit={credit:.2f}"
     )
-    if open_count >= max_positions:
+
+    if ctp_open_count >= max_positions:
         logger.info(
-            f"Max positions reached ({open_count}/{max_positions}) — "
+            f"CTP max positions reached ({ctp_open_count}/{max_positions}) — "
             f"no new order. Continuing to poll."
         )
         return False, credit
@@ -159,27 +257,36 @@ def _check_pyramiding(
 
 
 # ---------------------------------------------------------------------------
-# Today's P&L from journal (for guard reconstruction on restart)
+# Journal helpers
 # ---------------------------------------------------------------------------
 
-def _load_todays_pnl(journal_path: Path) -> list:
+def _load_todays_ctp_pnl(journal_path: Path) -> tuple[list[float], float]:
     """
-    Load today's closed-trade P&L values from the journal CSV in chronological order.
-    Returns empty list if journal absent or has no today entries.
+    Load today's closed CTP trade data from trades.csv.
+
+    Returns:
+        (pnl_list, pnl_sum) where:
+          pnl_list: P&L values in chronological order (for consecutive loss
+                    reconstruction via _count_tail_losses).
+          pnl_sum:  Sum of all today's P&L values (for drawdown check).
+
+    Returns ([], 0.0) if journal absent, empty, or unreadable.
     """
     if not journal_path.exists() or journal_path.stat().st_size == 0:
-        return []
+        return [], 0.0
     try:
         import pandas as pd
         df = pd.read_csv(journal_path)
         today_str = datetime.now(timezone.utc).date().isoformat()
         if "close_time" not in df.columns or "profit_loss" not in df.columns:
-            return []
+            return [], 0.0
         mask = df["close_time"].astype(str).str.startswith(today_str)
-        return df.loc[mask, "profit_loss"].tolist()
+        pnl_list = df.loc[mask, "profit_loss"].tolist()
+        pnl_sum = float(sum(pnl_list))
+        return pnl_list, pnl_sum
     except Exception as exc:
-        logger.warning(f"Could not load today's P&L from journal: {exc}")
-        return []
+        logger.warning(f"Could not load today's CTP P&L from journal: {exc}")
+        return [], 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -190,27 +297,19 @@ def _seconds_until_next_allowed_hour(allowed_hours_utc: list) -> float:
     """
     Return seconds until the next hour that appears in allowed_hours_utc.
 
-    Scans forward minute-by-minute from now (UTC) until a matching hour is
-    found, up to 24 h ahead.  Always returns a positive value >= 0.
-
-    Args:
-        allowed_hours_utc: Sorted or unsorted list of UTC hours (0-23).
-
-    Returns:
-        Seconds until the start of the next allowed hour.
+    Scans forward hour-by-hour from now (UTC) until a matching hour is found,
+    up to 25 h ahead. Always returns a positive value >= 0.
     """
     if not allowed_hours_utc:
         return 0.0
     allowed = set(allowed_hours_utc)
     now = datetime.now(timezone.utc)
-    # Walk forward hour by hour (max 25 to guarantee termination)
     for hours_ahead in range(1, 26):
         candidate = (now + timedelta(hours=hours_ahead)).replace(
             minute=0, second=0, microsecond=0
         )
         if candidate.hour in allowed:
             return max(0.0, (candidate - now).total_seconds())
-    # Fallback — should never reach here with a non-empty list
     return 3600.0
 
 
@@ -227,8 +326,7 @@ def main() -> None:
     parser.add_argument(
         "--quiet", "-q",
         action="store_true",
-        help="Suppress all console output — log file only. "
-             "Use when running in a background terminal.",
+        help="Suppress all console output — log file only.",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -261,7 +359,7 @@ def main() -> None:
         f"leverage={bs_config.execution.leverage}x | "
         f"Safety: max_losses={bs_config.safety.max_consecutive_losses} "
         f"({bs_config.safety.consecutive_loss_action}), "
-        f"max_drawdown={bs_config.safety.max_daily_drawdown_pct:.1f}%, "
+        f"max_drawdown={bs_config.safety.max_daily_drawdown_pct:.1f}% (CTP journal-scoped), "
         f"min_cash={bs_config.safety.min_available_cash_usd:.2f}, "
         f"kill_switch='{bs_config.safety.kill_switch_file}'"
     )
@@ -277,6 +375,10 @@ def main() -> None:
         logger.error(f"Failed to initialise infrastructure: {exc}")
         sys.exit(1)
 
+    # ── Seed CTP open position tracking ──────────────────────────────────
+    open_positions_path = _PROJECT_ROOT / OPEN_POSITIONS_FILE
+    ctp_open_position_ids: set[int] = _load_ctp_open_position_ids(open_positions_path)
+
     # ── Fetch initial portfolio credit for guard baseline ─────────────────
     try:
         init_portfolio = client._make_request("GET", "api/v1/trading/info/demo/portfolio")
@@ -288,13 +390,13 @@ def main() -> None:
         logger.error(f"Failed to fetch initial portfolio: {exc}")
         sys.exit(1)
 
-    # ── Initialise guard ─────────────────────────────────────────────────
-    journal_path = Path(DEFAULT_JOURNAL)
-    todays_pnl = _load_todays_pnl(journal_path)
+    # ── Initialise guard ──────────────────────────────────────────────────
+    journal_path = _PROJECT_ROOT / DEFAULT_JOURNAL
+    todays_pnl_list, _ = _load_todays_ctp_pnl(journal_path)
     guard = PaperTradingGuard(
         config=bs_config,
         session_open_credit=session_open_credit,
-        journal_trades_today=todays_pnl,
+        journal_trades_today=todays_pnl_list,
     )
 
     # ── Main loop ─────────────────────────────────────────────────────────
@@ -314,9 +416,6 @@ def main() -> None:
             sys.exit(0)
 
         # ── Off-hours gate ────────────────────────────────────────────────
-        # If the current UTC hour is not in allowed_hours_utc (or is in
-        # skip_hours_utc), sleep until the next allowed hour opens rather
-        # than burning API calls on polls that can never result in an order.
         current_hour = datetime.now(timezone.utc).hour
         allowed = bs_config.trading_window.allowed_hours_utc
         skipped = bs_config.trading_window.skip_hours_utc
@@ -324,10 +423,9 @@ def main() -> None:
             wait_s = _seconds_until_next_allowed_hour(
                 [h for h in allowed if h not in skipped]
             )
-            next_open = datetime.now(timezone.utc)
-            next_open = (next_open + timedelta(seconds=wait_s)).replace(
-                minute=0, second=0, microsecond=0
-            )
+            next_open = (
+                datetime.now(timezone.utc) + timedelta(seconds=wait_s)
+            ).replace(minute=0, second=0, microsecond=0)
             logger.info(
                 f"Outside trading hours (UTC hour={current_hour}). "
                 f"Sleeping until next session open: "
@@ -335,7 +433,6 @@ def main() -> None:
                 f"({wait_s / 3600:.1f}h) …"
             )
             _sleep_interruptible(wait_s, chunk=300, guard=guard)
-            # ── Session open banner ───────────────────────────────────────
             logger.info("=" * 60)
             logger.info(
                 f"Session open — resuming at UTC hour "
@@ -343,14 +440,15 @@ def main() -> None:
             )
             logger.info("=" * 60)
             continue
-        # Reuse the pyramiding portfolio fetch result to avoid a second API call.
-        # _check_pyramiding returns (safe: bool, credit: float).
+
+        # ── Portfolio fetch (pyramiding — CTP-scoped) ─────────────────────
         try:
             safe_to_trade, current_credit = _check_pyramiding(
                 client=client,
                 resolver=resolver,
                 symbol=bs_config.execution.symbol,
-                max_positions=1,  # always 1 — strategy YAML max_positions
+                max_positions=1,
+                ctp_open_position_ids=ctp_open_position_ids,
             )
         except RuntimeError as exc:
             logger.error(f"Portfolio fetch error: {exc}")
@@ -369,9 +467,10 @@ def main() -> None:
                 f"All daily counters cleared."
             )
 
-        # ── Drawdown + cash guards ────────────────────────────────────────
+        # ── CTP drawdown + cash guards ────────────────────────────────────
+        _, ctp_pnl_today = _load_todays_ctp_pnl(journal_path)
         try:
-            guard.check_daily_drawdown(current_credit)
+            guard.check_daily_drawdown(ctp_pnl_today)
             guard.check_min_cash(current_credit)
         except HaltLoopError as exc:
             logger.error(f"HALT: {exc}")
@@ -379,7 +478,7 @@ def main() -> None:
 
         # ── Position already open — idle ──────────────────────────────────
         if not safe_to_trade:
-            logger.info(f"Position open — idling. Next poll in {POLL_INTERVAL}s …")
+            logger.info(f"CTP position open — idling. Next poll in {POLL_INTERVAL}s …")
             time.sleep(POLL_INTERVAL)
             continue
 
@@ -439,9 +538,7 @@ def main() -> None:
                 f"Sleeping {wait_seconds / 3600:.1f}h until "
                 f"{resume_at.strftime('%Y-%m-%d %H:%M UTC')} …"
             )
-            # Sleep in chunks so kill switch is still checked periodically
             _sleep_interruptible(wait_seconds, chunk=300, guard=guard)
-            # After pause: reset daily state with fresh credit
             try:
                 wake_portfolio = client._make_request(
                     "GET", "api/v1/trading/info/demo/portfolio"
@@ -450,7 +547,7 @@ def main() -> None:
                     wake_portfolio.get("clientPortfolio", {}).get("credit", 0.0)
                 )
             except Exception:
-                wake_credit = current_credit  # best effort
+                wake_credit = current_credit
             guard.reset_daily_state(wake_credit)
             logger.info(
                 f"Resuming after pause. New session_open_credit={wake_credit:.2f}"
@@ -477,6 +574,14 @@ def main() -> None:
             time.sleep(POLL_INTERVAL)
             continue
 
+        # ── Track placed positionID for CTP isolation ─────────────────────
+        ctp_open_position_ids.add(int(position_id))
+        _persist_ctp_open_position_ids(open_positions_path, ctp_open_position_ids)
+        logger.info(
+            f"CTP open positions updated: {ctp_open_position_ids} "
+            f"(persisted to {open_positions_path})"
+        )
+
         orders_placed += 1
         logger.info("=" * 60)
         logger.info(f"ORDER PLACED #{orders_placed}")
@@ -489,12 +594,6 @@ def main() -> None:
         logger.info(f"  take_profit  : {signal.take_profit_rate:.2f}")
         logger.info(f"  session total: {orders_placed} order(s) placed")
         logger.info("=" * 60)
-
-        # Loop continues — tracker loop (run separately) handles close detection
-        # and calls guard.record_trade_result() is NOT called here because the
-        # trade is still open. The tracker loop writes to the journal; the loop
-        # reconstructs consecutive_losses from the journal on the next day reset.
-        # NOTE: see tracker integration note in docs/ctp/BROKER_INTEGRATION.md.
 
         time.sleep(POLL_INTERVAL)
 
@@ -510,7 +609,7 @@ def _sleep_interruptible(
 ) -> None:
     """
     Sleep for total_seconds, waking every `chunk` seconds to check kill switch.
-    Exits loop cleanly if kill switch is detected during a pause.
+    Exits cleanly if kill switch is detected during a pause.
     """
     remaining = total_seconds
     while remaining > 0:

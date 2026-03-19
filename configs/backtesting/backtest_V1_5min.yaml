@@ -1,7 +1,7 @@
 # =============================================================================
-# backtest_V1_04.yaml
-# Version: 1.1.0
-# Date: 2026-03-14
+# backtest_V1_5min.yaml
+# Version: A (raw)
+# Date: 2026-03-19
 #
 # CONFIGURATION: STF=5min / HTF=15min
 # BASE FILTERS:  DPO + CCI + MACD
@@ -16,7 +16,7 @@
 # PARAMETER NAMING (verified against strategy_template.yaml + discovery zone):
 #   bollinger_length / bollinger_multiplier / bollinger_width_ma  (not bb_*)
 #   macd_fast / macd_slow / macd_signal
-#   cci_length / cci_overbought / cci_oversold  (step: 10 per discovery zone)
+#   cci_length / cci_overbought / cci_oversold  (step: 2 per discovery zone)
 #   dpo_length (step:2) / dpo_smooth / dpo_threshold (step:0.1 per discovery)
 #   atr_length / atr_multiplier (maps to atr_multiplier_sl — confirmed in prod)
 #   rr_target / risk_percentile
@@ -34,7 +34,7 @@
 #   min_profit_factor:   0.75  (unchanged)
 #   min_win_rate:        0.18  (unchanged)
 #
-# SIGMOID: _SIGMOID_SCALE=310.0 hardcoded. Fitness NOT comparable to 1min runs.
+# SIGMOID: _SIGMOID_SCALE=163.0.
 #
 # RUNTIME ESTIMATE: 10–14 hours at max_workers=2
 # =============================================================================
@@ -216,8 +216,8 @@ zones:
       atr_length:           {type: int,   min: 8,   max: 20,  step: 1}
       atr_multiplier:       {type: float, min: 1.5, max: 2.8, step: 0.1}
       rr_target:            {type: float, min: 2.5, max: 6.0, step: 0.1}
-      risk_percentile:      {type: float, min: 0.20, max: 0.70, step: 0.01}
-      dpo_length:           {type: int,   min: 14,  max: 30,  step: 2}
+      risk_percentile:      {type: float, min: 0.30, max: 0.80, step: 0.01}
+      dpo_length:           {type: int,   min: 14,  max: 30,  step: 1}
       dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
       dpo_threshold:        {type: float, min: 0.10, max: 0.30, step: 0.10}
       cci_length:           {type: int,   min: 10,  max: 25,  step: 5}
@@ -235,19 +235,19 @@ zones:
       atr_length:           {type: int,   min: 5,   max: 24,  step: 1}
       atr_multiplier:       {type: float, min: 1.2, max: 3.0, step: 0.1}
       rr_target:            {type: float, min: 2.0, max: 8.0, step: 0.1}
-      risk_percentile:      {type: float, min: 0.20, max: 0.70, step: 0.01}
-      dpo_length:           {type: int,   min: 14,  max: 35,  step: 2}
+      risk_percentile:      {type: float, min: 0.20, max: 0.90, step: 0.01}
+      dpo_length:           {type: int,   min: 11,  max: 35,  step: 1}
       dpo_smooth:           {type: int,   min: 2,   max: 25,  step: 1}
       dpo_threshold:        {type: float, min: 0.10, max: 0.40, step: 0.10}
       cci_length:           {type: int,   min: 10,  max: 30,  step: 5}
-      cci_overbought:       {type: int,   min: 80,  max: 120, step: 10}
-      cci_oversold:         {type: int,   min: -120, max: -80, step: 10}
-      macd_fast:            {type: int,   min: 8,   max: 16,  step: 2}
-      macd_slow:            {type: int,   min: 20,  max: 30,  step: 2}
-      macd_signal:          {type: int,   min: 6,   max: 12,  step: 1}
-      bollinger_length:     {type: int,   min: 5,   max: 40,  step: 2}
+      cci_overbought:       {type: int,   min: 55,  max: 120, step: 2}
+      cci_oversold:         {type: int,   min: -120, max: -55, step: 2}
+      macd_fast:            {type: int,   min: 3,   max: 16,  step: 1}
+      macd_slow:            {type: int,   min: 17,  max: 30,  step: 1}
+      macd_signal:          {type: int,   min: 3,   max: 14,  step: 1}
+      bollinger_length:     {type: int,   min: 5,   max: 40,  step: 1}
       bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
-      bollinger_width_ma:   {type: int,   min: 15,  max: 60,  step: 5}
+      bollinger_width_ma:   {type: int,   min: 15,  max: 60,  step: 1}
 
   discovery:
     enabled: false

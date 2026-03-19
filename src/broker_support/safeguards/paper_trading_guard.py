@@ -7,25 +7,31 @@ Called by run_signal_loop.py before each order attempt and after each trade resu
 Safeguards enforced:
   - Kill switch file (STOP in project root) — checked every poll
   - Max consecutive losses — hard stop or pause until next session open
-  - Daily drawdown % of session-open portfolio credit — hard stop
+  - Daily drawdown % of session-open credit — CTP journal-scoped only
   - Minimum available cash — hard stop
   - Consecutive pipeline error streak — hard stop
+
+Daily drawdown is scoped exclusively to CTP-placed trades recorded in the
+journal (trades.csv).  External positions on the same demo account (manual
+trades, other strategies) are invisible to this guard by design.  The caller
+passes the sum of today's closed CTP P&L; this guard never reads the raw
+account credit for the drawdown calculation.
 
 Daily state (consecutive_losses, drawdown baseline) resets automatically
 when the UTC date advances to a new trading day.
 
 Session resume after pause: first hour in trading_window.allowed_hours_utc
 on the next calendar day (UTC).  This reuses the existing YAML config and
-requires no new fields.
+requires no new config fields.
 
 Design rules:
   - Never calls sys.exit() — raises HaltLoopError or PauseUntilTomorrowError.
     The loop decides how to exit.
-  - Never implements HTTP — receives credit value from caller who already
-    fetched the portfolio (no duplicate API calls).
+  - Never implements HTTP — receives values from caller who already fetched
+    the portfolio (no duplicate API calls).
   - All state is in-memory; no persistence across process restarts.
-    On restart, daily counters reconstruct from CSVJournal (consecutive losses)
-    and a fresh portfolio fetch (session-open credit).
+    On restart, daily counters reconstruct from CSVJournal (consecutive losses
+    and today's CTP P&L sum) and a fresh portfolio fetch (session-open credit).
 """
 from __future__ import annotations
 
@@ -78,9 +84,11 @@ class PaperTradingGuard:
     Args:
         config:              Full BrokerSupportConfig (reads safety + trading_window).
         session_open_credit: Portfolio credit at the start of this session (USD).
-                             Used as the drawdown baseline.
-        journal_trades_today: Closed trades already journalled today (used to
-                              reconstruct consecutive_losses on restart).
+                             Kept for status logging and min_cash checks only —
+                             NOT used as drawdown baseline (drawdown is CTP-scoped).
+        journal_trades_today: Closed CTP trade P&L values already journalled today,
+                              in chronological order.  Used to reconstruct
+                              consecutive_losses on restart.
     """
     config: BrokerSupportConfig
     session_open_credit: float
@@ -89,11 +97,12 @@ class PaperTradingGuard:
     # mutable session state
     consecutive_losses: int = field(default=0, init=False)
     pipeline_error_streak: int = field(default=0, init=False)
-    session_date: date = field(default_factory=lambda: datetime.now(timezone.utc).date(), init=False)
+    session_date: date = field(
+        default_factory=lambda: datetime.now(timezone.utc).date(), init=False
+    )
     _paused_until: Optional[datetime] = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        # Reconstruct consecutive losses from today's journal trades on restart
         self.consecutive_losses = self._count_tail_losses(self.journal_trades_today)
         logger.info(
             f"PaperTradingGuard initialised: "
@@ -101,7 +110,8 @@ class PaperTradingGuard:
             f"consecutive_losses={self.consecutive_losses} (from journal), "
             f"max_consecutive_losses={self.config.safety.max_consecutive_losses}, "
             f"consecutive_loss_action={self.config.safety.consecutive_loss_action}, "
-            f"max_daily_drawdown_pct={self.config.safety.max_daily_drawdown_pct:.1f}%, "
+            f"max_daily_drawdown_pct={self.config.safety.max_daily_drawdown_pct:.1f}% "
+            f"(CTP journal-scoped — external account activity ignored), "
             f"min_cash={self.config.safety.min_available_cash_usd:.2f}, "
             f"max_pipeline_errors={self.config.safety.max_pipeline_errors}, "
             f"kill_switch_file='{self.config.safety.kill_switch_file}'"
@@ -120,7 +130,8 @@ class PaperTradingGuard:
           - When the loop detects UTC date has advanced past session_date.
 
         Args:
-            new_session_open_credit: Current portfolio credit (new drawdown baseline).
+            new_session_open_credit: Current portfolio credit (kept for
+                                     status logging and min_cash checks).
         """
         prev_date = self.session_date
         self.session_date = datetime.now(timezone.utc).date()
@@ -137,7 +148,7 @@ class PaperTradingGuard:
     def check_date_rollover(self, current_credit: float) -> bool:
         """
         Check whether the UTC date has advanced past session_date.
-        If so, reset daily state and return True (caller should log the rollover).
+        If so, reset daily state and return True.
 
         Args:
             current_credit: Current portfolio credit for the new baseline.
@@ -173,39 +184,60 @@ class PaperTradingGuard:
                 f"Loop halted. Remove the file before restarting."
             )
 
-    def check_daily_drawdown(self, current_credit: float) -> None:
+    def check_daily_drawdown(self, ctp_realised_pnl_today: float) -> None:
         """
-        Halt if today's drawdown exceeds max_daily_drawdown_pct of session-open credit.
+        Halt if CTP's own realised P&L today breaches max_daily_drawdown_pct.
 
-        Drawdown = (session_open_credit - current_credit) / session_open_credit * 100.
-        Only triggers if session_open_credit > 0 (guards against uninitialised state).
+        Drawdown is scoped exclusively to trades placed by this CTP loop and
+        recorded in the journal (trades.csv).  External positions on the same
+        demo account — manual trades, other strategies — are invisible to this
+        check by design.
+
+        Drawdown formula:
+            drawdown_pct = -ctp_realised_pnl_today / session_open_credit * 100
+
+        A negative ctp_realised_pnl_today (net loss) produces a positive
+        drawdown_pct.  A positive value (net profit) produces 0% drawdown
+        (clamped — profits don't offset the limit).
+
+        Only triggers if session_open_credit > 0.
 
         Args:
-            current_credit: Current portfolio credit from latest portfolio fetch.
+            ctp_realised_pnl_today: Sum of profit_loss for all CTP trades
+                                    closed today (from journal). Negative = loss.
 
         Raises:
-            HaltLoopError: if drawdown threshold breached.
+            HaltLoopError: if CTP drawdown threshold is breached.
         """
         if self.session_open_credit <= 0:
             return
-        drawdown_pct = (
-            (self.session_open_credit - current_credit) / self.session_open_credit * 100.0
+
+        # Only losses count toward drawdown — clamp at 0
+        drawdown_pct = max(
+            0.0,
+            -ctp_realised_pnl_today / self.session_open_credit * 100.0,
         )
         limit = self.config.safety.max_daily_drawdown_pct
+
         if drawdown_pct >= limit:
             raise HaltLoopError(
-                f"Daily drawdown limit reached: {drawdown_pct:.2f}% >= {limit:.1f}% "
-                f"(session_open={self.session_open_credit:.2f}, "
-                f"current={current_credit:.2f}). Loop halted for today."
+                f"CTP daily drawdown limit reached: {drawdown_pct:.2f}% >= {limit:.1f}% "
+                f"(session_open_credit={self.session_open_credit:.2f}, "
+                f"ctp_realised_pnl_today={ctp_realised_pnl_today:+.2f}). "
+                f"Loop halted for today. External account activity excluded."
             )
         logger.debug(
-            f"Drawdown check: {drawdown_pct:.2f}% / {limit:.1f}% limit OK "
-            f"(session_open={self.session_open_credit:.2f}, current={current_credit:.2f})"
+            f"CTP drawdown check: {drawdown_pct:.2f}% / {limit:.1f}% limit OK "
+            f"(ctp_realised_pnl_today={ctp_realised_pnl_today:+.2f}, "
+            f"session_open_credit={self.session_open_credit:.2f})"
         )
 
     def check_min_cash(self, current_credit: float) -> None:
         """
         Halt if available cash falls below the configured minimum.
+
+        Uses raw account credit — this is a capital preservation floor,
+        not a strategy-scoped metric.
 
         Args:
             current_credit: Current portfolio credit.
@@ -225,7 +257,7 @@ class PaperTradingGuard:
         Enforce max_consecutive_losses circuit breaker.
 
         Action depends on consecutive_loss_action:
-          'hard_stop'          → HaltLoopError (loop exits permanently)
+          'hard_stop'            → HaltLoopError (loop exits permanently)
           'pause_until_next_day' → PauseUntilTomorrowError (loop sleeps until
                                    first allowed_hours_utc hour next calendar day)
 
@@ -245,7 +277,6 @@ class PaperTradingGuard:
         if action == "hard_stop":
             raise HaltLoopError(f"{reason} Action=hard_stop. Loop halted.")
 
-        # pause_until_next_day — resume at first allowed hour next calendar day
         resume_at = self._next_session_open()
         raise PauseUntilTomorrowError(
             f"{reason} Action=pause_until_next_day. "
@@ -320,11 +351,6 @@ class PaperTradingGuard:
 
     def status_summary(self) -> str:
         """One-line status string for periodic loop logging."""
-        drawdown_pct = 0.0
-        if self.session_open_credit > 0:
-            # Caller must pass current credit; we use session_open as proxy here
-            # for the summary — accurate value logged in check_daily_drawdown.
-            pass
         return (
             f"Guard: consecutive_losses={self.consecutive_losses}/"
             f"{self.config.safety.max_consecutive_losses} | "
@@ -345,11 +371,7 @@ class PaperTradingGuard:
         on the next calendar day (UTC).
         """
         allowed = sorted(self.config.trading_window.allowed_hours_utc)
-        if not allowed:
-            # Fallback: 09:00 UTC next day if list is somehow empty
-            first_hour = 9
-        else:
-            first_hour = allowed[0]
+        first_hour = allowed[0] if allowed else 9
 
         now_utc = datetime.now(timezone.utc)
         next_day = (now_utc + timedelta(days=1)).date()

@@ -1,101 +1,83 @@
 # =============================================================================
-# backtest_V1_10min.yaml – Calibration B
-# Version: 2.0.0
-# Date: 2026-03-19
+# backtest_V1_10min.yaml – Calibration C
+# Version: 3.0.0
+# Date: 2026-03-20
 #
 # CONFIGURATION: STF=10min / HTF=4H
 # BASE FILTERS:  DPO + MA + Bollinger Bands (exploration zone only)
 #
-# PARENT RUN: bc633082-9fcd-4030-acc1-7b975398d0f8 (calibration A)
-# SERIES:     10min A → B
+# PARENT RUN: 7ce7beb1-5940-443d-aef2-dd351b5fee2a (calibration B)
+# SERIES:     10min A → B → C
 #
 # =============================================================================
-# WHAT RUN A PROVED
+# WHAT RUN B PROVED
 # =============================================================================
 #
-# run_id bc633082-9fcd-4030-acc1-7b975398d0f8 (calibration A)
+# run_id 7ce7beb1-5940-443d-aef2-dd351b5fee2a (calibration B)
 #
-# Stage 1 pass rate: 8% (33/400). Primary rejections:
-#   - INSUFFICIENT_TRADES (210) – min_significant_trades=30 too high for 10min.
-#   - win_rate (107) – min_win_rate 0.18 cuts just above average (0.177).
-#   - trades_per_week (38) – average trades/week = 0.66.
+# Stage 1 pass rate: 17% (69/400) – improved from 8% but still below 30–60%.
+# Main rejections: INSUFFICIENT_TRADES (188), trades_per_week (80), win_rate (40).
+# Average trades/week = 0.68; top candidates achieve 1–2 trades/week.
 #
-# Stage 4 WFO: 30 candidates scored, 28 collapsed (per-window drawdown >400 pts).
-# Only three candidates had >2 windows evaluated:
-#   - fd88bf5233b9 (exploration): 2 windows, WFO=0.8751 → borderline (spike in atr_multiplier)
-#   - 8bbed2b1eaa6 (exploration): 5 windows, WFO=0.7742 → auto_go (no spike, no collapse)
-#   - 7cc3b747f017 (safe): 3 windows, WFO=0.5641 → borderline (spike in ma_length, collapsed)
+# Stage 4 WFO: 30 candidates scored, 25 collapsed (per-window drawdown >400 pts).
+# Five non‑collapsed candidates emerged, with 1–7 windows evaluated:
+#   - d10d50790f5d: 5 windows, WFO=0.8453, spike in atr_mult/boll_mult/dpo_len
+#   - a055096e13c0: 7 windows, WFO=0.7758, spike in atr_mult
+#   - 7012af148a04: 1 window,  WFO=0.9083, spike in atr_mult/dpo_len/ma_slope
+#   - 6b986ffca372: 1 window,  WFO=0.8980, spike in atr_mult
+#   - f50625b58d10: 1 window,  WFO=0.6277, spike in ma_slope/rr_target
 #
-# Key findings:
-#   1. Safe zone produced only one candidate with any windows evaluated, and it collapsed.
-#      Safe zone appears unproductive at 10min given current trade frequency.
-#   2. Exploration zone auto_go candidate 8bbed2b1eaa6 hit several range boundaries:
-#      - ma_length = 50 (max)
-#      - dpo_length = 14 (min)
-#      - dpo_smooth = 2 (min)
-#      - dpo_threshold = 0.1 (min)
-#      This suggests the optimal region may extend beyond current ranges.
-#   3. The hardcoded sigmoid scale 310.0 is too high for 10min P&L distribution.
-#      Computed from run: stdev(net_pnl) = 326.48 → recommended scale = 163.2.
-#   4. min_significant_trades = 30 starves many windows; lowering to 20 will
-#      increase evaluable windows (e.g., 8bbed2b would gain W01, W09, W10, W12, W13 → 10 windows).
+# Three candidates with ≥4 windows and no spike (81b6, e516, 8e22) all collapsed.
+# No auto_go candidates – all 10 final verdicts are borderline.
 #
-# =============================================================================
-# CHANGES FOR CALIBRATION B
-# =============================================================================
+# Sigmoid scale from run B: stdev(net_pnl) = 362.21 → recommended scale = 181.1.
+# Run B used 163.0 (slightly under‑scaled).
 #
-#  1. DISABLE SAFE ZONE – set `enabled: false`. All search effort concentrated
-#     in exploration zone (DPO+MA+BB).
-#
-#  2. INCREASE samples_per_zone to 400 (exploration only) – improves coverage
-#     of the parameter space.
-#
-#  3. LOWER min_significant_trades to 20 – increases window evaluability.
-#
-#  4. ADJUST CONSTRAINTS based on Stage 1 distributions:
-#       min_win_rate: 0.18 → 0.11   (average win_rate 0.177)
-#       max_losing_streak: 20 → 30  (average 17.2, max 57)
-#     Others (min_trades_per_week, min_expectancy, min_profit_factor) unchanged.
-#
-#  5. UPDATE _SIGMOID_SCALE to 163.0 in consistency_scorer.py (from 310.0).
-#
-#  6. EXPAND PARAMETER RANGES where top candidate hit boundaries (exploration zone):
-#       ma_length: max 50 → 60 (step 5)
-#       dpo_length: min 14 → 10 (step 2)
-#       dpo_smooth: min 2 → 1 (step 1) – allow exploring minimal smoothing
-#       dpo_threshold: min 0.10 → 0.05 (step 0.05) – allow lower threshold
-#     Other ranges unchanged.
-#
-#  7. INCREASE GA BUDGET to better search the now-larger parameter space:
-#       population_size: 60 → 70
-#       generations: 30 → 40
-#       stagnation_generations: 10 → 12 (to match longer evolution)
-#
-#  8. INCREASE max_workers to 4 (from 2) – runtime estimate still comfortable
-#     with 8GB RAM because only one zone active and per-candidate evaluation
-#     is lighter than 1min runs.
+# KEY FINDINGS:
+#   1. Trade starvation persists with 3‑month windows (many windows have <20 trades).
+#      Longer windows are needed to increase evaluable windows per candidate.
+#   2. The productive parameter region remains wide – no clear clustering yet.
+#   3. Collapse rate is high, but non‑collapsed candidates exist with multiple windows.
+#   4. Sensitivity spikes are common, especially in atr_multiplier.
 #
 # =============================================================================
-# KEY QUESTIONS FOR CALIBRATION B
+# CHANGES FOR CALIBRATION C
 # =============================================================================
 #
-#  1. With 400 samples in exploration zone and relaxed constraints, does
-#     Stage 1 pass rate rise to 30–60%?
+#  1. SWITCH TO 4×9‑MONTH WINDOWS (instead of 13×3‑month) to increase trade
+#     counts per window. This matches the successful 15‑minute series structure.
+#     Windows cover the full 38‑month period with ~9‑month slices.
 #
-#  2. After lowering min_significant_trades to 20, do top candidates achieve
-#     windows_evaluated >= 8 (i.e., >60% of the 13 windows)?
+#  2. UPDATE _SIGMOID_SCALE to 181.0 in consistency_scorer.py (from 163.0).
 #
-#  3. Does expanding ma_length to 60 and dpo_length to 10 produce candidates
-#     with WFO > 0.80 and no collapse?
+#  3. LOWER min_trades_per_week to 0.3 (from 0.5) to increase Stage 1 pass rate.
+#     This allows more candidates into GA, relying on WFO to filter low‑trade ones.
 #
-#  4. Can we identify more than one auto_go candidate with windows_evaluated >= 5?
+#  4. All other constraints unchanged (min_win_rate=0.11, max_losing_streak=30).
 #
-#  5. Does the new sigmoid scale (163) improve fitness differentiation?
+#  5. Parameter ranges remain identical to run B – no narrowing yet, as top
+#     candidates show wide diversity. Further narrowing will be considered after C.
 #
-# RUNTIME ESTIMATE: 10–14 hours at max_workers=4
-#   Stage 1:  ~60–80 min  (400 candidates, 4 workers)
+#  6. Keep exploration zone only; safe zone remains disabled.
+#
+# =============================================================================
+# KEY QUESTIONS FOR CALIBRATION C
+# =============================================================================
+#
+#  1. Do 9‑month windows increase the number of evaluated windows per candidate?
+#     Target: top candidates achieve ≥6 windows out of 4 (i.e., all windows).
+#
+#  2. With higher trade counts, does the collapse rate decrease?
+#
+#  3. Does the new sigmoid scale improve fitness differentiation?
+#
+#  4. Can we obtain an auto_go candidate (no spike, no collapse, WFO ≥0.40,
+#     windows_evaluated ≥3)?
+#
+# RUNTIME ESTIMATE: 6–9 hours at max_workers=4 (fewer windows, but longer each)
+#   Stage 1:  ~60–80 min  (400 candidates)
 #   Stage 3:  ~4–6 hrs    (GA 40gen × 70pop)
-#   Stage 4:  ~5–7 hrs    (13 windows × 30 candidates)
+#   Stage 4:  ~2–3 hrs    (4 windows × 30 candidates)
 #   Stage 5:  ~20–30 min
 #   Stage 6:  ~20–30 min
 #   Stage 7:  ~5 min
@@ -112,7 +94,7 @@ run:
   output_dir: "outputs/backtesting"
   temp_dir: "temp/backtesting"
   retain_temp_yamls: false
-  max_workers: 4                     # increased from 2
+  max_workers: 4
   log_level: "INFO"
 
 stages:
@@ -127,17 +109,17 @@ stages:
 random_search:
   method: "lhs"
   samples_per_zone: 400                # only one zone active
-  min_significant_trades: 20            # lowered from 30
+  min_significant_trades: 20            # unchanged
   seed: 42
 
 genetic:
-  population_size: 70                   # increased from 60
-  generations: 40                        # increased from 30
+  population_size: 70
+  generations: 40
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 12             # increased from 10
+  stagnation_generations: 12
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -147,19 +129,11 @@ walk_forward:
   enforce_oos_gate: false
   oos_degradation_threshold: 0.50
   windows:
-    - {id: "W01", start: "2023-01-02", end: "2023-03-31"}
-    - {id: "W02", start: "2023-04-03", end: "2023-06-30"}
-    - {id: "W03", start: "2023-07-03", end: "2023-09-29"}
-    - {id: "W04", start: "2023-10-02", end: "2023-12-29"}
-    - {id: "W05", start: "2024-01-02", end: "2024-03-28"}
-    - {id: "W06", start: "2024-04-01", end: "2024-06-28"}
-    - {id: "W07", start: "2024-07-01", end: "2024-09-30"}
-    - {id: "W08", start: "2024-10-01", end: "2024-12-31"}
-    - {id: "W09", start: "2025-01-02", end: "2025-03-31"}
-    - {id: "W10", start: "2025-04-01", end: "2025-06-30"}
-    - {id: "W11", start: "2025-07-01", end: "2025-09-30"}
-    - {id: "W12", start: "2025-10-01", end: "2025-12-31"}
-    - {id: "W13", start: "2026-01-02", end: "2026-02-28"}
+    - {id: "W01", start: "2023-01-02", end: "2023-09-29"}   # 9 months
+    - {id: "W02", start: "2023-10-02", end: "2024-06-28"}   # 9 months
+    - {id: "W03", start: "2024-07-01", end: "2025-03-31"}   # 9 months
+    - {id: "W04", start: "2025-04-01", end: "2026-02-28"}   # 11 months (last partial)
+    # Note: W04 is slightly longer to cover remaining data; still acceptable.
 
 monte_carlo:
   deep:
@@ -207,9 +181,9 @@ scenarios:
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
-      min_win_rate: 0.11               # lowered from 0.18
-      max_losing_streak: 30             # increased from 20
-      min_trades_per_week: 0.5
+      min_win_rate: 0.11
+      max_losing_streak: 30
+      min_trades_per_week: 0.3           # lowered from 0.5
       min_expectancy: -2.0
       min_profit_factor: 0.75
     mc_prefilter_ruin_threshold: 0.25
@@ -271,7 +245,7 @@ scenarios:
 
 zones:
   safe:
-    enabled: false                      # safe zone inactive after run A
+    enabled: false                      # safe zone remains inactive
   exploration:
     # Filters active: DPO + MA + Bollinger Bands (all always on)
     enabled: true
@@ -280,10 +254,10 @@ zones:
       atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
       rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
       risk_percentile:      {type: float, min: 0.30, max: 1.1, step: 0.05}
-      dpo_length:           {type: int,   min: 10,  max: 35,  step: 2}    # min lowered from 14
-      dpo_smooth:           {type: int,   min: 1,   max: 25,  step: 1}    # min lowered from 2
-      dpo_threshold:        {type: float, min: 0.05, max: 0.50, step: 0.05} # min lowered from 0.10
-      ma_length:            {type: int,   min: 15,  max: 60,  step: 5}    # max increased from 50
+      dpo_length:           {type: int,   min: 10,  max: 35,  step: 2}
+      dpo_smooth:           {type: int,   min: 1,   max: 25,  step: 1}
+      dpo_threshold:        {type: float, min: 0.05, max: 0.50, step: 0.05}
+      ma_length:            {type: int,   min: 15,  max: 60,  step: 5}
       ma_slope_length:      {type: int,   min: 5,   max: 20,  step: 5}
       bollinger_length:     {type: int,   min: 5,   max: 40,  step: 2}
       bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
