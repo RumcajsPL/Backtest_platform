@@ -1,4 +1,12 @@
 # =============================================================================
+# backtest_V1_10min_D_datacollect.yaml – Data Collection Run
+# Version: 3.1.0
+# Date: 2026-03-20
+#
+# CONFIGURATION: STF=10min / HTF=4H
+# PURPOSE: Collect trade frequency and performance data for two filter sets
+#          (DPO+MACD and DPO+MA+Bollinger) to guide final calibration.
+# =============================================================================
 # backtest_V1_10min.yaml – Calibration C
 # Version: 3.0.0
 # Date: 2026-03-20
@@ -7,7 +15,7 @@
 # BASE FILTERS:  DPO + MA + Bollinger Bands (exploration zone only)
 #
 # PARENT RUN: 7ce7beb1-5940-443d-aef2-dd351b5fee2a (calibration B)
-# SERIES:     10min A → B → C
+# SERIES:     10min A → B → C ->
 #
 # =============================================================================
 # WHAT RUN B PROVED

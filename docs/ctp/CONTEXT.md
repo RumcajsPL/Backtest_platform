@@ -1,11 +1,13 @@
 # CONTEXT.md — CTP Session State
-# Updated: 2026-03-19 (CTP isolation fix — drawdown + pyramiding scoped to journal)
+# Updated: 2026-03-20 (logging clarity fix — result=NO_SIGNAL / result=RISK_REJECTED)
 ---
 ## Where We Are
 ```
 BROKER INTEGRATION:    Phase 2 COMPLETE as of 2026-03-18.
 CTP ISOLATION FIX:     2026-03-19 — loop halted due to external account activity
                        interfering with drawdown guard. Fix implemented and delivered.
+LOGGING FIX:           2026-03-20 — misleading "No signal on last bar" message
+                       replaced. See detail below.
 First live trade:      2026-03-17 13:06 UTC — BUY GER40 @ 23705.89
                        positionID=3466009287, orderID=336588020
                        SL=23676.47, TP=23891.07, R:R=8.8x
@@ -15,8 +17,41 @@ Loop halt (incident):  2026-03-19 10:02 UTC — Poll #4
                        Root cause: manual trades on same demo account depleted
                        credit before CTP placed any orders. Not a CTP bug.
                        Fix: drawdown now CTP journal-scoped only.
-Next action:           Deploy fixed files, restart loop for remainder of week.
+Next action:           Loop running. Next week: review first full week of data.
                        Command: python scripts/broker_support/run_signal_loop.py
+```
+---
+## 2026-03-20 Session — First Full Day Analysis
+```
+Loop ran cleanly all day. CTP isolation confirmed working — no external
+interference observed (contrast: 2026-03-19 incident).
+Signals detected:
+  Poll #133  11:12 UTC — SELL @ 22861.62 — RiskManager REJECTED
+  Poll #253  13:12 UTC — BUY  @ 22827.07 — RiskManager REJECTED
+  Poll #417  16:14 UTC — SELL            — RiskManager REJECTED
+  (3 signals total, all rejected — consistent with 0.45% threshold calibration)
+Apparent "silent fail" at Poll #417 investigated and ruled out:
+  - 16:14 SELL appeared in Poll #418 "latest signals" list but not in Poll #417
+    rejection log. Initially flagged as possible silent swallow.
+  - Root cause: both "no signal on last bar" (Stage 5) and "RiskManager
+    rejected" (Stage 6) returned None and hit the same log line in the loop —
+    "No signal on last bar" — making a rejection look identical to a flat bar.
+  - Poll #417 DID process the signal correctly. No signals were lost.
+  - The "latest signals" appearance at Poll #418 is expected behaviour:
+    _describe_recent_signals() scans the full 500-bar filter result, so
+    a bar from the prior poll remains in the window.
+Logging fix delivered (2 files, 3 lines):
+  src/broker_support/live/signal_bridge.py
+    - result=NO_SIGNAL logged before Stage 5 return None
+    - result=RISK_REJECTED logged before Stage 6 return None
+  scripts/broker_support/run_signal_loop.py
+    - "No signal on last bar" → "No actionable signal this poll"
+      (accurate for both Stage 5 and Stage 6 outcomes)
+Post-fix log sequence for a rejection will read:
+  SignalBridge: signal found at last bar — SELL @ …
+  SignalBridge: RiskManager rejected trade at … Risk summary: …
+  SignalBridge: result=RISK_REJECTED
+  No actionable signal this poll. Next poll in 60s …
 ```
 ---
 ## CTP Isolation Design (implemented 2026-03-19)
@@ -70,6 +105,11 @@ tests/broker_support/test_signal_pipeline_integration.py
 src/broker_support/safeguards/paper_trading_guard.py  ← check_daily_drawdown redesigned
 scripts/broker_support/run_signal_loop.py             ← CTP isolation, open_positions.json
 ```
+## 2026-03-20 Deliverables
+```
+src/broker_support/live/signal_bridge.py    ← result=NO_SIGNAL / result=RISK_REJECTED
+scripts/broker_support/run_signal_loop.py   ← "No actionable signal this poll"
+```
 ---
 ## Test Status
 ```
@@ -77,6 +117,7 @@ scripts/broker_support/run_signal_loop.py             ← CTP isolation, open_po
 63/63  integration tests passing
 Note:  PaperTradingGuard, order_router fast-fill path, CTP isolation not yet
        covered by tests — all in test backlog for V2.
+       Logging fix (result= sentinel lines) not tested — trivial log-only change.
 ```
 ---
 ## Trade Constraint Status
@@ -110,9 +151,12 @@ Note:  PaperTradingGuard, order_router fast-fill path, CTP isolation not yet
             openRate=23705.89, SL=23676.47, TP=23891.07, R:R=8.8x
             Trade was profitable (per operator).
 2026-03-19: Loop halted Poll #4 — external account drawdown 24.18%.
-            Fixed. Ready to restart.
+            Fixed. Restarted.
+2026-03-20: 3 signals detected (11:12 SELL, 13:12 BUY, 16:14 SELL).
+            All rejected by RiskManager. Loop healthy.
 RiskManager calibration — pending:
-  Only 2 data points. Run full week before reviewing 0.45% threshold.
+  Only ~5 data points across 3 days. Run full week before reviewing 0.45%
+  threshold. All rejections consistent with elevated DAX volatility / ATR.
 ```
 ---
 ## Useful Commands
@@ -141,9 +185,21 @@ BS config:           configs/broker_support/broker_support_config.yaml
 Instrument map:      configs/broker_support/instrument_map.yaml  (symbol key: GER40)
 Credentials:         configs/broker_support/broker_settings.env
 Journal (closed):    outputs/broker_support/journal/trades.csv
-Open positions:      outputs/broker_support/journal/open_positions.json  ← NEW
+Open positions:      outputs/broker_support/journal/open_positions.json
 Logs:                outputs/broker_support/logs/run_signal_loop_YYYY-MM-DD.log
 ```
+---
+## Next Session Start
+1. python scripts/broker_support/inspect_portfolio.py — check open positions
+2. Review logs: outputs/broker_support/logs/run_signal_loop_YYYY-MM-DD.log
+3. Count: signals found, RiskManager rejections vs approvals, orders placed
+4. After 1 full week (target: end of w/c 2026-03-23):
+   - Review RiskManager 0.45% threshold vs DAX volatility profile
+   - Assess whether rejection rate is consistent with backtest (~39% approval)
+   - If consistent: threshold is correctly calibrated, no change
+   - If approval rate significantly lower: consider threshold review
+5. If circuit breaker fired: diagnose before restarting loop
+6. Secondary candidate 20745ca991be: do NOT promote until PRIMARY stable 1 week
 ---
 ## V2 Backlog (do not act until Phase 2 week complete)
 ```
@@ -157,10 +213,3 @@ Logs:                outputs/broker_support/logs/run_signal_loop_YYYY-MM-DD.log
 - SafetyConfig evolution — V2 discussion
 - Promote secondary candidate 20745ca991be after PRIMARY stable 1 week
 ```
----
-## Next Session Start
-1. python scripts/broker_support/inspect_portfolio.py — check open positions
-2. Review logs: outputs/broker_support/logs/run_signal_loop_YYYY-MM-DD.log
-3. Count: signals found, orders placed, circuit breakers fired (if any)
-4. After 1 full week: review RiskManager 0.45% calibration vs 2026 DAX volatility
-5. If circuit breaker fired: diagnose before restarting loop

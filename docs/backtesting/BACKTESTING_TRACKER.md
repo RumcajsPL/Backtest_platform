@@ -1,4 +1,4 @@
-BACKTESTING_RESULTS.md — Comprehensive Backtesting History & Status
+BACKTESTING_TRACKER.md — Comprehensive Backtesting History & Status
 ```
 1. Overview
 ```
@@ -200,6 +200,46 @@ W04	2025-04-01 → 2026-02-28	Most recent regime
 4.6 Frozen 10‑Minute Configuration
 To be finalised after run C.
 
+4.7 Calibration C Results (548dacea-165b-4f3a-bca5-6944bf40c838)
+
+- Stage 1 pass rate: 101/400 (25.3%). Average trades/week = 0.68.
+- WFO: 30 scored, 19 collapsed (63%). Top candidate `4228c5a263f1` achieved WFO=0.9717 but only 1 evaluated window.
+- Verdicts: 2 auto_go, 8 borderline. Both auto_go had windows_evaluated = 1 → phantom verdicts.
+- Trade starvation remains the dominant issue; even with 9‑month windows many candidates fail to reach 20 trades.
+- Sigmoid scale was under‑scaled (used 181 vs recommended 258). Net P&L stdev = 516.16.
+
+4.8 Planned Calibration D (backtest_V1_10min_D.yaml)
+
+Changes:
+- Enable safe zone with narrowed ranges derived from top‑10 WFO candidates.
+- Update sigmoid scale to 258.
+- Lower min_significant_trades to 15, min_trades_per_week to 0.2.
+- Increase GA population to 80, generations to 45, stagnation to 14.
+- Increase random search samples to 500 total (250 per zone).
+- Verdict gate (windows_evaluated ≥ 3) must be enforced in pipeline before this run.
+
+Goal: Obtain at least one honest auto_go candidate with ≥3 evaluated windows and no collapse/spikes.
+
+4.9 Calibration D (Data Collection – backtest_V1_10min_D_datacollect.yaml)
+
+**Purpose:** Collect trade frequency and performance data for two filter sets on 10min to inform parameter narrowing for final calibration (E).
+
+**Settings:**
+- Stages: random_search + walk_forward only (no GA, MC, sensitivity).
+- Random search: 500 samples per zone (safe + exploration), total 1000.
+- Constraints: very loose (`e2e_test` scenario) to allow nearly all candidates to pass.
+- WFO: all 1000 candidates evaluated across 4 × 9‑month windows.
+- Sigmoid scale set to 258 (code change required).
+- Safe zone: DPO+MACD, ranges slightly widened from 15min series.
+- Exploration zone: DPO+MA+Bollinger, original wide ranges.
+
+**Expected outputs:**
+- Distribution of trades/week per filter set.
+- Parameter regions with trade frequency ≥ 1.0 and positive expectancy.
+- Data to guide final parameter narrowing for Run E.
+
+**Runtime:** ~10–12 hours.
+
 5. 5‑Minute Series (Overnight Runs, 10–14 hours)
 5.1 Calibration History
 Calibration	YAML	Run ID	Status	auto_go	Best WFO	Notes
@@ -246,6 +286,38 @@ See §2.4 for window definitions.
 
 5.5 Frozen 5‑Minute Configuration
 To be finalised after run B.
+
+5.6 Calibration B Results (4b87d038-2702-4a34-83aa-8a2d0f448530)
+
+**Configuration:** `backtest_V1_5min.yaml` (exploration zone disabled, safe zone only).  
+- Random search: 500 samples, min_significant_trades=20.  
+- Constraints: min_win_rate=0.15, min_trades_per_week=1.0, min_expectancy=-3.0, max_losing_streak=40.  
+- GA: population 70, generations 40, stagnation 12.  
+- Sigmoid scale: 172 (recommended 203.8 from this run – slightly under‑scaled but acceptable).  
+
+**Results:**
+- Stage 1 pass rate: 234/500 (46.8%).  
+- Average trades/week (Stage 1): 2.36 (max 7.89).  
+- WFO: 30 candidates scored, 12 collapsed.  
+- Verdicts: 4 auto_go, 6 borderline. All auto_go have windows_evaluated ≥3 (up to 6).  
+- MC ruin probability: 0.000 for all top candidates.  
+- Sensitivity: 4 spikes among the 10 evaluated candidates.  
+
+**Top auto_go candidates:**
+| Candidate | WFO | Windows evaluated | Median return |
+|-----------|-----|-------------------|---------------|
+| 43e8efe2242a | 0.9009 | 5 | 252.79 |
+| 1fc79a22806a | 0.8324 | 3 | 137.46 |
+| 248933d21f4a | 0.8149 | 5 | 121.19 |
+| 631cbc6cbf80 | 0.8004 | 6 | 287.05 |
+
+**Observations:**
+- The safe zone (DPO+CCI+MACD) consistently produces high‑trade‑frequency strategies.  
+- Top candidates have good window coverage and survive WFO without collapse.  
+- The exploration zone was disabled; no loss of potential candidates.  
+- Sigmoid scale used (172) was slightly low; future runs should use 204.  
+
+**Next Step:** Proceed to Calibration C (final) to tighten parameter ranges based on the top 30 WFO candidates and produce a frozen configuration for paper trading.
 
 6. Common Insights (Applicable to All Timeframes)
 ```
@@ -326,3 +398,4 @@ The current BACKTESTING_RESULTS.md serves as the knowledge base for the orchestr
 *Document generated: 2026-03-18*
 Next review: after completing 5min & 10min series.
 ```
+

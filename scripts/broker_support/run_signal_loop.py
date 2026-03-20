@@ -497,9 +497,12 @@ def main() -> None:
             time.sleep(POLL_INTERVAL)
             continue
 
-        # ── No signal ─────────────────────────────────────────────────────
+        # ── No signal (last bar flat or RiskManager rejected) ─────────────
         if signal is None:
-            logger.info(f"No signal on last bar. Next poll in {POLL_INTERVAL}s …")
+            # signal_bridge.py logs result=NO_SIGNAL or result=RISK_REJECTED
+            # at INFO level before returning None. The summary here is
+            # intentionally generic — see those lines for the specific reason.
+            logger.info(f"No actionable signal this poll. Next poll in {POLL_INTERVAL}s …")
             time.sleep(POLL_INTERVAL)
             continue
 

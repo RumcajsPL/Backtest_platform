@@ -1,49 +1,23 @@
 # =============================================================================
-# backtest_V1_5min_B.yaml
-# Version: B (focused on safe zone)
+# backtest_V1_5min_C.yaml – Final Calibration (Narrowed Safe Zone)
+# Version: C
 # Date: 2026-03-20
 #
 # CONFIGURATION: STF=5min / HTF=15min
-# SAFE ZONE ONLY: DPO + CCI + MACD (exploration zone disabled)
+# SAFE ZONE ONLY: DPO + CCI + MACD, ranges narrowed from Calibration B top candidates
 #
-# PARENT RUN: (raw A run – ID not logged)
-# SERIES:     5min A → B
-#
-# =============================================================================
-# WHAT RUN A PROVED
-# =============================================================================
-#
-# Stage 1 pass rate: 14.8%. Safe zone passed 24% vs exploration 5.6%.
-# WFO: 6 auto_go from safe zone, 1 auto_go from exploration.
-# Conclusion: safe zone is clearly the productive region; exploration adds little.
+# PARENT RUN: 4b87d038-2702-4a34-83aa-8a2d0f448530 (calibration B)
+# SERIES:     5min B → C
 #
 # =============================================================================
-# CHANGES FOR CALIBRATION B
+# CHANGES FOR CALIBRATION C
 # =============================================================================
 #
-#  1. DISABLE EXPLORATION ZONE – set `enabled: false`.
-#  2. Increase samples_per_zone to 500 (all in safe).
-#  3. Lower min_significant_trades to 20 (from 30).
-#  4. Relax constraints based on Stage 1 distributions:
-#       min_win_rate: 0.18 → 0.15
-#       min_expectancy: -2.0 → -3.0
-#       min_trades_per_week: 1.5 → 1.0
-#       max_losing_streak: 35 → 40
-#  5. Update _SIGMOID_SCALE to 172 in consistency_scorer.py (from 163).
-#  6. Increase GA budget (population 70, generations 40, stagnation 12).
-#  7. Keep parameter ranges identical to raw A (no tightening yet).
+#  1. Narrow safe zone parameter ranges to productive clusters.
+#  2. Update _SIGMOID_SCALE to 204 in consistency_scorer.py.
+#  3. Keep all other settings identical to Calibration B.
 #
-# =============================================================================
-# KEY QUESTIONS FOR CALIBRATION B
-# =============================================================================
-#
-#  1. Does Stage 1 pass rate rise to 30–40%?
-#  2. Do top safe candidates achieve ≥4 windows evaluated (out of 13)?
-#  3. Can we obtain multiple auto_go candidates with windows_evaluated ≥6?
-#  4. Does the exploration zone remain unnecessary (i.e., no auto_go from
-#     any surviving exploration candidate)?
-#
-# RUNTIME ESTIMATE: 10–14 hours at max_workers=2
+# RUNTIME ESTIMATE: 8–12 hours at max_workers=2
 # =============================================================================
 
 backtester_version: "1.0.0"
@@ -71,18 +45,18 @@ stages:
 
 random_search:
   method: "lhs"
-  samples_per_zone: 500                # all in safe zone
-  min_significant_trades: 20            # reduced from 30
+  samples_per_zone: 500
+  min_significant_trades: 20
   seed: 42
 
 genetic:
-  population_size: 70                   # increased from 60
-  generations: 40                        # increased from 30
+  population_size: 70
+  generations: 40
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 12             # increased from 10
+  stagnation_generations: 12
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -152,10 +126,10 @@ scenarios:
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
-      min_win_rate: 0.15               # lowered from 0.18
-      max_losing_streak: 40             # raised from 35
-      min_trades_per_week: 1.0           # lowered from 1.5
-      min_expectancy: -3.0              # lowered from -2.0
+      min_win_rate: 0.15
+      max_losing_streak: 40
+      min_trades_per_week: 1.0
+      min_expectancy: -3.0
       min_profit_factor: 0.75
     mc_prefilter_ruin_threshold: 0.25
     wfo_collapse_drawdown_threshold: 400.0
@@ -216,22 +190,21 @@ scenarios:
 
 zones:
   safe:
-    # Filters active: DPO + CCI + MACD (all always on)
     enabled: true
     parameters:
-      atr_length:           {type: int,   min: 8,   max: 20,  step: 1}
-      atr_multiplier:       {type: float, min: 1.5, max: 2.8, step: 0.1}
-      rr_target:            {type: float, min: 2.5, max: 6.0, step: 0.1}
-      risk_percentile:      {type: float, min: 0.30, max: 0.80, step: 0.01}
-      dpo_length:           {type: int,   min: 14,  max: 30,  step: 1}
-      dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
-      dpo_threshold:        {type: float, min: 0.10, max: 0.30, step: 0.02}
-      cci_length:           {type: int,   min: 10,  max: 25,  step: 1}
-      cci_overbought:       {type: int,   min: 80,  max: 120, step: 2}
-      cci_oversold:         {type: int,   min: -120, max: -80, step: 2}
-      macd_fast:            {type: int,   min: 8,   max: 16,  step: 1}
-      macd_slow:            {type: int,   min: 20,  max: 30,  step: 1}
-      macd_signal:          {type: int,   min: 6,   max: 12,  step: 1}
+      atr_length:           {type: int,   min: 12,  max: 18,  step: 1}
+      atr_multiplier:       {type: float, min: 1.8,  max: 2.6,  step: 0.1}
+      rr_target:            {type: float, min: 3.0,  max: 5.5,  step: 0.1}
+      risk_percentile:      {type: float, min: 0.45, max: 0.75, step: 0.02}
+      dpo_length:           {type: int,   min: 20,  max: 28,  step: 2}
+      dpo_smooth:           {type: int,   min: 8,   max: 16,  step: 2}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.20, step: 0.02}
+      cci_length:           {type: int,   min: 12,  max: 22,  step: 2}
+      cci_overbought:       {type: int,   min: 90,  max: 110, step: 2}
+      cci_oversold:         {type: int,   min: -110, max: -90, step: 2}
+      macd_fast:            {type: int,   min: 10,  max: 14,  step: 1}
+      macd_slow:            {type: int,   min: 22,  max: 28,  step: 1}
+      macd_signal:          {type: int,   min: 8,   max: 10,  step: 1}
   exploration:
     enabled: false
   discovery:

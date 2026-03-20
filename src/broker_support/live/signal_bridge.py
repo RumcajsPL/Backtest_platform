@@ -104,6 +104,11 @@ class SignalBridge:
 
         Logs clearly at every decision point so Stage 1 dry-run output
         is informative even when no signal is found.
+
+        Return-None paths are distinguished by a terminal log line:
+            result=NO_SIGNAL        — no signal on the last bar
+            result=RISK_REJECTED    — signal found but RiskManager rejected it
+        The caller uses these to log an accurate summary message.
         """
         symbol = self._bs.execution.symbol
         cfg = self._strategy_config
@@ -151,6 +156,7 @@ class SignalBridge:
                 f"SignalBridge: no signal on last bar ({last_ts}). "
                 f"Latest signals: {_describe_recent_signals(filter_result.final_signals.signals)}"
             )
+            logger.info("SignalBridge: result=NO_SIGNAL")
             return None
 
         direction = "BUY" if last_signal == SignalType.BUY else "SELL"
@@ -182,6 +188,7 @@ class SignalBridge:
                 f"SignalBridge: RiskManager rejected trade at {last_ts}. "
                 f"Risk summary: {risk_manager.get_risk_summary()}"
             )
+            logger.info("SignalBridge: result=RISK_REJECTED")
             return None
 
         logger.info(
