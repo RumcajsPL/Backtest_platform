@@ -156,17 +156,108 @@ _SIGMOID_SCALE = 410  # set manually in consistency_scorer.py
 max_workers: 4
 ```
 
-4. Common Insights (Applicable to All Timeframes)
+4. 10‑Minute Series (Daytime Runs, 3–6 hours)
+4.1 Calibration History
+Calibration	YAML	Run ID	Status	auto_go	Best WFO	Notes
+A (raw)	backtest_V1_10min.yaml	bc633082-9fcd-4030-acc1-7b975398d0f8	✅ Complete	1	0.7742	exploration zone only, 400 samples, min_trades=30, sigmoid 310 (wrong).
+B (focused)	backtest_V1_10min_B.yaml	7ce7beb1-5940-443d-aef2-dd351b5fee2a	✅ Complete	0	0.9083	exploration only, min_trades=20, sigmoid 163, constraints relaxed. 10 borderline.
+C (planned)	backtest_V1_10min_C.yaml	–	Planned	–	–	switch to 4×9‑month windows, sigmoid 181, further relax trades/week.
+4.2 Raw Run A Findings (bc633082)
+Stage 1 pass rate: 33/400 (8%). Rejections: INSUFFICIENT_TRADES (210), win_rate (107), trades_per_week (38). Average trades/week = 0.66.
+
+WFO: 30 scored, 28 collapsed. Only three candidates had ≥2 windows evaluated.
+
+Top candidate: 8bbed2b1eaa6 (exploration) – WFO=0.7742 (5 windows), no collapse, no spike → auto_go.
+
+Sigmoid: stdev(net_pnl)=326.48 → recommended scale 163 (was 310). Updated for run B.
+
+4.3 Run B Findings (7ce7beb1)
+Stage 1 pass rate: 69/400 (17%). Rejections: INSUFFICIENT_TRADES (188), trades_per_week (80), win_rate (40). Average trades/week = 0.68.
+
+WFO: 30 scored, 25 collapsed. Five non‑collapsed candidates with 1–7 windows evaluated.
+
+Top candidate: 7012af148a04 (exploration) – WFO=0.9083 (1 window), no collapse, spike in atr_mult/dpo_len/ma_slope → borderline.
+
+No auto_go in run B; all 10 final verdicts borderline.
+
+Sigmoid: stdev(net_pnl)=362.21 → recommended scale 181 (used 163). Will be updated for run C.
+
+4.4 Planned Run C Changes
+Switch to 4×9‑month windows (match 15min structure) to increase trade counts per window.
+
+Update _SIGMOID_SCALE to 181 in consistency_scorer.py.
+
+Lower min_trades_per_week to 0.3 (from 0.5) to boost Stage 1 pass rate.
+
+Keep exploration zone only, parameters unchanged from run B.
+
+4.5 Window Structure for Run C
+Window	Period	Regime
+W01	2023-01-02 → 2023-09-29	DAX recovery
+W02	2023-10-02 → 2024-06-28	ECB rate cycle
+W03	2024-07-01 → 2025-03-31	H2 2024 productive + H1 2025 dead
+W04	2025-04-01 → 2026-02-28	Most recent regime
+4.6 Frozen 10‑Minute Configuration
+To be finalised after run C.
+
+5. 5‑Minute Series (Overnight Runs, 10–14 hours)
+5.1 Calibration History
+Calibration	YAML	Run ID	Status	auto_go	Best WFO	Notes
+A (raw)	backtest_V1_5min.yaml	(not logged)	✅ Complete	7	0.9734	safe zone productive (6 auto_go), exploration marginal (1 auto_go). sigmoid 163 (under‑scaled).
+B (focused)	backtest_V1_5min_B.yaml	–	Planned	–	–	safe zone only, 500 samples, min_trades=20, constraints relaxed, sigmoid 172.
+5.2 Raw Run A Findings
+Stage 1 pass rate: 74/500 (14.8%). Safe zone passed 24% (60/250), exploration 5.6% (14/250). Rejections: win_rate (163), trades_per_week (107), expectancy (78), INSUFFICIENT_TRADES (77).
+
+Average trades/week: 2.19 (≈360 trades over 38 months). 3‑month windows average ~28 trades.
+
+WFO: 30 scored, 13 collapsed. Safe zone produced 6 auto_go, 2 borderline. Exploration produced 1 auto_go, 1 borderline.
+
+Top safe candidate: 38af78ada974 – WFO=0.9734 (1 window), no spike, no collapse.
+
+Top exploration candidate: e3a30e9d8a69 – WFO=0.8981 (3 windows), no spike, no collapse.
+
+Sigmoid: stdev(net_pnl)=343.64 → recommended scale 172 (used 163). Will be updated for run B.
+
+5.3 Planned Run B Changes
+Disable exploration zone – focus all 500 samples on safe zone.
+
+Increase samples_per_zone to 500.
+
+Lower min_significant_trades to 20 (from 30).
+
+Relax constraints based on Stage 1 distributions:
+
+min_win_rate: 0.15 (from 0.18)
+
+min_expectancy: -3.0 (from -2.0)
+
+min_trades_per_week: 1.0 (from 1.5)
+
+max_losing_streak: 40 (from 35)
+
+Update sigmoid scale to 172 in consistency_scorer.py.
+
+Increase GA budget: population 70, generations 40, stagnation 12 (from 60/30/10).
+
+Keep safe zone parameter ranges unchanged.
+
+5.4 Window Structure (13 × 3‑month, same as 1‑minute series)
+See §2.4 for window definitions.
+
+5.5 Frozen 5‑Minute Configuration
+To be finalised after run B.
+
+6. Common Insights (Applicable to All Timeframes)
 ```
 
-4.1 Phantom WFO Verdicts
+6.1 Phantom WFO Verdicts
 The WFO scorer assigns near‑perfect scores to candidates with too few evaluated windows (≤2).
 
 Fix (V2‑VERDICT‑GATE): Reject any candidate with windows_evaluated < 3 – verdict becomes INSUFFICIENT_COVERAGE.
 
 Always check windows_evaluated before trusting a high WFO score.
 
-4.2 risk_percentile Behaviour
+6.2 risk_percentile Behaviour
 Unit = percentage of account equity (0.45 = 0.45%, not 45%).
 
 Acts as a trade filter, not position sizer: signal rejected if ATR‑based risk > threshold.
@@ -177,14 +268,14 @@ TF‑dependent calibration is mandatory:
 
 15min: 0.85–1.10
 
-4.3 Sigmoid Scale Calibration
+6.3 Sigmoid Scale Calibration
 _SIGMOID_SCALE should be set to stdev(net_pnl) × 0.5 from Stage 4.
 
 Within‑run relative ranking is unaffected by the scale, but absolute fitness values change.
 
 V2 action: Make it a per‑run config parameter.
 
-4.4 WFO Window Sizing
+6.4 WFO Window Sizing
 Each window must average at least min_significant_trades trades.
 
 1min: 30 (comfortable)
@@ -193,7 +284,7 @@ Each window must average at least min_significant_trades trades.
 
 Longer windows reduce starvation; 4×9‑month structure solved 15min coverage.
 
-4.5 MACD Filter Crash Fix
+6.5 MACD Filter Crash Fix
 pta.macd() fails for short series; fix applied in macd_filter.py:
 
 python
@@ -202,7 +293,7 @@ if len(close) < min_required: return NaN
 Do NOT set macd_signal < 2; enforce minimum 2 in all zone definitions.
 ```
 
-5. Frozen Production Configurations
+7. Frozen Production Configurations
 ```
 Both series are now considered mature and frozen. No further parameter changes are planned. The YAML files are the source of truth.
 
@@ -213,7 +304,7 @@ Both series are now considered mature and frozen. No further parameter changes a
 Any future 1‑minute runs (if needed) should use the same ranges with possibly different random seeds. 15‑minute runs are not required but can be repeated with seed variation.
 ```
 
-6. Next Steps for V3 (Intelligent Backtesting Orchestrator)
+8. Next Steps for V3 (Intelligent Backtesting Orchestrator)
 ```
 The methodology proven on 1min and 15min will be extended to 5‑minute and 10‑minute timeframes. The orchestrator should:
 

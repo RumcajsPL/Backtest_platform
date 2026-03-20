@@ -1,40 +1,47 @@
 # =============================================================================
-# backtest_V1_5min.yaml
-# Version: A (raw)
-# Date: 2026-03-19
+# backtest_V1_5min_B.yaml
+# Version: B (focused on safe zone)
+# Date: 2026-03-20
 #
 # CONFIGURATION: STF=5min / HTF=15min
-# BASE FILTERS:  DPO + CCI + MACD
-# EXPLORATION:   DPO + CCI + MACD + Bollinger Bands
+# SAFE ZONE ONLY: DPO + CCI + MACD (exploration zone disabled)
 #
-# ZONE STRATEGY:
-#   safe zone        — DPO + CCI + MACD always active. Tighter param ranges.
-#   exploration zone — DPO + CCI + MACD + BB always active. Wider ranges.
-#   No choice parameters — discovery zone (type: choice) untested in V1.
-#   Filter toggling is implicit in zone membership, not via _enabled flags.
+# PARENT RUN: (raw A run – ID not logged)
+# SERIES:     5min A → B
 #
-# PARAMETER NAMING (verified against strategy_template.yaml + discovery zone):
-#   bollinger_length / bollinger_multiplier / bollinger_width_ma  (not bb_*)
-#   macd_fast / macd_slow / macd_signal
-#   cci_length / cci_overbought / cci_oversold  (step: 2 per discovery zone)
-#   dpo_length (step:2) / dpo_smooth / dpo_threshold (step:0.1 per discovery)
-#   atr_length / atr_multiplier (maps to atr_multiplier_sl — confirmed in prod)
-#   rr_target / risk_percentile
+# =============================================================================
+# WHAT RUN A PROVED
+# =============================================================================
 #
-# DATA PATHS — ACTION REQUIRED BEFORE RUNNING:
-#   Template currently points to 1min data. Update before running:
-#     strategy_ohlcv: data/processed/ohlcv/DEUIDXEUR_5min_20221201_20260301.parquet
-#     htf_ohlcv:      data/processed/ohlcv/DEUIDXEUR_15min_20221201_20260301.parquet
-#     htf_period:     "15min"
+# Stage 1 pass rate: 14.8%. Safe zone passed 24% vs exploration 5.6%.
+# WFO: 6 auto_go from safe zone, 1 auto_go from exploration.
+# Conclusion: safe zone is clearly the productive region; exploration adds little.
 #
-# CONSTRAINT CALIBRATION (~2,000 trades / 38mo ≈ 10/week):
-#   min_trades_per_week: 1.5   (was 3.0)
-#   max_losing_streak:   35    (was 50)
-#   min_expectancy:     -2.0   (unchanged)
-#   min_profit_factor:   0.75  (unchanged)
-#   min_win_rate:        0.18  (unchanged)
+# =============================================================================
+# CHANGES FOR CALIBRATION B
+# =============================================================================
 #
-# SIGMOID: _SIGMOID_SCALE=163.0.
+#  1. DISABLE EXPLORATION ZONE – set `enabled: false`.
+#  2. Increase samples_per_zone to 500 (all in safe).
+#  3. Lower min_significant_trades to 20 (from 30).
+#  4. Relax constraints based on Stage 1 distributions:
+#       min_win_rate: 0.18 → 0.15
+#       min_expectancy: -2.0 → -3.0
+#       min_trades_per_week: 1.5 → 1.0
+#       max_losing_streak: 35 → 40
+#  5. Update _SIGMOID_SCALE to 172 in consistency_scorer.py (from 163).
+#  6. Increase GA budget (population 70, generations 40, stagnation 12).
+#  7. Keep parameter ranges identical to raw A (no tightening yet).
+#
+# =============================================================================
+# KEY QUESTIONS FOR CALIBRATION B
+# =============================================================================
+#
+#  1. Does Stage 1 pass rate rise to 30–40%?
+#  2. Do top safe candidates achieve ≥4 windows evaluated (out of 13)?
+#  3. Can we obtain multiple auto_go candidates with windows_evaluated ≥6?
+#  4. Does the exploration zone remain unnecessary (i.e., no auto_go from
+#     any surviving exploration candidate)?
 #
 # RUNTIME ESTIMATE: 10–14 hours at max_workers=2
 # =============================================================================
@@ -64,18 +71,18 @@ stages:
 
 random_search:
   method: "lhs"
-  samples_per_zone: 250      # 250 × 2 zones = 500 total
-  min_significant_trades: 30
+  samples_per_zone: 500                # all in safe zone
+  min_significant_trades: 20            # reduced from 30
   seed: 42
 
 genetic:
-  population_size: 60
-  generations: 30
+  population_size: 70                   # increased from 60
+  generations: 40                        # increased from 30
   elite_fraction: 0.10
   mutation_rate: 0.15
   crossover_rate: 0.70
   tournament_size: 5
-  stagnation_generations: 10
+  stagnation_generations: 12             # increased from 10
   diversity_penalty_weight: 0.10
   diversity_distance_threshold: 0.15
   seed: 44
@@ -145,10 +152,10 @@ scenarios:
       trade_frequency: 0.10
       profit_factor: 0.10
     constraints:
-      min_win_rate: 0.18
-      max_losing_streak: 35
-      min_trades_per_week: 1.5
-      min_expectancy: -2.0
+      min_win_rate: 0.15               # lowered from 0.18
+      max_losing_streak: 40             # raised from 35
+      min_trades_per_week: 1.0           # lowered from 1.5
+      min_expectancy: -3.0              # lowered from -2.0
       min_profit_factor: 0.75
     mc_prefilter_ruin_threshold: 0.25
     wfo_collapse_drawdown_threshold: 400.0
@@ -210,7 +217,6 @@ scenarios:
 zones:
   safe:
     # Filters active: DPO + CCI + MACD (all always on)
-    # Tighter ranges. Choppiness and ADX excluded to isolate DPO+CCI+MACD signal.
     enabled: true
     parameters:
       atr_length:           {type: int,   min: 8,   max: 20,  step: 1}
@@ -219,35 +225,14 @@ zones:
       risk_percentile:      {type: float, min: 0.30, max: 0.80, step: 0.01}
       dpo_length:           {type: int,   min: 14,  max: 30,  step: 1}
       dpo_smooth:           {type: int,   min: 2,   max: 20,  step: 1}
-      dpo_threshold:        {type: float, min: 0.10, max: 0.30, step: 0.10}
-      cci_length:           {type: int,   min: 10,  max: 25,  step: 5}
-      cci_overbought:       {type: int,   min: 80,  max: 120, step: 10}
-      cci_oversold:         {type: int,   min: -120, max: -80, step: 10}
-      macd_fast:            {type: int,   min: 8,   max: 16,  step: 2}
-      macd_slow:            {type: int,   min: 20,  max: 30,  step: 2}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.30, step: 0.02}
+      cci_length:           {type: int,   min: 10,  max: 25,  step: 1}
+      cci_overbought:       {type: int,   min: 80,  max: 120, step: 2}
+      cci_oversold:         {type: int,   min: -120, max: -80, step: 2}
+      macd_fast:            {type: int,   min: 8,   max: 16,  step: 1}
+      macd_slow:            {type: int,   min: 20,  max: 30,  step: 1}
       macd_signal:          {type: int,   min: 6,   max: 12,  step: 1}
-
   exploration:
-    # Filters active: DPO + CCI + MACD + Bollinger Bands (all always on)
-    # Wider ranges + BB parameters.
-    enabled: true
-    parameters:
-      atr_length:           {type: int,   min: 5,   max: 24,  step: 1}
-      atr_multiplier:       {type: float, min: 1.2, max: 3.0, step: 0.1}
-      rr_target:            {type: float, min: 2.0, max: 8.0, step: 0.1}
-      risk_percentile:      {type: float, min: 0.20, max: 0.90, step: 0.01}
-      dpo_length:           {type: int,   min: 11,  max: 35,  step: 1}
-      dpo_smooth:           {type: int,   min: 2,   max: 25,  step: 1}
-      dpo_threshold:        {type: float, min: 0.10, max: 0.40, step: 0.10}
-      cci_length:           {type: int,   min: 10,  max: 30,  step: 5}
-      cci_overbought:       {type: int,   min: 55,  max: 120, step: 2}
-      cci_oversold:         {type: int,   min: -120, max: -55, step: 2}
-      macd_fast:            {type: int,   min: 3,   max: 16,  step: 1}
-      macd_slow:            {type: int,   min: 17,  max: 30,  step: 1}
-      macd_signal:          {type: int,   min: 3,   max: 14,  step: 1}
-      bollinger_length:     {type: int,   min: 5,   max: 40,  step: 1}
-      bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
-      bollinger_width_ma:   {type: int,   min: 15,  max: 60,  step: 1}
-
+    enabled: false
   discovery:
     enabled: false

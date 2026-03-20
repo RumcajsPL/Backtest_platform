@@ -32,7 +32,7 @@ asset:
 # -----------------------------------------------------------------------------
 data:
   paths:
-    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_5min_20221201_20260301.parquet"
+    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_10min_20221201_20260301.parquet"
     # -----------------------------------------------------------------------------
     # Existing data files:
     #   - data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260301.parquet
@@ -44,7 +44,7 @@ data:
     #   - data/processed/ohlcv/DEUIDXEUR_4h_20221201_20260301.parquet
     #   - data/processed/ohlcv/DEUIDXEUR_1d_20221201_20260301.parquet
     # -----------------------------------------------------------------------------
-    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_15min_20221201_20260301.parquet"
+    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_4h_20221201_20260301.parquet"
     ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20230101_20260301.parquet"
     artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet"
     
@@ -55,7 +55,7 @@ data:
 
   timezone: "CET"
 
-  htf_period: "15min"         # HTF resampling period passed to WBWSTrigger
+  htf_period: "4H"         # HTF resampling period passed to WBWSTrigger
   ltf_timeframe: "1s"      # LTF bar frequency — must match ltf_ohlcv file content
   artf_timeframe: "1ME"    # ARTF bar frequency — must match artf_ohlcv file content
 
@@ -78,12 +78,12 @@ filters:
 
   filter_sequence:
     - dpo_filter
-    - cci_filter
     - ma_filter
     - rsi_filter
     - choppiness_filter
-    - macd_filter
     - bollinger_filter
+    - macd_filter
+    - cci_filter
     - adx_filter
     - supertrend_filter
     - pivot_filter
@@ -118,7 +118,7 @@ filters:
       factor: 3.0
 
     cci_filter:
-      enabled: true
+      enabled: false
       length: 20
       overbought: 100
       oversold: -100
@@ -129,13 +129,13 @@ filters:
       threshold: 18.0
 
     macd_filter:
-      enabled: true
+      enabled: false
       fast_length: 12
       slow_length: 26
       signal_length: 9
 
     ma_filter:
-      enabled: false
+      enabled: true
       ma_type: "TEMA"
       length: 25
       slope_length: 10
