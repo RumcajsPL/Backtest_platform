@@ -1,13 +1,25 @@
 # =============================================================================
-# backtest_V1_10min_D_datacollect.yaml – Data Collection Run
+# backtest_V1_10min.yaml – Calibration E
+# Version: 3.1.0
+# Date: 2026-03-20
+#
+# CONFIGURATION: STF=10min / HTF=4H
+# PURPOSE: Narrowed parameter ranges to ensure ensure cover of the productive region observed in top candidates while cutting off dead space
+#          (only safe zone: DPO+MA) to guide final calibration (if still required).
+# Recommended _SIGMOID_SCALE = stdev × 0.5 = 242.1
+# SERIES:     10min A → B → C -> D -> E
+# =============================================================================
+# Previous run - backtest_V1_10min_D_datacollect.yaml – Data Collection Run
 # Version: 3.1.0
 # Date: 2026-03-20
 #
 # CONFIGURATION: STF=10min / HTF=4H
 # PURPOSE: Collect trade frequency and performance data for two filter sets
 #          (DPO+MACD and DPO+MA+Bollinger) to guide final calibration.
+#
+# SERIES:     10min A → B → C -> D
 # =============================================================================
-# backtest_V1_10min.yaml – Calibration C
+# Previous run - backtest_V1_10min.yaml – Calibration C
 # Version: 3.0.0
 # Date: 2026-03-20
 #
@@ -92,10 +104,10 @@
 # =============================================================================
 
 backtester_version: "1.0.0"
-scenario: "capital_accumulation"
+scenario: "capital_accumulation"        
 
 strategy:
-  base_yaml_path: "configs/strategies/strategy_template.yaml"
+  base_yaml_path: "configs/strategies/strategy_template10min.yaml"
 
 run:
   mode: "full_pipeline"
@@ -107,20 +119,20 @@ run:
 
 stages:
   random_search:     true
-  mc_prefilter:      false            # full-history run – keep disabled
-  genetic_algorithm: true
+  mc_prefilter:      false
+  genetic_algorithm: true          
   walk_forward:      true
   monte_carlo_deep:  true
   sensitivity:       true
-  report:            true
+  report:            true            
 
 random_search:
   method: "lhs"
-  samples_per_zone: 400                # only one zone active
-  min_significant_trades: 20            # unchanged
+  samples_per_zone: 500              
+  min_significant_trades: 20         
   seed: 42
 
-genetic:
+genetic:                            
   population_size: 70
   generations: 40
   elite_fraction: 0.10
@@ -137,21 +149,20 @@ walk_forward:
   enforce_oos_gate: false
   oos_degradation_threshold: 0.50
   windows:
-    - {id: "W01", start: "2023-01-02", end: "2023-09-29"}   # 9 months
-    - {id: "W02", start: "2023-10-02", end: "2024-06-28"}   # 9 months
-    - {id: "W03", start: "2024-07-01", end: "2025-03-31"}   # 9 months
-    - {id: "W04", start: "2025-04-01", end: "2026-02-28"}   # 11 months (last partial)
-    # Note: W04 is slightly longer to cover remaining data; still acceptable.
+    - {id: "W01", start: "2023-01-02", end: "2023-09-29"}
+    - {id: "W02", start: "2023-10-02", end: "2024-06-28"}
+    - {id: "W03", start: "2024-07-01", end: "2025-03-31"}
+    - {id: "W04", start: "2025-04-01", end: "2026-02-28"}
 
 monte_carlo:
-  deep:
+  deep:                              # not used
     input_count: 10
     iterations: 3000
     perturbation_profile: "default"
     ruin_threshold: 0.20
     seed: 45
 
-sensitivity:
+sensitivity:                         # not used
   input_count: 10
   max_steps: 1
   spike_threshold: 0.15
@@ -191,7 +202,7 @@ scenarios:
     constraints:
       min_win_rate: 0.11
       max_losing_streak: 30
-      min_trades_per_week: 0.3           # lowered from 0.5
+      min_trades_per_week: 0.3
       min_expectancy: -2.0
       min_profit_factor: 0.75
     mc_prefilter_ruin_threshold: 0.25
@@ -253,11 +264,24 @@ scenarios:
 
 zones:
   safe:
-    enabled: false                      # safe zone remains inactive
-  exploration:
-    # Filters active: DPO + MA + Bollinger Bands (all always on)
     enabled: true
     parameters:
+      # ATR / risk
+      atr_length:           {type: int,   min: 10,    max: 24,   step: 1}
+      atr_multiplier:       {type: float, min: 1.0,  max: 2.5,  step: 0.1}
+      rr_target:            {type: float, min: 5.0,  max: 12.0, step: 0.5}
+      risk_percentile:      {type: float, min: 0.7,  max: 1.2,  step: 0.05}
+      # DPO
+      dpo_length:           {type: int,   min: 12,   max: 30,   step: 2}
+      dpo_smooth:           {type: int,   min: 1,    max: 20,   step: 1}
+      dpo_threshold:        {type: float, min: 0.05, max: 0.45, step: 0.05}
+      # MA slope (trend context)
+      ma_length:            {type: int,   min: 15,  max: 60,  step: 5}
+      ma_slope_length:      {type: int,   min: 5,   max: 20,  step: 5}
+  exploration:
+    enabled: false
+    parameters:
+      # Original wide ranges for DPO+MA+Bollinger
       atr_length:           {type: int,   min: 5,   max: 35,  step: 2}
       atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
       rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}

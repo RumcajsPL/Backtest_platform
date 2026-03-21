@@ -1,23 +1,14 @@
 # =============================================================================
-# backtest_V1_5min_C.yaml – Final Calibration (Narrowed Safe Zone)
-# Version: C
-# Date: 2026-03-20
+# backtest_V1_5min.yaml – Frozen 5‑Minute Safe Zone Configuration
+# Version: Final
+# Date: 2026-03-21
 #
-# CONFIGURATION: STF=5min / HTF=15min
-# SAFE ZONE ONLY: DPO + CCI + MACD, ranges narrowed from Calibration B top candidates
+# Derived from Calibration B (run 4b87d038-2702-4a34-83aa-8a2d0f448530)
+# with widened parameter ranges and updated sigmoid scale.
 #
-# PARENT RUN: 4b87d038-2702-4a34-83aa-8a2d0f448530 (calibration B)
-# SERIES:     5min B → C
-#
-# =============================================================================
-# CHANGES FOR CALIBRATION C
-# =============================================================================
-#
-#  1. Narrow safe zone parameter ranges to productive clusters.
-#  2. Update _SIGMOID_SCALE to 204 in consistency_scorer.py.
-#  3. Keep all other settings identical to Calibration B.
-#
-# RUNTIME ESTIMATE: 8–12 hours at max_workers=2
+# This configuration produced 4 auto_go candidates with no spikes/collapses.
+# Use for any future 5‑minute runs.
+# _SIGMOID_SCALE is set to 204
 # =============================================================================
 
 backtester_version: "1.0.0"
@@ -192,19 +183,24 @@ zones:
   safe:
     enabled: true
     parameters:
-      atr_length:           {type: int,   min: 12,  max: 18,  step: 1}
-      atr_multiplier:       {type: float, min: 1.8,  max: 2.6,  step: 0.1}
-      rr_target:            {type: float, min: 3.0,  max: 5.5,  step: 0.1}
-      risk_percentile:      {type: float, min: 0.45, max: 0.75, step: 0.02}
-      dpo_length:           {type: int,   min: 20,  max: 28,  step: 2}
-      dpo_smooth:           {type: int,   min: 8,   max: 16,  step: 2}
-      dpo_threshold:        {type: float, min: 0.10, max: 0.20, step: 0.02}
-      cci_length:           {type: int,   min: 12,  max: 22,  step: 2}
+      # ATR
+      atr_length:           {type: int,   min: 8,   max: 20,  step: 1}
+      atr_multiplier:       {type: float, min: 1.6, max: 2.8, step: 0.1}
+      # Risk & target
+      rr_target:            {type: float, min: 3.0, max: 6.0, step: 0.1}
+      risk_percentile:      {type: float, min: 0.40, max: 0.80, step: 0.02}
+      # DPO
+      dpo_length:           {type: int,   min: 18,  max: 30,  step: 1}
+      dpo_smooth:           {type: int,   min: 8,   max: 18,  step: 1}
+      dpo_threshold:        {type: float, min: 0.10, max: 0.25, step: 0.02}
+      # CCI
+      cci_length:           {type: int,   min: 12,  max: 24,  step: 1}
       cci_overbought:       {type: int,   min: 90,  max: 110, step: 2}
       cci_oversold:         {type: int,   min: -110, max: -90, step: 2}
-      macd_fast:            {type: int,   min: 10,  max: 14,  step: 1}
-      macd_slow:            {type: int,   min: 22,  max: 28,  step: 1}
-      macd_signal:          {type: int,   min: 8,   max: 10,  step: 1}
+      # MACD
+      macd_fast:            {type: int,   min: 8,   max: 14,  step: 1}
+      macd_slow:            {type: int,   min: 20,  max: 30,  step: 1}
+      macd_signal:          {type: int,   min: 6,   max: 12,  step: 1}
   exploration:
     enabled: false
   discovery:

@@ -240,6 +240,64 @@ Goal: Obtain at least one honest auto_go candidate with ≥3 evaluated windows a
 
 **Runtime:** ~10–12 hours.
 
+4.12 Calibration D – Data Collection Results (3d64c26d-40ce-46c8-90b6-7d7aba7481d5)
+Purpose: Compare trade frequency and performance of safe zone (DPO+MACD) vs exploration zone (DPO+MA+Bollinger) on 4×9‑month windows.
+
+Settings:
+
+Scenario: e2e_test (very loose constraints)
+
+Random search: 500 samples per zone (1000 total)
+
+Stages: random search + walk‑forward only
+
+Sigmoid scale: not used in e2e_test, but computed later
+
+Results:
+
+Stage 1 pass rate: 631/1000 (63%) – safe 400/500 (80%), exploration 231/500 (46%)
+
+Average trades/week (Stage 1): 0.66
+
+WFO scored: 631 candidates
+
+Collapsed: 449 (71%) – safe 309 (77%), exploration 140 (61%)
+
+Top safe candidate: d75d1b49b5c3 – WFO=0.9630, 3 windows evaluated, no collapse
+
+Top exploration candidate: 91f20af410da – WFO=0.9631, 1 window evaluated
+
+Recommended sigmoid scale: 242.1 (stdev=484.25 × 0.5)
+
+Key Conclusions:
+
+Safe zone (DPO+MACD) is superior: higher pass rate, higher trade frequency, better WFO scores.
+
+Exploration zone will be disabled for final calibration.
+
+Productive parameter ranges for safe zone have been identified from top candidates.
+
+4.13 Calibration E (Final) – Planned
+Configuration: backtest_V1_10min_E.yaml (to be created)
+
+Changes from Calibration D:
+
+Safe zone only.
+
+Narrowed parameter ranges based on top‑30 safe candidates (see table above).
+
+Enable GA, MC, sensitivity.
+
+Enforce windows_evaluated ≥ 3 in verdict gate (code update required).
+
+Update _SIGMOID_SCALE to 242.1.
+
+Keep constraints: min_trades_per_week=0.3, min_win_rate=0.11, etc.
+
+Expected Runtime: ~10–12 hours
+
+Goal: Obtain at least one auto_go candidate with ≥3 windows evaluated, no collapse, and no sensitivity spikes.
+
 5. 5‑Minute Series (Overnight Runs, 10–14 hours)
 5.1 Calibration History
 Calibration	YAML	Run ID	Status	auto_go	Best WFO	Notes
@@ -318,6 +376,45 @@ To be finalised after run B.
 - Sigmoid scale used (172) was slightly low; future runs should use 204.  
 
 **Next Step:** Proceed to Calibration C (final) to tighten parameter ranges based on the top 30 WFO candidates and produce a frozen configuration for paper trading.
+
+5.7 Calibration C – Narrowed Ranges (Run ae5570c4-fd98-4fe1-b179-4b86820b78e9)
+
+**Purpose:** Final tightening of safe zone ranges based on top 30 WFO candidates from Calibration B.
+
+**Configuration:** `backtest_V1_5min.yaml` (as provided in the run)
+
+**Results:**
+- Stage 1 pass rate: 65% (326/500)
+- WFO scored: 30 candidates, 11 collapsed
+- MC Deep ruin probability: 0.000 for all 10 evaluated
+- Sensitivity spikes: 9/10 candidates
+- Verdicts: 0 auto_go, 10 borderline
+
+**Observations:**
+- Narrow ranges forced candidates to the edges of the feasible space, causing fragility.
+- Even the highest WFO score (0.9178) was accompanied by large sensitivity spikes.
+- No candidate met the `auto_go` criteria.
+
+**Conclusion:** Calibration C is **not suitable for production**. The wider ranges of Calibration B are necessary to obtain robust, spike‑free candidates.
+
+5.8 Frozen 5‑Minute Configuration (Final)
+
+**Configuration:** `backtest_V1_5min_final.yaml` (see below)
+
+**Changes from Calibration B:**
+- Parameter ranges widened again to the productive region observed in B (see YAML).
+- `_SIGMOID_SCALE` set to 204 (recommended from B’s net P&L stdev).
+- All other settings identical to B (safe zone only, GA 70/40/12, etc.).
+
+**Auto‑go candidates from Calibration B are ready for paper trading**:
+| Candidate | WFO | Windows eval | Median return |
+|-----------|-----|--------------|---------------|
+| 43e8efe2242a | 0.9009 | 5 | 252.79 |
+| 1fc79a22806a | 0.8324 | 3 | 137.46 |
+| 248933d21f4a | 0.8149 | 5 | 121.19 |
+| 631cbc6cbf80 | 0.8004 | 6 | 287.05 |
+
+**YAML file location:** `configs/backtesting/backtest_V1_5min_final.yaml`
 
 6. Common Insights (Applicable to All Timeframes)
 ```
