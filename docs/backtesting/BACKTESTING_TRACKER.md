@@ -298,6 +298,44 @@ Expected Runtime: ~10–12 hours
 
 Goal: Obtain at least one auto_go candidate with ≥3 windows evaluated, no collapse, and no sensitivity spikes.
 
+4.14 Calibration F – Final (822f1889-1810-4a22-8393-eaa4792a759e)
+Configuration: backtest_V1_10min_F.yaml (safe zone only, narrowed ranges from E).
+
+Random search: 500 LHS samples, min_significant_trades=20.
+
+GA: population 70, generations 40, stagnation 12.
+
+WFO: 4×9‑month windows.
+
+Sigmoid scale: 313 (code setting; recommended 233 from this run).
+
+Results:
+
+Stage 1 pass rate: 485/500 (97%).
+
+Average trades/week: 0.84.
+
+WFO scored: 30 candidates, 26 collapsed.
+
+Verdicts: 1 auto_go, 9 borderline.
+
+Honest auto_go candidate:
+
+240166da287e – WFO=0.8886, windows_evaluated=4, no collapse, no spikes, ruin_prob=0.000.
+
+Observations:
+
+Trade frequency remains modest but sufficient for the 9‑month windows.
+
+The narrowed safe zone produced a robust candidate with full window coverage.
+
+The parameter region is now well‑defined and ready for production.
+
+4.15 Frozen 10‑Minute Configuration
+Final YAML: configs/backtesting/backtest_V1_10min_F.yaml (as in Calibration F).
+Sigmoid scale (code): set to 233 in consistency_scorer.py for any future runs.
+Production candidate: 240166da287e – YAML available in outputs/backtesting/trading_yamls/822f1889_240166da287e_strategy.yaml.
+
 5. 5‑Minute Series (Overnight Runs, 10–14 hours)
 
 5.1 Calibration History
