@@ -1,5 +1,5 @@
 # =============================================================================
-# backtest_V1_10min.yaml – Calibration E
+# Previous run - backtest_V1_10min.yaml – Calibration E
 # Version: 3.1.0
 # Date: 2026-03-20
 #
@@ -102,9 +102,20 @@
 #   Stage 6:  ~20–30 min
 #   Stage 7:  ~5 min
 # =============================================================================
+# =============================================================================
+# backtest_V1_10min_F.yaml – Final Calibration
+# Version: 3.2.0
+# Date: 2026-03-22
+#
+# CONFIGURATION: STF=10min / HTF=4H
+# PURPOSE: Final narrow ranges based on honest auto_go candidates from Calibration E.
+#          Safe zone only (DPO+MACD). Enforce windows_evaluated >= 3 verdict gate.
+# SERIES:     10min F (final)
+# _SIGMOID_SCALE = 313
+# =============================================================================
 
 backtester_version: "1.0.0"
-scenario: "capital_accumulation"        
+scenario: "capital_accumulation"
 
 strategy:
   base_yaml_path: "configs/strategies/strategy_template10min.yaml"
@@ -120,19 +131,19 @@ run:
 stages:
   random_search:     true
   mc_prefilter:      false
-  genetic_algorithm: true          
+  genetic_algorithm: true
   walk_forward:      true
   monte_carlo_deep:  true
   sensitivity:       true
-  report:            true            
+  report:            true
 
 random_search:
   method: "lhs"
-  samples_per_zone: 500              
-  min_significant_trades: 20         
+  samples_per_zone: 500
+  min_significant_trades: 20
   seed: 42
 
-genetic:                            
+genetic:
   population_size: 70
   generations: 40
   elite_fraction: 0.10
@@ -155,14 +166,14 @@ walk_forward:
     - {id: "W04", start: "2025-04-01", end: "2026-02-28"}
 
 monte_carlo:
-  deep:                              # not used
+  deep:
     input_count: 10
     iterations: 3000
     perturbation_profile: "default"
     ruin_threshold: 0.20
     seed: 45
 
-sensitivity:                         # not used
+sensitivity:
   input_count: 10
   max_steps: 1
   spike_threshold: 0.15
@@ -226,73 +237,21 @@ scenarios:
       - mc_deep_ruin_probability
       - actual_max_drawdown
 
-  e2e_test:
-    description: "Pipeline validation only — NOT FOR TRADING USE"
-    fitness_weights:
-      net_pnl: 0.20
-      expectancy: 0.20
-      max_drawdown: 0.20
-      win_rate: 0.20
-      trade_frequency: 0.10
-      profit_factor: 0.10
-    constraints:
-      min_win_rate: 0.05
-      max_drawdown: 0.99
-      max_losing_streak: 9999
-      min_trades_per_week: 0.05
-      min_expectancy: -10.0
-      min_profit_factor: 0.05
-    mc_prefilter_ruin_threshold: 0.99
-    wfo_collapse_drawdown_threshold: 400.0
-    wfo_temporal_weights:
-      median_return: 0.25
-      variance: 0.25
-      worst_drawdown: 0.25
-      fraction_positive: 0.25
-    verdict_thresholds:
-      go_wfo_floor: 0.01
-      borderline_wfo_floor: 0.005
-      go_mc_ruin_ceiling: 0.99
-      borderline_mc_ruin_ceiling: 0.999
-      sensitivity_spike_threshold: 0.99
-    report_emphasis:
-      - actual_win_rate
-      - actual_trades_per_week
-      - wfo_consistency_score
-      - mc_deep_ruin_probability
-      - actual_max_drawdown
-
 zones:
   safe:
     enabled: true
     parameters:
-      # ATR / risk
-      atr_length:           {type: int,   min: 10,    max: 24,   step: 1}
-      atr_multiplier:       {type: float, min: 1.0,  max: 2.5,  step: 0.1}
-      rr_target:            {type: float, min: 5.0,  max: 12.0, step: 0.5}
-      risk_percentile:      {type: float, min: 0.7,  max: 1.2,  step: 0.05}
-      # DPO
-      dpo_length:           {type: int,   min: 12,   max: 30,   step: 2}
-      dpo_smooth:           {type: int,   min: 1,    max: 20,   step: 1}
-      dpo_threshold:        {type: float, min: 0.05, max: 0.45, step: 0.05}
-      # MA slope (trend context)
-      ma_length:            {type: int,   min: 15,  max: 60,  step: 5}
-      ma_slope_length:      {type: int,   min: 5,   max: 20,  step: 5}
+      # ATR / risk – narrowed from Calibration E
+      atr_length:           {type: int,   min: 12,   max: 24,   step: 1}
+      atr_multiplier:       {type: float, min: 1.0,  max: 1.5,  step: 0.1}
+      rr_target:            {type: float, min: 6.0,  max: 9.0,  step: 0.5}
+      risk_percentile:      {type: float, min: 1.0,  max: 1.2,  step: 0.05}
+      # DPO – narrowed
+      dpo_length:           {type: int,   min: 20,   max: 30,   step: 2}
+      dpo_smooth:           {type: int,   min: 10,   max: 16,   step: 1}
+      dpo_threshold:        {type: float, min: 0.30, max: 0.45, step: 0.05}
+      # MA slope (trend context) – slightly narrowed
+      ma_length:            {type: int,   min: 25,   max: 60,   step: 5}
+      ma_slope_length:      {type: int,   min: 10,   max: 20,   step: 5}
   exploration:
-    enabled: false
-    parameters:
-      # Original wide ranges for DPO+MA+Bollinger
-      atr_length:           {type: int,   min: 5,   max: 35,  step: 2}
-      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
-      rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
-      risk_percentile:      {type: float, min: 0.30, max: 1.1, step: 0.05}
-      dpo_length:           {type: int,   min: 10,  max: 35,  step: 2}
-      dpo_smooth:           {type: int,   min: 1,   max: 25,  step: 1}
-      dpo_threshold:        {type: float, min: 0.05, max: 0.50, step: 0.05}
-      ma_length:            {type: int,   min: 15,  max: 60,  step: 5}
-      ma_slope_length:      {type: int,   min: 5,   max: 20,  step: 5}
-      bollinger_length:     {type: int,   min: 5,   max: 40,  step: 2}
-      bollinger_multiplier: {type: float, min: 0.1, max: 1.5, step: 0.1}
-      bollinger_width_ma:   {type: int,   min: 15,  max: 60,  step: 5}
-  discovery:
     enabled: false

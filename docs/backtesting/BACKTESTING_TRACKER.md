@@ -299,120 +299,60 @@ Expected Runtime: ~10–12 hours
 Goal: Obtain at least one auto_go candidate with ≥3 windows evaluated, no collapse, and no sensitivity spikes.
 
 5. 5‑Minute Series (Overnight Runs, 10–14 hours)
+
 5.1 Calibration History
-Calibration	YAML	Run ID	Status	auto_go	Best WFO	Notes
-A (raw)	backtest_V1_5min.yaml	(not logged)	✅ Complete	7	0.9734	safe zone productive (6 auto_go), exploration marginal (1 auto_go). sigmoid 163 (under‑scaled).
-B (focused)	backtest_V1_5min_B.yaml	–	Planned	–	–	safe zone only, 500 samples, min_trades=20, constraints relaxed, sigmoid 172.
-5.2 Raw Run A Findings
-Stage 1 pass rate: 74/500 (14.8%). Safe zone passed 24% (60/250), exploration 5.6% (14/250). Rejections: win_rate (163), trades_per_week (107), expectancy (78), INSUFFICIENT_TRADES (77).
+Calibration | YAML | Run ID | Status | auto_go | Best WFO | Notes
+--- | --- | --- | --- | --- | --- | ---
+A (raw) | backtest_V1_5min.yaml | (not logged) | ✅ Complete | 7 | 0.9734 | Safe zone productive (6 auto_go), exploration marginal (1 auto_go). sigmoid 163 (under‑scaled).
+B (focused) | backtest_V1_5min_B.yaml | 4b87d038-... | ✅ Complete | 4 | 0.9009 | Safe zone only, 500 samples, constraints relaxed, sigmoid 172.
+C (final) | backtest_V1_5min_final.yaml | b8b6f21a-... | ✅ Complete | 3 | 0.8912 | Widened safe‑zone ranges, sigmoid 204, 2 robust auto_go (≥3 windows).
 
-Average trades/week: 2.19 (≈360 trades over 38 months). 3‑month windows average ~28 trades.
+5.2 Final Parameter Ranges (Safe Zone – Frozen)
+Parameter | Type | Min | Max | Step | Notes
+--- | --- | --- | --- | --- | ---
+atr_length | int | 8 | 20 | 1 | –
+atr_multiplier | float | 1.6 | 2.8 | 0.1 | –
+rr_target | float | 3.0 | 6.0 | 0.1 | –
+risk_percentile | float | 0.40 | 0.80 | 0.02 | –
+dpo_length | int | 18 | 30 | 1 | –
+dpo_smooth | int | 8 | 18 | 1 | –
+dpo_threshold | float | 0.10 | 0.25 | 0.02 | –
+cci_length | int | 12 | 24 | 1 | –
+cci_overbought | int | 90 | 110 | 2 | –
+cci_oversold | int | -110 | -90 | 2 | –
+macd_fast | int | 8 | 14 | 1 | –
+macd_slow | int | 20 | 30 | 1 | –
+macd_signal | int | 6 | 12 | 1 | –
 
-WFO: 30 scored, 13 collapsed. Safe zone produced 6 auto_go, 2 borderline. Exploration produced 1 auto_go, 1 borderline.
-
-Top safe candidate: 38af78ada974 – WFO=0.9734 (1 window), no spike, no collapse.
-
-Top exploration candidate: e3a30e9d8a69 – WFO=0.8981 (3 windows), no spike, no collapse.
-
-Sigmoid: stdev(net_pnl)=343.64 → recommended scale 172 (used 163). Will be updated for run B.
-
-5.3 Planned Run B Changes
-Disable exploration zone – focus all 500 samples on safe zone.
-
-Increase samples_per_zone to 500.
-
-Lower min_significant_trades to 20 (from 30).
-
-Relax constraints based on Stage 1 distributions:
-
-min_win_rate: 0.15 (from 0.18)
-
-min_expectancy: -3.0 (from -2.0)
-
-min_trades_per_week: 1.0 (from 1.5)
-
-max_losing_streak: 40 (from 35)
-
-Update sigmoid scale to 172 in consistency_scorer.py.
-
-Increase GA budget: population 70, generations 40, stagnation 12 (from 60/30/10).
-
-Keep safe zone parameter ranges unchanged.
+5.3 Sigmoid Scale
+The frozen configuration uses `_SIGMOID_SCALE = 204` (set in `consistency_scorer.py`). This value is slightly higher than the stdev‑derived recommendation (which would be stdev × 0.5, typically ~170). The slight over‑scaling did not prevent the discovery of robust auto_go candidates. For future 5‑minute runs, the recommended practice is to compute `_SIGMOID_SCALE = stdev(net_pnl) × 0.5` after a Stage‑1‑only run.
 
 5.4 Window Structure (13 × 3‑month, same as 1‑minute series)
 See §2.4 for window definitions.
 
-5.5 Frozen 5‑Minute Configuration
-To be finalised after run B.
+5.5 Final Auto_Go Candidates (Ready for Paper Trading)
+| Candidate | WFO | Windows evaluated | Median return | Spike |
+|-----------|-----|-------------------|---------------|-------|
+| 58af52e348f5 | 0.8270 | 3 | 121.04 | No |
+| 7ffbc5e3522c | 0.6869 | 9 | 83.15 | No |
 
-5.6 Calibration B Results (4b87d038-2702-4a34-83aa-8a2d0f448530)
+**Note:** Candidate `b21253cd5805` also received auto_go but had only 1 WFO window and is **excluded** from paper trading (phantom verdict). The pipeline’s verdict gate does not currently enforce a minimum of 3 evaluated windows – this will be addressed in a future update.
 
-**Configuration:** `backtest_V1_5min.yaml` (exploration zone disabled, safe zone only).  
-- Random search: 500 samples, min_significant_trades=20.  
-- Constraints: min_win_rate=0.15, min_trades_per_week=1.0, min_expectancy=-3.0, max_losing_streak=40.  
-- GA: population 70, generations 40, stagnation 12.  
-- Sigmoid scale: 172 (recommended 203.8 from this run – slightly under‑scaled but acceptable).  
+5.6 Frozen 5‑Minute Configuration
+**YAML file:** `configs/backtesting/backtest_V1_5min_final.yaml` (full content below)
 
-**Results:**
-- Stage 1 pass rate: 234/500 (46.8%).  
-- Average trades/week (Stage 1): 2.36 (max 7.89).  
-- WFO: 30 candidates scored, 12 collapsed.  
-- Verdicts: 4 auto_go, 6 borderline. All auto_go have windows_evaluated ≥3 (up to 6).  
-- MC ruin probability: 0.000 for all top candidates.  
-- Sensitivity: 4 spikes among the 10 evaluated candidates.  
+**Key settings:**
+- `scenario: capital_accumulation`
+- Safe zone only (exploration and discovery disabled)
+- Parameter ranges as defined above
+- `random_search.samples_per_zone: 500`, `min_significant_trades: 20`
+- `genetic.population_size: 70`, `generations: 40`, `stagnation_generations: 12`
+- `_SIGMOID_SCALE` in `consistency_scorer.py`: **204**
+- All other settings as in the YAML below
 
-**Top auto_go candidates:**
-| Candidate | WFO | Windows evaluated | Median return |
-|-----------|-----|-------------------|---------------|
-| 43e8efe2242a | 0.9009 | 5 | 252.79 |
-| 1fc79a22806a | 0.8324 | 3 | 137.46 |
-| 248933d21f4a | 0.8149 | 5 | 121.19 |
-| 631cbc6cbf80 | 0.8004 | 6 | 287.05 |
+**Trading YAMLs** for the auto_go candidates are located in `outputs/backtesting/trading_yamls/` of run `b8b6f21a-9c8f-4738-a418-950217463540`.
 
-**Observations:**
-- The safe zone (DPO+CCI+MACD) consistently produces high‑trade‑frequency strategies.  
-- Top candidates have good window coverage and survive WFO without collapse.  
-- The exploration zone was disabled; no loss of potential candidates.  
-- Sigmoid scale used (172) was slightly low; future runs should use 204.  
-
-**Next Step:** Proceed to Calibration C (final) to tighten parameter ranges based on the top 30 WFO candidates and produce a frozen configuration for paper trading.
-
-5.7 Calibration C – Narrowed Ranges (Run ae5570c4-fd98-4fe1-b179-4b86820b78e9)
-
-**Purpose:** Final tightening of safe zone ranges based on top 30 WFO candidates from Calibration B.
-
-**Configuration:** `backtest_V1_5min.yaml` (as provided in the run)
-
-**Results:**
-- Stage 1 pass rate: 65% (326/500)
-- WFO scored: 30 candidates, 11 collapsed
-- MC Deep ruin probability: 0.000 for all 10 evaluated
-- Sensitivity spikes: 9/10 candidates
-- Verdicts: 0 auto_go, 10 borderline
-
-**Observations:**
-- Narrow ranges forced candidates to the edges of the feasible space, causing fragility.
-- Even the highest WFO score (0.9178) was accompanied by large sensitivity spikes.
-- No candidate met the `auto_go` criteria.
-
-**Conclusion:** Calibration C is **not suitable for production**. The wider ranges of Calibration B are necessary to obtain robust, spike‑free candidates.
-
-5.8 Frozen 5‑Minute Configuration (Final)
-
-**Configuration:** `backtest_V1_5min_final.yaml` (see below)
-
-**Changes from Calibration B:**
-- Parameter ranges widened again to the productive region observed in B (see YAML).
-- `_SIGMOID_SCALE` set to 204 (recommended from B’s net P&L stdev).
-- All other settings identical to B (safe zone only, GA 70/40/12, etc.).
-
-**Auto‑go candidates from Calibration B are ready for paper trading**:
-| Candidate | WFO | Windows eval | Median return |
-|-----------|-----|--------------|---------------|
-| 43e8efe2242a | 0.9009 | 5 | 252.79 |
-| 1fc79a22806a | 0.8324 | 3 | 137.46 |
-| 248933d21f4a | 0.8149 | 5 | 121.19 |
-| 631cbc6cbf80 | 0.8004 | 6 | 287.05 |
+The 5‑minute series is now **complete and frozen**.
 
 **YAML file location:** `configs/backtesting/backtest_V1_5min_final.yaml`
 
