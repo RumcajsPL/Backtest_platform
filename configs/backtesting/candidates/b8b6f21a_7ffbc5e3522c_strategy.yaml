@@ -1,0 +1,132 @@
+asset:
+  symbol: DEUIDXEUR
+  pip_size: 0.1
+  point_size: 1.0
+data:
+  paths:
+    strategy_ohlcv: data/processed/ohlcv/DEUIDXEUR_5min_20221201_20260301.parquet
+    htf_ohlcv: data/processed/ohlcv/DEUIDXEUR_15min_20221201_20260301.parquet
+    ltf_ohlcv: data/processed/ohlcv/DEUIDXEUR_1s_20230101_20260301.parquet
+    artf_ohlcv: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
+  date_range:
+    start: '2025-12-01 08:30:00'
+    end: '2026-02-28 20:30:00'
+  timezone: CET
+  htf_period: 15min
+  ltf_timeframe: 1s
+  artf_timeframe: 1ME
+execution:
+  mode: analytics
+filters:
+  time_filters:
+    time_filter:
+      enabled: true
+      session_start:
+        hour: 08
+        minute: 30
+      session_end:
+        hour: 20
+        minute: 30
+  filter_sequence:
+  - dpo_filter
+  - cci_filter
+  - ma_filter
+  - rsi_filter
+  - choppiness_filter
+  - macd_filter
+  - bollinger_filter
+  - adx_filter
+  - supertrend_filter
+  - pivot_filter
+  technical_filters:
+    rsi_filter:
+      enabled: false
+      length: 14
+      overbought: 70
+      oversold: 30
+    dpo_filter:
+      enabled: true
+      length: 24
+      smooth: 14
+      threshold: 0.1
+    bollinger_filter:
+      enabled: true
+      length: 14
+      width_ma_length: 30
+      filter_multiplier: 0.5
+    choppiness_filter:
+      enabled: false
+      length: 14
+      threshold: 61.8
+    supertrend_filter:
+      enabled: false
+      atr_length: 10
+      factor: 3.0
+    cci_filter:
+      enabled: true
+      length: 23
+      overbought: 110
+      oversold: -104
+    adx_filter:
+      enabled: false
+      adx_length: 14
+      threshold: 18.0
+    macd_filter:
+      enabled: true
+      fast_length: 9
+      slow_length: 27
+      signal_length: 6
+    ma_filter:
+      enabled: false
+      ma_type: TEMA
+      length: 25
+      slope_length: 10
+    pivot_filter:
+      enabled: false
+      reversal_percent: 0.35
+      order: 5
+  default_error_strategy: pass_through
+trade_management:
+  spread:
+    enabled: true
+    config_path: configs/spreads/broker_spreads.yaml
+  risk:
+    atr_length: 19
+    atr_multiplier_sl: 1.7
+    tp_mode: rr_ratio
+    risk_to_reward_ratio: 4.0
+    atr_multiplier_tp: 7.98
+    max_risk_percentile: 0.52
+  position_control:
+    pyramiding_enabled: false
+    close_on_opposite: false
+    max_positions: 1
+output:
+  reports:
+    enabled: true
+    output_dir: outputs/strategies/reports/wbws
+    theme: dark
+    chart_height_px: 300
+    brand_name: WBWSStrategy
+    include_raw_data: true
+  logging:
+    level: INFO
+    output_dir: outputs/strategies/logs/wbws
+backtester_metadata:
+  run_id: b8b6f21a-9c8f-4738-a418-950217463540
+  candidate_id: 7ffbc5e3522c06b4434c8c99e9a8144296951ba0509cc05fcc1eb5696660c608
+  zone_name: safe
+  config_hash: a406476b366b2d3d3a8e0b969f49fab49e6e8d6b49539098e2fbff82aaa74220
+  scenario_name: capital_accumulation
+  backtester_version: 1.0.0
+  generated_at: '2026-03-22T14:46:25.792263+00:00'
+  deployment_status: PAPER_TRADE_REQUIRED
+  verdict: auto_go
+  wfo_consistency_score: 0.686889049213441
+  mc_deep_ruin_probability: 0.0
+  sensitivity_spike: false
+  random_search_seed: 42
+  ga_seed: 44
+  mc_prefilter_seed: 44
+  mc_deep_seed: 45
+  sensitivity_seed: 46
