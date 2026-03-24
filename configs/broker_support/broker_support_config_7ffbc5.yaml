@@ -1,0 +1,36 @@
+# broker_support_config_7ffbc5.yaml
+# Instance: 7ffbc5 — candidate 7ffbc5e3522c (5-min, run b8b6f21a)
+# WFO score: 0.6869 | Windows: 9 | Est filtered P&L: 1534 pts | Ruin: 0.000
+# ---------------------------------------------------------------------------
+
+strategy:
+  yaml_path: configs/backtesting/candidates/b8b6f21a_7ffbc5e3522c_strategy.yaml
+
+live_data:
+  artf_ohlcv_path: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
+  strategy_bars_to_fetch: 500      # 5-min bars (~42h, enough for ATR(19) + all filters)
+  htf_bars_to_fetch: 120           # 15-min bars (~30h, enough for HTF signal context)
+  strategy_interval: FiveMinutes   # eToro candles interval — matches strategy 5-min TF
+  htf_interval: FifteenMinutes     # eToro candles interval — matches htf_period: 15min
+  candle_direction: desc           # desc = newest first, reversed to asc before pipeline
+
+trading_window:
+  enabled: true
+  allowed_hours_utc: [10, 13, 14, 15, 17, 20]  # positive hours per backtest analysis
+  skip_hours_utc: []                             # no explicit blocks beyond allowed list
+  monday_size_factor: 1.0
+
+execution:
+  instrument_map_path: configs/broker_support/instrument_map.yaml
+  symbol: GER40
+  amount_usd: 60.0
+  leverage: 20
+
+safety:
+  max_open_positions: 5
+  min_available_cash_usd: 200.0
+  max_consecutive_losses: 3
+  consecutive_loss_action: hard_stop
+  max_daily_drawdown_pct: 5.0
+  max_pipeline_errors: 5
+  kill_switch_file: STOP_7ffbc5

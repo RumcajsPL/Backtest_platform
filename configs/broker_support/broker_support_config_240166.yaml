@@ -1,0 +1,36 @@
+# broker_support_config_240166.yaml
+# Instance: 240166 — candidate 240166da287e (10-min, run 822f1889)
+# WFO score: 0.8886 | Windows: 4 | Est filtered P&L: 2708 pts | Ruin: 0.000
+# ---------------------------------------------------------------------------
+
+strategy:
+  yaml_path: configs/backtesting/candidates/822f1889_240166da287e_strategy.yaml
+
+live_data:
+  artf_ohlcv_path: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
+  strategy_bars_to_fetch: 500    # 10-min bars (~83h, enough for ATR(14) + all filters)
+  htf_bars_to_fetch: 120         # 4H bars (~20 days, enough for HTF signal context)
+  strategy_interval: TenMinutes  # eToro candles interval — matches strategy 10-min TF
+  htf_interval: FourHours        # eToro candles interval — matches htf_period: 4H
+  candle_direction: desc         # desc = newest first, reversed to asc before pipeline
+
+trading_window:
+  enabled: true
+  allowed_hours_utc: [9, 10, 11, 12, 15, 16, 17, 19, 20]  # positive hours per backtest analysis
+  skip_hours_utc: [13, 14, 18]                              # avoid per backtest analysis
+  monday_size_factor: 1.0
+
+execution:
+  instrument_map_path: configs/broker_support/instrument_map.yaml
+  symbol: GER40
+  amount_usd: 60.0
+  leverage: 20
+
+safety:
+  max_open_positions: 5
+  min_available_cash_usd: 200.0
+  max_consecutive_losses: 3
+  consecutive_loss_action: hard_stop
+  max_daily_drawdown_pct: 5.0
+  max_pipeline_errors: 5
+  kill_switch_file: STOP_240166

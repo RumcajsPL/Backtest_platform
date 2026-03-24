@@ -1,0 +1,38 @@
+# broker_support_config_61875.yaml
+# Instance: 61875 — candidate 61875464b3aa (1-min, run cd67ceb0)
+# WFO score: 0.7731 | Windows: 8 | Est filtered P&L: 1067 pts | Ruin: 0.000
+# Note: htf_period: 1min — HTF equals strategy TF. Fetcher makes two identical
+#       calls (OneMinute x2). Harmless — DataBundle handles both correctly.
+# ---------------------------------------------------------------------------
+
+strategy:
+  yaml_path: configs/backtesting/candidates/cd67ceb0_61875464b3aa_strategy.yaml
+
+live_data:
+  artf_ohlcv_path: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
+  strategy_bars_to_fetch: 500    # 1-min bars (~8h 20min, enough for ATR(11) + all filters)
+  htf_bars_to_fetch: 120         # 1-min bars — HTF same as strategy TF for this candidate
+  strategy_interval: OneMinute   # eToro candles interval — matches strategy 1-min TF
+  htf_interval: OneMinute        # eToro candles interval — matches htf_period: 1min
+  candle_direction: desc         # desc = newest first, reversed to asc before pipeline
+
+trading_window:
+  enabled: true
+  allowed_hours_utc: [9, 11, 12, 13, 16, 19, 20]  # positive hours per backtest analysis
+  skip_hours_utc: []                                # no explicit blocks beyond allowed list
+  monday_size_factor: 1.0
+
+execution:
+  instrument_map_path: configs/broker_support/instrument_map.yaml
+  symbol: GER40
+  amount_usd: 60.0
+  leverage: 20
+
+safety:
+  max_open_positions: 5
+  min_available_cash_usd: 200.0
+  max_consecutive_losses: 3
+  consecutive_loss_action: hard_stop
+  max_daily_drawdown_pct: 5.0
+  max_pipeline_errors: 5
+  kill_switch_file: STOP_61875

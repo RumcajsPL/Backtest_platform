@@ -1,13 +1,14 @@
 # CONTEXT.md — CTP Session State
-# Updated: 2026-03-20 (logging clarity fix — result=NO_SIGNAL / result=RISK_REJECTED)
+# Updated: 2026-03-24 (parallel loop support — 4 instances)
 ---
 ## Where We Are
 ```
 BROKER INTEGRATION:    Phase 2 COMPLETE as of 2026-03-18.
 CTP ISOLATION FIX:     2026-03-19 — loop halted due to external account activity
                        interfering with drawdown guard. Fix implemented and delivered.
-LOGGING FIX:           2026-03-20 — misleading "No signal on last bar" message
-                       replaced. See detail below.
+PARALLEL LOOPS:        2026-03-24 — 4-instance parallel paper trading implemented.
+                       run_signal_loop.py extended with --instance flag.
+                       Three new config files created for new candidates.
 First live trade:      2026-03-17 13:06 UTC — BUY GER40 @ 23705.89
                        positionID=3466009287, orderID=336588020
                        SL=23676.47, TP=23891.07, R:R=8.8x
@@ -17,68 +18,68 @@ Loop halt (incident):  2026-03-19 10:02 UTC — Poll #4
                        Root cause: manual trades on same demo account depleted
                        credit before CTP placed any orders. Not a CTP bug.
                        Fix: drawdown now CTP journal-scoped only.
-Next action:           Loop running. Next week: review first full week of data.
-                       Command: python scripts/broker_support/run_signal_loop.py
+Next action:           Deploy all files below and start 4 loops in separate terminals.
 ```
 ---
-## 2026-03-20 Session — First Full Day Analysis
+## 4 Active Instances
+| Instance | TF | Candidate | Strategy YAML | Config |
+|---|---|---|---|---|
+| `c424` | 1-min | c424a0e04327 | outputs/backtesting/trading_yamls/b651ec5c_c424a0e04327_strategy.yaml | broker_support_config.yaml |
+| `240166` | 10-min | 240166da287e | configs/backtesting/candidates/822f1889_240166da287e_strategy.yaml | broker_support_config_240166.yaml |
+| `7ffbc5` | 5-min | 7ffbc5e3522c | configs/backtesting/candidates/b8b6f21a_7ffbc5e3522c_strategy.yaml | broker_support_config_7ffbc5.yaml |
+| `61875` | 1-min | 61875464b3aa | configs/backtesting/candidates/cd67ceb0_61875464b3aa_strategy.yaml | broker_support_config_61875.yaml |
+Note on `61875`: htf_period: 1min — HTF equals strategy TF. Fetcher makes two
+identical OneMinute calls. Harmless — DataBundle handles both correctly.
+---
+## Parallel Loop Isolation Design (implemented 2026-03-24)
 ```
-Loop ran cleanly all day. CTP isolation confirmed working — no external
-interference observed (contrast: 2026-03-19 incident).
-Signals detected:
-  Poll #133  11:12 UTC — SELL @ 22861.62 — RiskManager REJECTED
-  Poll #253  13:12 UTC — BUY  @ 22827.07 — RiskManager REJECTED
-  Poll #417  16:14 UTC — SELL            — RiskManager REJECTED
-  (3 signals total, all rejected — consistent with 0.45% threshold calibration)
-Apparent "silent fail" at Poll #417 investigated and ruled out:
-  - 16:14 SELL appeared in Poll #418 "latest signals" list but not in Poll #417
-    rejection log. Initially flagged as possible silent swallow.
-  - Root cause: both "no signal on last bar" (Stage 5) and "RiskManager
-    rejected" (Stage 6) returned None and hit the same log line in the loop —
-    "No signal on last bar" — making a rejection look identical to a flat bar.
-  - Poll #417 DID process the signal correctly. No signals were lost.
-  - The "latest signals" appearance at Poll #418 is expected behaviour:
-    _describe_recent_signals() scans the full 500-bar filter result, so
-    a bar from the prior poll remains in the window.
-Logging fix delivered (2 files, 3 lines):
-  src/broker_support/live/signal_bridge.py
-    - result=NO_SIGNAL logged before Stage 5 return None
-    - result=RISK_REJECTED logged before Stage 6 return None
-  scripts/broker_support/run_signal_loop.py
-    - "No signal on last bar" → "No actionable signal this poll"
-      (accurate for both Stage 5 and Stage 6 outcomes)
-Post-fix log sequence for a rejection will read:
-  SignalBridge: signal found at last bar — SELL @ …
-  SignalBridge: RiskManager rejected trade at … Risk summary: …
-  SignalBridge: result=RISK_REJECTED
-  No actionable signal this poll. Next poll in 60s …
+Each instance is identified by --instance <id>.
+All file paths are derived from the instance ID:
+  Journal dir   : outputs/broker_support/journal/<id>/
+  trades.csv    : outputs/broker_support/journal/<id>/trades.csv
+  open_positions: outputs/broker_support/journal/<id>/open_positions.json
+  Log file      : outputs/broker_support/logs/run_signal_loop_<id>_YYYY-MM-DD.log
+  Kill switch   : STOP_<id> (per-instance) + STOP (master — halts ALL loops)
+Config auto-resolution from instance ID (no --config flag needed):
+  c424    → configs/broker_support/broker_support_config.yaml
+  240166  → configs/broker_support/broker_support_config_240166.yaml
+  7ffbc5  → configs/broker_support/broker_support_config_7ffbc5.yaml
+  61875   → configs/broker_support/broker_support_config_61875.yaml
+Each instance has fully independent:
+  - Circuit breakers (drawdown, consecutive losses, pipeline errors)
+  - CTP position tracking (open_positions.json)
+  - Journal (trades.csv)
+  - WBWS+ trading window (per-candidate backtest analysis)
+  - Kill switch
+Shared (read-only — no conflict):
+  - EToroClient (stateless HTTP)
+  - instrument_map.yaml
+  - broker_settings.env
+  - artf parquet (DEUIDXEUR_1ME_20210101_20260301.parquet)
+  - broker_spreads.yaml
 ```
 ---
-## CTP Isolation Design (implemented 2026-03-19)
+## Files Deployed 2026-03-24
 ```
-Problem:  Demo account is shared between CTP and manual/other strategies.
-          Account-wide credit movements triggered CTP's circuit breakers
-          even when CTP had placed no trades.
-Solution: Both safeguards now scoped exclusively to CTP-placed activity.
+scripts/broker_support/run_signal_loop.py             ← --instance flag, master kill switch
+configs/broker_support/broker_support_config_240166.yaml   ← NEW
+configs/broker_support/broker_support_config_7ffbc5.yaml   ← NEW
+configs/broker_support/broker_support_config_61875.yaml    ← NEW
+```
+---
+## CTP Isolation Design (implemented 2026-03-19, unchanged)
+```
 1. Drawdown guard — journal-scoped:
    - check_daily_drawdown(ctp_realised_pnl_today: float)
-   - ctp_realised_pnl_today = sum(profit_loss) from trades.csv for today (UTC)
+   - ctp_realised_pnl_today = sum(profit_loss) from instance trades.csv for today (UTC)
    - drawdown_pct = max(0, -ctp_realised_pnl_today / session_open_credit * 100)
    - Account-wide credit comparison REMOVED entirely
-   - External losses on same account are invisible to this guard by design
 2. Pyramiding guard — CTP position set:
-   - _check_pyramiding() now accepts ctp_open_position_ids: set[int]
-   - Only positions whose positionID is in that set are counted
-   - External positions on same instrument are logged but ignored
-   - ctp_open_position_ids maintained in-memory, persisted to
-     outputs/broker_support/journal/open_positions.json
-   - Written on every order placement, seeded from file on restart
-3. open_positions.json schema:
+   - _check_pyramiding() counts only positionIDs in ctp_open_position_ids
+   - External positions on same instrument logged but ignored
+   - ctp_open_position_ids per-instance, persisted to instance open_positions.json
+3. open_positions.json schema (per-instance):
    {"position_ids": [3466009287, ...]}
-   - Created/updated by run_signal_loop.py on order placement
-   - Stale entries (closed externally) are harmless — they won't appear
-     in live portfolio so ctp_open_count will be 0 regardless
-   - Tracker loop integration (removing entries on close) remains V2 backlog
 ```
 ---
 ## Phase 2 Deliverables (complete 2026-03-18)
@@ -100,76 +101,58 @@ scripts/broker_support/run_signal_loop.py
 tests/broker_support/test_time_utils.py
 tests/broker_support/test_signal_pipeline_integration.py
 ```
-## 2026-03-19 Deliverables
-```
-src/broker_support/safeguards/paper_trading_guard.py  ← check_daily_drawdown redesigned
-scripts/broker_support/run_signal_loop.py             ← CTP isolation, open_positions.json
-```
-## 2026-03-20 Deliverables
-```
-src/broker_support/live/signal_bridge.py    ← result=NO_SIGNAL / result=RISK_REJECTED
-scripts/broker_support/run_signal_loop.py   ← "No actionable signal this poll"
-```
 ---
 ## Test Status
 ```
 90/90  unit tests passing
 63/63  integration tests passing
-Note:  PaperTradingGuard, order_router fast-fill path, CTP isolation not yet
-       covered by tests — all in test backlog for V2.
-       Logging fix (result= sentinel lines) not tested — trivial log-only change.
+Note:  PaperTradingGuard, order_router fast-fill path, CTP isolation,
+       parallel loop paths not yet covered — all in test backlog for V2.
 ```
 ---
-## Trade Constraint Status
+## Trade Constraint Status (all instances)
 | Constraint | Value | Enforced where |
 |---|---|---|
-| max_risk_percentile | 0.45 | RiskManager — uses full ARTF parquet |
+| max_risk_percentile | per YAML | RiskManager — uses full ARTF parquet |
 | pyramiding_enabled | false | _check_pyramiding() — CTP positionIDs only |
 | max_positions | 1 | Same guard — source: strategy YAML |
 | close_on_opposite | false | Emergent from pyramiding guard |
-| max_consecutive_losses | 3 | PaperTradingGuard — hard_stop (first week) |
+| max_consecutive_losses | 3 | PaperTradingGuard — hard_stop |
 | max_daily_drawdown_pct | 5.0% | PaperTradingGuard — CTP journal-scoped |
 | min_available_cash_usd | 200.0 | PaperTradingGuard — account-wide (capital floor) |
 | max_pipeline_errors | 5 | PaperTradingGuard — hard_stop |
-| kill_switch_file | STOP | PaperTradingGuard — checked every poll |
-| off-hours gate | allowed_hours_utc | Loop — sleeps until next session open |
+| kill_switch_file | STOP_<id> | PaperTradingGuard — per-instance |
+| master kill switch | STOP | run_signal_loop.py — halts all instances |
+| off-hours gate | allowed_hours_utc | Loop — per-instance config |
 ---
-## Paper Trade Candidates (run b651ec5c — production reference)
-| Priority | Candidate | WFO | Ruin | Status |
-|----------|-----------|-----|------|--------|
-| 1st | c424a0e04327 | 0.8108 | 0.000 | PRIMARY — active |
-| 2nd | 20745ca991be | 0.7201 | 0.054 | SECONDARY — after PRIMARY stable |
-| Watch | c42f8b009283 | 0.6473 | 0.000 | MONITOR |
-| Watch | c209820886c8 | 0.5699 | 0.000 | SECONDARY MONITOR — do NOT promote |
----
-## Live Signal Loop — Status
-```
-2026-03-16: Poll #324, 14:35 UTC — BUY @ 23605.05
-            REJECTED by RiskManager (threshold_pct=0.45). Expected.
-2026-03-17: Poll #235, 13:06 UTC — BUY @ 23694.81
-            PLACED. orderID=336588020 → positionID=3466009287
-            openRate=23705.89, SL=23676.47, TP=23891.07, R:R=8.8x
-            Trade was profitable (per operator).
-2026-03-19: Loop halted Poll #4 — external account drawdown 24.18%.
-            Fixed. Restarted.
-2026-03-20: 3 signals detected (11:12 SELL, 13:12 BUY, 16:14 SELL).
-            All rejected by RiskManager. Loop healthy.
-RiskManager calibration — pending:
-  Only ~5 data points across 3 days. Run full week before reviewing 0.45%
-  threshold. All rejections consistent with elevated DAX volatility / ATR.
-```
+## Paper Trade Candidates
+| Priority | Instance | Candidate | WFO | Windows | Ruin | Status |
+|---|---|---|---|---|---|---|
+| Active | c424 | c424a0e04327 | 0.8108 | — | 0.000 | PRIMARY — running |
+| New | 240166 | 240166da287e | 0.8886 | 4 | 0.000 | NEW — deploy |
+| New | 7ffbc5 | 7ffbc5e3522c | 0.6869 | 9 | 0.000 | NEW — deploy |
+| New | 61875 | 61875464b3aa | 0.7731 | 8 | 0.000 | NEW — deploy |
+| Watch | — | 65df7121489f | 0.7941 | 8 | 0.000 | HOLD — promote if slot opens |
+| Watch | — | 2a891e2cce6c | 0.8058 | 9 | 0.000 | HOLD — promote if slot opens |
 ---
 ## Useful Commands
 ```powershell
-# Live trading — persistent loop (recommended)
-python scripts/broker_support/run_signal_loop.py --config configs/broker_support/broker_support_config.yaml
-python scripts/broker_support/run_signal_loop.py --quiet
-# Kill switch — halt loop at next poll
-echo "" > STOP          # create file
-del STOP                # resume (restart loop manually)
-# Supervised single trade
-python scripts/broker_support/run_signal.py --verbose
-python scripts/broker_support/run_signal.py --place-order --verbose
+# Start all 4 instances (one terminal each)
+python scripts/broker_support/run_signal_loop.py --instance c424
+python scripts/broker_support/run_signal_loop.py --instance 240166
+python scripts/broker_support/run_signal_loop.py --instance 7ffbc5
+python scripts/broker_support/run_signal_loop.py --instance 61875
+# Quiet mode (background terminals)
+python scripts/broker_support/run_signal_loop.py --instance c424 --quiet
+python scripts/broker_support/run_signal_loop.py --instance 240166 --quiet
+python scripts/broker_support/run_signal_loop.py --instance 7ffbc5 --quiet
+python scripts/broker_support/run_signal_loop.py --instance 61875 --quiet
+# Kill switch — halt one instance
+echo "" > STOP_240166     # halt 240166 only
+del STOP_240166           # resume (restart manually)
+# Kill switch — halt ALL instances
+echo "" > STOP            # master kill
+del STOP                  # resume all (restart each manually)
 # Diagnostics
 python scripts/broker_support/inspect_portfolio.py
 python scripts/broker_support/run_tracker_loop.py --once --no-hours-guard
@@ -179,37 +162,55 @@ pytest tests/broker_support/ -v
 ---
 ## Key Paths
 ```
-Strategy YAML:       outputs/backtesting/trading_yamls/b651ec5c_c424a0e04327_strategy.yaml
+Configs:
+  configs/broker_support/broker_support_config.yaml          ← c424
+  configs/broker_support/broker_support_config_240166.yaml   ← 240166
+  configs/broker_support/broker_support_config_7ffbc5.yaml   ← 7ffbc5
+  configs/broker_support/broker_support_config_61875.yaml    ← 61875
+Strategy YAMLs:
+  outputs/backtesting/trading_yamls/b651ec5c_c424a0e04327_strategy.yaml
+  configs/backtesting/candidates/822f1889_240166da287e_strategy.yaml
+  configs/backtesting/candidates/b8b6f21a_7ffbc5e3522c_strategy.yaml
+  configs/backtesting/candidates/cd67ceb0_61875464b3aa_strategy.yaml
 ARTF parquet:        data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
-BS config:           configs/broker_support/broker_support_config.yaml
-Instrument map:      configs/broker_support/instrument_map.yaml  (symbol key: GER40)
+Instrument map:      configs/broker_support/instrument_map.yaml
 Credentials:         configs/broker_support/broker_settings.env
-Journal (closed):    outputs/broker_support/journal/trades.csv
-Open positions:      outputs/broker_support/journal/open_positions.json
-Logs:                outputs/broker_support/logs/run_signal_loop_YYYY-MM-DD.log
+Journals (closed):
+  outputs/broker_support/journal/c424/trades.csv
+  outputs/broker_support/journal/240166/trades.csv
+  outputs/broker_support/journal/7ffbc5/trades.csv
+  outputs/broker_support/journal/61875/trades.csv
+Open positions:
+  outputs/broker_support/journal/c424/open_positions.json
+  outputs/broker_support/journal/240166/open_positions.json
+  outputs/broker_support/journal/7ffbc5/open_positions.json
+  outputs/broker_support/journal/61875/open_positions.json
+Logs:
+  outputs/broker_support/logs/run_signal_loop_c424_YYYY-MM-DD.log
+  outputs/broker_support/logs/run_signal_loop_240166_YYYY-MM-DD.log
+  outputs/broker_support/logs/run_signal_loop_7ffbc5_YYYY-MM-DD.log
+  outputs/broker_support/logs/run_signal_loop_61875_YYYY-MM-DD.log
+```
+---
+## V2 Backlog (do not act until paper trading week(s) complete)
+```
+- Tests: PaperTradingGuard new drawdown logic + CTP isolation
+- Tests: order_router fast-fill path
+- Tests: parallel loop path isolation
+- run_tracker_loop.py → remove closed positionID from instance open_positions.json
+  on close detection (currently stale entries are harmless)
+- run_tracker_loop.py → call guard.record_trade_result() on close detection
+- daily_order_cap safeguard
+- SafetyConfig evolution — V2 discussion
+- Promote 65df7121489f or 2a891e2cce6c after current 4 instances evaluated
+- Review RiskManager 0.45% calibration after 1 full week of c424 data
 ```
 ---
 ## Next Session Start
 1. python scripts/broker_support/inspect_portfolio.py — check open positions
-2. Review logs: outputs/broker_support/logs/run_signal_loop_YYYY-MM-DD.log
-3. Count: signals found, RiskManager rejections vs approvals, orders placed
-4. After 1 full week (target: end of w/c 2026-03-23):
-   - Review RiskManager 0.45% threshold vs DAX volatility profile
-   - Assess whether rejection rate is consistent with backtest (~39% approval)
-   - If consistent: threshold is correctly calibrated, no change
-   - If approval rate significantly lower: consider threshold review
-5. If circuit breaker fired: diagnose before restarting loop
-6. Secondary candidate 20745ca991be: do NOT promote until PRIMARY stable 1 week
----
-## V2 Backlog (do not act until Phase 2 week complete)
-```
-- Tests for PaperTradingGuard (new drawdown logic + CTP isolation)
-- Tests for order_router fast-fill path
-- run_tracker_loop.py → remove closed positionID from open_positions.json
-  on close detection (currently stale entries are harmless but cleanup is clean)
-- run_tracker_loop.py → call guard.record_trade_result() on close detection
-  (requires shared guard state or inter-process journal polling)
-- daily_order_cap safeguard (deferred)
-- SafetyConfig evolution — V2 discussion
-- Promote secondary candidate 20745ca991be after PRIMARY stable 1 week
-```
+2. Review logs for each instance:
+   outputs/broker_support/logs/run_signal_loop_<id>_YYYY-MM-DD.log
+3. Count per instance: signals found, orders placed, circuit breakers fired
+4. After 1 full week: compare live signal frequency vs backtest baseline per candidate
+5. After 2 full weeks: review RiskManager thresholds per candidate
+6. If any circuit breaker fired: diagnose before restarting that instance

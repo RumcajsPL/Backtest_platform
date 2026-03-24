@@ -7,18 +7,33 @@ is found, then keeps running (does NOT stop after one order). Stops only when a
 circuit breaker fires, the kill switch is set, or Ctrl+C is pressed.
 
 Safety circuit breakers (all configurable in broker_support_config.yaml):
-  - Kill switch file (default: STOP in project root) — checked every poll
+  - Kill switch file — checked every poll (per-instance AND master STOP)
   - Max consecutive losses — hard_stop or pause_until_next_day
   - Daily CTP drawdown % of session-open credit — hard stop (journal-scoped)
   - Minimum available cash — hard stop
   - Consecutive pipeline error streak — hard stop
+
+Instance isolation (parallel loop support):
+  Each loop instance is identified by --instance <id> (e.g. c424, 240166).
+  All file paths are derived from the instance ID:
+
+    Journal dir   : outputs/broker_support/journal/<id>/
+    trades.csv    : outputs/broker_support/journal/<id>/trades.csv
+    open_positions: outputs/broker_support/journal/<id>/open_positions.json
+    Log file      : outputs/broker_support/logs/run_signal_loop_<id>_YYYY-MM-DD.log
+    Kill switch   : STOP_<id>  (per-instance) + STOP (master — halts all loops)
+
+  When --instance is omitted, paths fall back to the legacy single-loop layout
+  (outputs/broker_support/journal/trades.csv etc.) for backward compatibility
+  with the original c424 loop if desired — but using --instance c424 is
+  strongly recommended for consistency.
 
 Isolation from external account activity:
   - Pyramiding check filters the live portfolio to CTP-placed positionIDs only.
     Manual trades or other strategies on the same demo account are invisible.
   - Daily drawdown uses CTP's own realised P&L from trades.csv only.
     External losses on the account do NOT trigger CTP's circuit breakers.
-  - CTP-placed positionIDs are tracked in open_positions.json (project root).
+  - CTP-placed positionIDs are tracked in open_positions.json (instance dir).
     On restart the loop seeds from this file so pyramiding survives restarts.
 
 Guards also enforced (unchanged from Phase 2):
@@ -33,23 +48,28 @@ Loop behaviour:
   - All circuit breaker actions are logged with full context before exit/pause
 
 Usage:
-    # Normal operation — console output + log file
-    python scripts/broker_support/run_signal_loop.py
+    # Named instance (recommended — full isolation)
+    python scripts/broker_support/run_signal_loop.py --instance c424
+    python scripts/broker_support/run_signal_loop.py --instance 240166
+    python scripts/broker_support/run_signal_loop.py --instance 7ffbc5
+    python scripts/broker_support/run_signal_loop.py --instance 61875
 
-    # Quiet mode — log file only, no console output (run in background terminal)
-    python scripts/broker_support/run_signal_loop.py --quiet
-
-    # Custom config
+    # Custom config (instance ID still required for path isolation)
     python scripts/broker_support/run_signal_loop.py \\
+        --instance c424 \\
         --config configs/broker_support/broker_support_config.yaml
 
+    # Quiet mode — log file only, no console output (background terminal)
+    python scripts/broker_support/run_signal_loop.py --instance 240166 --quiet
+
     # Debug console output
-    python scripts/broker_support/run_signal_loop.py --verbose
+    python scripts/broker_support/run_signal_loop.py --instance 240166 --verbose
 
 Kill switch:
-    Create a file named STOP (or the configured kill_switch_file value) in the
-    project root. The loop halts at the next poll cycle. Delete the file before
-    restarting.
+    Per-instance: create STOP_<id> in project root (e.g. STOP_240166).
+                  Halts only that instance at the next poll cycle.
+    Master:       create STOP in project root. Halts ALL running instances.
+    Delete the file(s) before restarting.
 """
 import argparse
 import json
@@ -82,20 +102,85 @@ from src.broker_support.safeguards.paper_trading_guard import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_CONFIG        = "configs/broker_support/broker_support_config.yaml"
-DEFAULT_LOG_DIR       = "outputs/broker_support/logs"
-DEFAULT_JOURNAL       = "outputs/broker_support/journal/trades.csv"
-OPEN_POSITIONS_FILE   = "outputs/broker_support/journal/open_positions.json"
-POLL_INTERVAL         = 60   # seconds
+DEFAULT_CONFIG   = "configs/broker_support/broker_support_config.yaml"
+DEFAULT_LOG_DIR  = "outputs/broker_support/logs"
+JOURNAL_BASE_DIR = "outputs/broker_support/journal"
+POLL_INTERVAL    = 60   # seconds
+MASTER_KILL_FILE = "STOP"
+
+
+# ---------------------------------------------------------------------------
+# Instance path resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_paths(instance_id: str | None) -> tuple[Path, Path]:
+    """
+    Resolve journal and open_positions paths from instance ID.
+
+    With instance_id:
+        journal   → outputs/broker_support/journal/<id>/trades.csv
+        positions → outputs/broker_support/journal/<id>/open_positions.json
+
+    Without instance_id (legacy fallback):
+        journal   → outputs/broker_support/journal/trades.csv
+        positions → outputs/broker_support/journal/open_positions.json
+
+    Returns:
+        (journal_path, open_positions_path)
+    """
+    base = _PROJECT_ROOT / JOURNAL_BASE_DIR
+    if instance_id:
+        instance_dir = base / instance_id
+        return (
+            instance_dir / "trades.csv",
+            instance_dir / "open_positions.json",
+        )
+    return (
+        base / "trades.csv",
+        base / "open_positions.json",
+    )
+
+
+def _default_config(instance_id: str | None) -> str:
+    """
+    Return default config path for a given instance ID.
+
+    Known mappings:
+        c424    → broker_support_config.yaml          (existing primary)
+        240166  → broker_support_config_240166.yaml
+        7ffbc5  → broker_support_config_7ffbc5.yaml
+        61875   → broker_support_config_61875.yaml
+
+    Falls back to DEFAULT_CONFIG for unknown or missing instance IDs so that
+    the legacy single-loop invocation without --instance still works.
+    """
+    _CONFIG_MAP = {
+        "c424":   "configs/broker_support/broker_support_config.yaml",
+        "240166": "configs/broker_support/broker_support_config_240166.yaml",
+        "7ffbc5": "configs/broker_support/broker_support_config_7ffbc5.yaml",
+        "61875":  "configs/broker_support/broker_support_config_61875.yaml",
+    }
+    if instance_id and instance_id in _CONFIG_MAP:
+        return _CONFIG_MAP[instance_id]
+    return DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
-def _configure_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
+def _configure_logging(
+    log_dir: str,
+    instance_id: str | None,
+    verbose: bool,
+    quiet: bool,
+) -> None:
     """
     Configure loguru sinks.
+
+    Log filename includes instance ID when provided:
+        run_signal_loop_<id>_{time:YYYY-MM-DD}.log
+        run_signal_loop_{time:YYYY-MM-DD}.log   (no instance)
 
     quiet=True  → file sink only, no console output.
     verbose=True → console at DEBUG level (ignored when quiet=True).
@@ -104,8 +189,11 @@ def _configure_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
     log_path.mkdir(parents=True, exist_ok=True)
     logger.remove()
 
+    suffix = f"_{instance_id}" if instance_id else ""
+    log_filename = f"run_signal_loop{suffix}_{{time:YYYY-MM-DD}}.log"
+
     logger.add(
-        str(log_path / "run_signal_loop_{time:YYYY-MM-DD}.log"),
+        str(log_path / log_filename),
         level="DEBUG",
         rotation="00:00",
         retention="30 days",
@@ -131,10 +219,6 @@ def _configure_logging(log_dir: str, verbose: bool, quiet: bool) -> None:
 def _load_ctp_open_position_ids(open_positions_path: Path) -> set[int]:
     """
     Load CTP-placed positionIDs from open_positions.json.
-
-    This file is written by the loop whenever an order is placed and entries
-    are removed when the tracker loop confirms a close.  On restart, seeding
-    from this file prevents double-trading into an already-open CTP position.
 
     Returns empty set if file absent or unreadable (safe — pyramiding check
     will then allow a trade if no CTP position is in the live portfolio under
@@ -228,13 +312,11 @@ def _check_pyramiding(
     positions = portfolio.get("clientPortfolio", {}).get("positions", [])
     credit = float(portfolio.get("clientPortfolio", {}).get("credit", 0.0))
 
-    # Count only positions placed by this CTP loop
     ctp_open_count = sum(
         1 for p in positions
         if int(p.get("positionID", -1)) in ctp_open_position_ids
     )
 
-    # For transparency, also log total account positions on this instrument
     total_instrument_count = sum(
         1 for p in positions if p.get("instrumentID") == instrument_id
     )
@@ -314,6 +396,31 @@ def _seconds_until_next_allowed_hour(allowed_hours_utc: list) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Kill switch — checks both master and per-instance files
+# ---------------------------------------------------------------------------
+
+def _check_kill_switches(instance_id: str | None, guard: PaperTradingGuard) -> None:
+    """
+    Check both master STOP file and per-instance kill switch.
+
+    Master STOP halts all loops regardless of instance.
+    Per-instance kill switch (from guard config) halts only this instance.
+
+    Raises:
+        HaltLoopError: if either kill switch file is detected.
+    """
+    master = _PROJECT_ROOT / MASTER_KILL_FILE
+    if master.exists():
+        raise HaltLoopError(
+            f"Master kill switch '{MASTER_KILL_FILE}' detected. "
+            f"Loop [{instance_id or 'default'}] halted. "
+            f"Remove the file before restarting any loop."
+        )
+    # Per-instance check delegated to guard (reads kill_switch_file from config)
+    guard.check_kill_switch()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -321,7 +428,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Persistent paper trading loop with full circuit breakers."
     )
-    parser.add_argument("--config",  default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--instance", "-i",
+        default=None,
+        help=(
+            "Instance ID for parallel loop isolation (e.g. c424, 240166, 7ffbc5, 61875). "
+            "Determines journal dir, log filename, and default config path. "
+            "Omit only for legacy single-loop operation."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to broker_support_config YAML. "
+            "Defaults to the standard config for the given --instance, "
+            "or configs/broker_support/broker_support_config.yaml if --instance is omitted."
+        ),
+    )
     parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
     parser.add_argument(
         "--quiet", "-q",
@@ -335,18 +459,27 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _configure_logging(args.log_dir, args.verbose, args.quiet)
+    instance_id: str | None = args.instance
+    config_path_str: str = args.config or _default_config(instance_id)
 
+    _configure_logging(args.log_dir, instance_id, args.verbose, args.quiet)
+
+    instance_label = instance_id or "default"
     logger.info("=" * 60)
-    logger.info("run_signal_loop.py — PERSISTENT loop (runs until circuit breaker or Ctrl+C)")
-    logger.info(f"  config       : {args.config}")
+    logger.info(f"run_signal_loop.py — instance [{instance_label}]")
+    logger.info("PERSISTENT loop (runs until circuit breaker or Ctrl+C)")
+    logger.info(f"  config       : {config_path_str}")
     logger.info(f"  poll interval: {POLL_INTERVAL}s")
     logger.info(f"  quiet mode   : {args.quiet}")
-    logger.info("  Ctrl+C to stop at any time | create STOP file to halt at next poll")
+    logger.info(
+        f"  kill switches: '{MASTER_KILL_FILE}' (master — all loops) | "
+        f"per-instance configured in YAML"
+    )
+    logger.info("  Ctrl+C to stop at any time")
     logger.info("=" * 60)
 
     # ── Load config ───────────────────────────────────────────────────────
-    config_path = Path(args.config)
+    config_path = Path(config_path_str)
     try:
         bs_config = BrokerSupportConfig.from_yaml(config_path)
     except Exception as exc:
@@ -364,6 +497,14 @@ def main() -> None:
         f"kill_switch='{bs_config.safety.kill_switch_file}'"
     )
 
+    # ── Resolve instance-scoped paths ─────────────────────────────────────
+    journal_path, open_positions_path = _resolve_paths(instance_id)
+    logger.info(
+        f"Instance paths: "
+        f"journal={journal_path}, "
+        f"open_positions={open_positions_path}"
+    )
+
     # ── Build infrastructure ──────────────────────────────────────────────
     try:
         client   = EToroClient()
@@ -376,7 +517,6 @@ def main() -> None:
         sys.exit(1)
 
     # ── Seed CTP open position tracking ──────────────────────────────────
-    open_positions_path = _PROJECT_ROOT / OPEN_POSITIONS_FILE
     ctp_open_position_ids: set[int] = _load_ctp_open_position_ids(open_positions_path)
 
     # ── Fetch initial portfolio credit for guard baseline ─────────────────
@@ -391,7 +531,6 @@ def main() -> None:
         sys.exit(1)
 
     # ── Initialise guard ──────────────────────────────────────────────────
-    journal_path = _PROJECT_ROOT / DEFAULT_JOURNAL
     todays_pnl_list, _ = _load_todays_ctp_pnl(journal_path)
     guard = PaperTradingGuard(
         config=bs_config,
@@ -406,13 +545,13 @@ def main() -> None:
     while True:
         iteration += 1
         now_utc = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-        logger.info(f"── Poll #{iteration} at {now_utc} ──")
+        logger.info(f"── [{instance_label}] Poll #{iteration} at {now_utc} ──")
 
-        # ── Per-poll guard checks ─────────────────────────────────────────
+        # ── Per-poll kill switch checks (master + per-instance) ───────────
         try:
-            guard.check_kill_switch()
+            _check_kill_switches(instance_id, guard)
         except HaltLoopError as exc:
-            logger.warning(f"HALT: {exc}")
+            logger.warning(f"HALT [{instance_label}]: {exc}")
             sys.exit(0)
 
         # ── Off-hours gate ────────────────────────────────────────────────
@@ -427,15 +566,15 @@ def main() -> None:
                 datetime.now(timezone.utc) + timedelta(seconds=wait_s)
             ).replace(minute=0, second=0, microsecond=0)
             logger.info(
-                f"Outside trading hours (UTC hour={current_hour}). "
+                f"[{instance_label}] Outside trading hours (UTC hour={current_hour}). "
                 f"Sleeping until next session open: "
                 f"{next_open.strftime('%Y-%m-%d %H:%M UTC')} "
                 f"({wait_s / 3600:.1f}h) …"
             )
-            _sleep_interruptible(wait_s, chunk=300, guard=guard)
+            _sleep_interruptible(wait_s, chunk=300, guard=guard, instance_id=instance_id)
             logger.info("=" * 60)
             logger.info(
-                f"Session open — resuming at UTC hour "
+                f"[{instance_label}] Session open — resuming at UTC hour "
                 f"{datetime.now(timezone.utc).hour:02d}:00."
             )
             logger.info("=" * 60)
@@ -451,11 +590,11 @@ def main() -> None:
                 ctp_open_position_ids=ctp_open_position_ids,
             )
         except RuntimeError as exc:
-            logger.error(f"Portfolio fetch error: {exc}")
+            logger.error(f"[{instance_label}] Portfolio fetch error: {exc}")
             try:
                 guard.record_pipeline_error()
             except HaltLoopError as halt:
-                logger.error(f"HALT: {halt}")
+                logger.error(f"HALT [{instance_label}]: {halt}")
                 sys.exit(0)
             time.sleep(POLL_INTERVAL)
             continue
@@ -463,7 +602,8 @@ def main() -> None:
         # ── Date rollover check ───────────────────────────────────────────
         if guard.check_date_rollover(current_credit):
             logger.info(
-                f"New trading day. Session open credit reset to {current_credit:.2f}. "
+                f"[{instance_label}] New trading day. "
+                f"Session open credit reset to {current_credit:.2f}. "
                 f"All daily counters cleared."
             )
 
@@ -473,41 +613,47 @@ def main() -> None:
             guard.check_daily_drawdown(ctp_pnl_today)
             guard.check_min_cash(current_credit)
         except HaltLoopError as exc:
-            logger.error(f"HALT: {exc}")
+            logger.error(f"HALT [{instance_label}]: {exc}")
             sys.exit(0)
 
         # ── Position already open — idle ──────────────────────────────────
         if not safe_to_trade:
-            logger.info(f"CTP position open — idling. Next poll in {POLL_INTERVAL}s …")
+            logger.info(
+                f"[{instance_label}] CTP position open — idling. "
+                f"Next poll in {POLL_INTERVAL}s …"
+            )
             time.sleep(POLL_INTERVAL)
             continue
 
         # ── Run signal pipeline ───────────────────────────────────────────
-        logger.info("SignalBridge: fetching live candles …")
+        logger.info(f"[{instance_label}] SignalBridge: fetching live candles …")
         try:
             signal = bridge.get_signal()
             guard.reset_pipeline_error_streak()
         except Exception as exc:
-            logger.error(f"Pipeline error: {exc}. Retrying in {POLL_INTERVAL}s …")
+            logger.error(
+                f"[{instance_label}] Pipeline error: {exc}. "
+                f"Retrying in {POLL_INTERVAL}s …"
+            )
             try:
                 guard.record_pipeline_error()
             except HaltLoopError as halt:
-                logger.error(f"HALT: {halt}")
+                logger.error(f"HALT [{instance_label}]: {halt}")
                 sys.exit(0)
             time.sleep(POLL_INTERVAL)
             continue
 
-        # ── No signal (last bar flat or RiskManager rejected) ─────────────
+        # ── No signal ─────────────────────────────────────────────────────
         if signal is None:
-            # signal_bridge.py logs result=NO_SIGNAL or result=RISK_REJECTED
-            # at INFO level before returning None. The summary here is
-            # intentionally generic — see those lines for the specific reason.
-            logger.info(f"No actionable signal this poll. Next poll in {POLL_INTERVAL}s …")
+            logger.info(
+                f"[{instance_label}] No actionable signal this poll. "
+                f"Next poll in {POLL_INTERVAL}s …"
+            )
             time.sleep(POLL_INTERVAL)
             continue
 
-        # ── Signal found — always log it ──────────────────────────────────
-        logger.info("SIGNAL FOUND:")
+        # ── Signal found ──────────────────────────────────────────────────
+        logger.info(f"[{instance_label}] SIGNAL FOUND:")
         logger.info(f"  {signal.summary()}")
         logger.info(f"  direction    : {signal.direction}")
         logger.info(f"  entry (mid)  : {signal.entry_price_mid:.2f}")
@@ -520,7 +666,7 @@ def main() -> None:
         # ── WBWS+ gate ────────────────────────────────────────────────────
         if not signal.wbws_window_valid:
             logger.warning(
-                f"Signal outside WBWS+ window — not placing order. "
+                f"[{instance_label}] Signal outside WBWS+ window — not placing order. "
                 f"Next poll in {POLL_INTERVAL}s …"
             )
             time.sleep(POLL_INTERVAL)
@@ -530,18 +676,18 @@ def main() -> None:
         try:
             guard.check_consecutive_losses()
         except HaltLoopError as exc:
-            logger.error(f"HALT: {exc}")
+            logger.error(f"HALT [{instance_label}]: {exc}")
             sys.exit(0)
         except PauseUntilTomorrowError as exc:
             resume_at = exc.resume_at
             now = datetime.now(timezone.utc)
             wait_seconds = max(0.0, (resume_at - now).total_seconds())
             logger.warning(
-                f"PAUSE: {exc} "
+                f"[{instance_label}] PAUSE: {exc} "
                 f"Sleeping {wait_seconds / 3600:.1f}h until "
                 f"{resume_at.strftime('%Y-%m-%d %H:%M UTC')} …"
             )
-            _sleep_interruptible(wait_seconds, chunk=300, guard=guard)
+            _sleep_interruptible(wait_seconds, chunk=300, guard=guard, instance_id=instance_id)
             try:
                 wake_portfolio = client._make_request(
                     "GET", "api/v1/trading/info/demo/portfolio"
@@ -553,12 +699,13 @@ def main() -> None:
                 wake_credit = current_credit
             guard.reset_daily_state(wake_credit)
             logger.info(
-                f"Resuming after pause. New session_open_credit={wake_credit:.2f}"
+                f"[{instance_label}] Resuming after pause. "
+                f"New session_open_credit={wake_credit:.2f}"
             )
             continue
 
         # ── Place order ───────────────────────────────────────────────────
-        logger.info("Placing order …")
+        logger.info(f"[{instance_label}] Placing order …")
         try:
             position_id = router.open_position(
                 symbol=bs_config.execution.symbol,
@@ -569,11 +716,13 @@ def main() -> None:
                 take_profit_rate=signal.take_profit_rate,
             )
         except OutsideTradingHoursError as exc:
-            logger.error(f"ORDER BLOCKED by trading hours guard: {exc}")
+            logger.error(
+                f"[{instance_label}] ORDER BLOCKED by trading hours guard: {exc}"
+            )
             time.sleep(POLL_INTERVAL)
             continue
         except Exception as exc:
-            logger.error(f"ORDER FAILED: {exc}")
+            logger.error(f"[{instance_label}] ORDER FAILED: {exc}")
             time.sleep(POLL_INTERVAL)
             continue
 
@@ -581,13 +730,13 @@ def main() -> None:
         ctp_open_position_ids.add(int(position_id))
         _persist_ctp_open_position_ids(open_positions_path, ctp_open_position_ids)
         logger.info(
-            f"CTP open positions updated: {ctp_open_position_ids} "
+            f"[{instance_label}] CTP open positions updated: {ctp_open_position_ids} "
             f"(persisted to {open_positions_path})"
         )
 
         orders_placed += 1
         logger.info("=" * 60)
-        logger.info(f"ORDER PLACED #{orders_placed}")
+        logger.info(f"[{instance_label}] ORDER PLACED #{orders_placed}")
         logger.info(f"  positionID   : {position_id}")
         logger.info(f"  symbol       : {signal.symbol}")
         logger.info(f"  direction    : {signal.direction}")
@@ -602,31 +751,34 @@ def main() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Interruptible sleep — checks kill switch every `chunk` seconds
+# Interruptible sleep — checks kill switches every `chunk` seconds
 # ---------------------------------------------------------------------------
 
 def _sleep_interruptible(
     total_seconds: float,
     chunk: int,
     guard: PaperTradingGuard,
+    instance_id: str | None = None,
 ) -> None:
     """
-    Sleep for total_seconds, waking every `chunk` seconds to check kill switch.
-    Exits cleanly if kill switch is detected during a pause.
+    Sleep for total_seconds, waking every `chunk` seconds to check kill switches.
+    Exits cleanly if either master or per-instance kill switch is detected.
     """
+    instance_label = instance_id or "default"
     remaining = total_seconds
     while remaining > 0:
         sleep_for = min(chunk, remaining)
         time.sleep(sleep_for)
         remaining -= sleep_for
         try:
-            guard.check_kill_switch()
+            _check_kill_switches(instance_id, guard)
         except HaltLoopError as exc:
-            logger.warning(f"HALT during pause: {exc}")
+            logger.warning(f"HALT during pause [{instance_label}]: {exc}")
             sys.exit(0)
         if remaining > 0:
             logger.info(
-                f"Still paused — {remaining / 3600:.1f}h remaining until session open."
+                f"[{instance_label}] Still paused — "
+                f"{remaining / 3600:.1f}h remaining until session open."
             )
 
 
