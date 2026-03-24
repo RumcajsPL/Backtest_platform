@@ -9,14 +9,14 @@ data:
     ltf_ohlcv: data/processed/ohlcv/DEUIDXEUR_1s_20230101_20260301.parquet
     artf_ohlcv: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
   date_range:
-    start: '2025-09-01 08:30:00'
+    start: '2023-01-01 08:30:00'
     end: '2026-02-28 20:30:00'
   timezone: CET
   htf_period: 4H
   ltf_timeframe: 1s
   artf_timeframe: 1ME
 execution:
-  mode: analytics
+  mode: core
 filters:
   time_filters:
     time_filter:
@@ -103,7 +103,7 @@ trade_management:
     max_positions: 1
 output:
   reports:
-    enabled: true
+    enabled: false
     output_dir: outputs/strategies/reports/wbws
     theme: dark
     chart_height_px: 300

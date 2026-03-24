@@ -16,7 +16,7 @@ data:
   ltf_timeframe: 1s
   artf_timeframe: 1ME
 execution:
-  mode: analytics
+  mode: core
 filters:
   time_filters:
     time_filter:
@@ -103,7 +103,7 @@ trade_management:
     max_positions: 1
 output:
   reports:
-    enabled: true
+    enabled: false
     output_dir: outputs/strategies/reports/wbws
     theme: dark
     chart_height_px: 300
