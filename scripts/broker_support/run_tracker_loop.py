@@ -1,28 +1,41 @@
 #!/usr/bin/env python
 """
-Polling tracker loop — runs position tracking on a fixed interval during
-DAX trading hours (08:00–22:00 CET/CEST).
+run_tracker_loop.py — polling tracker loop with instance isolation.
+
+Tracks open positions and journals closed trades to the instance-scoped
+journal directory. Runs during DAX trading hours (08:00–22:00 CET/CEST).
+
+Instance isolation:
+  --instance <id> scopes all paths to the instance's journal directory:
+    Journal  : outputs/broker_support/journal/<id>/trades.csv
+    Log file : outputs/broker_support/logs/tracker_<id>_YYYY-MM-DD.log
+  Without --instance, falls back to the legacy root paths for backward
+  compatibility (outputs/broker_support/journal/trades.csv).
 
 Features:
   - Polls every POLL_INTERVAL_MINUTES (default 5) during trading hours.
   - Sleeps until next market open when outside trading hours.
   - Graceful shutdown on Ctrl-C or SIGTERM.
-  - Structured log file at outputs/broker_support/logs/tracker.log.
-  - --once flag for manual / cron single-cycle execution (same as run_tracker.py
-    but with full logging setup and trading-hours awareness).
+  - Structured log file per instance, rotated daily.
+  - --once flag for manual / cron single-cycle execution.
 
 Usage:
-    # Continuous loop (leave running in background / Task Scheduler)
+    # Continuous loop — named instance (recommended)
+    python scripts/broker_support/run_tracker_loop.py --instance c424
+    python scripts/broker_support/run_tracker_loop.py --instance 240166
+
+    # Single cycle
+    python scripts/broker_support/run_tracker_loop.py --instance 240166 --once
+
+    # Legacy root path (no instance)
     python scripts/broker_support/run_tracker_loop.py
 
-    # Single cycle (cron / manual test)
-    python scripts/broker_support/run_tracker_loop.py --once
+    # Ignore trading hours guard (testing)
+    python scripts/broker_support/run_tracker_loop.py --instance 240166 --no-hours-guard
 
-    # Custom interval and paths
-    python scripts/broker_support/run_tracker_loop.py --interval 10 --verbose
-
-    # Ignore trading hours guard (runs 24/7 — useful for testing)
-    python scripts/broker_support/run_tracker_loop.py --no-hours-guard
+Kill switch:
+    The tracker loop does not consume kill switch files — it is a read-only
+    observer. Stop it with Ctrl-C or SIGTERM.
 """
 import argparse
 import signal
@@ -32,6 +45,13 @@ from pathlib import Path
 
 from loguru import logger
 
+# ---------------------------------------------------------------------------
+# Path bootstrap
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from src.broker_support.tracking.position_tracker import PositionTracker
 from src.broker_support.utils.time_utils import is_trading_hours, seconds_until_open, now_berlin
 
@@ -40,10 +60,38 @@ from src.broker_support.utils.time_utils import is_trading_hours, seconds_until_
 # ---------------------------------------------------------------------------
 
 POLL_INTERVAL_MINUTES: int = 5
-DEFAULT_JOURNAL    = "outputs/broker_support/journal/trades.csv"
+JOURNAL_BASE_DIR   = "outputs/broker_support/journal"
 DEFAULT_SNAPSHOTS  = "outputs/broker_support/snapshots"
 DEFAULT_LOG_DIR    = "outputs/broker_support/logs"
 DEFAULT_INSTRUMENT_MAP = "configs/broker_support/instrument_map.yaml"
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_journal_path(instance_id: str | None) -> Path:
+    """
+    Resolve instance-scoped journal path.
+
+    With instance_id : outputs/broker_support/journal/<id>/trades.csv
+    Without          : outputs/broker_support/journal/trades.csv  (legacy)
+    """
+    base = _PROJECT_ROOT / JOURNAL_BASE_DIR
+    if instance_id:
+        return base / instance_id / "trades.csv"
+    return base / "trades.csv"
+
+
+def _resolve_log_filename(instance_id: str | None) -> str:
+    """
+    Return loguru log filename pattern for this instance.
+
+    With instance_id : tracker_<id>_{time:YYYY-MM-DD}.log
+    Without          : tracker_{time:YYYY-MM-DD}.log  (legacy)
+    """
+    if instance_id:
+        return f"tracker_{instance_id}_{{time:YYYY-MM-DD}}.log"
+    return "tracker_{time:YYYY-MM-DD}.log"
 
 # ---------------------------------------------------------------------------
 # Graceful shutdown
@@ -59,29 +107,30 @@ def _handle_signal(signum, frame) -> None:
 
 
 signal.signal(signal.SIGTERM, _handle_signal)
-# SIGINT (Ctrl-C) is handled via KeyboardInterrupt in the main loop.
 
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
 
-def _configure_logging(log_dir: str, verbose: bool) -> None:
+def _configure_logging(log_dir: str, instance_id: str | None, verbose: bool) -> None:
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
     level = "DEBUG" if verbose else "INFO"
+    log_filename = _resolve_log_filename(instance_id)
 
-    # Console sink
     logger.remove()
-    logger.add(sys.stderr, level=level, colorize=True,
-               format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                      "<level>{level: <8}</level> | {message}")
-
-    # Rotating file sink
     logger.add(
-        str(log_path / "tracker_{time:YYYY-MM-DD}.log"),
+        sys.stderr,
+        level=level,
+        colorize=True,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+               "<level>{level: <8}</level> | {message}",
+    )
+    logger.add(
+        str(log_path / log_filename),
         level="DEBUG",
-        rotation="00:00",      # new file each day
+        rotation="00:00",
         retention="30 days",
         encoding="utf-8",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} | {message}",
@@ -100,12 +149,21 @@ def run_cycle(tracker: PositionTracker) -> int:
         return 0
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="eToro position tracker — polling loop with trading hours guard."
+        description="eToro position tracker — polling loop with instance isolation."
+    )
+    parser.add_argument(
+        "--instance", "-i",
+        default=None,
+        help=(
+            "Instance ID for parallel loop isolation (e.g. c424, 240166). "
+            "Scopes journal path and log filename to the instance directory. "
+            "Omit only for legacy single-loop operation."
+        ),
     )
     parser.add_argument(
         "--once", action="store_true",
@@ -114,10 +172,6 @@ def main() -> None:
     parser.add_argument(
         "--interval", type=int, default=POLL_INTERVAL_MINUTES, metavar="MINUTES",
         help=f"Poll interval in minutes (default: {POLL_INTERVAL_MINUTES}).",
-    )
-    parser.add_argument(
-        "--journal", default=DEFAULT_JOURNAL,
-        help="Path to closed-trades CSV journal.",
     )
     parser.add_argument(
         "--snapshots", default=DEFAULT_SNAPSHOTS,
@@ -141,20 +195,24 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _configure_logging(args.log_dir, args.verbose)
+    instance_id: str | None = args.instance
+    instance_label = instance_id or "default"
+    journal_path = _resolve_journal_path(instance_id)
+
+    _configure_logging(args.log_dir, instance_id, args.verbose)
 
     logger.info("=" * 60)
-    logger.info("eToro Position Tracker starting")
+    logger.info(f"eToro Position Tracker — instance [{instance_label}]")
     logger.info(f"  mode           : {'once' if args.once else 'loop'}")
     logger.info(f"  interval       : {args.interval} min")
     logger.info(f"  hours guard    : {'disabled' if args.no_hours_guard else 'enabled (08:00-22:00 CET)'}")
-    logger.info(f"  journal        : {args.journal}")
+    logger.info(f"  journal        : {journal_path}")
     logger.info(f"  snapshots      : {args.snapshots}")
     logger.info(f"  instrument map : {args.instrument_map}")
     logger.info("=" * 60)
 
     tracker = PositionTracker(
-        journal_path=Path(args.journal),
+        journal_path=journal_path,
         snapshots_dir=Path(args.snapshots),
         instrument_map_path=Path(args.instrument_map),
     )
@@ -175,8 +233,10 @@ def main() -> None:
 
         new_trades = run_cycle(tracker)
         df = tracker.journal.load_all()
-        logger.info(f"Cycle complete — {new_trades} new trade(s). "
-                    f"Journal total: {len(df)}.")
+        logger.info(
+            f"[{instance_label}] Cycle complete — {new_trades} new trade(s). "
+            f"Journal total: {len(df)}."
+        )
         sys.exit(0)
 
     # ------------------------------------------------------------------
@@ -189,52 +249,45 @@ def main() -> None:
     try:
         while not _shutdown_requested:
 
-            # Trading hours check
             if not args.no_hours_guard and not is_trading_hours():
                 sleep_sec = seconds_until_open()
                 berlin_now = now_berlin().strftime("%H:%M %Z")
                 logger.info(
-                    f"Outside trading hours ({berlin_now}). "
+                    f"[{instance_label}] Outside trading hours ({berlin_now}). "
                     f"Sleeping {sleep_sec // 3600}h "
                     f"{(sleep_sec % 3600) // 60}m until market open."
                 )
-                # Sleep in short chunks so SIGTERM / Ctrl-C is responsive
                 _interruptible_sleep(sleep_sec)
                 continue
 
-            # Run cycle
             berlin_now = now_berlin().strftime("%H:%M %Z")
-            logger.info(f"--- Cycle {total_cycles + 1} at {berlin_now} ---")
+            logger.info(f"── [{instance_label}] Cycle {total_cycles + 1} at {berlin_now} ──")
             new_trades = run_cycle(tracker)
             total_cycles += 1
             total_trades += new_trades
 
             df = tracker.journal.load_all()
             logger.info(
-                f"Cycle {total_cycles} complete — {new_trades} new trade(s). "
-                f"Journal total: {len(df)}."
+                f"[{instance_label}] Cycle {total_cycles} complete — "
+                f"{new_trades} new trade(s). Journal total: {len(df)}."
             )
 
             if _shutdown_requested:
                 break
 
-            logger.info(f"Next cycle in {args.interval} minute(s).")
+            logger.info(f"[{instance_label}] Next cycle in {args.interval} minute(s).")
             _interruptible_sleep(poll_seconds)
 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received.")
 
     logger.info(
-        f"Tracker stopped. Total cycles: {total_cycles}, "
-        f"total trades recorded: {total_trades}."
+        f"[{instance_label}] Tracker stopped. "
+        f"Total cycles: {total_cycles}, total trades recorded: {total_trades}."
     )
 
 
 def _interruptible_sleep(seconds: int) -> None:
-    """
-    Sleep for `seconds` total, waking every 5s to check for shutdown signal.
-    Ensures Ctrl-C and SIGTERM are handled promptly.
-    """
     elapsed = 0
     chunk = 5
     while elapsed < seconds and not _shutdown_requested:

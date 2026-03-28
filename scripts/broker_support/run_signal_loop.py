@@ -11,7 +11,7 @@ Safety circuit breakers (all configurable in broker_support_config.yaml):
   - Max consecutive losses — hard_stop or pause_until_next_day
   - Daily CTP drawdown % of session-open credit — hard stop (journal-scoped)
   - Minimum available cash — hard stop
-  - Consecutive pipeline error streak — hard stop
+  - Consecutive pipeline error streak — hard stop (SignalBridge failures only)
 
 Instance isolation (parallel loop support):
   Each loop instance is identified by --instance <id> (e.g. c424, 240166).
@@ -35,6 +35,24 @@ Isolation from external account activity:
     External losses on the account do NOT trigger CTP's circuit breakers.
   - CTP-placed positionIDs are tracked in open_positions.json (instance dir).
     On restart the loop seeds from this file so pyramiding survives restarts.
+
+Pending-order reconciliation (ORDER FAILED safety net):
+  When open_position() raises OrderExecutionError (portfolio scan timed out),
+  the position status is UNKNOWN — the broker accepted the order (statusID=1)
+  but we could not confirm the positionID within the timeout window.
+  In this case the orderID is added to _pending_order_ids. At the start of
+  every subsequent poll, before running the signal pipeline, the loop scans
+  the live portfolio for any pending orderID. If found, the positionID is
+  registered in ctp_open_position_ids and the pyramiding guard blocks new
+  orders correctly. If still not found after _PENDING_ORDER_MAX_POLLS polls,
+  the entry is retired (assumed not opened — operator should verify manually).
+
+Pipeline error counter scope:
+  guard.record_pipeline_error() is called ONLY on SignalBridge failures.
+  Portfolio fetch errors (connectivity, broker 429/503) are logged and the
+  poll is skipped, but they do NOT count against the pipeline error budget.
+  Rationale: broker outages should not trigger a permanent loop halt that
+  was designed to catch broken signal infrastructure.
 
 Guards also enforced (unchanged from Phase 2):
   - WBWS+ trading window gate
@@ -107,6 +125,10 @@ DEFAULT_LOG_DIR  = "outputs/broker_support/logs"
 JOURNAL_BASE_DIR = "outputs/broker_support/journal"
 POLL_INTERVAL    = 60   # seconds
 MASTER_KILL_FILE = "STOP"
+
+# Pending-order reconciliation: how many polls to keep scanning before retiring
+# an unresolved orderID. 5 polls × 60s = 5 minutes max reconciliation window.
+_PENDING_ORDER_MAX_POLLS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +361,92 @@ def _check_pyramiding(
 
 
 # ---------------------------------------------------------------------------
+# Pending-order reconciliation
+# ---------------------------------------------------------------------------
+
+def _reconcile_pending_orders(
+    client: EToroClient,
+    pending_order_ids: dict[int, int],
+    ctp_open_position_ids: set[int],
+    open_positions_path: Path,
+    instance_label: str,
+) -> None:
+    """
+    Scan the live portfolio for any unresolved pending orderIDs.
+
+    Called at the top of every poll when pending_order_ids is non-empty.
+    When an orderID is found in the portfolio, its positionID is registered
+    in ctp_open_position_ids and the entry is removed from pending_order_ids.
+    Entries that exceed _PENDING_ORDER_MAX_POLLS polls are retired with a
+    warning — the operator should verify manually via inspect_portfolio.py.
+
+    Args:
+        client:               EToroClient instance.
+        pending_order_ids:    Dict of {orderID: polls_remaining}. Modified in-place.
+        ctp_open_position_ids: Set of confirmed CTP positionIDs. Modified in-place.
+        open_positions_path:  Path for persisting ctp_open_position_ids.
+        instance_label:       For log messages.
+    """
+    if not pending_order_ids:
+        return
+
+    logger.info(
+        f"[{instance_label}] Reconciling {len(pending_order_ids)} pending "
+        f"order(s): {list(pending_order_ids.keys())}"
+    )
+
+    try:
+        portfolio = client._make_request("GET", "api/v1/trading/info/demo/portfolio")
+    except Exception as exc:
+        logger.warning(
+            f"[{instance_label}] Pending-order reconciliation: portfolio fetch "
+            f"failed: {exc}. Will retry next poll."
+        )
+        return
+
+    positions = portfolio.get("clientPortfolio", {}).get("positions", [])
+
+    resolved = []
+    for order_id in list(pending_order_ids.keys()):
+        # Search portfolio for this orderID
+        for pos in positions:
+            if pos.get("orderID") == order_id:
+                position_id = pos.get("positionID")
+                if position_id is not None:
+                    pid = int(position_id)
+                    ctp_open_position_ids.add(pid)
+                    _persist_ctp_open_position_ids(open_positions_path, ctp_open_position_ids)
+                    logger.warning(
+                        f"[{instance_label}] RECONCILED: orderID={order_id} → "
+                        f"positionID={pid} found in portfolio during reconciliation. "
+                        f"Position IS open. CTP position set updated. "
+                        f"This order was previously reported as ORDER FAILED."
+                    )
+                    resolved.append(order_id)
+                    break
+        else:
+            # Not found — decrement counter
+            pending_order_ids[order_id] -= 1
+            remaining = pending_order_ids[order_id]
+            if remaining <= 0:
+                logger.warning(
+                    f"[{instance_label}] PENDING ORDER RETIRED: orderID={order_id} "
+                    f"not found in portfolio after {_PENDING_ORDER_MAX_POLLS} polls "
+                    f"({_PENDING_ORDER_MAX_POLLS * POLL_INTERVAL}s). "
+                    f"Assumed not opened. Verify manually via inspect_portfolio.py."
+                )
+                resolved.append(order_id)
+            else:
+                logger.info(
+                    f"[{instance_label}] Pending orderID={order_id} still not in "
+                    f"portfolio ({remaining} poll(s) remaining before retirement)."
+                )
+
+    for order_id in resolved:
+        del pending_order_ids[order_id]
+
+
+# ---------------------------------------------------------------------------
 # Journal helpers
 # ---------------------------------------------------------------------------
 
@@ -519,6 +627,12 @@ def main() -> None:
     # ── Seed CTP open position tracking ──────────────────────────────────
     ctp_open_position_ids: set[int] = _load_ctp_open_position_ids(open_positions_path)
 
+    # ── Pending-order tracking (ORDER FAILED reconciliation) ──────────────
+    # {orderID: polls_remaining_before_retirement}
+    # Populated when open_position() raises but the broker accepted the order.
+    # Drained as positionIDs are found in the portfolio or polls are exhausted.
+    pending_order_ids: dict[int, int] = {}
+
     # ── Fetch initial portfolio credit for guard baseline ─────────────────
     try:
         init_portfolio = client._make_request("GET", "api/v1/trading/info/demo/portfolio")
@@ -554,6 +668,18 @@ def main() -> None:
             logger.warning(f"HALT [{instance_label}]: {exc}")
             sys.exit(0)
 
+        # ── Pending-order reconciliation ──────────────────────────────────
+        # Must run before pyramiding check so that positionIDs from previously
+        # failed portfolio scans are registered before we decide safe_to_trade.
+        if pending_order_ids:
+            _reconcile_pending_orders(
+                client=client,
+                pending_order_ids=pending_order_ids,
+                ctp_open_position_ids=ctp_open_position_ids,
+                open_positions_path=open_positions_path,
+                instance_label=instance_label,
+            )
+
         # ── Off-hours gate ────────────────────────────────────────────────
         current_hour = datetime.now(timezone.utc).hour
         allowed = bs_config.trading_window.allowed_hours_utc
@@ -581,6 +707,9 @@ def main() -> None:
             continue
 
         # ── Portfolio fetch (pyramiding — CTP-scoped) ─────────────────────
+        # NOTE: portfolio fetch errors are connectivity/broker issues, NOT
+        # signal pipeline failures. They do NOT increment pipeline_error_streak.
+        # The pipeline error counter is reserved for SignalBridge failures only.
         try:
             safe_to_trade, current_credit = _check_pyramiding(
                 client=client,
@@ -591,11 +720,10 @@ def main() -> None:
             )
         except RuntimeError as exc:
             logger.error(f"[{instance_label}] Portfolio fetch error: {exc}")
-            try:
-                guard.record_pipeline_error()
-            except HaltLoopError as halt:
-                logger.error(f"HALT [{instance_label}]: {halt}")
-                sys.exit(0)
+            logger.info(
+                f"[{instance_label}] Portfolio fetch failed — skipping poll. "
+                f"Next poll in {POLL_INTERVAL}s …"
+            )
             time.sleep(POLL_INTERVAL)
             continue
 
@@ -706,6 +834,7 @@ def main() -> None:
 
         # ── Place order ───────────────────────────────────────────────────
         logger.info(f"[{instance_label}] Placing order …")
+        placed_order_id: int | None = None
         try:
             position_id = router.open_position(
                 symbol=bs_config.execution.symbol,
@@ -722,7 +851,32 @@ def main() -> None:
             time.sleep(POLL_INTERVAL)
             continue
         except Exception as exc:
+            # ORDER FAILED — position status is UNKNOWN.
+            # The broker may have accepted the order (statusID=1 in POST) but
+            # positionID resolution timed out. We extract the orderID from the
+            # exception message if possible — order_router embeds it in the
+            # OrderExecutionError message — and register it for reconciliation
+            # at the next poll. This prevents the loop from re-signalling while
+            # the position may already be live.
             logger.error(f"[{instance_label}] ORDER FAILED: {exc}")
+            exc_msg = str(exc)
+            # Extract orderID from the standard OrderExecutionError message:
+            # "Portfolio scan: positionID for orderID=<N> not found after ..."
+            import re
+            match = re.search(r"orderID=(\d+)", exc_msg)
+            if match:
+                failed_order_id = int(match.group(1))
+                pending_order_ids[failed_order_id] = _PENDING_ORDER_MAX_POLLS
+                logger.warning(
+                    f"[{instance_label}] Order status UNKNOWN for orderID={failed_order_id}. "
+                    f"Registered for reconciliation over next {_PENDING_ORDER_MAX_POLLS} poll(s). "
+                    f"No new order will be placed until this is resolved or retired."
+                )
+            else:
+                logger.warning(
+                    f"[{instance_label}] Could not extract orderID from error. "
+                    f"Pausing for one poll before next attempt."
+                )
             time.sleep(POLL_INTERVAL)
             continue
 

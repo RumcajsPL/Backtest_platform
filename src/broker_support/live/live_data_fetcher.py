@@ -212,7 +212,10 @@ class LiveDataFetcher:
             return pd.DataFrame()
 
         df = pd.DataFrame(records)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        # fromDate is ISO 8601 with Z suffix (e.g. "2026-03-26T17:34:55.042Z").
+        # Explicit format="ISO8601" avoids pandas UserWarning on mixed-precision
+        # fractional seconds and ensures consistent parsing across all candle TFs.
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="ISO8601", utc=True)
         df["timestamp"] = df["timestamp"].dt.tz_localize(None)  # tz-naive UTC
         df["timestamp"] = df["timestamp"].dt.floor("s")
         df = df.set_index("timestamp")
