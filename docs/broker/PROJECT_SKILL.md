@@ -1,13 +1,12 @@
 ---
-name: backtester-project
+name: CTP broker integration
 description: >
-  Use for any CTP broker_support or backtesting work. Triggers: broker_support,
+  Use for any CTP broker_support and integration work. Triggers: broker_support,
   EToroClient, PositionTracker, CSVJournal, PaperTradingGuard, HaltLoopError,
   PauseUntilTomorrowError, OrderRouter, SignalBridge, LiveDataFetcher,
   LiveConfigPatcher, OrderSignal, BrokerSupportConfig, InstrumentResolver,
   TradeEnricher, pyramiding, _check_pyramiding, open_positions.json,
-  pending_order_ids, run_signal_loop, run_tracker_loop, kill_switch,
-  WBWS+, backtester, WFO, CandidateStore, GA engine, filter_pipeline.
+  pending_order_ids, run_signal_loop, run_tracker_loop, kill_switch.
 ---
 # CTP Broker Integration — Session Skill
 ## Session Start Protocol
