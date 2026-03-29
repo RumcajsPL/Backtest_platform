@@ -41,8 +41,9 @@ src/broker_support/
     time_utils.py               Trading hours + WBWS+ window functions
   cli.py                        broker-support CLI (console_scripts entry point)
 scripts/broker_support/
-  run_signal_loop.py            Persistent signal loop — live trading entry point
-  run_tracker_loop.py           Position tracker loop — close detection → journal
+  run_demo_trading.py           Unified loop — signal + tracker, 4 instances replace 8
+  run_signal_loop.py            SUPERSEDED by run_demo_trading.py
+  run_tracker_loop.py           SUPERSEDED by run_demo_trading.py
   run_signal.py                 Single-run dry-run / supervised single trade
   inspect_portfolio.py          Portfolio diagnostic
 scripts/diagnostics/
@@ -368,6 +369,11 @@ Never calls `sys.exit()`. Raises exceptions — the loop decides how to exit.
 | `check_date_rollover(credit)` | — | Resets daily state if UTC date advanced; returns bool |
 | `reset_daily_state(credit)` | — | Resets losses, streak, date, credit |
 | `status_summary()` | — | One-line state string for logging |
+**`_run_tracker_cycle`**
+**Tracker isolation (run_demo_trading.py):**
+  - Snapshot and diff scoped to ctp_open_position_ids only.
+  - External positions (manual trades, other loops) are filtered before detect_closed_positions() and save_snapshot(). Never enter trades.csv.
+  - Stale snapshot guard: if snapshot contains non-CTP positionIDs (written by a previous unscoped tracker), snapshot is invalidated for that cycle and rebuilt clean. One-time self-correcting behaviour.
 **Drawdown formula** (CTP journal-scoped — external account activity excluded):
 ```python
 drawdown_pct = max(0.0, -ctp_realised_pnl_today / session_open_credit * 100.0)
@@ -533,11 +539,12 @@ Non-blocking — sets `wbws_window_valid` flag in `OrderSignal` only.
 | isNoTakeProfit | `true` = TP DISABLED (inverted). |
 | Timestamp parsing | `pd.to_datetime(..., format="ISO8601", utc=True)` required. |
 | `fields` on search | REQUIRED on `market-data/search`. Omit → empty results. |
+| trade/history boundary | 30-day window is EXCLUSIVE. timedelta(days=30) → 403.
+|                        | Use days=29 maximum. Confirmed 2026-03-29. |
 ---
 ## 14. KNOWN ISSUES
 | Issue | Location | Fix |
 |-------|----------|-----|
-| TradeEnricher 403 | `trade_enricher.py`: `_HISTORY_LOOKBACK_DAYS=90` exceeds 30-day window | Replace with `settings.default_days_back` |
 | Tracker does not remove closed positionIDs from `open_positions.json` | `run_tracker_loop.py` | V2 |
 | `record_trade_result()` not called on close detection | `run_tracker_loop.py` | V2 |
 ---

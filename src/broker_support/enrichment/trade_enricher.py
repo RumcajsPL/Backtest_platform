@@ -13,19 +13,15 @@ Two-stage enrichment:
 
 PositionTracker calls enrich() which runs both stages in order.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
 from src.broker_support.client.client import EToroClient
+from src.broker_support.config.settings import settings
 from src.broker_support.enrichment.instrument_resolver import InstrumentResolver
 from src.broker_support.models.trade import Trade
-
-# How far back to search in trade history when looking up a specific positionId.
-# Trades closed within the last 90 days should always be found.
-_HISTORY_LOOKBACK_DAYS = 90
 
 
 class TradeEnricher:
@@ -64,8 +60,12 @@ class TradeEnricher:
         """
         Fetch the authoritative closed-trade record from history and fill
         exit_price, profit_loss, fees, leverage, sl_rate, tp_rate.
+
+        Uses settings.default_days_back - 1 days as the lookback window.
+        The eToro API hard limit is 30 days but the boundary is exclusive —
+        exactly 30 days back returns 403. Using 29 days stays safely inside.
         """
-        from_date = datetime.now() - timedelta(days=_HISTORY_LOOKBACK_DAYS)
+        from_date = datetime.now(timezone.utc) - timedelta(days=settings.default_days_back - 1)
 
         try:
             # Fetch history page by page until we find the positionId
@@ -83,7 +83,7 @@ class TradeEnricher:
 
             logger.warning(
                 f"TradeEnricher: positionId={trade.trade_id} not found in "
-                f"last {_HISTORY_LOOKBACK_DAYS} days of history. "
+                f"last {settings.default_days_back} days of history. "
                 f"exit_price and profit_loss remain 0.0."
             )
 

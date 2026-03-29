@@ -1,80 +1,54 @@
 # CONTEXT.md — CTP Session State
 # Claude session-to-session continuity. Facts live in ARCHITECTURE.md.
-# IMPORTANT: from next session CONTEXT move completed changes to SESSION_LOG appendix and replace this line by "Completed changes goes to SESSION_LOG appendix"
-# Updated: 2026-03-28
+# Completed changes goes to SESSION_LOG appendix
+# Updated: 2026-03-29
 ---
 ## Current State
 ```
 Phase 2 (live pipeline):    COMPLETE 2026-03-18
 Multi-instance week 1:      COMPLETE 2026-03-24 to 2026-03-28
-Documentation overhaul:     IN PROGRESS 2026-03-28
-  ARCHITECTURE.md:          Complete — all sources read and documented
-  BROKER_INTEGRATION.md:    Updated 2026-03-28
-  SKILL.md:                 Updated 2026-03-28 (description trimmed to 1024 chars)
-  CONTEXT.md:               This file
+Loop consolidation:         COMPLETE 2026-03-29 (8 terminals → 4)
+  run_demo_trading.py:      Signal + tracker unified — DEPLOYED, RUNNING
+  TradeEnricher fix:        Applied — 29-day lookback (30-day boundary is exclusive)
+  Tracker isolation:        Full CTP scope — external positions never enter trades.csv
+  Stale snapshot guard:     Active — auto-invalidates pre-isolation snapshots on first run
+  week_one_health_check:    Updated — new log filename + trades.csv P&L section 7
+Week 2 loops:               RUNNING from 2026-03-29 (~21:14 UTC)
 First live trade: 2026-03-17 13:06 UTC
   positionID=3466009287, orderID=336588020
   BUY GER40 @ 23705.89, SL=23676.47, TP=23891.07, R:R=8.8x — profitable
 ```
 ---
-## Deliverables This Session (2026-03-28)
-```
-scripts/broker_support/run_signal_loop.py
-  - Pending-order reconciliation (Bug 1 fix)
-  - Portfolio fetch errors no longer count against pipeline error budget (Bug 2 fix)
-src/broker_support/live/live_data_fetcher.py
-  - pd.to_datetime(..., format="ISO8601", utc=True) — pandas UserWarning fix
-scripts/broker_support/run_tracker_loop.py
-  - --instance flag: instance-scoped journal path and log filename
-scripts/broker_support/inspect_portfolio.py
-  - --instance flag, --all-positions flag, orderID display, CTP annotation
-scripts/diagnostics/week_one_health_check.py
-  - New: 6-section log analyser, writes txt report
-docs/broker/ARCHITECTURE.md   — complete rewrite with Mermaid diagrams
-docs/broker/BROKER_INTEGRATION.md — restructured, no redundancy
-docs/broker/SKILL.md           — restructured, description ≤ 1024 chars
-docs/broker/SESSION_LOG.md     — session appended log of changes -> uncharging other session documents from keeping history of important changes. Avaiable on request if deeper analysis required. Once change logged it is remove from respective session document to avoid redundancy.
-docs/broker/CONTEXT.md         — this file
-```
----
 ## Open Issues
-### TradeEnricher 403 — fix ready, not yet applied
+None. All issues resolved.
+---
+## Watch Items — Week 2
 ```
-File:    src/broker_support/enrichment/trade_enricher.py
-Problem: _HISTORY_LOOKBACK_DAYS = 90 hardcoded. Working window is 30 days
-         (DEFAULT_DAYS_BACK=30 in broker_settings.env).
-         90-day request → 403. Confirmed root cause 2026-03-28.
-Fix:
-  Remove: _HISTORY_LOOKBACK_DAYS = 90
-  Change: from_date = datetime.now() - timedelta(days=_HISTORY_LOOKBACK_DAYS)
-  To:     from_date = datetime.now() - timedelta(days=settings.default_days_back)
-  Add import: from src.broker_support.config.settings import settings
-Effect when fixed: trades.csv will have correct exit_price and profit_loss.
-  Drawdown guard and consecutive loss reconstruction will work across restarts.
-```
-### 240166 unconfirmed orders — verify before restart
-```
-4 orders placed 2026-03-26 to 2026-03-27 where portfolio scan timed out.
-Verify each via: inspect_portfolio.py --instance 240166 --all-positions
-or eToro trade history UI.
-orderID=338749124  2026-03-26 18:35:15
-orderID=338770199  2026-03-26 18:36:35
-orderID=338747252  2026-03-26 18:37:56
-orderID=339031085  2026-03-27 17:29:59
-Confirmed positionID: 3475134299 (4th attempt only)
-Check open_positions.json for instance 240166 before restart.
-If 3475134299 is closed: remove from file before restarting loop.
+1. open_positions.json: deleted manually for 240166 (position 3475134299 was closed).
+   File will be auto-created on first new position placement by run_demo_trading.py.
+   Confirm this happens correctly on first signal.
+2. trades.csv: not yet created for any instance (correct — no closed CTP trades yet
+   under new loop). Will be created by tracker cycle on first detected close.
+   Confirm correct exit_price and profit_loss (TradeEnricher fix now active).
+3. Stale snapshot guard: fired once on 240166 restart (expected — old snapshot from
+   run_tracker_loop.py contained external positions). Will not fire again once
+   last_positions.csv is rebuilt under CTP isolation. Monitor other 3 instances
+   for same one-time warning on first start.
+4. 240166 unconfirmed orders from week 1 (all pre-dates new loop):
+   orderID=338749124 / 338770199 / 338747252 / 339031085
+   positionID=3475134299 confirmed for 4th attempt — all now closed.
+   No action required. Logged for reference only.
 ```
 ---
 ## Active Instances
 ```
-c424    → broker_support_config.yaml           (1-min, halted 2026-03-27 — bug fixed)
+c424    → broker_support_config.yaml           (1-min)
 240166  → broker_support_config_240166.yaml    (10-min, most signals)
-7ffbc5  → broker_support_config_7ffbc5.yaml    (1-min, stable)
-61875   → broker_support_config_61875.yaml     (1-min, stable)
+7ffbc5  → broker_support_config_7ffbc5.yaml    (1-min)
+61875   → broker_support_config_61875.yaml     (1-min)
 ```
-RiskManager calibration: insufficient data after 1 week.
-Continue another full week before reviewing 0.45% threshold.
+RiskManager calibration: 1 week of data — insufficient. Review 0.45% threshold
+after week 2 completes.
 ---
 ## Paper Trade Candidates
 | Priority | Candidate | WFO | Ruin | Notes |
@@ -87,11 +61,10 @@ Continue another full week before reviewing 0.45% threshold.
 ---
 ## Next Session Actions
 ```
-1. Fix TradeEnricher (see Open Issues above — one-line change)
-2. Deploy all 2026-03-28 deliverables before restarting loops
-3. Verify 240166 unconfirmed orders and open_positions.json state
-4. Restart all 4 loops for week 2
-5. After week 2: review RiskManager 0.45% threshold
+1. Review week 2 results — run health_check after week ends
+2. Review RiskManager 0.45% threshold with 2 weeks of live data
+3. Promote 20745ca991be after PRIMARY (c424) stable 1 full week
+4. V2 backlog items (see below)
 ```
 ---
 ## Test Status
@@ -102,34 +75,31 @@ Not yet covered (V2 backlog):
   PaperTradingGuard drawdown + CTP isolation
   order_router fast-fill path
   pending_order reconciliation
+  _run_tracker_cycle (new — integrated tracker)
 ```
 ---
 ## V2 Backlog
 ```
-- Tests: PaperTradingGuard, order_router fast-fill, pending_order reconciliation
-- run_tracker_loop.py: remove closed positionID from open_positions.json on close
-- run_tracker_loop.py: call guard.record_trade_result() on close detection
-- Merge run_tracker_loop.py into run_signal_loop.py (reduce 8 terminals to 4)
+- Tests: PaperTradingGuard, order_router fast-fill, pending_order reconciliation,
+         _run_tracker_cycle integration
 - Increase _PORTFOLIO_POLL_MAX_ATTEMPTS from 10 to 20 if scan timeout recurs
 - daily_order_cap safeguard
-- Promote 20745ca991be after PRIMARY stable 1 week
 - Scripts and tests documentation session (separate session)
 ```
 ---
 ## Useful Commands
 ```powershell
-# Loops
-python scripts/broker_support/run_signal_loop.py --instance c424
-python scripts/broker_support/run_signal_loop.py --instance 240166 --quiet
-python scripts/broker_support/run_signal_loop.py --instance 7ffbc5 --quiet
-python scripts/broker_support/run_signal_loop.py --instance 61875 --quiet
+# Loops (unified — 4 terminals)
+python scripts/broker_support/run_demo_trading.py --instance c424
+python scripts/broker_support/run_demo_trading.py --instance 240166 --quiet
+python scripts/broker_support/run_demo_trading.py --instance 7ffbc5 --quiet
+python scripts/broker_support/run_demo_trading.py --instance 61875 --quiet
 # Kill switches
-echo "" > STOP           # halt all
-echo "" > STOP_240166    # halt one
+echo "" > STOP             # halt all
+echo "" > STOP_240166      # halt one
 del STOP_240166
 # Diagnostics
 python scripts/broker_support/inspect_portfolio.py --instance 240166 --all-positions
-python scripts/broker_support/run_tracker_loop.py --instance 240166 --once --no-hours-guard
 python scripts/diagnostics/week_one_health_check.py
 # Tests
 pytest tests/broker_support/ -v
@@ -143,7 +113,10 @@ Instrument map:   configs/broker_support/instrument_map.yaml
 Credentials:      configs/broker_support/broker_settings.env
 Journal:          outputs/broker_support/journal/<instance>/trades.csv
 Open positions:   outputs/broker_support/journal/<instance>/open_positions.json
-Signal logs:      outputs/broker_support/logs/run_signal_loop_<instance>_YYYY-MM-DD.log
-Tracker logs:     outputs/broker_support/logs/tracker_<instance>_YYYY-MM-DD.log
-Architecture:     docs/ctp/ARCHITECTURE.md
+Snapshots:        outputs/broker_support/snapshots/<instance>/last_positions.csv
+Signal logs:      outputs/broker_support/logs/demo_trading_<instance>_YYYY-MM-DD.log
+Architecture:     docs/broker/ARCHITECTURE.md
 ```
+---
+## SESSION_LOG appendix
+See docs/broker/SESSION_LOG.md for full history of completed changes.
