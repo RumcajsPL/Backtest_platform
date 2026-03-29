@@ -1,5 +1,6 @@
 # CONTEXT.md — CTP Session State
 # Claude session-to-session continuity. Facts live in ARCHITECTURE.md.
+# IMPORTANT: from next session CONTEXT move completed changes to SESSION_LOG appendix and replace this line by "Completed changes goes to SESSION_LOG appendix"
 # Updated: 2026-03-28
 ---
 ## Current State

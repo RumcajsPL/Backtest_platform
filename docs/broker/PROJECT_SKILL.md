@@ -86,9 +86,9 @@ Config:   configs/broker_support/broker_settings.env
 ```
 ## Session Deliverables (end of every session)
 ```
-docs/broker/ARCHITECTURE.md   ← update any confirmed facts or completed sections
+docs/broker/ARCHITECTURE.md   ← update if any new confirmed facts or fact validated updates
 docs/broker/BROKER_INTEGRATION.md ← update if API facts or endpoints changed
-docs/broker/CONTEXT.md        ← update with what changed, next actions
+docs/broker/CONTEXT.md        ← update with continued over sessions and next actions/task, open points. Closed change history goes to SESSION_LOG.md
 docs/broker/SKILL.md          ← update only if architecture rules changed
-docs/broker/SESSION_LOG.md ← append after each session for changes to uncharge other 4 session documents. Available on request if deeper historical changes analysis required.
+docs/broker/SESSION_LOG.md ← append after each session for session closed changes to uncharge other session documents. Available on request if deeper historical changes analysis required.
 ```
