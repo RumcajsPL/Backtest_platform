@@ -522,7 +522,7 @@ Both series are now considered mature and frozen. No further parameter changes a
 Any future 1‑minute runs (if needed) should use the same ranges with possibly different random seeds. 15‑minute runs are not required but can be repeated with seed variation.
 ```
 
-8. Next Steps for V3 (Intelligent Backtesting Orchestrator)
+8. Next Steps specifically for V3 (Intelligent Backtesting Orchestrator) but to review in V2
 ```
 The methodology proven on 1min and 15min will be extended to 5‑minute and 10‑minute timeframes. The orchestrator should:
 
@@ -538,7 +538,7 @@ Enforce windows_evaluated >= 3 verdict gate before considering any candidate for
 
 Maintain separate result trees for each timeframe – never mix data across TFs.
 
-The current BACKTESTING_RESULTS.md serves as the knowledge base for the orchestrator’s initial search heuristics.
+The current BACKTESTING_TRACKER.md serves as the knowledge base for the orchestrator’s initial search heuristics.
 ```
 
 ## Breakdowns strategy runs for each of paper trading
