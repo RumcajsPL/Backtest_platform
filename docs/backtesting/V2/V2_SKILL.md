@@ -1,16 +1,9 @@
 ---
-name: CTP V2 Backtester Project
+name: ctp-v2-backtester-project
 description: >
   Use for any CTP V2 Backtester Project work. Triggers: backtest,
   backtester, backtesting, agent, agentic, staging, sandbox, 
   V2_GOV.md, V2_PLAN.md, V2_CONTEXT.md, V2_CHANGELOG.md, V2_SESSION_LOG.md.
-
-SKILL.md (this) | Claude.ai role, architecture rules, protocols | Claude.ai | Architecture rule changes, role changes |
-| CONTEXT.md | Live project state for session continuity | Claude.ai | Every session close |
-| SESSION_LOG.md | Immutable audit trail of sessions | Claude.ai | Every session close |
-| GOV.md | Organisation structure only | Claude.ai | Role/process changes only |
-| PLAN.md | Project plan, backlog, milestones | Claude.ai | Backlog changes each session |
-| CHANGELOG.md | Architecture decisions and code changes | Claude.ai | Every confirmed change |
 ---
 # SKILL.md — CTP V2 Backtester Project
 # Role: Claude.ai Program Director / PM
