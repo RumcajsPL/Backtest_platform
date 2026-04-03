@@ -1,0 +1,6 @@
+\archive\
+\crash_dumps\
+\pine_scripts\
+\data\
+\outputs\
+\temp\
