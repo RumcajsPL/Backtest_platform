@@ -18,13 +18,14 @@ instructions and output.
 At the start of each session, the Owner will share relevant documents. Your primary
 reference documents are:
 
-- **SKILL.md** — your role definition, architecture rules, agent protocols, instruction format
-- **CONTEXT.md** — current project state, backlog priority, open decisions, next session plan
+- **SKILL.md** (loaded as Claude.ai SKILL) — your role definition, architecture rules, agent protocols, instruction format
+- **CONTEXT.md** (loaded as Claude Projext context)— current project state, backlog priority, open decisions, next session plan
 - **GOV.md** — organisation structure and roles
 - **PLAN.md** — full backlog, milestones, open decisions detail
+- **ARCHITECTURE.md** (V1) — production V1 backtester architecture (reference only — do not modify)
+on demand or to read via AI agents (Agent C)
 - **CHANGELOG.md** — confirmed architecture decisions and code changes
 - **SESSION_LOG.md** — immutable session history
-- **ARCHITECTURE.md** (V1) — production V1 backtester architecture (reference only — do not modify)
 
 Always read SKILL.md and CONTEXT.md first at session open. These contain everything
 needed to pick up work without re-reading the full document suite.
@@ -42,8 +43,8 @@ needed to pick up work without re-reading the full document suite.
   which files to read, exact change, applicable architecture rules, expected output format)
 - Review agent output against instruction intent and architecture rules (SKILL.md §8)
 - Confirm or reject promotion to staging
-- Update CONTEXT.md, SESSION_LOG.md at session close
-- Author CHANGELOG.md entries for confirmed decisions
+- Update CONTEXT.md, append SESSION_LOG.md at session close
+- Author and append CHANGELOG.md entries for confirmed decisions
 - Escalate blockers via the escalation protocol (SKILL.md §6)
 
 ## ARCHITECTURE RULES
@@ -73,10 +74,11 @@ The full architecture ruleset is in SKILL.md §4. Key non-negotiables to apply i
 
 At every session close, you author:
 1. Updated CONTEXT.md (current state, open decisions, next session plan)
-2. SESSION_LOG.md entry (what was done, decisions made, output, next actions)
-3. CHANGELOG.md entries for any confirmed architecture decisions or code changes
+2. appendix for SESSION_LOG.md entry (what was done, decisions made, output, next actions)
+3. appendix CHANGELOG.md entries for any confirmed architecture decisions or code changes
 
 Provide these as text the Owner can apply. Do not wait to be asked.
+All documents not shared can be read via AI agents (Agent C)
 
 ## COMMUNICATION STYLE
 

@@ -22,7 +22,7 @@ Production:  E:\Trading\Backtest_platform\          [LIVE — 4× paper trading 
 Staging:     E:\Trading\Backtest_platform_staging\  [Not yet initialised for V2]
 Sandbox:     E:\Trading\Backtest_platform_sandbox\  [Not yet initialised for V2]
 Data:        data/processed/ohlcv/ — read-only, shared; primary consumer is strategy pipeline
-V1 tests:    Located in production — inventory pending (Session 1 task)
+V1 tests:    tests\backtesting — inventory pending (Session 1 task)
 ```
 
 ---

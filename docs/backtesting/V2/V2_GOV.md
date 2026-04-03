@@ -37,7 +37,7 @@ V2 starts after Phase 2 gate: 20+ automated paper trades confirmed.
        │               │                  │
 ┌──────▼──────┐ ┌──────▼──────┐ ┌────────▼────────┐
 │  AGENT A    │ │   AGENT B   │ │    AGENT C      │
-│ Claude Code │ │    Codex    │ │  Qwen Coder     │
+│ Claude Code │ │    Codex    │ │  Qwen Code      │
 │  Dev Lead   │ │  Rapid Dev  │ │  QA / Search    │
 └─────────────┘ └─────────────┘ └─────────────────┘
 ```
@@ -117,7 +117,7 @@ V2 starts after Phase 2 gate: 20+ automated paper trades confirmed.
 
 ---
 
-### 3.5 Agent C — Qwen Coder (QA / Search)
+### 3.5 Agent C — Qwen Code (QA / Search)
 
 **Specialisation:** Codebase search, impact analysis, test execution, output verification
 
@@ -201,8 +201,24 @@ Rule:       Disposable — rebuilt from staging at session start
 
 ### Environment initialisation (one-time before Session 1)
 ```powershell
-# Staging (full copy)
-xcopy E:\Trading\Backtest_platform\ E:\Trading\Backtest_platform_staging\ /E /I /H
+# Staging (full copy - except data/ and other specific exploatation production content)
+## robocopy should be considered as alternative for xcopy 
+## Step 1 — Create an exclude file
+```
+\archive\
+\crash_dumps\
+\pine_scripts\
+\data\
+\outputs\
+\temp\
+```
+## Step 2 — Copy everything except excluded folders
+xcopy E:\Trading\Backtest_platform\ E:\Trading\Backtest_platform_staging\ /E /I /H /EXCLUDE:exclude.txt
+
+## Step 3 — Recreate only folder structures (no files) for specific dirs
+xcopy E:\Trading\Backtest_platform\data E:\Trading\Backtest_platform_staging\data /T /E
+xcopy E:\Trading\Backtest_platform\outputs E:\Trading\Backtest_platform_staging\outputs /T /E
+xcopy E:\Trading\Backtest_platform\temp E:\Trading\Backtest_platform_staging\temp /T /E
 
 # Sandbox (source only)
 xcopy E:\Trading\Backtest_platform\src\     E:\Trading\Backtest_platform_sandbox\src\     /E /I
