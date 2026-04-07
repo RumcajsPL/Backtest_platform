@@ -25,6 +25,8 @@ INDEX_NAME = "timestamp"
 DEFAULT_CONFIG_PATH = "configs/data/data_aggregator.yaml"
 OUTPUT_TIMEZONE = "Europe/Berlin"
 
+SUB_MINUTE_ALIASES = ("s", "sec", "second")
+
 # ------------------------------------------------------------
 # Helper function to standardize timestamps
 # ------------------------------------------------------------
@@ -45,6 +47,28 @@ def standardize_timestamp_index(index, timeframe, market_close_hour=23, market_c
         index = index.normalize() + pd.Timedelta(hours=market_close_hour, minutes=market_close_minute)
     
     return index
+
+
+def _normalize_timeframe_alias(timeframe: str) -> str:
+    """Normalize user timeframe to a pandas-compatible alias."""
+    timeframe = timeframe.strip()
+    tf_lower = timeframe.lower()
+    return tf_lower if tf_lower.endswith("h") else timeframe
+
+
+def _is_sub_minute_timeframe(tf_pd: str) -> bool:
+    """Return True when timeframe granularity is below one minute."""
+    try:
+        offset = pd.tseries.frequencies.to_offset(tf_pd)
+    except ValueError as exc:
+        raise ValueError(f"Unsupported timeframe: {tf_pd}") from exc
+
+    delta = getattr(offset, "delta", None)
+    if delta is not None and delta != pd.Timedelta(0):
+        return delta < pd.Timedelta(minutes=1)
+
+    freqstr = getattr(offset, "freqstr", str(offset)).lower()
+    return any(alias in freqstr for alias in SUB_MINUTE_ALIASES)
 
 # ------------------------------------------------------------
 # Optimized Numba Decoder (Returns Arrays, not Lists)
@@ -94,9 +118,9 @@ def decode_bi5_numba(raw_data, base_ts, divisor):
 def process_single_day(args):
     """
     Processes all 24 hourly files for a single day.
-    Returns 1-minute resampled data for that day.
+    Returns data resampled at the worker base timeframe for that day.
     """
-    instrument, day_dt, raw_root, divisor, target_tz_str = args
+    instrument, day_dt, raw_root, divisor, target_tz_str, worker_timeframe = args
     
     # Storage for the whole day (list of arrays is faster than appending to DF)
     day_ts, day_prices, day_vols = [], [], []
@@ -151,13 +175,12 @@ def process_single_day(args):
     df.index.name = INDEX_NAME
     df.sort_index(inplace=True)
 
-    # ALWAYS resample to 1min first (base unit)
-    ohlc_1min = df["price"].resample("1min").ohlc()
-    vol_1min = df["volume"].resample("1min").sum()
-    ohlc_1min["volume"] = vol_1min
-    ohlc_1min.dropna(inplace=True)
+    ohlc = df["price"].resample(worker_timeframe).ohlc()
+    volume = df["volume"].resample(worker_timeframe).sum()
+    ohlc["volume"] = volume
+    ohlc.dropna(inplace=True)
 
-    return ohlc_1min
+    return ohlc
 
 # ------------------------------------------------------------
 # Main Controller
@@ -179,7 +202,8 @@ def generate_ohlcv_multicore(config_path: str):
     end_date = datetime.strptime(str(data_cfg["end_date"]), "%Y-%m-%d")
 
     # Resolve pandas timeframe
-    tf_pd = timeframe.lower() if timeframe.lower().endswith("h") else timeframe
+    tf_pd = _normalize_timeframe_alias(timeframe)
+    worker_timeframe = tf_pd if _is_sub_minute_timeframe(tf_pd) else "1min"
 
     print(f"--- Parallel OHLCV Gen: {instrument} ({timeframe}) ---")
     
@@ -193,9 +217,9 @@ def generate_ohlcv_multicore(config_path: str):
     total_days = len(days_to_process)
     print(f"Processing {total_days} days on {os.cpu_count()} cores...")
 
-    # Prepare arguments for workers - removed timeframe_pd
+    # Prepare arguments for workers.
     worker_args = [
-        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str) 
+        (instrument, d, RAW_DATA_ROOT, divisor, target_tz_str, worker_timeframe)
         for d in days_to_process
     ]
 
@@ -210,14 +234,14 @@ def generate_ohlcv_multicore(config_path: str):
             if i % 5 == 0 or i == total_days - 1:
                 print(f"Progress: {100*(i+1)/total_days:.1f}%", end="\r")
 
-    print("\nMerging 1min data...")
+    print(f"\nMerging {worker_timeframe} data...")
     if not results:
         print(f"❌ No data found for {instrument}.")
         return
 
-    # Concatenate all 1min data
-    full_1min_df = pd.concat(results)
-    full_1min_df.sort_index(inplace=True)
+    # Concatenate all worker-level data
+    full_base_df = pd.concat(results)
+    full_base_df.sort_index(inplace=True)
 
     # Define aggregation rules
     agg_rules = {
@@ -231,10 +255,10 @@ def generate_ohlcv_multicore(config_path: str):
     # Perform FINAL aggregation to user requested timeframe
     print(f"Aggregating to {timeframe}...")
     
-    if tf_pd == "1min" or tf_pd == "1t":
-        final_ohlc = full_1min_df
+    if tf_pd == worker_timeframe:
+        final_ohlc = full_base_df
     else:
-        final_ohlc = full_1min_df.resample(tf_pd).agg(agg_rules)
+        final_ohlc = full_base_df.resample(tf_pd).agg(agg_rules)
         final_ohlc.dropna(inplace=True)
 
     # Standardize timestamps

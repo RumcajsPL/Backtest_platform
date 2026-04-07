@@ -195,7 +195,7 @@ def update_raw_bi5_files(instrument: str, base_dir: str, max_workers: int = 50):
 
 if __name__ == "__main__":
     # --- EXAMPLE USAGE ---
-    INSTRUMENT_TO_UPDATE = "deuidxeur"
+    INSTRUMENT_TO_UPDATE = "USATECHIDXUSD"
     
     update_raw_bi5_files(
         instrument=INSTRUMENT_TO_UPDATE,
