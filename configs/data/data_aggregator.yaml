@@ -12,9 +12,9 @@
   # directory: Final destination for aggregated bars
 
 data_source:
-  instrument: USATECHIDXUSD
-  timeframe: 1s
-  start_date: 2023-01-01
+  instrument: DEUIDXEUR
+  timeframe: 1d
+  start_date: 2022-12-01
   end_date: 2026-04-01
 
 output:
