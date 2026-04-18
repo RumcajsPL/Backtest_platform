@@ -42,7 +42,7 @@ a structured report covering:
 Usage:
     python scripts/diagnostics/week_one_health_check.py
     python scripts/diagnostics/week_one_health_check.py --instance 240166
-    python scripts/diagnostics/week_one_health_check.py --dates 2026-03-24 2026-03-27
+    python scripts/diagnostics/week_one_health_check.py --dates 2026-03-30 2026-04-17
     python scripts/diagnostics/week_one_health_check.py --verbose
 
 Output:
@@ -611,7 +611,7 @@ def _build_report(
         lines.append("")
 
     lines.append("  C. Deploy run_demo_trading.py (replaces run_signal_loop + run_tracker):")
-    lines.append("       python scripts/broker_support/run_demo_trading.py --instance c424")
+    lines.append("       python scripts/broker_support/run_demo_trading.py --instance c424 --quiet")
     lines.append("       python scripts/broker_support/run_demo_trading.py --instance 240166 --quiet")
     lines.append("       python scripts/broker_support/run_demo_trading.py --instance 7ffbc5 --quiet")
     lines.append("       python scripts/broker_support/run_demo_trading.py --instance 61875 --quiet")
