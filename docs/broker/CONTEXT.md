@@ -1,7 +1,15 @@
 # CONTEXT.md — CTP Session State
 # Claude session-to-session continuity. Facts live in ARCHITECTURE.md.
 # Completed changes goes to SESSION_LOG appendix
-# Updated: 2026-03-29
+# Updated: 2026-04-18 
+# -----------------------------------------------------------------------------------------
+# IMPORTANT CHANGE: Claude.ai can read directly (no permission required) 
+#     from BACTEST_PLATFORM and write (under Owner approval)
+# Secondly Agents AI are running in the platform as "eyes and hands" of Claude.ai
+#     Claude.ai can issue instruction to an agent AI (Owner would relay) to read/analyze and 
+#           also write/create text, scripts etc. Claude.ai can preserve its tokens for    
+#           important analitical and project management tasks.  
+# -----------------------------------------------------------------------------------------   
 ---
 ## Current State
 ```
@@ -16,13 +24,17 @@ Loop consolidation:         COMPLETE 2026-03-29 (8 terminals → 4)
 Week 2 loops:               RUNNING from 2026-03-29 (~21:14 UTC)
 First live trade: 2026-03-17 13:06 UTC
   positionID=3466009287, orderID=336588020
-  BUY GER40 @ 23705.89, SL=23676.47, TP=23891.07, R:R=8.8x — profitable
+  BUY GER40 @ 23705.89, SL=23676.47, TP=23891.07, R:R=8.8x — profitable  
 ```
 ---
+## STATUS ON 18/04/2026
+3 weeks of paper trading run (no analysis done bertween) were finished and analysed:
+outputs\broker_support\diagnostics\health_check_2026-04-18.txt 
+health check shows several issues to analyze.
 ## Open Issues
 None. All issues resolved.
 ---
-## Watch Items — Week 2
+## Watch Items — Week 2-4
 ```
 1. open_positions.json: deleted manually for 240166 (position 3475134299 was closed).
    File will be auto-created on first new position placement by run_demo_trading.py.

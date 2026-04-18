@@ -1,5 +1,5 @@
 ---
-name: CTP broker integration
+name: ctp-broker-integration
 description: >
   Use for any CTP broker_support and integration work. Triggers: broker_support,
   EToroClient, PositionTracker, CSVJournal, PaperTradingGuard, HaltLoopError,
@@ -8,11 +8,19 @@ description: >
   TradeEnricher, pyramiding, _check_pyramiding, open_positions.json,
   pending_order_ids, run_signal_loop, run_tracker_loop, kill_switch.
 ---
+# -----------------------------------------------------------------------------------------
+# IMPORTANT CHANGE: Claude.ai can read directly (no permission required) 
+#     from BACTEST_PLATFORM and write (under Owner approval)
+# Secondly Agents AI are running in the platform as "eyes and hands" of Claude.ai
+#     Claude.ai can issue instruction to an agent AI (Owner would relay) to read/analyze and 
+#           also write/create text, scripts etc. Claude.ai can preserve its tokens for    
+#           important analitical and management tasks.  
+# -----------------------------------------------------------------------------------------  
 # CTP Broker Integration — Session Skill
 ## Session Start Protocol
 ```
 1. Read docs/broker/CONTEXT.md       ← open issues, next actions, session state
-2. Read docs/broker/ARCHITECTURE.md  ← single source of truth for all code facts
+2. If required read docs/broker/ARCHITECTURE.md  ← single source of truth for all code facts
 3. Read only the source file being modified — never guess file content
 4. Never write code before reading ARCHITECTURE.md
 ```
