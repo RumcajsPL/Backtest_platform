@@ -198,3 +198,152 @@ Update week_one_health_check.py for new log filename and trades.csv P&L stats.
 - 240166 instance confirmed running cleanly
 - c424 / 7ffbc5 / 61875 to be started (will hit stale snapshot guard once, self-correct)
 - All 4 instances use run_demo_trading.py — run_tracker_loop.py fully superseded
+
+---
+## 2026-04-19 — Governance framework + agent monitoring protocol
+
+### Objective
+Create GOV.md for broker integration (adapted from V2 Backtester GOV.md).
+Update SKILL.md and CONTEXT.md to reflect new governance, agent roster, and
+Claude.ai expanded authorities. No source code changed this session.
+
+### Documents changed
+
+**docs/broker/GOV.md** (new file)
+- Created broker-integration-specific governance document
+- 4-agent roster: A=Claude Code, B=Codex, C=Qwen Code 3.6 (local), D=OpenCode/Gemma4
+- Claude.ai role expanded: direct file read (confirmed), write authority on .md/text files
+  (no approval required), trading advisor role formalised
+- Monitoring protocol defined (Section 6):
+  - Agent C: scheduled health checks every 24h, report-only, no autonomous action
+  - Agent D: loop liveness checks every 30 min, bounded autonomous restart authority
+  - Restart strictly forbidden after HaltLoopError / PauseUntilTomorrowError / kill switch
+  - Auto-restart limit: 2 per instance per 24h
+- Agent instruction template defined (Section 9) — standard format for all agent tasks
+- Environment structure carried from V2 GOV with broker-specific production rules
+- Sprint/session checklist formalised (Section 10)
+
+**docs/broker/SKILL.md** (updated)
+- Added governance summary block at top (agent roster, Claude.ai authorities)
+- Added GOV.md to session start protocol (step 3)
+- Added monitoring "What NOT to Do" rules (no restart after HaltLoopError etc.)
+- Updated open_positions.json rule: references run_demo_trading.py (not run_signal_loop.py)
+- Updated session deliverables: added GOV.md to list
+
+**docs/broker/CONTEXT.md** (updated)
+- Added GOV.md governance status section
+- Restructured Next Session Actions: priority 1=trading advisory, 2=monitoring
+  implementation, 3=V2 backlog dev
+- Clarified health check 2026-04-18 as open issue requiring analysis
+- RiskManager threshold review elevated (3 weeks data now available)
+
+### Not done this session
+- Health check 2026-04-18 analysis (deferred — priority 1 next session)
+- Monitoring agent implementation scripts (GOV.md defines protocol; implementation pending)
+- No source code changes
+
+---
+## 2026-04-19 (continued) — Live validation project + agent instructions
+
+### Objective
+Design and formalise the live vs backtest correspondence validation project.
+Author ready-to-execute agent instructions for both tracks.
+
+### Analysis done
+- Reviewed SignalBridge source to confirm what is already logged per poll
+- Reviewed existing logs (demo_trading_240166_2026-04-01.log) to confirm log
+  structure, message patterns, and data availability
+- Confirmed 10-min parquet coverage to 2026-04-01 (matches live trading start)
+- Key finding: Track B requires NO new logging code — all needed data already
+  exists in demo_trading logs (bar_timestamp, bid_price, ATR, SL/TP distances,
+  result, rejection reason)
+
+### Documents created/updated
+
+**docs/broker/LIVE_VALIDATION.md** (new file)
+- Full project definition: Track A (price alignment) + Track B (signal correspondence)
+- Approach, deliverables, input files, decision framework per track
+- Assigned agents: A1 → Agent B, B1 → Agent C
+- Open questions identified before script authoring
+
+**docs/broker/AGENT_INSTRUCTIONS_VALIDATION.md** (new file)
+- INSTRUCTION A1: Agent B → price_alignment_check.py
+  Fetches broker TenMin candles for overlap window, compares to historical parquet,
+  produces alignment report with bias direction and ALIGNED/INVESTIGATE/MISALIGNED verdict
+- INSTRUCTION B1: Agent C → signal_log_extractor.py
+  Parses all demo_trading_*.log files, extracts per-poll pipeline outcomes to CSV
+  (bar_timestamp, result, direction, ATR, SL/TP distances, rejection reason)
+
+**docs/broker/CONTEXT.md** (updated)
+- Elevated live validation to Priority 1 next session
+- Added Key Paths entry for validation outputs
+
+### Not done
+- Scripts not yet written (agent instructions ready for relay)
+- Track A/B analysis not yet done (scripts must run first)
+
+---
+## 2026-04-19 (continued) — Track B analysis + extractor fixes
+
+### Objective
+Run signal_log_extractor.py, analyse results, produce Track B findings.
+
+### Results
+- 13,901 total polls, 12,900 stage-5, date range 2026-03-29 to 2026-04-17
+- 3 signals, 24 RISK_REJECTED, 12,873 NO_SIGNAL
+- Only 240166 and 61875 captured (c424/7ffbc5 missing — extractor bug)
+
+### Analysis findings (full detail in docs/broker/TRACK_B_ANALYSIS.md)
+- Signal frequency: CONSISTENT with backtest expectations for 240166
+- Signal direction: all SELL — correct for market conditions (April sell-off)
+- Signal quality 240166: R:R 7.0x, SL ~1.1×ATR — healthy
+- Signal quality 61875: one signal R:R 2.6x — watch for 1-min calibration issue
+- RISK_REJECTED: all 24 from 61875, threshold_pct=0.28 — suspected ATR scale
+  mismatch between 1-min strategy ATR and monthly ARTF percentile distribution
+  This is now Priority 2 investigation item
+
+### Files changed
+**docs/broker/TRACK_B_ANALYSIS.md** (new)
+  Full signal correspondence analysis with per-signal breakdown, rejection
+  analysis, verdict table, and action items
+
+**scripts/diagnostics/signal_log_extractor.py** (two bug fixes applied directly)
+  Bug 1: POLL_HEADER_PATTERN \d+ → [\w]+ to capture alphanumeric instance IDs
+         (c424, 7ffbc5 were silently excluded)
+  Bug 2: open() encoding='utf-8' → errors='replace' to handle Windows-1252
+         characters (0xa6 byte in Apr 8-9 logs caused mid-file parse abort)
+
+**docs/broker/LIVE_VALIDATION.md** (execution order updated to reflect done/todo)
+**docs/broker/CONTEXT.md** (priorities updated: Track B done, Track A next,
+  61875 RISK_REJECTED investigation added as Priority 2)
+
+---
+## 2026-04-19 (continued) — API facts: candle pagination + OHLCV lag
+
+### Objective
+Document two precision points raised by Owner: 1000-bar per request limit
+with pagination requirement, and 1-hour lag on historical OHLCV availability.
+
+### Documents updated
+
+**docs/broker/API_REFERENCE.md**
+- Candle endpoint section expanded:
+  - Hard maximum 1000 bars per single request, applies to all timeframes equally
+  - Pagination note: windows > 1000 bars require multiple requests with date offsets
+  - CTP current config (500 + 120) confirmed well within limit
+  - `OneWeek` confirmed as highest available broker TF; `OneMonth` does NOT exist
+  - 1-hour lag documented with example and validation impact note
+
+**docs/broker/ARCHITECTURE.md** (Section 13 Empirical API Facts)
+- Added: Candles hard limit precision (pagination note added)
+- Added: Broker timeframe ceiling (`OneWeek` max, `OneMonth` absent)
+- Added: Historical OHLCV lag (~1h, boundary comparison guidance)
+
+**docs/broker/LIVE_VALIDATION.md** (Track A section)
+- Added pagination note: overlap window ~1260 bars > 1000-bar limit
+  Agent B must issue two requests and merge/deduplicate
+- Added 1-hour lag note with guidance for future re-runs
+
+**docs/broker/AGENT_INSTRUCTIONS_VALIDATION.md** (INSTRUCTION A1)
+- Step 2 updated: two-request fetch strategy specified explicitly
+  Agent B instructed to merge, deduplicate, sort before comparison

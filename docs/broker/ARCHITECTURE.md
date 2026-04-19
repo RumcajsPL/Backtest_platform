@@ -521,7 +521,9 @@ Non-blocking — sets `wbws_window_valid` flag in `OrderSignal` only.
 | Fact | Detail |
 |------|--------|
 | OHLC values can be None | Key present, value None during market closure. Use `bar.get("f") or 0.0` not `bar.get("f", 0.0)`. |
-| Candles hard limit | 1000 bars per request. |
+| Candles hard limit | 1000 bars per single request. Applies to all timeframes equally. For windows > 1000 bars, multiple paginated requests with date offsets required. |
+| Broker timeframe ceiling | `OneWeek` is the highest available TF. `OneMonth` does NOT exist on the broker candle endpoint. Use local monthly parquet for ARTF risk normalisation. |
+| Historical OHLCV lag | ~1 hour delay. Data updated at T covers bars up to T-1h. Avoid comparing broker candles to local parquet within 1h of the data update boundary — boundary bars may be absent or incomplete. |
 | Candle direction | Always fetch `desc`, reverse to `asc` in fetcher. |
 | DAX volume | Always 0 — kept for schema compatibility. |
 | DAX instrument_id | 32 — immutable, confirmed. |

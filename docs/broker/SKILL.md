@@ -9,21 +9,40 @@ description: >
   pending_order_ids, run_signal_loop, run_tracker_loop, kill_switch.
 ---
 # -----------------------------------------------------------------------------------------
-# IMPORTANT CHANGE: Claude.ai can read directly (no permission required) 
-#     from BACTEST_PLATFORM and write (under Owner approval)
-# Secondly Agents AI are running in the platform as "eyes and hands" of Claude.ai
-#     Claude.ai can issue instruction to an agent AI (Owner would relay) to read/analyze and 
-#           also write/create text, scripts etc. Claude.ai can preserve its tokens for    
-#           important analitical and management tasks.  
-# -----------------------------------------------------------------------------------------  
+# GOVERNANCE (see docs/broker/GOV.md for full detail)
+#
+# Claude.ai authorities:
+#   - Direct read on all project files (no Owner relay required)
+#   - Write authority on .md and text files (no approval required)
+#   - Does NOT write .py / .yaml / .env / .csv / .json — agents do this
+#   - Does NOT execute code or run tests — agents do this
+#
+# Agent roster:
+#   Agent A — Claude Code    : complex multi-file dev, tests, src/ changes
+#   Agent B — Codex          : scoped tasks, config, utilities, boilerplate
+#   Agent C — Qwen Code 3.6  : QA, search, impact analysis, health monitoring
+#   Agent D — OpenCode/Gemma4: dev (overflow/replacement for B), loop liveness monitor
+#
+# Agent D autonomous restart: strictly bounded — see GOV.md Section 6.2
+#   NEVER auto-restart after HaltLoopError or PauseUntilTomorrowError
+#   NEVER auto-restart if kill switch present
+#   Limit: 2 restarts per instance per 24h
+#
+# All instructions to agents use the template in GOV.md Section 9
+# -----------------------------------------------------------------------------------------
+
 # CTP Broker Integration — Session Skill
+
 ## Session Start Protocol
 ```
 1. Read docs/broker/CONTEXT.md       ← open issues, next actions, session state
 2. If required read docs/broker/ARCHITECTURE.md  ← single source of truth for all code facts
-3. Read only the source file being modified — never guess file content
-4. Never write code before reading ARCHITECTURE.md
+3. If required read docs/broker/GOV.md           ← governance, roles, monitoring protocol
+4. Read only the source file being modified — never guess file content
+5. Never write code before reading ARCHITECTURE.md
+6. Surface health/trading advisory observations before coding work begins
 ```
+
 ## Architecture Rules (non-negotiable)
 ```python
 # HTTP:      _make_request() is the only HTTP engine — never implement HTTP elsewhere
@@ -36,9 +55,10 @@ description: >
 # Strategy:  time_filter and position_control never patched in LiveConfigPatcher
 # Pyramiding: _check_pyramiding() uses ctp_open_position_ids only (CTP-scoped)
 # Pipeline errors: guard.record_pipeline_error() from SignalBridge block ONLY
-# open_positions.json: written by run_signal_loop.py only
+# open_positions.json: written by run_demo_trading.py (run_signal_loop) only
 # TradeEnricher: _HISTORY_LOOKBACK_DAYS must use settings.default_days_back (30)
 ```
+
 ## What NOT to Do
 ```
 # API
@@ -61,7 +81,12 @@ description: >
 - Do NOT count portfolio fetch errors against pipeline error budget
 - Do NOT write open_positions.json from run_tracker_loop.py
 - Do NOT hardcode _HISTORY_LOOKBACK_DAYS — use settings.default_days_back
+# Monitoring
+- Do NOT auto-restart loop after HaltLoopError or PauseUntilTomorrowError
+- Do NOT auto-restart loop if kill switch file is present
+- Do NOT exceed 2 Agent D restarts per instance per 24h
 ```
+
 ## Trade Constraints
 | Constraint | Value | Enforced in |
 |---|---|---|
@@ -73,6 +98,7 @@ description: >
 | max_pipeline_errors | 5 | PaperTradingGuard — SignalBridge only |
 | kill_switch_file | STOP + STOP_<id> | master + per-instance |
 | off-hours gate | allowed_hours_utc | Loop — _seconds_until_next_allowed_hour |
+
 ## Key API Facts (quick reference)
 ```
 Keys:        ETORO_API_KEY = app-level. ETORO_USER_KEY = demo read/write.
@@ -85,6 +111,7 @@ History:     minDate=YYYY-MM-DD. 30-day max. Returns array directly.
 isNoSL/TP:   true = DISABLED (inverted flags).
 casing:      Portfolio PascalCase+capital ID. History camelCase+lowercase id.
 ```
+
 ## Platform
 ```
 OS:       Windows 10, Python 3.13
@@ -92,11 +119,14 @@ Project:  E:\Trading\Backtest_platform
 API base: https://public-api.etoro.com/api/v1
 Config:   configs/broker_support/broker_settings.env
 ```
+
 ## Session Deliverables (end of every session)
 ```
-docs/broker/ARCHITECTURE.md   ← update if any new confirmed facts or fact validated updates
-docs/broker/BROKER_INTEGRATION.md ← update if API facts or endpoints changed
-docs/broker/CONTEXT.md        ← update with continued over sessions and next actions/task, open points. Closed change history goes to SESSION_LOG.md
-docs/broker/SKILL.md          ← update only if architecture rules changed
-docs/broker/SESSION_LOG.md ← append after each session for session closed changes to uncharge other session documents. Available on request if deeper historical changes analysis required.
+docs/broker/CONTEXT.md        ← next actions, open points, continued items
+                                 closed changes go to SESSION_LOG.md
+docs/broker/SESSION_LOG.md    ← append closed changes for this session
+docs/broker/ARCHITECTURE.md   ← update only if new confirmed API/code facts
+docs/broker/BROKER_INTEGRATION.md ← update only if API endpoints/facts changed
+docs/broker/SKILL.md          ← update only if architecture or governance rules changed
+docs/broker/GOV.md            ← update only if governance structure changed
 ```

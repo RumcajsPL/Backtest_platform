@@ -425,7 +425,30 @@ Confirmed: DAX = `instrumentID=32`, `symbolFull="GER40"`
 | `instrumentId` | int | Instrument ID |
 | `direction` | `asc` \| `desc` | asc=oldest first, desc=newest first |
 | `interval` | `OneMinute` `FiveMinutes` `TenMinutes` `FifteenMinutes` `ThirtyMinutes` `OneHour` `FourHours` `OneDay` `OneWeek` | Candle timeframe |
-| `candlesCount` | int (max 1000) | Number of candles |
+| `candlesCount` | int (max 1000) | Number of candles per request |
+
+**Candle count limit and pagination:**
+Hard maximum is **1000 bars per single request** — enforced server-side.
+This limit applies equally across all timeframes (1-min, 10-min, 4H, etc.).
+To fetch a window longer than 1000 bars, issue multiple requests with
+date offsets (fromDate/toDate or equivalent). No single-call workaround exists.
+CTP current config: 500 strategy bars + 120 HTF bars — well within limit.
+
+**Supported timeframes (confirmed):**
+Highest available timeframe is `OneWeek`. `OneMonth` is NOT available via the
+broker candle endpoint. Daily and weekly bars are available. For applications
+requiring monthly-equivalent data (e.g. ARTF risk normalisation), use
+locally-stored monthly parquet — do not attempt to reconstruct from broker weekly.
+
+**Historical OHLCV data availability — 1-hour lag:**
+When fetching broker candles (or updating local historical parquet files),
+data is available with approximately 1 hour of delay.
+Example: data update run at 15:00 UTC on 2026-04-20 will return candles
+covering up to 14:00 UTC on 2026-04-20. The most recent completed bar
+may not yet appear if the update runs close to the bar boundary.
+Impact on validation: when comparing broker candles to local historical
+parquet for the same period, ensure the comparison window ends at least
+1 hour before the data update time to avoid spurious boundary mismatches.
 **Response structure:**
 ```json
 {
