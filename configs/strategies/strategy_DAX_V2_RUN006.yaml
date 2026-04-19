@@ -1,0 +1,293 @@
+# =============================================================================
+# strategy_DAX_V2_RUN006.yaml — V2 Base Strategy Config: RUN-006 Recalibration
+# Version: 2.0.0
+# Created: Session 28
+#
+# PURPOSE:
+#   Base strategy configuration for the RUN-006 recalibration run.
+#   Cloned from strategy_DAX_V2_RUN005.yaml with one zone change:
+#     discovery.risk_percentile max: 0.80 -> 0.60
+#   All other content identical to RUN-005.
+#
+# INSTRUMENT: DEUIDXEUR (DAX 40)
+# TIMEFRAME:  1-minute strategy bars
+# DATA RANGE: 2023-01-02 to 2026-03-31
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ASSET
+# -----------------------------------------------------------------------------
+asset:
+  symbol: "DEUIDXEUR"
+  pip_size: 0.1
+  point_size: 1.0
+
+# -----------------------------------------------------------------------------
+# DATA
+# -----------------------------------------------------------------------------
+data:
+  paths:
+    strategy_ohlcv: "data/processed/ohlcv/DEUIDXEUR_1min_20221201_20260401.parquet"
+    htf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_15min_20221201_20260401.parquet"
+    ltf_ohlcv:      "data/processed/ohlcv/DEUIDXEUR_1s_20230101_20260401.parquet"
+    artf_ohlcv:     "data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260401.parquet"
+  date_range:
+    start: "2023-01-02 08:30:00"
+    end:   "2026-03-31 20:30:00"
+  timezone: "CET"
+  htf_period:      "15min"
+  ltf_timeframe:   "1s"
+  artf_timeframe:  "1ME"
+
+# -----------------------------------------------------------------------------
+# EXECUTION
+# -----------------------------------------------------------------------------
+execution:
+  mode: "analytics"
+
+# -----------------------------------------------------------------------------
+# FILTERS
+# All 10 filters defined. Optimizer overrides enabled flags and params.
+# RSI: always disabled (DEC-006). Bollinger: always enabled via zone params.
+# -----------------------------------------------------------------------------
+filters:
+  time_filters:
+    time_filter:
+      enabled: true
+      session_start: {hour: 08, minute: 30}
+      session_end:   {hour: 20, minute: 30}
+  filter_sequence:
+    - bollinger_filter
+    - dpo_filter
+    - cci_filter
+    - adx_filter
+    - choppiness_filter
+    - supertrend_filter
+    - macd_filter
+    - ma_filter
+    - pivot_filter
+    - rsi_filter
+  technical_filters:
+    rsi_filter:
+      enabled: false
+      length: 14
+      overbought: 70
+      oversold: 30
+    bollinger_filter:
+      enabled: false
+      length: 14
+      width_ma_length: 30
+      filter_multiplier: 0.5
+    dpo_filter:
+      enabled: true
+      length: 20
+      smooth: 3
+      threshold: 0.2
+    cci_filter:
+      enabled: false
+      length: 20
+      overbought: 100
+      oversold: -100
+    adx_filter:
+      enabled: false
+      adx_length: 14
+      threshold: 18.0
+    choppiness_filter:
+      enabled: false
+      length: 14
+      threshold: 61.8
+    supertrend_filter:
+      enabled: false
+      atr_length: 10
+      factor: 3.0
+    macd_filter:
+      enabled: false
+      fast_length: 12
+      slow_length: 26
+      signal_length: 9
+    ma_filter:
+      enabled: false
+      ma_type: "TEMA"
+      length: 25
+      slope_length: 10
+    pivot_filter:
+      enabled: false
+      reversal_percent: 0.35
+      order: 5
+  default_error_strategy: "pass_through"
+
+# -----------------------------------------------------------------------------
+# TRADE MANAGEMENT
+# -----------------------------------------------------------------------------
+trade_management:
+  spread:
+    enabled: true
+    config_path: "configs/spreads/broker_spreads.yaml"
+  risk:
+    atr_length: 14
+    atr_multiplier_sl: 1.4
+    tp_mode: "rr_ratio"
+    risk_to_reward_ratio: 4.0
+    atr_multiplier_tp: 7.98
+    max_risk_percentile: 0.50
+  position_control:
+    pyramiding_enabled: false
+    close_on_opposite: false
+    max_positions: 1
+
+# -----------------------------------------------------------------------------
+# OUTPUT
+# -----------------------------------------------------------------------------
+output:
+  reports:
+    enabled: false
+    output_dir: "outputs/strategies/reports/wbws"
+    theme: "dark"
+    chart_height_px: 300
+    brand_name: "WBWSStrategy"
+    include_raw_data: false
+  logging:
+    level: "INFO"
+    output_dir: "outputs/strategies/logs/wbws"
+
+# -----------------------------------------------------------------------------
+# WFO WINDOW DEFINITIONS
+# 13 quarterly windows: 2023-Q1 through 2026-Q1 (full available range)
+# Identical to RUN-005.
+# -----------------------------------------------------------------------------
+walk_forward:
+  windows:
+    - id: "W01"
+      start: "2023-01-02"
+      end:   "2023-03-31"
+    - id: "W02"
+      start: "2023-04-01"
+      end:   "2023-06-30"
+    - id: "W03"
+      start: "2023-07-01"
+      end:   "2023-09-30"
+    - id: "W04"
+      start: "2023-10-01"
+      end:   "2023-12-31"
+    - id: "W05"
+      start: "2024-01-01"
+      end:   "2024-03-31"
+    - id: "W06"
+      start: "2024-04-01"
+      end:   "2024-06-30"
+    - id: "W07"
+      start: "2024-07-01"
+      end:   "2024-09-30"
+    - id: "W08"
+      start: "2024-10-01"
+      end:   "2024-12-31"
+    - id: "W09"
+      start: "2025-01-01"
+      end:   "2025-03-31"
+    - id: "W10"
+      start: "2025-04-01"
+      end:   "2025-06-30"
+    - id: "W11"
+      start: "2025-07-01"
+      end:   "2025-09-30"
+    - id: "W12"
+      start: "2025-10-01"
+      end:   "2025-12-31"
+    - id: "W13"
+      start: "2026-01-01"
+      end:   "2026-03-31"
+
+# -----------------------------------------------------------------------------
+# SCENARIO
+# -----------------------------------------------------------------------------
+scenario: "v2_validation"
+scenarios:
+  v2_validation:
+    description: "V2 full feature validation — loose constraints, all stages exercised"
+    fitness_weights:
+      net_pnl:         0.20
+      expectancy:      0.25
+      max_drawdown:    0.20
+      win_rate:        0.15
+      trade_frequency: 0.10
+      profit_factor:   0.10
+    constraints:
+      min_win_rate:        0.05
+      max_drawdown:        0.9999      # CHANGED from 0.99 — matches backtest YAML
+      max_losing_streak:   9999
+      min_trades_per_week: 0.5
+      min_expectancy:     -999.0
+      min_profit_factor:   0.01
+    mc_prefilter_ruin_threshold: 0.05
+    wfo_collapse_drawdown_threshold: 999999.0
+    wfo_temporal_weights:
+      median_return:     0.25
+      variance:          0.25
+      worst_drawdown:    0.25
+      fraction_positive: 0.25
+    verdict_thresholds:
+      go_wfo_floor:                    0.001
+      borderline_wfo_floor:            0.0001
+      go_mc_drawdown_ceiling:          0.99
+      borderline_mc_drawdown_ceiling:  0.999
+      sensitivity_spike_threshold:     0.99
+    report_emphasis:
+      - actual_win_rate
+      - actual_trades_per_week
+      - wfo_consistency_score
+      - mc_deep_ruin_probability
+      - actual_max_drawdown
+
+# -----------------------------------------------------------------------------
+# PARAMETER ZONES
+# Cloned from RUN-005 with one change:
+#   discovery.risk_percentile max: 0.80 -> 0.60
+# All other zones identical to RUN-005.
+# -----------------------------------------------------------------------------
+zones:
+  safe:
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 10,  max: 20, step: 2}
+      atr_multiplier:       {type: float, min: 1.5, max: 2.0, step: 0.1}
+      rr_target:            {type: float, min: 4.0, max: 6.0, step: 0.5}
+      risk_percentile:      {type: float, min: 0.3, max: 0.5, step: 0.05}
+      bollinger_length:     {type: int,   min: 10,  max: 25, step: 1}
+      bollinger_multiplier: {type: float, min: 0.3, max: 0.8, step: 0.05}
+      bollinger_width_ma:   {type: int,   min: 20, max: 35, step: 1}
+
+  exploration:
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 7,  max: 28, step: 3}
+      atr_multiplier:       {type: float, min: 0.8, max: 2.5, step: 0.2}
+      rr_target:            {type: float, min: 4.0, max: 10.0, step: 0.5}
+      risk_percentile:      {type: float, min: 0.20, max: 0.60, step: 0.05}
+      bollinger_length:     {type: int,   min: 8,  max: 30, step: 2}
+      bollinger_multiplier: {type: float, min: 0.3, max: 1.0, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 20, max: 50, step: 2}
+      choppiness_enabled:   {type: choice, choices: [true, false]}
+      choppiness_length:    {type: int,   min: 10, max: 20, step: 1}
+      choppiness_threshold: {type: float, min: 55.0, max: 65.0, step: 0.5}
+
+  discovery:
+    enabled: true
+    parameters:
+      atr_length:           {type: int,   min: 5,  max: 35, step: 2}
+      atr_multiplier:       {type: float, min: 0.5, max: 3.5, step: 0.25}
+      rr_target:            {type: float, min: 3.0, max: 12.0, step: 1.0}
+      risk_percentile:      {type: float, min: 0.06, max: 0.60, step: 0.02}  # CHANGED max 0.80 -> 0.60
+      bollinger_length:     {type: int,   min: 5,  max: 40, step: 2}
+      bollinger_multiplier: {type: float, min: 0.2, max: 1.5, step: 0.1}
+      bollinger_width_ma:   {type: int,   min: 15, max: 60, step: 5}
+      choppiness_enabled:   {type: choice, choices: [true, false]}
+      choppiness_length:    {type: int,   min: 8,  max: 25, step: 2}
+      choppiness_threshold: {type: float, min: 50.0, max: 70.0, step: 2.5}
+      ma_enabled:           {type: choice, choices: [true, false]}
+      ma_length:            {type: int,   min: 15, max: 50, step: 5}
+      ma_slope_length:      {type: int,   min: 4,  max: 20, step: 2}
+      ma_type:              {type: choice, choices: ["SMA", "EMA", "WMA", "HMA", "DEMA", "TEMA", "KAMA", "TRIMA", "LSMA"]}
+      dpo_enabled:          {type: choice, choices: [true, false]}
+      dpo_length:           {type: int,   min: 14, max: 30, step: 2}
+      dpo_smooth:           {type: int,   min: 3,  max: 5,  step: 1}
+      dpo_threshold:        {type: float, min: 0.05, max: 0.5, step: 0.01}
