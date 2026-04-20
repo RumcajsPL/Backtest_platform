@@ -145,7 +145,7 @@ GOV.md:   CREATED 2026-04-19 (new — broker integration specific)
 ## Useful Commands
 ```powershell
 # Loops (unified — 4 terminals)
-python scripts/broker_support/run_demo_trading.py --instance c424
+python scripts/broker_support/run_demo_trading.py --instance c424 --quiet
 python scripts/broker_support/run_demo_trading.py --instance 240166 --quiet
 python scripts/broker_support/run_demo_trading.py --instance 7ffbc5 --quiet
 python scripts/broker_support/run_demo_trading.py --instance 61875 --quiet
