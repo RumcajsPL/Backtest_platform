@@ -4,7 +4,7 @@
 # Data_source settings:
   # instrument: The instrument name used in the raw data folder structure
   #   DEUIDXEUR, USATECHIDXUSD
-  # timeframe: Target bar size (Pandas aliases: 1min, 5min, h, 4h, d, 1ME, 1MS, W) + customs like 45min, 90min
+  # timeframe: Target bar size (Pandas aliases: 1s, 1min, 5min, 1h, 4h, 1d, 1W, 1ME, 1MS) + customs like 45min, 90min
   # start_date: Start date (YYYY-MM-DD)
   # end_date: End date (YYYY-MM-DD) 
 # output settings:
@@ -12,10 +12,10 @@
   # directory: Final destination for aggregated bars
 
 data_source:
-  instrument: USATECHIDXUSD
-  timeframe: 1s
-  start_date: 2023-01-01
-  end_date: 2026-04-01
+  instrument: DEUIDXEUR
+  timeframe: 1ME
+  start_date: 2021-01-01
+  end_date: 2026-05-01
 
 output:
   format: parquet # csv | parquet
