@@ -75,7 +75,7 @@ class PositionTracker:
         """Persist current positions to disk for comparison on next cycle."""
         if positions:
             for p in positions:
-                p['positionId'] = str(p.get('positionId', ''))
+                p['positionId'] = str(p.get('positionID') or p.get('positionId') or '')
             df = pd.DataFrame(positions)
         else:
             df = pd.DataFrame()
@@ -151,8 +151,8 @@ class PositionTracker:
 
             trade = Trade.model_validate(
                 {
-                    'positionId': str(position.get('positionId', '')),
-                    'instrumentId': int(position.get('instrumentId', 0)),
+                    'positionId': str(position.get('positionID') or position.get('positionId') or ''),
+                    'instrumentId': int(position.get('instrumentID') or position.get('instrumentId') or 0),
                     'isBuy': position.get('isBuy', True),
                     'openTimestamp': open_time.isoformat(),
                     'closeTimestamp': datetime.now(tz=timezone.utc).isoformat(),
@@ -167,7 +167,7 @@ class PositionTracker:
         except Exception as exc:
             logger.error(
                 f"convert_to_trade failed for positionId="
-                f"{position.get('positionId')}: {exc}"
+                f"{position.get('positionID') or position.get('positionId')}: {exc}"
             )
             return None
 

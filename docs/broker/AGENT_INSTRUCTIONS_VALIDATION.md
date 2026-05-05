@@ -248,3 +248,119 @@ Acceptance criteria:
 Output format: Complete file. No diff — new file only.
 == END INSTRUCTION ==
 ```
+
+== INSTRUCTION ==
+Agent:        B
+Environment:  Staging
+Task:         Write a one-time backfill script that queries eToro closed trade
+              history and reconstructs trades.csv for all four CTP instances
+              from authoritative API data, replacing corrupted records.
+
+Context:
+  The PositionTracker had a PascalCase field mismatch (now fixed) that caused
+  all recorded trades to have trade_id=nan, instrument=UNKNOWN_0, exit_price=0.0,
+  profit_loss=0.0. Additionally CSVJournal deduplication collapsed all records
+  to a single corrupted row per instance. The real closed trades exist in the
+  eToro trade history API but were never correctly journalled.
+
+  The demo account is a shared paper trading account. It holds trades from
+  multiple sources (manual trades, other strategies). The backfill must only
+  write trades whose positionID appears in the instance's open_positions.json —
+  those are the CTP-placed positions for that instance. No other trades must
+  enter trades.csv.
+
+  open_positions.json currently contains the full set of CTP-placed positionIDs
+  for each instance, including both still-open and recently-closed ones, because
+  the tracker failed to remove closed IDs (due to the same field bug). This makes
+  it the correct source of truth for "which positionIDs belong to this instance".
+
+  The API 30-day window means trades closed before 2026-04-05 may not be
+  recoverable via API. The script must log a warning for any positionID in
+  open_positions.json that is not found in the API response.
+
+Files to read before starting:
+  src/broker_support/client/client.py
+      → fetch_closed_trades() signature, params, return format
+      → field names in history response: camelCase+lowercase id
+        (positionId, instrumentId, closeRate, netProfit, fees, leverage,
+         stopLossRate, takeProfitRate, isBuy, openDate, closeDate)
+  src/broker_support/models/trade.py
+      → Trade model field aliases — use these for construction
+  src/broker_support/tracking/csv_journal.py
+      → CSVJournal.append_trades() — use this to write, not pd.to_csv directly
+  src/broker_support/enrichment/instrument_resolver.py
+      → InstrumentResolver.symbol() — use this to resolve instrument name
+  configs/broker_support/instrument_map.yaml
+      → instrument map format
+  outputs/broker_support/journal/c424/open_positions.json
+  outputs/broker_support/journal/240166/open_positions.json
+  outputs/broker_support/journal/7ffbc5/open_positions.json
+  outputs/broker_support/journal/61875/open_positions.json
+      → CTP positionIDs to filter against
+
+Scope:
+  PRODUCE — scripts/broker_support/backfill_trades_csv.py  (new file)
+
+  The script must:
+  1. Accept --instance (one or more, default all four) and --dry-run flags
+  2. For each instance:
+     a. Load CTP positionIDs from open_positions.json
+        — if file absent or empty: log warning and skip instance
+     b. Call fetch_closed_trades() with minDate 30 days back, paginating
+        until raw_trades is empty (max 10 pages as in TradeEnricher)
+     c. Filter API results to records whose positionId is in the CTP set
+     d. For each matching record, construct a Trade via Trade.model_validate()
+        using the history field aliases (positionId, instrumentId, closeRate,
+        netProfit, openDate mapped to openTimestamp, closeDate mapped to
+        closeTimestamp, isBuy, fees, leverage, stopLossRate, takeProfitRate)
+     e. Resolve instrument symbol via InstrumentResolver.symbol(instrument_id)
+        and set trade.instrument — use model_copy(update={'instrument': symbol})
+     f. Read the current trades.csv to identify the corrupted row
+        (trade_id == 'nan' or str(trade_id) == 'nan')
+     g. In --dry-run mode: print what would be written, write nothing
+     h. In live mode:
+        — Delete trades.csv for this instance (removes the corrupted row)
+        — Write all recovered trades via CSVJournal.append_trades()
+        — Log count of trades written and any positionIDs not found in API
+  3. Log a warning for every CTP positionID not found in the API response,
+     with the message: "positionID=<id> not found in API — may be outside
+     30-day window or still open"
+  4. Never write a trade with trade_id='nan' or instrument='UNKNOWN_0'
+     — assert these are absent before writing; raise ValueError if found
+
+  DO NOT CHANGE any existing source file
+  DO NOT modify trades.csv directly with pd.to_csv — use CSVJournal only
+  DO NOT call DataLoader or TradeSimulator
+  DO NOT call inspect_portfolio.py or any live portfolio endpoint
+    — fetch_closed_trades() only; no portfolio fetch
+
+Architecture constraints (from SKILL.md):
+  - datetime.now(timezone.utc) — never datetime.utcnow()
+  - pathlib.Path — never hardcoded separators
+  - logger.info/debug — never print() (except --dry-run summary to stdout is acceptable)
+  - fetch_closed_trades() uses minDate=YYYY-MM-DD (not 'from' or 'fromDate')
+  - History returns camelCase+lowercase id (positionId, instrumentId)
+  - Do NOT use bar.get("field", 0.0) pattern for fields that can be None —
+    use explicit None checks
+  - Do NOT call _make_request() directly — use client methods only
+
+Acceptance criteria:
+  1. --dry-run runs without error and prints a clear per-instance summary
+     showing which positionIDs were found, which were not, and what
+     would be written to trades.csv
+  2. After live run on staging:
+     — trades.csv for each instance contains only rows with real trade_id
+       (no 'nan', no 'UNKNOWN_0' instrument)
+     — trade count per instance matches the number of CTP positionIDs
+       found in the API response
+     — Any positionID not found is clearly logged as a warning
+  3. Script is idempotent: running it twice produces the same trades.csv
+     (CSVJournal deduplication handles this)
+  4. pytest tests/broker_support/ -v passes with zero regressions
+     (no new tests required for this script — it is a one-time utility)
+
+Output format:
+  Complete file: scripts/broker_support/backfill_trades_csv.py
+  Dry-run output from staging: python scripts/broker_support/backfill_trades_csv.py --dry-run
+  (relay dry-run output back to Claude.ai before running live)
+== END INSTRUCTION ==

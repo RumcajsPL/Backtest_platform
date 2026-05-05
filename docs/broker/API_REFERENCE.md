@@ -11,16 +11,15 @@ Three headers required on **every** request:
 | `x-api-key` | Public API Key — app-level, shared |
 | `x-user-key` | User Key — determines demo vs real account |
 | `x-request-id` | UUID — unique per request, generate fresh every call |
-### Key Types
-| Key type | Permissions | Account |
-|----------|-------------|---------|
-| Demo Read | Read only | Demo account |
-| Demo Write | Read + Write | Demo account + demo execution |
-| Real Read | Read only | Real account |
-| Real Write | Read + Write | Real account + real execution |
-**Critical:** Key type determines which account's data is returned — not the URL prefix.
-Demo key required for all `/demo/` endpoints. Real key → 403 on `/demo/` endpoints.
-**CTP setup:** `ETORO_API_KEY` = Public Key, `ETORO_USER_KEY` = Demo Write key.
+### Key Configuration
+Each user key is generated with two choices:
+- **Environment:** Demo or Real — determines which account's data is returned, not the URL prefix
+- **Permissions:** Read (portfolio access only) or Write (portfolio + trade execution)
+
+One key covers one environment. Two keys required if both Demo and Real access are needed.
+
+**Critical:** A Demo key → 403 on all `/demo/` endpoints if scoped to Real, and vice versa.
+**CTP setup:** `ETORO_API_KEY` = Public API Key (app-level), `ETORO_USER_KEY` = Demo Write key. This single key is sufficient for all CTP operations including trade history.
 ---
 ## Field Casing Reference
 | Context | Style | Examples |
@@ -51,15 +50,15 @@ Demo key required for all `/demo/` endpoints. Real key → 403 on `/demo/` endpo
 | **Demo — Cancel Close Order** | DELETE | `/trading/execution/demo/market-close-orders/{orderId}` | Demo Write |
 | **Demo — MIT Order** | POST | `/trading/execution/demo/limit-orders` | Demo Write |
 | **Demo — Cancel MIT Order** | DELETE | `/trading/execution/demo/limit-orders/{orderId}` | Demo Write |
-| **Real — Portfolio** | GET | `/trading/info/portfolio` | Real Write |
-| **Real — Portfolio + PnL** | GET | `/trading/info/real/pnl` | Real Write |
-| **Real — Open by Amount** | POST | `/trading/execution/market-open-orders/by-amount` | Real Write |
-| **Real — Open by Units** | POST | `/trading/execution/market-open-orders/by-units` | Real Write |
-| **Real — Close Position** | POST | `/trading/execution/market-close-orders/positions/{positionId}` | Real Write |
-| **Real — Cancel Open Order** | DELETE | `/trading/execution/market-open-orders/{orderId}` | Real Write |
-| **Real — MIT Order** | POST | `/trading/execution/limit-orders` | Real Write |
-| **Real — Cancel MIT Order** | DELETE | `/trading/execution/limit-orders/{orderId}` | Real Write |
-| **Trade History** | GET | `/trading/info/trade/history` | Real Write |
+| **Real — Portfolio** | GET | `/trading/info/portfolio` | Write (Real env) |
+| **Real — Portfolio + PnL** | GET | `/trading/info/real/pnl` | Write (Real env) |
+| **Real — Open by Amount** | POST | `/trading/execution/market-open-orders/by-amount` | Write (Real env) |
+| **Real — Open by Units** | POST | `/trading/execution/market-open-orders/by-units` | Write (Real env) |
+| **Real — Close Position** | POST | `/trading/execution/market-close-orders/positions/{positionId}` | Write (Real env) |
+| **Real — Cancel Open Order** | DELETE | `/trading/execution/market-open-orders/{orderId}` | Write (Real env) |
+| **Real — MIT Order** | POST | `/trading/execution/limit-orders` | Write (Real env) |
+| **Real — Cancel MIT Order** | DELETE | `/trading/execution/limit-orders/{orderId}` | Write (Real env) |
+| **Trade History** | GET | `/trading/info/trade/history` | Demo Write |
 | **Identity** | GET | `/me` | Any |
 | **Instrument Search** | GET | `/market-data/search` | Any |
 | **Instrument Metadata** | GET | `/market-data/instruments` | Any |
@@ -309,8 +308,9 @@ Cancel pending real MIT order. Response: `{ token: uuid }`
 ---
 ## SECTION 3 — Trade History
 ### GET /trading/info/trade/history
-**Key:** Real Write (empirically confirmed — Demo key returns 403)
+**Key:** Demo Write (same key as all other CTP endpoints)
 Demo trades appear here.
+**30-day window is EXCLUSIVE** — `minDate` of exactly 30 days ago → 403. Use `days=29` maximum. Confirmed 2026-03-29.
 **Query params:**
 | Param | Type | Required | Notes |
 |-------|------|----------|-------|
@@ -576,14 +576,14 @@ Rate message content fields: `Ask`, `Bid`, `LastExecution`, `Date`, `PriceRateID
 ## SECTION 9 — Empirically Confirmed Facts (Override Docs)
 | Endpoint | Key | Result | Notes |
 |----------|-----|--------|-------|
-| GET `/watchlists` | Real Read | ✅ 200 | Connection test |
-| GET `/trading/info/portfolio` | Real Write | ✅ 200 | Real account |
-| GET `/trading/info/real/pnl` | Real Write | ✅ 200 | Real account |
-| GET `/trading/info/trade/history` | Real Write | ✅ 200 | Demo trades appear here |
+| GET `/watchlists` | Read (Real env) | ✅ 200 | Connection test |
+| GET `/trading/info/portfolio` | Write (Real env) | ✅ 200 | Real account |
+| GET `/trading/info/real/pnl` | Write (Real env) | ✅ 200 | Real account |
+| GET `/trading/info/trade/history` | Write (Demo env) | ✅ 200 | Demo trades appear here. 30-day window EXCLUSIVE — use days=29 max |
 | GET `/market-data/search?searchText=GER40` | Any | ✅ 200 | Missing fields → incomplete |
 | GET `/market-data/instruments?instrumentIds=32` | Any | ✅ 200 | DAX confirmed |
-| GET `/trading/info/demo/pnl` | Real Write | ❌ 403 | Wrong key type |
-| GET `/trading/info/demo/portfolio` | Real Write | ❌ 403 | Wrong key type |
+| GET `/trading/info/demo/pnl` | Write (Real env) | ❌ 403 | Wrong environment — use Demo env key |
+| GET `/trading/info/demo/portfolio` | Write (Real env) | ❌ 403 | Wrong environment — use Demo env key |
 | GET candles (live, 2026-03-13) | Any | ✅ 200 | 500 1-min + 120 1H bars confirmed |
 Candle OHLC fields can be None (confirmed 2026-03-13):
 Key is present in the response but value is None — occurs for bars during market closure
@@ -606,7 +606,7 @@ Raw signals: buy=42, sell=12 → after filters: 1 (pass_rate=1.9%) — pipeline 
 - Do NOT call `/demo/pnl` or `/demo/portfolio` with a Real key → 403
 - Do NOT omit `fields` param on market-data/search → empty/error
 - Do NOT use `from` or `fromDate` for trade history → use `minDate=YYYY-MM-DD`
-- Do NOT use Read-only key for `trade/history` → 403
+- Do NOT request trade history beyond 29 days back → 403 (30-day window is exclusive)
 - Do NOT assume `positionID` is in the open-order response → poll order info
 - Do NOT send `InstrumentId` (lowercase d) in close body → use `InstrumentID`
 - Do NOT confuse `credit` (portfolio) with `credits` (pnl) — different field names

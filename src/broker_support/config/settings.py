@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     log_dir: str = Field("logs", validation_alias='LOG_DIR')
 
     # Trade Fetching Settings
-    default_days_back: int = Field(30, validation_alias='DEFAULT_DAYS_BACK')
+    default_days_back: int = Field(29, validation_alias='DEFAULT_DAYS_BACK')
     max_retries: int = Field(3, validation_alias='MAX_RETRIES')
     timeout_seconds: int = Field(30, validation_alias='TIMEOUT_SECONDS')
 

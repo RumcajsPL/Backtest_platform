@@ -61,11 +61,11 @@ class TradeEnricher:
         Fetch the authoritative closed-trade record from history and fill
         exit_price, profit_loss, fees, leverage, sl_rate, tp_rate.
 
-        Uses settings.default_days_back - 1 days as the lookback window.
+        Uses settings.default_days_back as the lookback window (currently 29 days).
         The eToro API hard limit is 30 days but the boundary is exclusive —
-        exactly 30 days back returns 403. Using 29 days stays safely inside.
+        exactly 30 days back returns 403. default_days_back=29 stays safely inside.
         """
-        from_date = datetime.now(timezone.utc) - timedelta(days=settings.default_days_back - 1)
+        from_date = datetime.now(timezone.utc) - timedelta(days=settings.default_days_back)
 
         try:
             # Fetch history page by page until we find the positionId

@@ -2,7 +2,7 @@
 # Claude session-to-session continuity. Facts live in ARCHITECTURE.md.
 # Governance, roles, monitoring: see GOV.md.
 # Completed changes go to SESSION_LOG.md appendix.
-# Updated: 2026-04-19
+# Updated: 2026-05-06
 ---
 
 ## Current State
@@ -11,14 +11,16 @@ Phase 2 (live pipeline):    COMPLETE 2026-03-18
 Multi-instance week 1:      COMPLETE 2026-03-24 to 2026-03-28
 Loop consolidation:         COMPLETE 2026-03-29 (8 terminals → 4)
   run_demo_trading.py:      Signal + tracker unified — DEPLOYED, RUNNING
-  TradeEnricher fix:        Applied — 29-day lookback (30-day boundary is exclusive)
   Tracker isolation:        Full CTP scope — external positions never enter trades.csv
   Stale snapshot guard:     Active — auto-invalidates pre-isolation snapshots on first run
   week_one_health_check:    Updated — new log filename + trades.csv P&L section 7
 Week 2-4 loops:             RUNNING from 2026-03-29
   3 weeks of paper trading completed and analysed 2026-04-18
   health_check: outputs\broker_support\diagnostics\health_check_2026-04-18.txt
-  Issues from health check: pending analysis (see Open Issues below)
+Broker integration bug fixes: COMPLETE 2026-05-06 (see SESSION_LOG)
+  PascalCase field mismatch:  FIXED — trades now written with correct trade_id/instrument
+  30-day boundary:            FIXED — DEFAULT_DAYS_BACK=29 across all components
+  Enricher lookback:          FIXED — uses full 29 days (was erroneously 28)
 First live trade: 2026-03-17 13:06 UTC
   positionID=3466009287, orderID=336588020
   BUY GER40 @ 23705.89, SL=23676.47, TP=23891.07, R:R=8.8x — profitable
@@ -39,11 +41,29 @@ RiskManager calibration: 3 weeks of data now available. Review 0.45% threshold.
 
 ## Open Issues
 ```
-1. Health check 2026-04-18 — issues to analyse (not yet done):
+1. trade/history endpoint returning 403 (InsufficientPermissions) — UNDER INVESTIGATION
+   Observed: backfill_trades_csv.py dry-run, 2026-05-06
+   minDate=2026-04-06 (29 days back) — date boundary is NOT the cause
+   Key is Demo Write — confirmed placing trades successfully with same key
+   eToro returns identical 403 errorCode for both permission and boundary violations
+   — cannot distinguish from error message alone
+   Action next session: test with minDate=2026-05-05 (1 day back) to isolate
+   whether boundary or genuine permission scope issue. Read eToro portal key details.
+   Impact: enricher silently returns exit_price=0.0 / profit_loss=0.0 on every close
+   until resolved. trade_id and instrument ARE now written correctly (PascalCase fix).
+
+2. trades.csv corrupted records — DATA ACCEPTED AS LOST
+   All four instances have 1 corrupted row (trade_id=nan, UNKNOWN_0, exit_price=0.0)
+   These pre-date the PascalCase fix and are outside reliable recovery scope.
+   Backfill attempted but blocked by issue 1 above.
+   Action: once issue 1 resolved, re-run backfill dry-run to recover if within window.
+   If still blocked: delete corrupted rows manually (they carry no valid data).
+
+3. Health check 2026-04-18 — issues to analyse (not yet done):
    File: outputs\broker_support\diagnostics\health_check_2026-04-18.txt
    Action: Claude.ai to review at next session and produce advisory + action list.
 
-2. RiskManager 0.45% threshold — review deferred from week 2.
+4. RiskManager 0.45% threshold — review deferred from week 2.
    Now 3 weeks of data available. Claude.ai to assess whether recalibration needed.
 ```
 
@@ -51,16 +71,16 @@ RiskManager calibration: 3 weeks of data now available. Review 0.45% threshold.
 
 ## Watch Items
 ```
-1. open_positions.json: deleted manually for 240166 (position 3475134299 was closed).
-   File will be auto-created on first new position placement by run_demo_trading.py.
-   Confirm this happens correctly on first signal.
-2. trades.csv: not yet created for any instance (correct — no closed CTP trades yet
-   under new loop). Will be created by tracker cycle on first detected close.
-   Confirm correct exit_price and profit_loss (TradeEnricher fix now active).
-3. 240166 unconfirmed orders from week 1 (all pre-date new loop):
-   orderID=338749124 / 338770199 / 338747252 / 339031085
-   positionID=3475134299 confirmed for 4th attempt — all now closed.
-   No action required. Logged for reference only.
+1. trades.csv going forward: PascalCase fix deployed. Confirm on first new close:
+   - trade_id is a valid integer string (not 'nan')
+   - instrument is 'GER40' (not 'UNKNOWN_0')
+   - exit_price and profit_loss non-zero IF history endpoint resolves (issue 1 above)
+   - open_positions.json correctly shrinks by 1 on each close detection
+2. open_positions.json all four instances: currently contain stale positionIDs
+   (positions that closed before PascalCase fix — cleanup failed silently).
+   These will NOT cause phantom closes — stale snapshot guard handles this.
+   They will be cleaned up naturally as new positions are placed and closed.
+   Do not manually edit unless confirmed all stale IDs are >29 days old.
 ```
 
 ---
@@ -78,34 +98,37 @@ RiskManager calibration: 3 weeks of data now available. Review 0.45% threshold.
 
 ## Next Session Actions
 ```
-Priority 1 — Live validation (IN PROGRESS):
+Priority 1 — Resolve trade/history 403 (Open Issue 1):
+  Test: python -c "from src.broker_support.client.client import EToroClient; 
+        from datetime import datetime, timedelta, timezone;
+        c=EToroClient(); print(c.fetch_closed_trades(
+        from_date=datetime.now(timezone.utc)-timedelta(days=1)))"
+  If 403 with 1 day back → genuine permission scope issue → regenerate Demo Write key
+  If 200 with 1 day back → boundary still wrong somewhere → read fetch_closed_trades()
+  Once resolved: re-run backfill dry-run to recover corrupted trades.csv records
+
+Priority 2 — Confirm first new close journalled correctly (Watch Item 1):
+  After loop runs for a few days, check trades.csv for:
+  trade_id not nan, instrument=GER40, exit_price>0, profit_loss non-zero
+  If exit_price=0.0 still: history endpoint still 403 — escalate Priority 1
+
+Priority 3 — Live validation (IN PROGRESS):
   Track B: COMPLETE. Analysis in docs/broker/TRACK_B_ANALYSIS.md
-    Key findings:
-      - 240166 (10-min): signal frequency CONSISTENT with backtest
-      - All signals SELL: correct for market conditions
-      - 61875: 24 RISK_REJECTED — ATR scale mismatch suspected (1-min vs monthly ARTF)
-      - c424 / 7ffbc5: missing from CSV — extractor fixed (alphanumeric ID + UTF-8 bugs)
-  Track B next: re-run extractor to capture c424/7ffbc5, re-run in 2 weeks for sample size
   Track A: NOT YET STARTED
     Instructions in docs/broker/AGENT_INSTRUCTIONS_VALIDATION.md (INSTRUCTION A1)
     Relay to Agent B next session
+  61875 RISK_REJECTED investigation: still pending
 
-Priority 2 — Investigate 61875 RISK_REJECTED:
-  RiskManager ATR scale: 1-min ATR vs monthly ARTF percentile distribution
-  All 24 rejections at threshold_pct=0.28 — confirm whether low-percentile
-  rejection is expected design or miscalibration for 1-min candidate
-  Read RiskManager source before any conclusion
-
-Priority 3 — Trading advisory (Claude.ai):
+Priority 4 — Trading advisory (Claude.ai):
   a. Review health_check_2026-04-18.txt → produce findings + action list
   b. Review RiskManager 0.45% threshold with 3 weeks of live data
   c. Assess candidate promotion: 20745ca991be readiness vs PRIMARY stability
 
-Priority 4 — Monitoring setup (GOV.md defined — needs implementation):
+Priority 5 — Monitoring setup (GOV.md defined — needs implementation):
   a. Author Agent C health check schedule instruction
   b. Author Agent D liveness check script instruction
 
-Priority 5 — V2 backlog (dev work):
+Priority 6 — V2 backlog (dev work):
   a. Tests: PaperTradingGuard, order_router fast-fill, pending_order reconciliation,
             _run_tracker_cycle integration
   b. Scripts and tests documentation
