@@ -42,7 +42,7 @@ a structured report covering:
 Usage:
     python scripts/diagnostics/week_one_health_check.py
     python scripts/diagnostics/week_one_health_check.py --instance 240166
-    python scripts/diagnostics/week_one_health_check.py --dates 2026-03-30 2026-04-17
+    python scripts/diagnostics/week_one_health_check.py --dates 2026-03-30 2026-04-17 > "health_check_DDMMYYYY.log" 2>&1 
     python scripts/diagnostics/week_one_health_check.py --verbose
 
 Output:

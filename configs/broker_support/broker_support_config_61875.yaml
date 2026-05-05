@@ -9,7 +9,7 @@ strategy:
   yaml_path: configs/backtesting/candidates/cd67ceb0_61875464b3aa_strategy.yaml
 
 live_data:
-  artf_ohlcv_path: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260301.parquet
+  artf_ohlcv_path: data/processed/ohlcv/DEUIDXEUR_1ME_20210101_20260501.parquet
   strategy_bars_to_fetch: 500    # 1-min bars (~8h 20min, enough for ATR(11) + all filters)
   htf_bars_to_fetch: 120         # 1-min bars — HTF same as strategy TF for this candidate
   strategy_interval: OneMinute   # eToro candles interval — matches strategy 1-min TF
